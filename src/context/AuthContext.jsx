@@ -57,28 +57,38 @@ export function AuthProvider({ children }) {
   const login = async (username, password, type = 'student') => {
     // DEMO MODE FOR GITHUB PAGES (Since no backend runs here)
     if (window.location.hostname.includes('github.io')) {
-      // Map local test accounts so GitHub reflects real UI logic
-      const localUsers = {
-        'admin': { id: 1, username: 'admin', role: 'admin', firstName: 'Abir', lastName: 'Ahmad' },
-        'admin2': { id: 7, username: 'admin2', role: 'admin', firstName: 'BFI', lastName: 'Admin' },
-        'eathsharajsharon.26ph': { id: 8, username: 'eathsharajsharon.26ph', role: 'student', firstName: 'Eath Sharaj', lastName: 'Sharon', batch: '2026' },
-        'mdalasad.7orv': { id: 9, username: 'mdalasad.7orv', role: 'student', firstName: 'MD. Al', lastName: 'Asad', batch: '2026' },
-        'mdzafrulhasan.8x6x': { id: 10, username: 'mdzafrulhasan.8x6x', role: 'student', firstName: 'MD. ZAFRUL', lastName: 'HASAN', batch: '2026' },
-        'mahfojorrahmanabir.hc1d': { id: 11, username: 'mahfojorrahmanabir.hc1d', role: 'student', firstName: 'Mahfojor Rahman', lastName: 'Abir', batch: '2026' },
-        'mohammedsajidulhaque.3oj1': { id: 12, username: 'mohammedsajidulhaque.3oj1', role: 'student', firstName: 'Mohammed Sajidul', lastName: 'Haque', batch: '2026' },
-        'bayazidahmed.9o28': { id: 13, username: 'bayazidahmed.9o28', role: 'student', firstName: 'Bayazid', lastName: 'Ahmed', batch: '2026' }
+      // Known accounts with their REAL passwords (must match exactly like the local system)
+      const knownCredentials = {
+        'admin':                    { password: 'Admin@BFI2024', user: { id: 1, username: 'admin', role: 'admin', firstName: 'Abir', lastName: 'Ahmad' } },
+        'admin2':                   { password: 'Admin@BFI2024', user: { id: 7, username: 'admin2', role: 'admin', firstName: 'BFI', lastName: 'Admin' } },
+        'eathsharajsharon.26ph':    { password: 'BFI@Student2024', user: { id: 8, username: 'eathsharajsharon.26ph', role: 'student', firstName: 'Eath Sharaj', lastName: 'Sharon', batch: '2026' } },
+        'mdalasad.7orv':            { password: 'BFI@Student2024', user: { id: 9, username: 'mdalasad.7orv', role: 'student', firstName: 'MD. Al', lastName: 'Asad', batch: '2026' } },
+        'mdzafrulhasan.8x6x':       { password: 'BFI@Student2024', user: { id: 10, username: 'mdzafrulhasan.8x6x', role: 'student', firstName: 'MD. ZAFRUL', lastName: 'HASAN', batch: '2026' } },
+        'mahfojorrahmanabir.hc1d':  { password: 'BFI@Student2024', user: { id: 11, username: 'mahfojorrahmanabir.hc1d', role: 'student', firstName: 'Mahfojor Rahman', lastName: 'Abir', batch: '2026' } },
+        'mohammedsajidulhaque.3oj1':{ password: 'BFI@Student2024', user: { id: 12, username: 'mohammedsajidulhaque.3oj1', role: 'student', firstName: 'Mohammed Sajidul', lastName: 'Haque', batch: '2026' } },
+        'bayazidahmed.9o28':        { password: 'BFI@Student2024', user: { id: 13, username: 'bayazidahmed.9o28', role: 'student', firstName: 'Bayazid', lastName: 'Ahmed', batch: '2026' } },
       };
 
-      const matchedUser = localUsers[username];
-      const demoUser = matchedUser || (type === 'admin' 
-        ? { id: 'admin1', username: 'admin', role: 'admin', firstName: 'BFI', lastName: 'Admin Demo' }
-        : { id: 'student1', username: 'student', role: 'student', firstName: 'General Demo', lastName: 'Student', batch: '2026' });
-      
+      const entry = knownCredentials[username];
+
+      if (!entry) {
+        throw new Error('Invalid credentials');
+      }
+      if (entry.password !== password) {
+        throw new Error('Invalid credentials');
+      }
+      // Role separation — same as backend
+      if (type === 'admin' && entry.user.role !== 'admin') {
+        throw new Error('Access Denied: This portal is for Administrators only.');
+      }
+      if (type === 'student' && entry.user.role === 'admin') {
+        throw new Error('Administrators must log in via the designated Admin Portal.');
+      }
+
       localStorage.setItem('token', 'demo-token');
-      // Store the literal user JSON as a custom demo variable so refresh works exactly as that user
-      localStorage.setItem('demo_user_cache', JSON.stringify(demoUser));
-      setCurrentUser(demoUser);
-      return { token: 'demo-token', user: demoUser };
+      localStorage.setItem('demo_user_cache', JSON.stringify(entry.user));
+      setCurrentUser(entry.user);
+      return { token: 'demo-token', user: entry.user };
     }
 
     try {
