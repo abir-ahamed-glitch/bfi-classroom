@@ -104,6 +104,14 @@ io.on('connection', (socket) => {
   });
 });
 
+// Serve frontend in production (Single Deployment)
+const clientBuildPath = path.join(__dirname, '..', 'dist');
+app.use(express.static(clientBuildPath));
+
+app.get('*', (req, res) => {
+  res.sendFile(path.join(clientBuildPath, 'index.html'));
+});
+
 // Start Server
 httpServer.listen(PORT, () => {
   console.log(`🚀 BFI Classroom API Gateway running on port ${PORT}`);
