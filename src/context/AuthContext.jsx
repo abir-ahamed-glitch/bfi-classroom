@@ -21,6 +21,13 @@ export function AuthProvider({ children }) {
   }, []);
 
   const fetchUser = async (token) => {
+    // DEMO MODE FOR GITHUB PAGES
+    if (window.location.hostname.includes('github.io') && token === 'demo-token') {
+      setCurrentUser({ id: 'demo1', username: 'demo', role: 'student', firstName: 'Demo', lastName: 'User', batch: '2026' });
+      setLoading(false);
+      return;
+    }
+
     try {
       const response = await fetch('/api/auth/me', {
         headers: {
@@ -43,6 +50,16 @@ export function AuthProvider({ children }) {
   };
 
   const login = async (username, password, type = 'student') => {
+    // DEMO MODE FOR GITHUB PAGES (Since no backend runs here)
+    if (window.location.hostname.includes('github.io')) {
+      const demoUser = type === 'admin' 
+        ? { id: 'admin1', username: 'admin', role: 'admin', firstName: 'BFI', lastName: 'Admin' }
+        : { id: 'student1', username: 'student', role: 'student', firstName: 'Demo', lastName: 'Student', batch: '2026' };
+      localStorage.setItem('token', 'demo-token');
+      setCurrentUser(demoUser);
+      return { token: 'demo-token', user: demoUser };
+    }
+
     try {
       const response = await fetch('/api/auth/login', {
         method: 'POST',

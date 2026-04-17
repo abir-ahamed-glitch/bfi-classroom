@@ -19,6 +19,18 @@ export default function Dashboard() {
   }, []);
 
   const fetchDashboardData = async () => {
+    // DEMO MODE FOR GITHUB PAGES
+    if (window.location.hostname.includes('github.io')) {
+      setData({
+        pinnedProjects: [{ id: 1, title: 'BFI Demo Project', genre: 'Documentation', duration: 'N/A', synopsis: 'This is a demo project showcasing the UI layout. Database features are currently disabled on GitHub pages.', awards_count: 5 }],
+        recommendedProjects: [],
+        stats: { batch: 'Demo', isBfiaaMember: false },
+        announcements: [{ id: 1, title: 'Welcome to the BFI Classroom Demo', content: 'You are currently viewing the static preview of the application. Since GitHub Pages does not support a backend database, any data changes you make will not be saved.', priority: 'normal', created_at: new Date() }]
+      });
+      setLoading(false);
+      return;
+    }
+
     try {
       const res = await fetch('/api/student/dashboard', {
         headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
