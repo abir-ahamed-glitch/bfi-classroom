@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { Film, User, Lock, ArrowRight, Loader2, Eye, EyeOff } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import './Login.css'; // Add a specific CSS file for Login
@@ -49,7 +49,7 @@ export default function Login() {
             alignItems: 'center',
             justifyContent: 'center'
           }}>
-            <img src="/bfi-logo.jpg" alt="BFI Logo" style={{ 
+            <img src={`${import.meta.env.BASE_URL}bfi-logo.jpg`} alt="BFI Logo" style={{ 
               height: '50px', 
               width: 'auto', 
               mixBlendMode: 'multiply',
@@ -124,7 +124,7 @@ export default function Login() {
         <div className="login-footer">
           <p>Student registration is handled by the institute.</p>
           <p>Not a student yet? <a href="https://bfibd.org/our-courses/" target="_blank" rel="noopener noreferrer" className="text-gradient">Explore courses</a></p>
-          <p style={{ marginTop: '1.5rem', fontSize: '0.8rem' }}><a href="/admin/login" className="text-muted">Institute Authority Area</a></p>
+          <p style={{ marginTop: '1.5rem', fontSize: '0.8rem' }}><Link to="/admin/login" className="text-muted">Institute Authority Area</Link></p>
         </div>
       </div>
     </div>

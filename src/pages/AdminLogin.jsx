@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { User, Lock, ArrowRight, Loader2, ShieldAlert, Eye, EyeOff } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import './Login.css';
@@ -50,7 +50,7 @@ export default function AdminLogin() {
             alignItems: 'center',
             justifyContent: 'center'
           }}>
-            <img src="/bfi-logo.jpg" alt="BFI Logo" style={{ 
+            <img src={`${import.meta.env.BASE_URL}bfi-logo.jpg`} alt="BFI Logo" style={{ 
               height: '50px', 
               width: 'auto', 
               mixBlendMode: 'multiply',
@@ -123,7 +123,7 @@ export default function AdminLogin() {
 
         <div className="login-footer">
           <p>Are you a student?</p>
-          <p><a href="/login" className="text-gradient">Go to Student Login</a></p>
+          <p><Link to="/login" className="text-gradient">Go to Student Login</Link></p>
         </div>
       </div>
     </div>
