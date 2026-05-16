@@ -52,7 +52,27 @@ export default function NoticeBoard() {
   const fetchNotices = async () => {
     if (window.location.hostname.includes('github.io')) {
       setNotices([
-        { id: 1, title: 'Welcome to the BFI Classroom Demo', content: 'You are currently viewing the static preview of the application. Since GitHub Pages does not support a backend database, any data changes you make will not be saved.', priority: 'normal', created_at: new Date() }
+        { 
+          id: 1, 
+          title: 'Welcome to the BFI Classroom Demo', 
+          content: 'You are currently viewing the static preview of the application. Since GitHub Pages does not support a backend database, we have enabled "Demo Mode" with mocked data so you can explore all student and admin features without restriction.\n\nKey features to explore:\n- Dashboard with project tracking\n- Course materials and lectures\n- Admin panel for student and announcement management\n- Community directory and portfolio views', 
+          priority: 'high', 
+          created_at: new Date() 
+        },
+        { 
+          id: 2, 
+          title: 'Admissions Open for Summer 2024', 
+          content: 'Admissions are now open for the 76th Batch of the Online Filmmaking Course. Interested candidates can apply through the official website. The course curriculum has been updated with new modules on Virtual Production and AI in Filmmaking.', 
+          priority: 'normal', 
+          created_at: new Date(Date.now() - 86400000) 
+        },
+        { 
+          id: 3, 
+          title: 'Film Appreciation Workshop', 
+          content: 'A 3-day intensive workshop on the Art of Film Appreciation will be held next weekend. Renowned critics and filmmakers will lead the sessions. Registration is mandatory for all current students.', 
+          priority: 'low', 
+          created_at: new Date(Date.now() - 172800000) 
+        }
       ]);
       setLoading(false);
       return;
