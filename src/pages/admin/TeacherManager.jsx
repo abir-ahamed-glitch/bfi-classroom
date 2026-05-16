@@ -206,25 +206,19 @@ export default function TeacherManager() {
                 <input type="email" name="email" value={formData.email} onChange={handleInputChange} className="input-glass" required style={{ width: '100%', paddingLeft: '1rem' }} />
               </div>
               <div>
-                <label style={{ display: 'block', marginBottom: '0.4rem', color: 'var(--text-secondary)' }}>Gender</label>
-                <select name="gender" value={formData.gender} onChange={handleInputChange} className="input-glass" style={{ width: '100%', paddingLeft: '1rem' }}>
-                  <option value="">Select Gender</option>
-                  <option value="Male">Male</option>
-                  <option value="Female">Female</option>
-                  <option value="Other">Other</option>
-                </select>
-              </div>
-            </div>
-
-            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: '1rem' }}>
-              <div>
-                <label style={{ display: 'block', marginBottom: '0.4rem', color: 'var(--text-secondary)' }}>Email</label>
-                <input type="email" name="email" value={formData.email} onChange={handleInputChange} className="input-glass" required style={{ width: '100%', paddingLeft: '1rem' }} />
-              </div>
-              <div>
                 <label style={{ display: 'block', marginBottom: '0.4rem', color: 'var(--text-secondary)' }}>Mobile Number</label>
                 <input type="text" name="mobileNumber" value={formData.mobileNumber} onChange={handleInputChange} className="input-glass" placeholder="+880..." style={{ width: '100%', paddingLeft: '1rem' }} />
               </div>
+            </div>
+
+            <div>
+              <label style={{ display: 'block', marginBottom: '0.4rem', color: 'var(--text-secondary)' }}>Gender</label>
+              <select name="gender" value={formData.gender} onChange={handleInputChange} className="input-glass" style={{ width: '100%', paddingLeft: '1rem' }}>
+                <option value="">Select Gender</option>
+                <option value="Male">Male</option>
+                <option value="Female">Female</option>
+                <option value="Other">Other</option>
+              </select>
             </div>
 
             <div style={{ padding: '1.5rem', background: 'rgba(255,255,255,0.02)', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.05)' }}>
