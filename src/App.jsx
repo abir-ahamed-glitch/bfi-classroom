@@ -103,6 +103,21 @@ const Layout = ({ children }) => {
             flexDirection: 'column',
             alignItems: 'stretch',
           }}>
+            {/* Demo Mode Banner */}
+            {window.location.hostname.includes('github.io') && (
+              <div style={{
+                background: 'linear-gradient(90deg, #0ea5e9, #2563eb)',
+                color: 'white',
+                padding: '6px 1rem',
+                fontSize: '0.8rem',
+                textAlign: 'center',
+                fontWeight: 600,
+                letterSpacing: '0.02em',
+                boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
+              }}>
+                DEMO MODE: Viewing Static Preview. Data is simulated for demonstration purposes.
+              </div>
+            )}
             <div style={{
               display: 'flex',
               alignItems: 'center',

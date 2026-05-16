@@ -44,6 +44,40 @@ export default function StudentManager() {
   ];
 
   const fetchStudents = async () => {
+    if (window.location.hostname.includes('github.io')) {
+      setStudents([
+        { 
+          id: 1, 
+          student_id: 'BFI01-2024', 
+          full_name: 'John Doe', 
+          first_name: 'John',
+          last_name: 'Doe',
+          username: 'johndoe', 
+          email: 'john@example.com', 
+          batch_number: '75',
+          created_at: new Date().toISOString(),
+          enrollments: [
+            { id: 1, course_name: 'Online Filmmaking Course', course_type: 'filmmaking', step1_completed: 1, step2_completed: 1, step3_completed: 1, step4_completed: 0 }
+          ]
+        },
+        { 
+          id: 2, 
+          student_id: 'BFI02-2024', 
+          full_name: 'Jane Smith', 
+          first_name: 'Jane',
+          last_name: 'Smith',
+          username: 'janesmith', 
+          email: 'jane@example.com', 
+          batch_number: '75',
+          created_at: new Date().toISOString(),
+          enrollments: [
+            { id: 2, course_name: 'Film Appreciation Course', course_type: 'workshop', step1_completed: 1, step4_completed: 1 }
+          ]
+        }
+      ]);
+      return;
+    }
+
     try {
       const res = await fetch(`/api/admin/students?t=${Date.now()}`, {
         headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }

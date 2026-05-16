@@ -40,12 +40,52 @@ export default function Dashboard() {
   const fetchDashboardData = async () => {
     // DEMO MODE FOR GITHUB PAGES
     if (window.location.hostname.includes('github.io')) {
+      const isAdmin = currentUser?.role === 'admin';
       setData({
-        pinnedProjects: [{ id: 1, title: 'BFI Demo Project', genre: 'Documentation', duration: 'N/A', synopsis: 'This is a demo project showcasing the UI layout. Database features are currently disabled on GitHub pages.', awards_count: 5 }],
-        recommendedProjects: [],
-        stats: { batch: 'Demo', isBfiaaMember: false, phase1_admitted: true, phase1_passed: true, phase2_admitted: false, phase2_completed: false },
-        announcements: [{ id: 1, title: 'Welcome to the BFI Classroom Demo', content: 'You are currently viewing the static preview of the application. Since GitHub Pages does not support a backend database, any data changes you make will not be saved.', priority: 'normal', created_at: new Date() }],
-        enrollments: [{ course_name: 'Film Appreciation Course' }]
+        pinnedProjects: [
+          { 
+            id: 1, 
+            title: 'Cinematic Storytelling Demo', 
+            genre: 'Documentary', 
+            duration: '12:45', 
+            synopsis: 'A demonstration project showcasing the cinematic layout and award badge system. In this demo mode, most backend features are simulated.', 
+            awards_count: 3,
+            thumbnail_url: 'https://images.unsplash.com/photo-1485846234645-a62644f84728?auto=format&fit=crop&q=80&w=800'
+          },
+          { 
+            id: 2, 
+            title: 'BFI Classroom Overview', 
+            genre: 'Educational', 
+            duration: '05:20', 
+            synopsis: 'Welcome to your new digital hub. This is where you manage your filmography, certificates, and community interactions.', 
+            awards_count: 0,
+            thumbnail_url: 'https://images.unsplash.com/photo-1478720568477-152d9b164e26?auto=format&fit=crop&q=80&w=800'
+          }
+        ],
+        recommendedProjects: [
+          { id: 101, title: 'Visual Poetry', first_name: 'Sarah', last_name: 'Chen', genre: 'Experimental', duration: '03:15', awards_count: 1 },
+          { id: 102, title: 'The Last Frame', first_name: 'Marc', last_name: 'Riviera', genre: 'Drama', duration: '15:00', awards_count: 0 },
+          { id: 103, title: 'Urban Silence', first_name: 'Elena', last_name: 'Sokolov', genre: 'Documentary', duration: '08:30', awards_count: 2 }
+        ],
+        stats: { 
+          batch: currentUser?.batch || '2026', 
+          isBfiaaMember: true, 
+          phase1_admitted: true, 
+          phase1_passed: true, 
+          phase2_admitted: true, 
+          phase2_completed: false,
+          totalStudents: 1240,
+          pendingApplications: 12,
+          activeNotices: 5
+        },
+        announcements: [
+          { id: 1, title: 'Welcome to the BFI Classroom Demo', content: 'You are currently viewing the static preview. Since GitHub Pages is a static host, we have enabled "Demo Mode" with mocked data so you can explore the interface.', priority: 'high', created_at: new Date() },
+          { id: 2, title: 'New Course: Advanced Cinematography', content: 'Enrolment is now open for the summer intensive batch. Check the course materials for more details.', priority: 'normal', created_at: new Date(Date.now() - 86400000) }
+        ],
+        enrollments: [
+          { course_name: 'Film Appreciation Course', course_type: 'appreciation', step1_completed: 1, step4_completed: 1 },
+          { course_name: 'Professional Filmmaking', course_type: 'filmmaking', step1_completed: 1, step2_completed: 1, step3_completed: 1, step4_completed: 0 }
+        ]
       });
       setLoading(false);
       return;

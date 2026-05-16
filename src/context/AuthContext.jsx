@@ -228,18 +228,18 @@ export function AuthProvider({ children }) {
   const login = async (username, password, type = 'student') => {
     // DEMO MODE FOR GITHUB PAGES (Since no backend runs here)
     if (window.location.hostname.includes('github.io')) {
-      if (username !== 'demo' || password !== 'demo') {
-        throw new Error('Demo mode only supports the demo/demo account.');
-      }
-
+      // In Demo Mode, we allow any username/password to let people preview the UI
+      const isAdmin = type === 'admin';
+      
       const entry = {
         user: {
-          id: 'demo1',
-          username: 'demo',
-          role: type === 'admin' ? 'admin' : 'student',
-          firstName: 'Demo',
-          lastName: 'User',
+          id: isAdmin ? 'demo-admin' : 'demo-student',
+          username: username || 'demo',
+          role: isAdmin ? 'admin' : 'student',
+          firstName: isAdmin ? 'Admin' : 'Demo',
+          lastName: isAdmin ? 'User' : 'Student',
           batch: '2026',
+          profile_picture: isAdmin ? '/avatars/teacher_male.png' : '/avatars/male1.png'
         },
       };
 

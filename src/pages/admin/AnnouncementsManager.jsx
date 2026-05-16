@@ -22,6 +22,14 @@ export default function AnnouncementsManager() {
   }, []);
 
   const fetchOptions = async () => {
+    if (window.location.hostname.includes('github.io')) {
+      setCourseOptions(['Online Filmmaking Course', 'Film Appreciation Course']);
+      setCourseBatchesMap({
+        'Online Filmmaking Course': ['75', '76'],
+        'Film Appreciation Course': ['2023', '2024']
+      });
+      return;
+    }
     try {
       const res = await fetch('/api/admin/targeting-options?_t=' + Date.now(), {
         headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
@@ -52,6 +60,13 @@ export default function AnnouncementsManager() {
   };
 
   const fetchAnnouncements = async () => {
+    if (window.location.hostname.includes('github.io')) {
+      setAnnouncements([
+        { id: 1, title: 'Welcome to the BFI Classroom Demo', content: 'You are currently viewing the static preview. Since GitHub Pages is a static host, we have enabled "Demo Mode" with mocked data so you can explore the interface.', priority: 'high', admin_name: 'Admin', created_at: new Date() },
+        { id: 2, title: 'Summer Batch Admissions Open', content: 'Admissions are now open for the 76th Batch of Online Filmmaking.', priority: 'normal', admin_name: 'Admin', created_at: new Date(Date.now() - 86400000) }
+      ]);
+      return;
+    }
     try {
       const res = await fetch('/api/admin/announcements', {
         headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
