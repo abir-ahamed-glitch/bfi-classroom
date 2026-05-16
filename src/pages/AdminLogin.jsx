@@ -21,7 +21,7 @@ export default function AdminLogin() {
     try {
       // Pass 'admin' as the type to the login context
       await login(username, password, 'admin');
-      navigate('/');
+      navigate('/', { replace: true });
     } catch (err) {
       setError(err.message || 'Failed to login. Please check your credentials.');
     } finally {
@@ -108,6 +108,10 @@ export default function AdminLogin() {
                 {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
               </button>
             </div>
+          </div>
+
+          <div className="form-actions" style={{ display: 'flex', justifyContent: 'flex-end', margin: '-0.5rem 0 1.5rem 0' }}>
+            <Link to="/admin/forgot-password" style={{ color: 'var(--text-muted)', fontSize: '0.85rem', textDecoration: 'none', transition: 'color 0.2s' }} onMouseEnter={(e) => e.target.style.color = 'var(--danger)'} onMouseLeave={(e) => e.target.style.color = 'var(--text-muted)'}>Forgot password?</Link>
           </div>
 
           <button 

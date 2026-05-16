@@ -357,7 +357,7 @@ export default function CourseMaterialsManager() {
           onClick={e => { if (e.target === e.currentTarget) closeModal(); }}>
           <div className="glass-panel" style={{ width: '100%', maxWidth: '620px', maxHeight: '90vh', overflowY: 'auto', padding: '2.5rem', borderRadius: '20px', position: 'relative', animation: 'fadeIn 0.25s ease' }}>
 
-            <button onClick={closeModal} style={{ position: 'absolute', top: '1.25rem', right: '1.25rem', background: 'rgba(255,255,255,0.05)', border: '1px solid var(--glass-border)', color: 'white', width: '34px', height: '34px', borderRadius: '50%', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <button onClick={closeModal} style={{ position: 'absolute', top: '1.25rem', right: '1.25rem', background: 'rgba(128,128,128,0.1)', border: '1px solid var(--glass-border)', color: 'var(--text-primary)', width: '34px', height: '34px', borderRadius: '50%', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
               <X size={17} />
             </button>
 

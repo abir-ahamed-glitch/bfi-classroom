@@ -57,6 +57,41 @@ router.post('/', authenticateToken, sanitizeInput, (req, res) => {
   }
 });
 
+// Update an experience
+router.put('/:id', authenticateToken, sanitizeInput, (req, res) => {
+  try {
+    const { title, organization, experience_type, start_date, end_date, description } = req.body;
+
+    if (!title) {
+      return res.status(400).json({ error: 'Experience title/role is required' });
+    }
+
+    const result = db.prepare(`
+      UPDATE student_experiences 
+      SET title = ?, organization = ?, experience_type = ?, start_date = ?, end_date = ?, description = ?
+      WHERE id = ? AND user_id = ?
+    `).run(
+      title,
+      organization || '',
+      experience_type || 'Other',
+      start_date || '',
+      end_date || '',
+      description || '',
+      req.params.id,
+      req.user.id
+    );
+
+    if (result.changes === 0) {
+      return res.status(404).json({ error: 'Experience not found or unauthorized' });
+    }
+
+    res.json({ message: 'Experience updated successfully' });
+  } catch (error) {
+    console.error('Update experience error:', error);
+    res.status(500).json({ error: 'Internal server error while updating experience' });
+  }
+});
+
 // Delete an experience
 router.delete('/:id', authenticateToken, (req, res) => {
   try {

@@ -1,7 +1,10 @@
-import { useState } from 'react';
-import { NavLink } from 'react-router-dom';
+import { useEffect, useRef, useState } from 'react';
+import { NavLink, useLocation } from 'react-router-dom';
+import { haptic } from '../utils/haptics';
+import { io } from 'socket.io-client';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
+import { resolveMediaUrl } from '../utils/mediaUtils';
 import { 
   Home, 
   Inbox, 
@@ -22,26 +25,173 @@ import {
   Moon,
   Shield,
   Briefcase,
+  UsersRound,
+  ScrollText,
+  Globe
 } from 'lucide-react';
 import './Sidebar.css';
 
 export default function Sidebar() {
   const { currentUser, logout } = useAuth();
   const { currentTheme, mode, toggleMode } = useTheme();
+  const location = useLocation();
   const [isOpen, setIsOpen] = useState(false);
+  const [unreadInboxCount, setUnreadInboxCount] = useState(0);
+  const [unreadNoticeCount, setUnreadNoticeCount] = useState(localStorage.getItem('unreadNotice') === 'true' ? 1 : 0);
+  const currentUserIdRef = useRef(null);
+  const socketUrl = import.meta.env.VITE_SOCKET_URL || '';
+  const hideBottomNav = isOpen || location.pathname === '/inbox' || location.pathname.startsWith('/admin');
 
   const toggleSidebar = () => setIsOpen(!isOpen);
   const closeSidebar = () => setIsOpen(false);
+
+  useEffect(() => {
+    // Mobile sidebar toggle no longer manipulates history to prevent breaking standard navigation stack
+  }, [isOpen]);
+  const hasUnreadInbox = unreadInboxCount > 0;
+  const unreadBadgeLabel = unreadInboxCount > 99 ? '99+' : `${unreadInboxCount}`;
+
+  const fetchUnreadInboxCount = async () => {
+    const token = localStorage.getItem('token');
+    if (!token) {
+      setUnreadInboxCount(0);
+      return;
+    }
+
+    try {
+      const response = await fetch('/api/inbox/conversations', {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      if (!response.ok) return;
+
+      const data = await response.json();
+      const chats = data.chats || [];
+      const nextCount = chats.reduce((sum, chat) => sum + (Number(chat.unread_count) || 0), 0);
+      setUnreadInboxCount(nextCount);
+    } catch (error) {
+      console.error('Failed to fetch unread inbox count', error);
+    }
+  };
+
+  useEffect(() => {
+    currentUserIdRef.current = Number(currentUser?.id);
+  }, [currentUser?.id]);
+
+  useEffect(() => {
+    if (!currentUser?.id) {
+      const timeoutId = window.setTimeout(() => setUnreadInboxCount(0), 0);
+      return () => window.clearTimeout(timeoutId);
+    }
+
+    const timeoutId = window.setTimeout(fetchUnreadInboxCount, 0);
+    const intervalId = window.setInterval(fetchUnreadInboxCount, 10000);
+    return () => {
+      window.clearTimeout(timeoutId);
+      window.clearInterval(intervalId);
+    };
+  }, [currentUser?.id]);
+
+  useEffect(() => {
+    const token = localStorage.getItem('token');
+    if (!token || !currentUser?.id) return undefined;
+
+    const socket = io(socketUrl, {
+      withCredentials: true,
+      auth: { token },
+    });
+
+    socket.on('inbox:message', (message) => {
+      const currentUserId = currentUserIdRef.current;
+      if (Number(message.receiver_id) !== currentUserId || Number(message.sender_id) === currentUserId) {
+        return;
+      }
+
+      setUnreadInboxCount((prev) => prev + 1);
+    });
+
+    socket.on('inbox:read', () => {
+      fetchUnreadInboxCount();
+    });
+
+    socket.on('inbox:conversation_deleted', () => {
+      fetchUnreadInboxCount();
+    });
+
+    socket.on('inbox:message_deleted', () => {
+      fetchUnreadInboxCount();
+    });
+
+    socket.on('new_announcement', async (payload) => {
+      if (currentUser?.role === 'admin') return;
+
+      if (payload?.target_batch || payload?.target_course) {
+        try {
+          const res = await fetch('/api/student/notices', {
+            headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
+          });
+          if (res.ok) {
+            const data = await res.json();
+            const isRelevant = data.announcements?.some(n => n.id === payload.id);
+            if (!isRelevant) return;
+          }
+        } catch (error) {
+          console.error('Failed to verify notice relevance:', error);
+        }
+      }
+
+      window.setTimeout(() => setUnreadNoticeCount(1), 0);
+      localStorage.setItem('unreadNotice', 'true');
+    });
+
+    return () => {
+      socket.disconnect();
+    };
+  }, [currentUser?.id, currentUser?.role, socketUrl]);
+
+  useEffect(() => {
+    if (location.pathname === '/notices') {
+      window.setTimeout(() => setUnreadNoticeCount(0), 0);
+      localStorage.setItem('unreadNotice', 'false');
+    }
+  }, [location.pathname]);
 
   return (
     <>
       {/* Mobile Header Bar */}
       <div className="mobile-header-bar">
-        <button className={`mobile-toggle ${isOpen ? 'active' : ''}`} onClick={toggleSidebar}>
-          {isOpen ? <X size={24} /> : <Menu size={24} />}
-        </button>
         <div className="mobile-header-brand">
-          BFI Classroom
+          <div style={{
+            background: 'linear-gradient(135deg, #0284c7 0%, #2563eb 100%)',
+            padding: '5px',
+            borderRadius: '8px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            boxShadow: '0 3px 8px rgba(37, 99, 235, 0.4)'
+          }}>
+            <img src={`${import.meta.env.BASE_URL}bfi-logo.jpg`} alt="BFI Logo" style={{ height: '18px', width: 'auto', mixBlendMode: 'multiply', display: 'block' }} />
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0px' }}>
+            <div style={{
+              fontFamily: 'var(--font-display)',
+              fontSize: '1.2rem',
+              color: 'var(--text-primary)',
+              lineHeight: '1.3',
+              fontWeight: 700,
+            }}>
+              Bangladesh Film Institute
+            </div>
+            <div style={{
+              fontFamily: 'var(--font-display)',
+              fontSize: '1.2rem',
+              color: 'var(--text-secondary)',
+              fontWeight: 300,
+              lineHeight: '1.3'
+            }}>
+              BFI Classroom
+            </div>
+          </div>
         </div>
       </div>
 
@@ -60,7 +210,7 @@ export default function Sidebar() {
             justifyContent: 'center',
             boxShadow: '0 4px 10px rgba(37, 99, 235, 0.4)'
           }}>
-            <img src="/bfi-logo.jpg" alt="BFI Logo" style={{ height: '22px', width: 'auto', mixBlendMode: 'multiply', display: 'block' }} />
+            <img src={`${import.meta.env.BASE_URL}bfi-logo.jpg`} alt="BFI Logo" style={{ height: '22px', width: 'auto', mixBlendMode: 'multiply', display: 'block' }} />
           </div>
           <div>
             <h2 className="font-display">BFI <span className="font-light">Classroom</span></h2>
@@ -85,36 +235,56 @@ export default function Sidebar() {
           <NavLink to="/" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`} end>
             <Home size={20} /> Dashboard
           </NavLink>
+          <NavLink to="/notices" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
+            <Megaphone size={20} /> Notice Board
+            {unreadNoticeCount > 0 && currentUser?.role !== 'admin' && <span className="nav-badge">{unreadNoticeCount}</span>}
+          </NavLink>
           <NavLink to="/inbox" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
             <Inbox size={20} /> Inbox
+            {hasUnreadInbox && <span className="nav-badge">{unreadBadgeLabel}</span>}
           </NavLink>
           
+          <p className="nav-subtitle">BFI Classroom</p>
+          <NavLink to="/classroom" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
+            <BookOpen size={20} /> Classroom
+          </NavLink>
+          <NavLink to="/registry" state={{ reset: true }} onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
+            <UsersRound size={20} /> {currentUser?.role === 'student' ? 'My Batchmates' : 'Academic Records & Registry'}
+          </NavLink>
+          <NavLink to="/instructors" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
+            <Award size={20} /> Instructor Directory
+          </NavLink>
+
           <p className="nav-subtitle">My Studio</p>
           <NavLink to="/profile" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
-            <User size={20} /> Student Profile
+            <User size={20} /> {currentUser?.role === 'admin' ? 'Admin Profile' : currentUser?.role === 'instructor' ? 'Teacher Profile' : 'Student Profile'}
           </NavLink>
           <NavLink to="/portfolio" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
-            <Library size={20} /> Student Portfolio
+            <Library size={20} /> {currentUser?.role === 'admin' ? 'Admin Portfolio' : currentUser?.role === 'instructor' ? 'Teacher Portfolio' : 'Student Portfolio'}
           </NavLink>
           <NavLink to="/experience" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
             <Briefcase size={20} /> Experience
           </NavLink>
-          <NavLink to="/certificates" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
-            <Award size={20} /> Certificates
-          </NavLink>
-          
+          {currentUser?.role === 'student' && (
+            <NavLink to="/certificates" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
+              <ScrollText size={20} /> Certificates
+            </NavLink>
+          )}
+          {currentUser?.role !== 'admin' && (
+            <NavLink to="/courses" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
+              <BookOpen size={20} /> Course Materials
+            </NavLink>
+          )}
           <p className="nav-subtitle">Learning Hub</p>
-          <NavLink to="/courses" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
-            <BookOpen size={20} /> Course Materials
-          </NavLink>
           <NavLink to="/community" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
             <Users size={20} /> Community
           </NavLink>
+
           <NavLink to="/directory" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
             <BookUser size={20} /> Alumni Directory
           </NavLink>
           <NavLink to="/bfiaa" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
-            <Award size={20} /> BFIAA Network
+            <Globe size={20} /> BFIAA Network
           </NavLink>
 
           {currentUser?.role === 'admin' && (
@@ -122,6 +292,9 @@ export default function Sidebar() {
               <p className="nav-subtitle">Administration</p>
               <NavLink to="/admin/students" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
                 <Settings size={20} /> Student Manager
+              </NavLink>
+              <NavLink to="/admin/teachers" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
+                <Settings size={20} /> Teacher Manager
               </NavLink>
               <NavLink to="/admin/course-materials" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
                 <BookOpen size={20} /> Course Materials
@@ -145,14 +318,14 @@ export default function Sidebar() {
             style={{
               display: 'flex', alignItems: 'center', gap: '0.6rem',
               width: '100%', padding: '0.65rem 0.85rem', borderRadius: '10px',
-              background: 'rgba(255,255,255,0.04)', border: '1px solid var(--glass-border)',
+              background: 'var(--bg-secondary)', border: '1px solid var(--glass-border)',
               color: 'var(--text-secondary)', cursor: 'pointer', marginBottom: '0.5rem',
               fontFamily: 'var(--font-sans)', fontSize: '0.88rem', fontWeight: 500,
               transition: 'all 0.2s ease',
               justifyContent: 'space-between',
             }}
-            onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.08)'; e.currentTarget.style.color = 'var(--text-primary)'; }}
-            onMouseLeave={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.04)'; e.currentTarget.style.color = 'var(--text-secondary)'; }}
+            onMouseEnter={e => { e.currentTarget.style.background = 'var(--hover-bg)'; e.currentTarget.style.color = 'var(--text-primary)'; }}
+            onMouseLeave={e => { e.currentTarget.style.background = 'var(--bg-secondary)'; e.currentTarget.style.color = 'var(--text-secondary)'; }}
           >
             <span style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
               {mode === 'dark' ? <Moon size={17} /> : <Sun size={17} />}
@@ -161,12 +334,12 @@ export default function Sidebar() {
             {/* Mini pill toggle */}
             <div style={{
               width: '36px', height: '20px', borderRadius: '10px',
-              background: mode === 'light' ? 'var(--accent-primary)' : 'rgba(255,255,255,0.15)',
+              background: mode === 'dark' ? 'var(--accent-primary)' : 'rgba(0,0,0,0.1)',
               position: 'relative', flexShrink: 0, transition: 'background 0.25s',
             }}>
               <div style={{
                 position: 'absolute', top: '3px',
-                left: mode === 'light' ? '18px' : '3px',
+                left: mode === 'dark' ? '18px' : '3px',
                 width: '14px', height: '14px', borderRadius: '50%',
                 background: 'white', transition: 'left 0.25s',
                 boxShadow: '0 1px 3px rgba(0,0,0,0.3)',
@@ -185,7 +358,13 @@ export default function Sidebar() {
             }} />
           </NavLink>
           <div className="user-mini-profile">
-            <div className="avatar">{currentUser?.firstName?.[0] || 'U'}</div>
+            <div className="avatar" style={{ overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              {currentUser?.profile_picture ? (
+                <img src={resolveMediaUrl(currentUser.profile_picture)} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+              ) : (
+                <img src={`${import.meta.env.BASE_URL}avatars/male1.png`} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: 0.5 }} />
+              )}
+            </div>
             <div className="user-info">
               <p className="user-name">{currentUser?.firstName} {currentUser?.lastName}</p>
               <p className="user-role">{currentUser?.username}</p>
@@ -196,6 +375,37 @@ export default function Sidebar() {
           </button>
         </div>
       </aside>
+
+      {/* ── Mobile Bottom Navigation Bar ─────────────────────────── */}
+      <nav className={`mobile-bottom-nav ${hideBottomNav ? 'bottom-nav-hidden' : ''}`} aria-label="Quick navigation">
+        <NavLink to="/" end className={({isActive}) => `bottom-nav-item ${isActive ? 'active' : ''}`} onClick={() => { closeSidebar(); haptic('tap'); }}>
+          <Home size={22} />
+          <span>Home</span>
+        </NavLink>
+        <NavLink to="/notices" className={({isActive}) => `bottom-nav-item ${isActive ? 'active' : ''}`} onClick={() => { closeSidebar(); haptic('tap'); }}>
+          <div className="bottom-nav-icon-wrap">
+            <Megaphone size={22} />
+            {unreadNoticeCount > 0 && currentUser?.role !== 'admin' && <span className="bottom-nav-badge">{unreadNoticeCount}</span>}
+          </div>
+          <span>Notices</span>
+        </NavLink>
+        <NavLink to="/inbox" className={({isActive}) => `bottom-nav-item ${isActive ? 'active' : ''}`} onClick={() => { closeSidebar(); haptic('tap'); }}>
+          <div className="bottom-nav-icon-wrap">
+            <Inbox size={22} />
+            {hasUnreadInbox && <span className="bottom-nav-badge">{unreadBadgeLabel}</span>}
+          </div>
+          <span>Inbox</span>
+        </NavLink>
+        <NavLink to="/profile" className={({isActive}) => `bottom-nav-item ${isActive ? 'active' : ''}`} onClick={() => { closeSidebar(); haptic('tap'); }}>
+          <User size={22} />
+          <span>Profile</span>
+        </NavLink>
+        <button type="button" className={`bottom-nav-item ${isOpen ? 'active' : ''}`} onClick={() => { toggleSidebar(); haptic('tap'); }}>
+          <Menu size={22} />
+          <span>Menu</span>
+        </button>
+      </nav>
     </>
   );
 }
+

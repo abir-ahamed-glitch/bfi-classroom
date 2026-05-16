@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components */
 import { createContext, useContext, useState, useEffect } from 'react';
 
 export const THEMES = [
@@ -79,9 +80,14 @@ const DARK_VARS = {
 
 // Light mode uses same accent color but inverted backgrounds/text
 const LIGHT_VARS = {
-  bg: '#f5f5f8', bg2: '#ffffff', bg3: '#ededf3',
-  glass: 'rgba(0,0,0,0.03)', border: 'rgba(0,0,0,0.1)',
-  t1: '#09090b', t2: '#52525b', tm: '#a1a1aa',
+  bg: '#f8fafc', // Very clean slate-50
+  bg2: '#ffffff', // solid white for sidebar and header to prevent text overlap
+  bg3: '#f1f5f9', // slate-100
+  glass: 'rgba(255, 255, 255, 0.85)', 
+  border: 'rgba(14, 165, 233, 0.2)', // noticeable light blue border
+  t1: '#0f172a', // slate-900
+  t2: '#334155', // slate-700
+  tm: '#64748b', // slate-500
 };
 
 const ThemeContext = createContext(null);

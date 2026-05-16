@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react';
-import { UserPlus, Search, Copy, CheckCircle2, User, UserCheck, CheckSquare, Square, Edit, X } from 'lucide-react';
-import { useAuth } from '../../context/AuthContext';
+import { createPortal } from 'react-dom';
+import { UserPlus, Search, Copy, CheckCircle2, User, UserCheck, CheckSquare, Square, Edit, X, FileSpreadsheet } from 'lucide-react';
+import BulkStudentImport from '../../components/admin/BulkStudentImport';
+import { getOrdinalSuffix } from '../../utils/formatUtils';
 
 export default function StudentManager() {
-  const { currentUser } = useAuth();
   const [students, setStudents] = useState([]);
   const [isDeploying, setIsDeploying] = useState(false);
   const [successData, setSuccessData] = useState(null);
@@ -144,6 +145,17 @@ export default function StudentManager() {
     setEditError('');
     setEditingStudent(student);
     const names = student.full_name ? student.full_name.split(' ') : ['', ''];
+    
+    let extractedSn = '';
+    let extractedYear = new Date().getFullYear().toString();
+    if (student.student_id && student.student_id.startsWith('BFI')) {
+      const idStr = student.student_id.substring(3);
+      if (idStr.length === 8) {
+        extractedSn = idStr.substring(0, 2);
+        extractedYear = idStr.substring(4, 8);
+      }
+    }
+
     setEditFormData({
       firstName: student.first_name || names[0] || '',
       lastName: student.last_name || names.slice(1).join(' ') || '',
@@ -151,6 +163,8 @@ export default function StudentManager() {
       mobileNumber: student.mobile_number || '',
       username: student.username || '',
       batchNumber: student.batch_number || '',
+      snNo: extractedSn,
+      year: extractedYear,
       phase1_fee: student.phase1_fee || '',
       phase2_fee: student.phase2_fee || '',
       courses: student.enrollments ? student.enrollments.map(e => e.course_name) : []
@@ -224,11 +238,24 @@ export default function StudentManager() {
       </div>
 
       <div style={{ display: 'block' }}>
+        {/* Bulk Import Panel */}
+        <div className="glass-panel" style={{ padding: '2rem', marginBottom: '2rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem' }}>
+          <div>
+            <h2 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <FileSpreadsheet className="text-accent" /> Bulk Import Students
+            </h2>
+            <p style={{ margin: '0.5rem 0 0 0', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Upload an Excel or CSV file to quickly create multiple student accounts at once.</p>
+          </div>
+          <BulkStudentImport onImportComplete={fetchStudents} />
+        </div>
+
         {/* Creator Panel */}
         <div className="glass-panel" style={{ padding: '2rem', marginBottom: '3rem' }}>
-          <h2 style={{ marginBottom: '1.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <UserPlus className="text-accent" /> Register New Student
-          </h2>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '1rem' }}>
+            <h2 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <UserPlus className="text-accent" /> Register New Student (Manual)
+            </h2>
+          </div>
           
           <form onSubmit={handleCreateStudent} style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
@@ -308,20 +335,24 @@ export default function StudentManager() {
 
           {/* Success Summary */}
           {successData && (
-            <div style={{ marginTop: '2rem', padding: '1.5rem', background: 'rgba(16, 185, 129, 0.1)', border: '1px solid rgba(16, 185, 129, 0.3)', borderRadius: '12px' }}>
+            <div style={{ marginTop: '2rem', padding: '1.5rem', background: 'rgba(16, 185, 129, 0.12)', border: '2px solid rgba(16, 185, 129, 0.5)', borderRadius: '12px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-                <h3 style={{ color: '#34d399', display: 'flex', alignItems: 'center', gap: '0.5rem' }}><CheckCircle2 size={20} /> Success! Credentials Ready</h3>
-                <button onClick={copyCredentials} className="btn" style={{ padding: '0.5rem 1rem', background: 'rgba(255,255,255,0.1)', color: 'white', border: 'none' }}>
+                <h3 style={{ color: '#059669', display: 'flex', alignItems: 'center', gap: '0.5rem' }}><CheckCircle2 size={20} /> Success! Credentials Ready</h3>
+                <button onClick={copyCredentials} className="btn" style={{ padding: '0.5rem 1rem', background: 'var(--accent-primary)', color: 'white', border: 'none', borderRadius: '8px' }}>
                   {copied ? 'Copied!' : <><Copy size={16} /> Copy Details</>}
                 </button>
               </div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem', color: '#e2e8f0', fontSize: '0.95rem' }}>
-                <p><strong>Name:</strong> {successData.firstName} {successData.lastName}</p>
-                <p><strong>ID:</strong> {successData.studentId}</p>
-                <p><strong>Username:</strong> <span style={{ fontFamily: 'monospace', color: '#60a5fa' }}>{successData.username}</span></p>
-                <p><strong>Password:</strong> <span style={{ fontFamily: 'monospace', color: '#f472b6' }}>{successData.rawPassword}</span></p>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', fontSize: '0.95rem' }}>
+                <p style={{ color: 'var(--text-primary)', margin: 0 }}><strong style={{ color: 'var(--text-secondary)' }}>Name:</strong> {successData.firstName} {successData.lastName}</p>
+                <p style={{ color: 'var(--text-primary)', margin: 0 }}><strong style={{ color: 'var(--text-secondary)' }}>ID:</strong> {successData.studentId}</p>
+                <p style={{ color: 'var(--text-primary)', margin: 0 }}><strong style={{ color: 'var(--text-secondary)' }}>Username:</strong>{' '}
+                  <span style={{ fontFamily: 'monospace', fontWeight: 700, color: '#2563eb', background: 'rgba(37,99,235,0.1)', padding: '0.1rem 0.4rem', borderRadius: '4px' }}>{successData.username}</span>
+                </p>
+                <p style={{ color: 'var(--text-primary)', margin: 0 }}><strong style={{ color: 'var(--text-secondary)' }}>Password:</strong>{' '}
+                  <span style={{ fontFamily: 'monospace', fontWeight: 700, color: '#be185d', background: 'rgba(190,24,93,0.1)', padding: '0.1rem 0.4rem', borderRadius: '4px' }}>{successData.rawPassword}</span>
+                </p>
               </div>
-              <p style={{ marginTop: '1rem', fontSize: '0.8rem', color: '#94a3b8' }}>* Note: Password is only displayed here once. Please copy and share it securely using the copy button above.</p>
+              <p style={{ marginTop: '1rem', fontSize: '0.8rem', color: 'var(--text-muted)' }}>* Note: Password is only displayed here once. Please copy and share it securely using the copy button above.</p>
             </div>
           )}
         </div>
@@ -343,57 +374,91 @@ export default function StudentManager() {
               />
             </div>
           </div>
-          <div className="glass-panel" style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
-            <table style={{ width: '100%', minWidth: '700px', borderCollapse: 'collapse', textAlign: 'left' }}>
+          <div className="glass-panel" style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch', padding: '0', border: '1px solid var(--glass-border)', borderRadius: '12px' }}>
+            <table style={{ width: '100%', minWidth: '900px', borderCollapse: 'collapse', textAlign: 'left' }}>
               <thead>
-                <tr style={{ background: 'rgba(255,255,255,0.05)', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
-                  <th style={{ padding: '1rem', borderBottom: '1px solid var(--glass-border)' }}>Student ID</th>
-                  <th style={{ padding: '1rem', borderBottom: '1px solid var(--glass-border)' }}>Name</th>
-                  <th style={{ padding: '1rem', borderBottom: '1px solid var(--glass-border)' }}>Username</th>
-                   <th style={{ padding: '1rem', borderBottom: '1px solid var(--glass-border)' }}>Email</th>
-                  <th style={{ padding: '1rem', borderBottom: '1px solid var(--glass-border)' }}>Batch</th>
-                  <th style={{ padding: '1rem', borderBottom: '1px solid var(--glass-border)' }}>Course Progression</th>
-                  <th style={{ padding: '1rem', borderBottom: '1px solid var(--glass-border)' }}>Joined</th>
-                  <th style={{ padding: '1rem', borderBottom: '1px solid var(--glass-border)' }}>Actions</th>
+                <tr style={{ background: 'rgba(0,0,0,0.02)', color: 'var(--text-muted)', fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                  <th style={{ padding: '1.25rem 1.5rem', borderBottom: '1px solid var(--glass-border)', fontWeight: '600' }}>Student ID</th>
+                  <th style={{ padding: '1.25rem 1.5rem', borderBottom: '1px solid var(--glass-border)', fontWeight: '600' }}>Name</th>
+                  <th style={{ padding: '1.25rem 1.5rem', borderBottom: '1px solid var(--glass-border)', fontWeight: '600' }}>Username & Contact</th>
+                  <th style={{ padding: '1.25rem 1.5rem', borderBottom: '1px solid var(--glass-border)', fontWeight: '600' }}>Batch</th>
+                  <th style={{ padding: '1.25rem 1.5rem', borderBottom: '1px solid var(--glass-border)', fontWeight: '600' }}>Course Progression</th>
+                  <th style={{ padding: '1.25rem 1.5rem', borderBottom: '1px solid var(--glass-border)', fontWeight: '600' }}>Joined</th>
+                  <th style={{ padding: '1.25rem 1.5rem', borderBottom: '1px solid var(--glass-border)', fontWeight: '600', textAlign: 'center' }}>Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {filteredStudents.map(s => (
-                  <tr key={s.id} style={{ borderBottom: '1px solid var(--glass-border)', fontSize: '0.95rem' }}>
-                    <td style={{ padding: '1rem', color: 'var(--text-muted)' }}>{s.student_id}</td>
-                    <td style={{ padding: '1rem' }}>{s.full_name}</td>
-                    <td style={{ padding: '1rem', fontFamily: 'monospace' }}>{s.username}</td>
-                    <td style={{ padding: '1rem', fontSize: '0.85rem' }}>{s.email}</td>
-                    <td style={{ padding: '1rem' }}>{s.batch_number}</td>
-                     <td style={{ padding: '1rem' }}>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.8rem' }}>
+                {filteredStudents.map((s, idx) => (
+                  <tr 
+                    key={s.id} 
+                    className="animate-slide-up"
+                    style={{ 
+                      borderBottom: '1px solid var(--glass-border)', 
+                      transition: 'background 0.2s',
+                      animationDelay: `${idx * 0.05}s`
+                    }} 
+                    onMouseEnter={(e) => e.currentTarget.style.background = 'rgba(14, 165, 233, 0.03)'} 
+                    onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                  >
+                    <td style={{ padding: '1.25rem 1.5rem', color: 'var(--text-secondary)', fontWeight: '500', fontSize: '0.85rem' }}>
+                      {s.student_id}
+                    </td>
+                    <td style={{ padding: '1.25rem 1.5rem' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                        <div style={{ width: '36px', height: '36px', borderRadius: '50%', background: 'linear-gradient(135deg, var(--accent-primary), var(--accent-secondary))', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold', fontSize: '1rem', flexShrink: 0 }}>
+                          {s.full_name.charAt(0).toUpperCase()}
+                        </div>
+                        <span style={{ fontWeight: '600', color: 'var(--text-primary)' }}>{s.full_name}</span>
+                      </div>
+                    </td>
+                    <td style={{ padding: '1.25rem 1.5rem' }}>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                        <span style={{ display: 'inline-block', background: 'rgba(56, 189, 248, 0.1)', color: 'var(--accent-primary)', padding: '0.2rem 0.6rem', borderRadius: '6px', fontSize: '0.8rem', fontWeight: '600', width: 'fit-content' }}>
+                          @{s.username}
+                        </span>
+                        <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{s.email}</span>
+                      </div>
+                    </td>
+                    <td style={{ padding: '1.25rem 1.5rem' }}>
+                      {s.batch_number ? (
+                        <span className="badge-pill" style={{ background: 'rgba(139, 92, 246, 0.1)', color: '#8b5cf6', borderColor: 'rgba(139, 92, 246, 0.2)' }}>
+                          {getOrdinalSuffix(s.batch_number)} Batch
+                        </span>
+                      ) : (
+                        <span style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>N/A</span>
+                      )}
+                    </td>
+                     <td style={{ padding: '1.25rem 1.5rem' }}>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
                         {s.enrollments && s.enrollments.map(e => (
-                          <div key={e.id} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                            <div style={{ fontSize: '0.75rem', fontWeight: 'bold', color: 'var(--text-secondary)', minWidth: '130px' }}>{e.course_name}</div>
-                            <div style={{ display: 'flex', gap: '0.3rem' }}>
+                          <div key={e.id} style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', background: 'rgba(0,0,0,0.01)', padding: '0.5rem', borderRadius: '8px', border: '1px solid var(--glass-border)' }}>
+                            <div style={{ fontSize: '0.75rem', fontWeight: '600', color: 'var(--text-secondary)' }}>
+                              {e.course_name}
+                            </div>
+                            <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
                               {e.course_type === 'filmmaking' ? (
                                 <>
-                                  <button onClick={() => toggleProgress(s.id, e.id, 'step1_completed', e.step1_completed)} title="Phase 1: Admitted" style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: e.step1_completed ? '#34d399' : '#64748b' }}>
-                                    {e.step1_completed ? <CheckSquare size={16} /> : <Square size={16} />}
+                                  <button onClick={() => toggleProgress(s.id, e.id, 'step1_completed', e.step1_completed)} title="Phase 1: Admitted" style={{ background: 'none', border: 'none', cursor: 'pointer', color: e.step1_completed ? '#10b981' : 'var(--text-muted)' }}>
+                                    {e.step1_completed ? <CheckSquare size={18} /> : <Square size={18} />}
                                   </button>
-                                  <button onClick={() => toggleProgress(s.id, e.id, 'step2_completed', e.step2_completed)} title="Phase 1: Passed Exam" style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: e.step2_completed ? '#34d399' : '#64748b' }}>
-                                    {e.step2_completed ? <CheckSquare size={16} /> : <Square size={16} />}
+                                  <button onClick={() => toggleProgress(s.id, e.id, 'step2_completed', e.step2_completed)} title="Phase 1: Passed Exam" style={{ background: 'none', border: 'none', cursor: 'pointer', color: e.step2_completed ? '#10b981' : 'var(--text-muted)' }}>
+                                    {e.step2_completed ? <CheckSquare size={18} /> : <Square size={18} />}
                                   </button>
-                                  <div style={{ width: '1px', background: 'var(--glass-border)', margin: '0 0.1rem' }}></div>
-                                  <button onClick={() => toggleProgress(s.id, e.id, 'step3_completed', e.step3_completed)} title="Phase 2: Admitted" style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: e.step3_completed ? '#34d399' : '#64748b' }}>
-                                    {e.step3_completed ? <CheckSquare size={16} /> : <Square size={16} />}
+                                  <div style={{ width: '1px', height: '14px', background: 'var(--glass-border)', margin: '0 0.2rem' }}></div>
+                                  <button onClick={() => toggleProgress(s.id, e.id, 'step3_completed', e.step3_completed)} title="Phase 2: Admitted" style={{ background: 'none', border: 'none', cursor: 'pointer', color: e.step3_completed ? '#10b981' : 'var(--text-muted)' }}>
+                                    {e.step3_completed ? <CheckSquare size={18} /> : <Square size={18} />}
                                   </button>
-                                  <button onClick={() => toggleProgress(s.id, e.id, 'step4_completed', e.step4_completed)} title="Phase 2: Completed Course" style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: e.step4_completed ? '#34d399' : '#64748b' }}>
-                                    {e.step4_completed ? <CheckSquare size={16} /> : <Square size={16} />}
+                                  <button onClick={() => toggleProgress(s.id, e.id, 'step4_completed', e.step4_completed)} title="Phase 2: Completed Course" style={{ background: 'none', border: 'none', cursor: 'pointer', color: e.step4_completed ? '#10b981' : 'var(--text-muted)' }}>
+                                    {e.step4_completed ? <CheckSquare size={18} /> : <Square size={18} />}
                                   </button>
                                 </>
                               ) : (
                                 <>
-                                  <button onClick={() => toggleProgress(s.id, e.id, 'step1_completed', e.step1_completed)} title="Admitted" style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: e.step1_completed ? '#34d399' : '#64748b' }}>
-                                    {e.step1_completed ? <CheckSquare size={16} /> : <Square size={16} />}
+                                  <button onClick={() => toggleProgress(s.id, e.id, 'step1_completed', e.step1_completed)} title="Admitted" style={{ background: 'none', border: 'none', cursor: 'pointer', color: e.step1_completed ? '#10b981' : 'var(--text-muted)' }}>
+                                    {e.step1_completed ? <CheckSquare size={18} /> : <Square size={18} />}
                                   </button>
-                                  <button onClick={() => toggleProgress(s.id, e.id, 'step4_completed', e.step4_completed)} title="Completed Course" style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: e.step4_completed ? '#34d399' : '#64748b' }}>
-                                    {e.step4_completed ? <CheckSquare size={16} /> : <Square size={16} />}
+                                  <button onClick={() => toggleProgress(s.id, e.id, 'step4_completed', e.step4_completed)} title="Completed Course" style={{ background: 'none', border: 'none', cursor: 'pointer', color: e.step4_completed ? '#10b981' : 'var(--text-muted)' }}>
+                                    {e.step4_completed ? <CheckSquare size={18} /> : <Square size={18} />}
                                   </button>
                                 </>
                               )}
@@ -402,9 +467,11 @@ export default function StudentManager() {
                         ))}
                       </div>
                     </td>
-                    <td style={{ padding: '1rem', color: 'var(--text-muted)' }}>{new Date(s.created_at).toLocaleDateString()}</td>
-                    <td style={{ padding: '1rem' }}>
-                      <button onClick={() => openEditModal(s)} className="btn" style={{ padding: '0.4rem', background: 'rgba(56, 189, 248, 0.1)', color: '#38bdf8', border: '1px solid rgba(56, 189, 248, 0.2)' }}>
+                    <td style={{ padding: '1.25rem 1.5rem', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                      {new Date(s.created_at).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}
+                    </td>
+                    <td style={{ padding: '1.25rem 1.5rem', textAlign: 'center' }}>
+                      <button onClick={() => openEditModal(s)} className="btn" style={{ padding: '0.5rem', background: 'rgba(56, 189, 248, 0.1)', color: '#0284c7', border: '1px solid rgba(56, 189, 248, 0.2)', borderRadius: '8px', transition: 'all 0.2s' }} onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(56, 189, 248, 0.2)'; e.currentTarget.style.transform = 'scale(1.05)'; }} onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(56, 189, 248, 0.1)'; e.currentTarget.style.transform = 'scale(1)'; }} title="Edit Student">
                         <Edit size={16} />
                       </button>
                     </td>
@@ -412,7 +479,14 @@ export default function StudentManager() {
                 ))}
                 {students.length === 0 && (
                   <tr>
-                    <td colSpan="5" style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)' }}>No students registered yet.</td>
+                    <td colSpan="7" style={{ padding: '4rem 2rem', textAlign: 'center', color: 'var(--text-muted)' }}>
+                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem' }}>
+                        <div style={{ width: '48px', height: '48px', background: 'var(--glass-bg)', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                          <UserCheck size={24} style={{ color: 'var(--text-muted)' }} />
+                        </div>
+                        <span>No students registered yet.</span>
+                      </div>
+                    </td>
                   </tr>
                 )}
               </tbody>
@@ -422,7 +496,7 @@ export default function StudentManager() {
       </div>
 
       {/* Edit Modal Overlay */}
-      {editingStudent && (
+      {editingStudent && createPortal(
         <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.8)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem' }}>
           <div className="glass-panel" style={{ background: 'var(--bg-secondary)', padding: '2rem', width: '100%', maxWidth: '500px', position: 'relative' }}>
             <button onClick={() => setEditingStudent(null)} style={{ position: 'absolute', top: '1rem', right: '1rem', background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}>
@@ -469,6 +543,17 @@ export default function StudentManager() {
 
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
                 <div>
+                  <label style={{ display: 'block', marginBottom: '0.4rem', color: 'var(--text-secondary)' }}>SN No. (2 digits)</label>
+                  <input type="text" name="snNo" value={editFormData.snNo} onChange={handleEditChange} className="input-glass" style={{ paddingLeft: '1rem' }} placeholder="e.g. 05" />
+                </div>
+                <div>
+                  <label style={{ display: 'block', marginBottom: '0.4rem', color: 'var(--text-secondary)' }}>Year (4 digits)</label>
+                  <input type="text" name="year" value={editFormData.year} onChange={handleEditChange} className="input-glass" style={{ paddingLeft: '1rem' }} placeholder="e.g. 2024" />
+                </div>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+                <div>
                   <label style={{ display: 'block', marginBottom: '0.4rem', color: 'var(--text-secondary)' }}>Phase 1 Fee Status</label>
                   <input type="text" name="phase1_fee" value={editFormData.phase1_fee} onChange={handleEditChange} className="input-glass" placeholder="e.g. 5000 BDT Paid" style={{ paddingLeft: '1rem' }} />
                 </div>
@@ -505,7 +590,8 @@ export default function StudentManager() {
               </div>
             </form>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );

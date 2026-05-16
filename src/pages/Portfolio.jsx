@@ -1,13 +1,14 @@
 import { useState, useEffect } from 'react';
-import { useAuth } from '../context/AuthContext';
-import { Plus, Video, Image as ImageIcon, Award, Trash2, X, Play, Download, Settings, ChevronRight } from 'lucide-react';
-import jsPDF from 'jspdf';
+
+import { Plus, Video, Image as ImageIcon, Award, Trash2, X, Play, Settings, ChevronRight, Pencil } from 'lucide-react';
+import { resolveMediaUrl } from '../utils/mediaUtils';
+
 
 export default function Portfolio() {
-  const { currentUser } = useAuth();
   const [projects, setProjects] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showAddModal, setShowAddModal] = useState(false);
+  const [editingProject, setEditingProject] = useState(null); // null = add, project obj = edit
 
   // New Project State
   const initialForm = {
@@ -36,7 +37,7 @@ export default function Portfolio() {
   const roleOptions = [
     'Director', 'Producer', 'Actor', 'Actress', 'Cinematographer', 
     'Script Writer', 'Screenplay Writer', 'Story', 'Researcher', 
-    'Editor', 'Sound Designer', 'Art Director', 'Crew'
+    'Editor', 'Sound Designer', 'Art Director', 'Graphics', 'Animation', 'Crew'
   ];
 
   useEffect(() => {
@@ -76,12 +77,40 @@ export default function Portfolio() {
   
   const removeAward = (index) => setAwards(awards.filter((_, i) => i !== index));
 
+  const openEditModal = (proj) => {
+    setEditingProject(proj);
+    setFormData({
+      title: proj.title || '',
+      duration: proj.duration || '',
+      genre: proj.genre || '',
+      synopsis: proj.synopsis || '',
+      media_link: proj.media_link || '',
+      media_source: proj.media_source || 'youtube',
+      poster_url: proj.poster_url || '',
+      privacy_setting: proj.privacy_setting || 'public',
+      show_on_dashboard: proj.show_on_dashboard === 1,
+      show_on_community: proj.show_on_community === 1,
+    });
+    setCredits(proj.credits ? proj.credits.map(c => ({ role: c.role, name: c.name })) : []);
+    setAwards(proj.awards ? proj.awards.map(a => ({ awardName: a.award_name, festivalName: a.festival_name, awardYear: a.award_year })) : []);
+    setShowAddModal(true);
+  };
+
+  const closeModal = () => {
+    setShowAddModal(false);
+    setEditingProject(null);
+    setFormData(initialForm);
+    setCredits([]);
+    setAwards([]);
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     try {
       const payload = { ...formData, credits, awards };
-      const res = await fetch('/api/portfolio', {
-        method: 'POST',
+      const isEditing = !!editingProject;
+      const res = await fetch(isEditing ? `/api/portfolio/${editingProject.id}` : '/api/portfolio', {
+        method: isEditing ? 'PUT' : 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${localStorage.getItem('token')}`
@@ -90,15 +119,15 @@ export default function Portfolio() {
       });
       
       if (res.ok) {
-        setShowAddModal(false);
-        setFormData(initialForm);
-        setCredits([]);
-        setAwards([]);
+        closeModal();
         fetchPortfolio();
+      } else {
+        const errData = await res.json();
+        alert(errData.error || (isEditing ? 'Failed to update project' : 'Failed to add project'));
       }
     } catch (err) {
       console.error(err);
-      alert('Failed to add project');
+      alert('An error occurred. Please try again.');
     }
   };
 
@@ -115,80 +144,45 @@ export default function Portfolio() {
     }
   };
 
-  const downloadAsset = (proj, format) => {
-    if (format === 'pdf') {
-      try {
-        const doc = new jsPDF();
-        doc.setFillColor(15, 23, 42); 
-        doc.rect(0, 0, 210, 297, 'F');
-        
-        doc.setTextColor(255, 255, 255);
-        doc.setFontSize(24);
-        doc.text(proj.title, 20, 30);
-        
-        doc.setFontSize(12);
-        doc.setTextColor(150, 150, 150);
-        doc.text(`${proj.genre} | ${proj.duration}`, 20, 40);
-        
-        doc.setTextColor(200, 200, 200);
-        const splitSynopsis = doc.splitTextToSize(proj.synopsis || 'No synopsis provided.', 170);
-        doc.text(splitSynopsis, 20, 55);
-        
-        doc.setFontSize(14);
-        doc.setTextColor(52, 211, 153);
-        doc.text('CREDITS', 20, 90);
-        
-        let y = 100;
-        proj.credits?.forEach(c => {
-          doc.setFontSize(11);
-          doc.setTextColor(200, 200, 200);
-          doc.text(`${c.role}: ${c.name}`, 20, y);
-          y += 10;
-        });
-
-        if (proj.awards?.length > 0) {
-          y += 10;
-          doc.setFontSize(14);
-          doc.setTextColor(245, 158, 11);
-          doc.text('AWARDS', 20, y);
-          y += 10;
-          proj.awards.forEach(a => {
-            doc.setFontSize(11);
-            doc.setTextColor(200, 200, 200);
-            doc.text(`- ${a.awardName} (${a.awardYear}) @ ${a.festivalName}`, 20, y);
-            y += 10;
-          });
-        }
-        
-        doc.save(`${proj.title.replace(/\s+/g, '_')}_Portfolio.pdf`);
-      } catch (e) {
-        console.error('PDF Generation Failed', e);
-        alert('Failed to generate PDF.');
-      }
-    } else {
-      alert(`Downloading format: ${format}`);
-    }
-  };
 
   // Extract embedded IDs for preview natively
   const getEmbedUrl = (url, source) => {
     if (!url) return '';
     try {
-      if (source === 'youtube') {
+      if (source === 'youtube' || !source) {
         const match = url.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|watch\?.+&v=))([^&?]+)/);
-        return match ? `https://www.youtube.com/embed/${match[1]}?autoplay=0&controls=1` : url;
+        return match ? `https://www.youtube.com/embed/${match[1]}?autoplay=1&controls=1&origin=${window.location.origin}` : url;
       }
       if (source === 'vimeo') {
         const match = url.match(/vimeo\.com\/(?:[a-z]*\/)*([0-9]{6,11})[?]?.*/);
-        return match ? `https://player.vimeo.com/video/${match[1]}` : url;
+        return match ? `https://player.vimeo.com/video/${match[1]}?autoplay=1` : url;
       }
       if (source === 'facebook') {
-        // Fallback for FB videos to plugins iframe
-        return `https://www.facebook.com/plugins/video.php?href=${encodeURIComponent(url)}&show_text=0&width=560`;
+        return `https://www.facebook.com/plugins/video.php?href=${encodeURIComponent(url)}&show_text=0&width=560&autoplay=true`;
       }
-    } catch(e) { /* ignore */ }
+    } catch { /* ignore */ }
     return url;
   };
+
+  const getYoutubeThumbnail = (url) => {
+    if (!url) return null;
+    const match = url.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|watch\?.+&v=))([^&?]+)/);
+    if (!match) return null;
+    const id = match[1];
+    const rawUrl = `https://img.youtube.com/vi/${id}/hqdefault.jpg`;
+    const API_BASE = import.meta.env.VITE_API_URL || '';
+    return `${API_BASE}/api/proxy-image?url=${encodeURIComponent(rawUrl)}`;
+  };
+
+  const [brokenThumbs, setBrokenThumbs] = useState({});
+  const getProjectPoster = (proj) => {
+    if (brokenThumbs[proj.id]) return null;
+    if (proj.thumbnail_url) return resolveMediaUrl(proj.thumbnail_url);
+    if (proj.poster_url) return resolveMediaUrl(proj.poster_url);
+    return getYoutubeThumbnail(proj.media_link) || null;
+  };
+
+  const [playingProjectId, setPlayingProjectId] = useState(null);
 
   if (loading) return <div className="page-container container"><h2 className="text-secondary">Loading Studio...</h2></div>;
 
@@ -221,23 +215,50 @@ export default function Portfolio() {
                 
                 {proj.media_link ? (
                   <div className="video-wrapper">
-                    <iframe 
-                      src={getEmbedUrl(proj.media_link, proj.media_source)} 
-                      frameBorder="0" 
-                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" 
-                      allowFullScreen
-                      title={proj.title}
-                    ></iframe>
+                    {playingProjectId === proj.id ? (
+                      <iframe 
+                        src={getEmbedUrl(proj.media_link, proj.media_source)} 
+                        frameBorder="0" 
+                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" 
+                        referrerPolicy="strict-origin-when-cross-origin"
+                        allowFullScreen
+                      />
+                    ) : (
+                      <div className="video-thumbnail-placeholder" onClick={() => setPlayingProjectId(proj.id)}>
+                        {getProjectPoster(proj) ? (
+                          <img 
+                            src={getProjectPoster(proj)} 
+                            alt={proj.title} 
+                            onError={() => setBrokenThumbs(prev => ({...prev, [proj.id]: true}))}
+                          />
+                        ) : (
+                          <div className="placeholder-overlay">
+                            <Video size={48} opacity={0.3} />
+                          </div>
+                        )}
+                        <div className="play-overlay">
+                          <Play size={48} fill="white" />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ) : getProjectPoster(proj) ? (
+                  <div className="poster-wrapper">
+                    <img 
+                      src={getProjectPoster(proj)} 
+                      alt={proj.title}
+                      onError={() => setBrokenThumbs(prev => ({...prev, [proj.id]: true}))}
+                    />
                   </div>
                 ) : (
-                  <div className="media-placeholder" style={{ backgroundImage: `url(${proj.poster_url})` }}>
-                    {!proj.poster_url && <ImageIcon size={48} opacity={0.3} />}
+                  <div className="placeholder-wrapper">
+                    <Video size={48} opacity={0.3} />
                   </div>
                 )}
                 
                 <div className="media-overlay">
                   <div className="overlay-actions">
-                    <button className="icon-btn tooltip-target" onClick={() => downloadAsset(proj, 'pdf')}><Download size={18} /><span>Download PDF</span></button>
+                    <button className="icon-btn tooltip-target" onClick={() => openEditModal(proj)} style={{ color: '#60a5fa' }}><Pencil size={18} /><span>Edit Project</span></button>
                     <button className="icon-btn tooltip-target" onClick={() => deleteProject(proj.id)} style={{ color: 'var(--danger)' }}><Trash2 size={18} /><span>Delete</span></button>
                   </div>
                 </div>
@@ -278,13 +299,13 @@ export default function Portfolio() {
         </div>
       )}
 
-      {/* Add Project Modal */}
+      {/* Add / Edit Project Modal */}
       {showAddModal && (
         <div className="modal-overlay">
           <div className="modal-content glass-panel">
             <div className="modal-header">
-              <h2 className="font-display">Add Portfolio Project</h2>
-              <button onClick={() => setShowAddModal(false)} className="close-btn"><X size={24} /></button>
+              <h2 className="font-display">{editingProject ? 'Edit Portfolio Project' : 'Add Portfolio Project'}</h2>
+              <button onClick={closeModal} className="close-btn"><X size={24} /></button>
             </div>
             
             <div className="modal-body custom-scrollbar">
@@ -412,8 +433,10 @@ export default function Portfolio() {
             </div>
             
             <div className="modal-footer">
-              <button onClick={() => setShowAddModal(false)} className="btn btn-glass">Cancel</button>
-              <button form="projectForm" type="submit" className="btn btn-primary">Publish Project</button>
+              <button onClick={closeModal} className="btn btn-glass">Cancel</button>
+              <button form="projectForm" type="submit" className="btn btn-primary">
+                {editingProject ? 'Save Changes' : 'Publish Project'}
+              </button>
             </div>
           </div>
         </div>
@@ -457,6 +480,70 @@ export default function Portfolio() {
           justify-content: center;
           z-index: 10;
           box-shadow: 0 4px 10px rgba(0,0,0,0.5);
+        }
+        .video-thumbnail-placeholder {
+          position: relative;
+          width: 100%;
+          height: 100%;
+          cursor: pointer;
+          overflow: hidden;
+          background: #000;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+        .video-thumbnail-placeholder img {
+          width: 100%;
+          height: 100%;
+          object-fit: cover;
+          transition: transform 0.5s ease;
+        }
+        .video-thumbnail-placeholder:hover img {
+          transform: scale(1.05);
+        }
+        .play-overlay {
+          position: absolute;
+          inset: 0;
+          background: rgba(0,0,0,0.3);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          transition: background 0.3s ease;
+        }
+        .video-thumbnail-placeholder:hover .play-overlay {
+          background: rgba(0,0,0,0.5);
+        }
+        .play-overlay svg {
+          color: white;
+          filter: drop-shadow(0 0 15px rgba(239, 68, 68, 0.6));
+          transition: transform 0.3s ease, filter 0.3s ease;
+        }
+        .video-thumbnail-placeholder:hover .play-overlay svg {
+          transform: scale(1.15);
+          filter: drop-shadow(0 0 20px rgba(239, 68, 68, 0.9));
+        }
+        .placeholder-overlay {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          width: 100%;
+          height: 100%;
+          background: var(--bg-surface-2);
+          color: var(--text-muted);
+        }
+        .poster-wrapper img {
+          width: 100%;
+          height: 100%;
+          object-fit: cover;
+        }
+        .placeholder-wrapper {
+          width: 100%;
+          height: 100%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          background: var(--bg-surface-2);
+          color: var(--text-muted);
         }
         .video-wrapper, .video-wrapper iframe {
           width: 100%;

@@ -16,5 +16,12 @@ module.exports = {
         NODE_ENV: 'development',
       },
     },
+    {
+      name: 'bfi-classroom-tunnel',
+      script: 'tunnel.js',
+      env: {
+        NODE_ENV: 'production',
+      },
+    },
   ],
 };

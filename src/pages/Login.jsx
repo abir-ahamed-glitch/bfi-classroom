@@ -20,7 +20,7 @@ export default function Login() {
 
     try {
       await login(username, password);
-      navigate('/');
+      navigate('/', { replace: true });
     } catch (err) {
       setError(err.message || 'Failed to login. Please check your credentials.');
     } finally {
@@ -108,7 +108,7 @@ export default function Login() {
           </div>
 
           <div className="form-actions">
-            <a href="#" className="forgot-password text-gradient">Forgot password?</a>
+            <Link to="/forgot-password" className="forgot-password text-gradient">Forgot password?</Link>
           </div>
 
           <button 

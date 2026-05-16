@@ -1,0 +1,166 @@
+/* ══════════════════════════════════════════════════════════════
+   SKELETON LOADER — Shimmer Placeholders
+   ══════════════════════════════════════════════════════════════ */
+
+/* Base shimmer animation */
+@keyframes skeletonShimmer {
+  0%   { background-position: -400px 0; }
+  100% { background-position: 400px 0; }
+}
+
+/* Core skeleton element */
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.04) 25%,
+    rgba(255, 255, 255, 0.08) 50%,
+    rgba(255, 255, 255, 0.04) 75%
+  );
+  background-size: 800px 100%;
+  animation: skeletonShimmer 1.6s ease-in-out infinite;
+  border-radius: 8px;
+}
+
+/* Light mode */
+[data-mode="light"] .skeleton {
+  background: linear-gradient(
+    90deg,
+    rgba(0, 0, 0, 0.06) 25%,
+    rgba(0, 0, 0, 0.10) 50%,
+    rgba(0, 0, 0, 0.06) 75%
+  );
+  background-size: 800px 100%;
+}
+
+/* Layout helpers */
+.skeleton-wrapper {
+  display: flex;
+  gap: 0.75rem;
+}
+
+.skeleton-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.skeleton-col {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+/* Shape variants */
+.skeleton-text {
+  height: 12px;
+  width: 100%;
+  border-radius: 6px;
+}
+
+.skeleton-text-sm {
+  height: 10px;
+}
+
+.skeleton-circle {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.skeleton-avatar {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  flex-shrink: 0;
+}
+
+/* Card skeleton */
+.skeleton-card {
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.02);
+  overflow: hidden;
+}
+
+[data-mode="light"] .skeleton-card {
+  border-color: rgba(0, 0, 0, 0.06);
+  background: rgba(0, 0, 0, 0.02);
+}
+
+.skeleton-card-image {
+  width: 100%;
+  height: 140px;
+  border-radius: 0;
+}
+
+.skeleton-card-body {
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+/* List item skeleton */
+.skeleton-list-item {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.65rem 0;
+}
+
+/* Stat card skeleton */
+.skeleton-stat-card {
+  flex: 1;
+  padding: 1.2rem;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.02);
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+[data-mode="light"] .skeleton-stat-card {
+  border-color: rgba(0, 0, 0, 0.06);
+  background: rgba(0, 0, 0, 0.02);
+}
+
+/* ── Pull-to-Refresh Indicator ──────────────────────────────── */
+.pull-to-refresh-indicator {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 0;
+  overflow: hidden;
+  transition: height 0.2s ease;
+}
+
+.pull-to-refresh-indicator.active {
+  height: 48px;
+}
+
+.pull-to-refresh-spinner {
+  width: 24px;
+  height: 24px;
+  border: 2.5px solid rgba(255, 255, 255, 0.1);
+  border-top-color: var(--accent-primary, #3b82f6);
+  border-radius: 50%;
+  animation: pullSpin 0.6s linear infinite;
+}
+
+@keyframes pullSpin {
+  to { transform: rotate(360deg); }
+}
+
+.pull-to-refresh-arrow {
+  width: 24px;
+  height: 24px;
+  color: var(--text-secondary);
+  transition: transform 0.2s ease;
+}
+
+.pull-to-refresh-arrow.ready {
+  transform: rotate(180deg);
+  color: var(--accent-primary, #3b82f6);
+}

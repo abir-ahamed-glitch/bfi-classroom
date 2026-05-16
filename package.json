@@ -12,12 +12,17 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@emoji-mart/data": "^1.2.1",
+    "@emoji-mart/react": "^1.1.1",
+    "@mlc-ai/web-llm": "^0.2.82",
     "bcryptjs": "^3.0.3",
     "better-sqlite3": "^12.8.0",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.6",
     "dompurify": "^3.3.3",
     "dotenv": "^17.3.1",
+    "emoji-mart": "^5.6.0",
+    "emoji-picker-react": "^4.19.1",
     "express": "^5.2.1",
     "express-rate-limit": "^8.3.1",
     "helmet": "^8.1.0",
@@ -27,12 +32,15 @@
     "jspdf": "^4.2.1",
     "lucide-react": "^1.6.0",
     "multer": "^2.1.1",
+    "nodemailer": "^8.0.7",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
+    "react-icons": "^5.6.0",
+    "react-quill": "^2.0.0",
     "react-router-dom": "^7.13.2",
     "socket.io": "^4.8.3",
     "socket.io-client": "^4.8.3",
-    "uuid": "^13.0.0"
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",

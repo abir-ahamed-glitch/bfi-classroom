@@ -1,11 +1,11 @@
 import { useState, useEffect } from 'react';
-import { useAuth } from '../context/AuthContext';
 import { BookOpen, FileText, Download, PlayCircle, Folder } from 'lucide-react';
 
 export default function CourseMaterials() {
   const [materials, setMaterials] = useState([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('All');
+  const backendOrigin = import.meta.env.VITE_API_BASE_URL || '';
 
   useEffect(() => {
     fetchMaterials();
@@ -15,15 +15,16 @@ export default function CourseMaterials() {
     try {
       setLoading(true);
       const res = await fetch('/api/courses', {
-        headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
+        headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
       });
       if (res.ok) {
         const data = await res.json();
-        const mapped = data.materials.map(m => ({
+        const mapped = data.materials.map((m) => ({
           id: m.id,
           title: m.title,
           course: m.course_name,
           type: m.file_type || 'pdf',
+          fileUrl: m.file_url,
           date: new Date(m.created_at).toLocaleDateString(),
           size: m.file_type === 'video' ? 'Video' : '1.2 MB',
           downloadable: m.is_downloadable === 1,
@@ -39,22 +40,42 @@ export default function CourseMaterials() {
   };
 
   const getIcon = (type) => {
-    const t = type?.toLowerCase();
-    if (t === 'pdf') return <FileText size={24} className="text-danger" />;
-    if (t === 'doc' || t === 'docx') return <FileText size={24} className="text-primary" />;
-    if (t === 'video') return <PlayCircle size={24} className="text-warning" />;
+    const lowerType = type?.toLowerCase();
+    if (lowerType === 'pdf') return <FileText size={24} className="text-danger" />;
+    if (lowerType === 'doc' || lowerType === 'docx') return <FileText size={24} className="text-primary" />;
+    if (lowerType === 'video') return <PlayCircle size={24} className="text-warning" />;
     return <BookOpen size={24} />;
   };
 
-  const filteredMaterials = activeTab === 'All' 
-    ? materials 
-    : materials.filter(m => m.type.toLowerCase() === activeTab.toLowerCase());
+  const filteredMaterials = activeTab === 'All'
+    ? materials
+    : materials.filter((material) => material.type.toLowerCase() === activeTab.toLowerCase());
 
-  if (loading) return <div className="page-container container"><h2 className="text-secondary text-center" style={{marginTop: '20vh'}}>Loading Library...</h2></div>;
+  const openMaterial = (material) => {
+    if (!material.fileUrl) {
+      alert('This material is not available right now.');
+      return;
+    }
+
+    const targetUrl = material.fileUrl.startsWith('http')
+      ? material.fileUrl
+      : material.fileUrl.startsWith('/media/')
+        ? `${backendOrigin}${material.fileUrl}`
+        : new URL(material.fileUrl.replace(/^\//, ''), `${window.location.origin}${import.meta.env.BASE_URL}`).toString();
+
+    window.open(targetUrl, '_blank', 'noopener,noreferrer');
+  };
+
+  if (loading) {
+    return (
+      <div className="page-container container">
+        <h2 className="text-secondary text-center" style={{ marginTop: '20vh' }}>Loading Library...</h2>
+      </div>
+    );
+  }
 
   return (
     <div className="page-container container" style={{ paddingBottom: '4rem' }}>
-      
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: '2rem', flexWrap: 'wrap', gap: '1rem' }}>
         <div>
           <h1 className="text-gradient font-display" style={{ fontSize: '2.5rem' }}>Course Materials</h1>
@@ -62,11 +83,10 @@ export default function CourseMaterials() {
         </div>
       </div>
 
-      {/* Tabs */}
       <div className="glass-panel" style={{ display: 'inline-flex', padding: '0.4rem', borderRadius: '12px', marginBottom: '2rem', overflowX: 'auto', maxWidth: '100%' }}>
-        {['All', 'PDF', 'Doc', 'Video'].map(tab => (
-          <button 
-            key={tab} 
+        {['All', 'PDF', 'Doc', 'Video'].map((tab) => (
+          <button
+            key={tab}
             onClick={() => setActiveTab(tab)}
             className={`tab-btn ${activeTab === tab ? 'active' : ''}`}
           >
@@ -76,25 +96,29 @@ export default function CourseMaterials() {
       </div>
 
       <div className="materials-grid">
-        {filteredMaterials.map(mat => (
-          <div key={mat.id} className="material-card glass-panel">
+        {filteredMaterials.map((material) => (
+          <div key={material.id} className="material-card glass-panel">
             <div className="material-icon">
-              {getIcon(mat.type)}
+              {getIcon(material.type)}
             </div>
             <div className="material-info">
-              <h3 className="material-title">{mat.title}</h3>
-              <p className="material-course"><Folder size={14} style={{display:'inline', marginRight:'4px'}}/> {mat.course}</p>
+              <h3 className="material-title">{material.title}</h3>
+              <p className="material-course"><Folder size={14} style={{ display: 'inline', marginRight: '4px' }} /> {material.course}</p>
               <div className="material-meta">
-                <span>{mat.date}</span>
-                <span>•</span>
-                <span>{mat.type === 'video' ? mat.duration : mat.size}</span>
+                <span>{material.date}</span>
+                <span>|</span>
+                <span>{material.type === 'video' ? material.duration : material.size}</span>
               </div>
             </div>
             <div className="material-action">
-              {mat.downloadable ? (
-                <button className="btn btn-glass icon-btn" title="Download Material"><Download size={20} /></button>
+              {material.downloadable ? (
+                <button className="btn btn-glass icon-btn" title="Download Material" onClick={() => openMaterial(material)}>
+                  <Download size={20} />
+                </button>
               ) : (
-                <button className="btn btn-primary icon-btn" title="Watch Video"><PlayCircle size={20} /></button>
+                <button className="btn btn-primary icon-btn" title="Watch Video" onClick={() => openMaterial(material)}>
+                  <PlayCircle size={20} />
+                </button>
               )}
             </div>
           </div>
@@ -126,7 +150,7 @@ export default function CourseMaterials() {
           color: var(--accent-primary);
           box-shadow: 0 2px 8px rgba(0,0,0,0.1);
         }
-        
+
         .materials-grid {
           display: grid;
           grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
@@ -156,7 +180,7 @@ export default function CourseMaterials() {
         }
         .material-info {
           flex: 1;
-          min-width: 0; /* needed for text truncation */
+          min-width: 0;
         }
         .material-title {
           font-size: 1.1rem;

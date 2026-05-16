@@ -1,0 +1,329 @@
+import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
+import { io } from 'socket.io-client';
+import { useAuth } from './AuthContext';
+import { soundManager } from '../utils/AudioSynthesizer';
+
+const CallContext = createContext(null);
+
+export const useCall = () => {
+  return useContext(CallContext);
+};
+
+export const CallProvider = ({ children }) => {
+  const { currentUser } = useAuth();
+  
+  // Call States: 'idle', 'receiving', 'calling', 'connected'
+  const [callState, setCallState] = useState('idle');
+  const [incomingCall, setIncomingCall] = useState(null); // { callerData: { id, name, avatar, hasVideo } }
+  const [activeCall, setActiveCall] = useState(null); // { targetId, targetData, hasVideo, isCaller }
+  
+  // Media streams
+  const [localStream, setLocalStream] = useState(null);
+  const [remoteStream, setRemoteStream] = useState(null);
+  const [isMuted, setIsMuted] = useState(false);
+  const [isVideoOff, setIsVideoOff] = useState(false);
+
+  // WebRTC & Socket refs
+  const socketRef = useRef(null);
+  const peerConnectionRef = useRef(null);
+  const localStreamRef = useRef(null);
+
+  useEffect(() => {
+    // Sound manager handles audio via Web Audio API
+  }, []);
+
+  useEffect(() => {
+    const token = localStorage.getItem('token');
+    if (!token || !currentUser?.id) {
+      if (socketRef.current) {
+        socketRef.current.disconnect();
+        socketRef.current = null;
+      }
+      return;
+    }
+
+    const socketUrl = import.meta.env.VITE_SOCKET_URL || '';
+    const socket = io(socketUrl, {
+      withCredentials: true,
+      auth: { token },
+    });
+    socketRef.current = socket;
+
+    socket.on('call-request', (data) => {
+      // data: { receiverId, callerData: { id, name, avatar, hasVideo } }
+      if (callState !== 'idle') {
+        // We are busy, automatically reject
+        socket.emit('call-rejected', { callerId: data.callerData.id });
+        return;
+      }
+      
+      // Get the chosen ringtone from localStorage or default to 1
+      const ringtoneId = parseInt(localStorage.getItem('selectedRingtoneId') || '1', 10);
+      soundManager.playRingtone(ringtoneId);
+      
+      setIncomingCall(data);
+      setCallState('receiving');
+    });
+
+    socket.on('call-answered', async (data) => {
+      // data: { callerId, answererData: { id, hasVideo } }
+      if (callState === 'calling' && activeCall?.targetId === data.answererData.id) {
+        soundManager.stopAll();
+        setCallState('connected');
+        // Now caller creates the WebRTC offer
+        try {
+          const offer = await peerConnectionRef.current.createOffer();
+          await peerConnectionRef.current.setLocalDescription(offer);
+          socket.emit('webrtc-offer', {
+            receiverId: activeCall.targetId,
+            offer: offer
+          });
+        } catch (error) {
+          console.error("Error creating offer:", error);
+          endCall();
+        }
+      }
+    });
+
+    socket.on('call-rejected', () => {
+      if (callState === 'calling') {
+        cleanupCall();
+        soundManager.playCallEnded();
+      }
+    });
+
+    socket.on('webrtc-offer', async (data) => {
+      // data: { receiverId, offer }
+      if (!peerConnectionRef.current) return;
+      try {
+        await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(data.offer));
+        const answer = await peerConnectionRef.current.createAnswer();
+        await peerConnectionRef.current.setLocalDescription(answer);
+        socket.emit('webrtc-answer', {
+          callerId: activeCall?.targetId || incomingCall?.callerData?.id,
+          answer: answer
+        });
+      } catch (error) {
+        console.error("Error handling offer:", error);
+      }
+    });
+
+    socket.on('webrtc-answer', async (data) => {
+      // data: { callerId, answer }
+      if (!peerConnectionRef.current) return;
+      try {
+        await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(data.answer));
+      } catch (error) {
+        console.error("Error handling answer:", error);
+      }
+    });
+
+    socket.on('ice-candidate', async (data) => {
+      // data: { targetId, candidate }
+      if (!peerConnectionRef.current) return;
+      try {
+        await peerConnectionRef.current.addIceCandidate(new RTCIceCandidate(data.candidate));
+      } catch (error) {
+        console.error("Error adding ICE candidate:", error);
+      }
+    });
+
+    socket.on('call-ended', () => {
+      cleanupCall();
+      soundManager.playCallEnded();
+    });
+
+    return () => {
+      socket.disconnect();
+      cleanupCall();
+    };
+  }, [currentUser, callState, activeCall, incomingCall]);
+
+  const setupPeerConnection = (targetId) => {
+    const pc = new RTCPeerConnection({
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+      ],
+    });
+
+    pc.onicecandidate = (event) => {
+      if (event.candidate && socketRef.current) {
+        socketRef.current.emit('ice-candidate', {
+          targetId: targetId,
+          candidate: event.candidate,
+        });
+      }
+    };
+
+    pc.ontrack = (event) => {
+      setRemoteStream(event.streams[0]);
+    };
+
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach((track) => {
+        pc.addTrack(track, localStreamRef.current);
+      });
+    }
+
+    peerConnectionRef.current = pc;
+  };
+
+  const getMediaStream = async (hasVideo) => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: hasVideo,
+        audio: true,
+      });
+      setLocalStream(stream);
+      localStreamRef.current = stream;
+      setIsVideoOff(!hasVideo);
+      setIsMuted(false);
+      return stream;
+    } catch (error) {
+      console.error("Error accessing media devices.", error);
+      // Fallback to audio only if video fails
+      if (hasVideo) {
+         try {
+           const stream = await navigator.mediaDevices.getUserMedia({ video: false, audio: true });
+           setLocalStream(stream);
+           localStreamRef.current = stream;
+           setIsVideoOff(true);
+           setIsMuted(false);
+           return stream;
+         } catch(e) {
+             console.error("Error accessing audio devices too.", e);
+             return null;
+         }
+      }
+      return null;
+    }
+  };
+
+  const initiateCall = async (receiverId, receiverData, hasVideo = true) => {
+    if (!socketRef.current) return;
+    
+    const stream = await getMediaStream(hasVideo);
+    if (!stream) {
+      alert("Microphone/Camera permission denied.");
+      return;
+    }
+
+    setActiveCall({ targetId: receiverId, targetData: receiverData, hasVideo, isCaller: true });
+    setCallState('calling');
+    soundManager.playDialTone();
+    setupPeerConnection(receiverId);
+
+    socketRef.current.emit('call-request', {
+      receiverId,
+      callerData: {
+        id: currentUser.id,
+        name: `${currentUser.firstName} ${currentUser.lastName}`,
+        avatar: currentUser.profile_picture,
+        hasVideo,
+      }
+    });
+  };
+
+  const answerCall = async (hasVideo = true) => {
+    if (!incomingCall || !socketRef.current) return;
+    
+    const callerId = incomingCall.callerData.id;
+    const stream = await getMediaStream(hasVideo);
+    if (!stream) {
+      alert("Microphone/Camera permission denied. Cannot answer call.");
+      rejectCall();
+      return;
+    }
+
+    setActiveCall({
+      targetId: callerId,
+      targetData: incomingCall.callerData,
+      hasVideo: incomingCall.callerData.hasVideo || hasVideo,
+      isCaller: false
+    });
+    setCallState('connected');
+    soundManager.stopAll();
+    setupPeerConnection(callerId);
+
+    socketRef.current.emit('call-answered', {
+      callerId,
+      answererData: { id: currentUser.id, hasVideo }
+    });
+
+    setIncomingCall(null);
+  };
+
+  function rejectCall() {
+    if (incomingCall && socketRef.current) {
+      socketRef.current.emit('call-rejected', { callerId: incomingCall.callerData.id });
+    }
+    soundManager.stopAll();
+    setIncomingCall(null);
+    setCallState('idle');
+  }
+
+  function endCall() {
+    if (activeCall && socketRef.current) {
+      socketRef.current.emit('call-ended', { targetId: activeCall.targetId });
+    }
+    cleanupCall();
+  }
+
+  function cleanupCall() {
+    soundManager.stopAll();
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach(track => track.stop());
+    }
+    if (peerConnectionRef.current) {
+      peerConnectionRef.current.close();
+    }
+    setLocalStream(null);
+    setRemoteStream(null);
+    localStreamRef.current = null;
+    peerConnectionRef.current = null;
+    setActiveCall(null);
+    setIncomingCall(null);
+    setCallState('idle');
+  }
+
+  const toggleMute = () => {
+    if (localStreamRef.current) {
+      const audioTrack = localStreamRef.current.getAudioTracks()[0];
+      if (audioTrack) {
+        audioTrack.enabled = !audioTrack.enabled;
+        setIsMuted(!audioTrack.enabled);
+      }
+    }
+  };
+
+  const toggleVideo = () => {
+    if (localStreamRef.current) {
+      const videoTrack = localStreamRef.current.getVideoTracks()[0];
+      if (videoTrack) {
+        videoTrack.enabled = !videoTrack.enabled;
+        setIsVideoOff(!videoTrack.enabled);
+      }
+    }
+  };
+
+  return (
+    <CallContext.Provider value={{
+      callState,
+      incomingCall,
+      activeCall,
+      localStream,
+      remoteStream,
+      isMuted,
+      isVideoOff,
+      initiateCall,
+      answerCall,
+      rejectCall,
+      endCall,
+      toggleMute,
+      toggleVideo
+    }}>
+      {children}
+    </CallContext.Provider>
+  );
+};

@@ -1,12 +1,12 @@
 import { useState, useEffect } from 'react';
-import { useAuth } from '../context/AuthContext';
-import { Plus, Briefcase, Calendar, MapPin, Trash2, X, Edit, Globe, Award, BookOpen, Film } from 'lucide-react';
+
+import { Plus, Briefcase, Calendar, MapPin, Trash2, X, Edit2, Globe, Award, BookOpen, Film, Pencil } from 'lucide-react';
 
 export default function Experience() {
-  const { currentUser } = useAuth();
   const [experiences, setExperiences] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showAddModal, setShowAddModal] = useState(false);
+  const [editingId, setEditingId] = useState(null);
   
   const initialForm = {
     title: '',
@@ -37,11 +37,32 @@ export default function Experience() {
     }
   };
 
+  const openEditModal = (exp) => {
+    setEditingId(exp.id);
+    setFormData({
+      title: exp.title || '',
+      organization: exp.organization || '',
+      experience_type: exp.experience_type || 'Film',
+      start_date: exp.start_date || '',
+      end_date: exp.end_date || '',
+      description: exp.description || ''
+    });
+    setShowAddModal(true);
+  };
+
+  const closeModal = () => {
+    setShowAddModal(false);
+    setEditingId(null);
+    setFormData(initialForm);
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     try {
-      const res = await fetch('/api/experience', {
-        method: 'POST',
+      const url = editingId ? `/api/experience/${editingId}` : '/api/experience';
+      const method = editingId ? 'PUT' : 'POST';
+      const res = await fetch(url, {
+        method,
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${localStorage.getItem('token')}`
@@ -50,13 +71,12 @@ export default function Experience() {
       });
       
       if (res.ok) {
-        setShowAddModal(false);
-        setFormData(initialForm);
+        closeModal();
         fetchExperiences();
       }
     } catch (err) {
       console.error(err);
-      alert('Failed to add experience');
+      alert(editingId ? 'Failed to update experience' : 'Failed to add experience');
     }
   };
 
@@ -120,6 +140,9 @@ export default function Experience() {
                   </div>
                   <div className="exp-meta">
                     <span className="exp-type-badge">{exp.experience_type}</span>
+                    <button className="edit-exp-btn" onClick={() => openEditModal(exp)} title="Edit Experience">
+                      <Pencil size={16} />
+                    </button>
                     <button className="delete-exp-btn" onClick={() => deleteExperience(exp.id)} title="Delete Experience">
                       <Trash2 size={16} />
                     </button>
@@ -143,8 +166,8 @@ export default function Experience() {
         <div className="modal-overlay">
           <div className="modal-content glass-panel" style={{ maxWidth: '600px' }}>
             <div className="modal-header">
-              <h2 className="font-display">Add Experience</h2>
-              <button onClick={() => setShowAddModal(false)} className="close-btn"><X size={24} /></button>
+              <h2 className="font-display">{editingId ? 'Edit Experience' : 'Add Experience'}</h2>
+              <button onClick={closeModal} className="close-btn"><X size={24} /></button>
             </div>
             
             <div className="modal-body">
@@ -228,8 +251,8 @@ export default function Experience() {
             </div>
             
             <div className="modal-footer">
-              <button onClick={() => setShowAddModal(false)} className="btn btn-glass">Cancel</button>
-              <button form="expForm" type="submit" className="btn btn-primary">Save Experience</button>
+              <button onClick={closeModal} className="btn btn-glass">Cancel</button>
+              <button form="expForm" type="submit" className="btn btn-primary">{editingId ? 'Update Experience' : 'Save Experience'}</button>
             </div>
           </div>
         </div>
@@ -259,7 +282,7 @@ export default function Experience() {
         .exp-icon-main {
           width: 50px;
           height: 50px;
-          background: var(--bg-gradient-primary);
+          background: var(--accent-primary);
           border-radius: 12px;
           display: flex;
           align-items: center;
@@ -290,15 +313,26 @@ export default function Experience() {
           letter-spacing: 0.05em;
         }
         
+        .edit-exp-btn {
+          background: none;
+          border: none;
+          color: var(--text-muted);
+          cursor: pointer;
+          padding: 0.5rem;
+          border-radius: 8px;
+          transition: all 0.2s;
+        }
+        .edit-exp-btn:hover { color: var(--accent-primary); background: rgba(99,102,241,0.1); }
         .delete-exp-btn {
           background: none;
           border: none;
           color: var(--text-muted);
           cursor: pointer;
           padding: 0.5rem;
-          transition: color 0.2s;
+          border-radius: 8px;
+          transition: all 0.2s;
         }
-        .delete-exp-btn:hover { color: var(--danger); }
+        .delete-exp-btn:hover { color: var(--danger); background: rgba(239,68,68,0.1); }
         
         .exp-dates {
           display: flex;

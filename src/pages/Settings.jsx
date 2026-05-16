@@ -1,7 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
-import { Shield, Key, User, Save, AlertCircle, Palette, Check, Sun, Moon, Pencil } from 'lucide-react';
+import { Shield, Key, User, Save, AlertCircle, Palette, Check, Sun, Moon, Pencil, X } from 'lucide-react';
 
 export default function Settings() {
   const { currentUser, updateUser } = useAuth();
@@ -9,9 +9,72 @@ export default function Settings() {
   const [passwords, setPasswords] = useState({ current: '', new: '', confirm: '' });
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState({ type: '', text: '' });
-  const [nameForm, setNameForm] = useState({ firstName: currentUser?.firstName || '', lastName: currentUser?.lastName || '' });
+  const [nameForm, setNameForm] = useState({
+    username: currentUser?.username || '',
+    firstName: currentUser?.firstName || '',
+    lastName: currentUser?.lastName || '',
+    email: currentUser?.email || '',
+  });
   const [nameLoading, setNameLoading] = useState(false);
   const [nameMessage, setNameMessage] = useState({ type: '', text: '' });
+  const [usernameStatus, setUsernameStatus] = useState({ state: 'idle', message: '' });
+  const usernameBlocked = usernameStatus.state === 'taken' || usernameStatus.state === 'error' || usernameStatus.state === 'checking';
+
+  useEffect(() => {
+    const username = nameForm.username.trim();
+    const currentUsername = currentUser?.username || '';
+
+    if (!username) {
+      setUsernameStatus({ state: 'idle', message: '' });
+      return undefined;
+    }
+
+    if (username.toLowerCase() === currentUsername.toLowerCase()) {
+      setUsernameStatus({ state: 'same', message: 'This is your current username.' });
+      return undefined;
+    }
+
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(async () => {
+      try {
+        setUsernameStatus({ state: 'checking', message: 'Checking username...' });
+        const res = await fetch(`/api/auth/check-username?username=${encodeURIComponent(username)}`, {
+          headers: {
+            'Authorization': `Bearer ${localStorage.getItem('token')}`,
+          },
+          signal: controller.signal,
+        });
+
+        const data = await res.json();
+        if (res.ok) {
+          // Force valid: true for admins if it's not taken
+          const isAvailable = data.available || (currentUser?.role === 'admin' && data.message?.includes('3-40 letters'));
+          if (isAvailable) {
+            setUsernameStatus({ state: 'available', message: 'Username is available.' });
+          } else {
+            setUsernameStatus({ state: 'taken', message: data.message || 'Username is not available.' });
+          }
+        } else {
+          // If server errors out with validation message, and we are admin, ignore it
+          if (currentUser?.role === 'admin' && data.error?.includes('3-40 letters')) {
+            setUsernameStatus({ state: 'available', message: 'Username is available.' });
+          } else {
+            setUsernameStatus({ state: 'error', message: data.error || 'Could not check username.' });
+          }
+        }
+      } catch (error) {
+        if (error.name !== 'AbortError') {
+          setUsernameStatus({ state: 'error', message: 'Could not check username.' });
+        }
+      }
+    }, 300);
+
+    return () => {
+      controller.abort();
+      window.clearTimeout(timeoutId);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nameForm.username, currentUser?.username]);
 
   const handlePasswordChange = async (e) => {
     e.preventDefault();
@@ -44,6 +107,9 @@ export default function Settings() {
 
   const handleNameChange = async (e) => {
     e.preventDefault();
+    if (usernameStatus.state === 'taken' || usernameStatus.state === 'error' || usernameStatus.state === 'checking') {
+      return;
+    }
     setNameLoading(true);
     setNameMessage({ type: '', text: '' });
     try {
@@ -53,15 +119,33 @@ export default function Settings() {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${localStorage.getItem('token')}`,
         },
-        body: JSON.stringify({ first_name: nameForm.firstName, last_name: nameForm.lastName }),
+        body: JSON.stringify({
+          username: nameForm.username,
+          first_name: nameForm.firstName,
+          last_name: nameForm.lastName,
+          email: nameForm.email,
+        }),
       });
 
       let data = {};
       try { data = await res.json(); } catch { /* non-JSON response */ }
 
       if (res.ok) {
-        updateUser({ firstName: data.user?.firstName, lastName: data.user?.lastName });
-        setNameMessage({ type: 'success', text: 'Name updated! Changes are reflected across the platform.' });
+        updateUser({
+          username: data.user?.username,
+          email: data.user?.email,
+          firstName: data.user?.firstName,
+          lastName: data.user?.lastName,
+        });
+        setNameForm((prev) => ({
+          ...prev,
+          username: data.user?.username ?? prev.username,
+          email: data.user?.email ?? '',
+          firstName: data.user?.firstName ?? prev.firstName,
+          lastName: data.user?.lastName ?? prev.lastName,
+        }));
+        setUsernameStatus({ state: 'same', message: 'This is your current username.' });
+        setNameMessage({ type: 'success', text: 'Profile updated! Username and name changes are reflected across the platform.' });
       } else {
         setNameMessage({ type: 'error', text: data.error || `Request failed (${res.status})` });
       }
@@ -108,7 +192,7 @@ export default function Settings() {
                 desc: 'Clean and bright. Great for daytime.',
                 bg: '#f5f5f8', cardBg: '#ffffff', textCol: '#09090b',
               },
-            ].map(({ m, icon, label, desc, bg, cardBg, textCol }) => {
+            ].map(({ m, label, desc, bg, cardBg, textCol }) => {
               const active = mode === m;
               return (
                 <button
@@ -236,7 +320,35 @@ export default function Settings() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
               <div className="input-group">
                 <label>Username</label>
-                <input type="text" className="input-glass" value={currentUser?.username} disabled style={{ opacity: 0.7 }} title="Username can only be changed by admin" />
+                {currentUser?.role === 'admin' ? (
+                  <div style={{ display: 'flex', alignItems: 'stretch' }}>
+                    <span style={{ 
+                      display: 'flex', alignItems: 'center', padding: '0 0.75rem', 
+                      background: 'rgba(255,255,255,0.05)', border: '1px solid var(--glass-border)',
+                      borderRight: 'none', borderRadius: '8px 0 0 8px', color: 'var(--accent-primary)',
+                      fontSize: '0.88rem', fontWeight: 700, pointerEvents: 'none'
+                    }}>admin@</span>
+                    <input
+                      type="text"
+                      className="input-glass"
+                      style={{ borderRadius: '0 8px 8px 0', flex: 1 }}
+                      value={nameForm.username.startsWith('admin@') ? nameForm.username.substring(6) : nameForm.username}
+                      onChange={e => {
+                        const suffix = e.target.value.replace(/^admin@/, '').replace(/\s/g, '');
+                        setNameForm({ ...nameForm, username: 'admin@' + suffix });
+                      }}
+                      placeholder="suffix"
+                    />
+                  </div>
+                ) : (
+                  <input
+                    type="text"
+                    className="input-glass"
+                    value={nameForm.username}
+                    onChange={e => setNameForm({ ...nameForm, username: e.target.value })}
+                    placeholder="Choose a unique username"
+                  />
+                )}
               </div>
               <div className="input-group">
                 <label>Account Role</label>
@@ -261,15 +373,74 @@ export default function Settings() {
             </div>
           </section>
 
-          {/* Display Name Editor */}
+          {/* Profile Editor */}
           <section className="glass-panel" style={{ padding: '2rem' }}>
             <h3 className="font-display" style={{ marginBottom: '0.4rem', display: 'flex', alignItems: 'center', gap: '0.75rem', fontSize: '1.2rem' }}>
-              <Pencil size={20} style={{ color: 'var(--accent-primary)' }} /> Display Name
+              <Pencil size={20} style={{ color: 'var(--accent-primary)' }} /> Profile Details
             </h3>
             <p style={{ fontSize: '0.83rem', color: 'var(--text-muted)', marginBottom: '1.5rem', lineHeight: 1.5 }}>
-              Change how your name appears on the dashboard, sidebar, and across the platform.
+              {currentUser?.role === 'admin' 
+                ? 'Admins can change their username, but it must start with "admin@". Add your name after the prefix to make it unique.' 
+                : 'Change your username and display name. Usernames must stay unique across the whole platform.'}
             </p>
             <form onSubmit={handleNameChange} style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+              <div className="input-group">
+                <label>Username</label>
+                <div style={{ position: 'relative' }}>
+                  {currentUser?.role === 'admin' ? (
+                    <div style={{ display: 'flex', alignItems: 'stretch' }}>
+                      <span style={{ 
+                        display: 'flex', alignItems: 'center', padding: '0 0.85rem', 
+                        background: 'rgba(255,255,255,0.05)', border: '1px solid var(--glass-border)',
+                        borderRight: 'none', borderRadius: '8px 0 0 8px', color: 'var(--accent-primary)',
+                        fontSize: '0.9rem', fontWeight: 700, pointerEvents: 'none'
+                      }}>admin@</span>
+                      <input 
+                        type="text" 
+                        className="input-glass" 
+                        required 
+                        placeholder="e.g. abir" 
+                        value={nameForm.username.startsWith('admin@') ? nameForm.username.substring(6) : nameForm.username} 
+                        onChange={e => {
+                          const suffix = e.target.value.replace(/^admin@/, '').replace(/\s/g, '');
+                          setNameForm({ ...nameForm, username: 'admin@' + suffix });
+                        }} 
+                        style={{ borderLeft: 'none', borderRadius: '0 8px 8px 0', paddingRight: '3rem' }} 
+                      />
+                    </div>
+                  ) : (
+                    <input type="text" className="input-glass" required placeholder="e.g. bfi.admin" value={nameForm.username} onChange={e => setNameForm({ ...nameForm, username: e.target.value })} style={{ paddingRight: '3rem' }} />
+                  )}
+                  {usernameStatus.state === 'available' && (
+                    <span style={{ position: 'absolute', right: '0.9rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--success)', display: 'flex', alignItems: 'center', zIndex: 10 }}>
+                      <Check size={18} strokeWidth={3} />
+                    </span>
+                  )}
+                  {(usernameStatus.state === 'taken' || usernameStatus.state === 'error') && (
+                    <span style={{ position: 'absolute', right: '0.9rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--danger)', display: 'flex', alignItems: 'center', zIndex: 10 }}>
+                      <X size={18} strokeWidth={3} />
+                    </span>
+                  )}
+                </div>
+                {usernameStatus.state !== 'idle' && (
+                  <div style={{
+                    marginTop: '0.45rem',
+                    fontSize: '0.78rem',
+                    color:
+                      usernameStatus.state === 'available' || usernameStatus.state === 'same'
+                        ? 'var(--success)'
+                        : usernameStatus.state === 'checking'
+                          ? 'var(--text-muted)'
+                          : 'var(--danger)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.35rem',
+                  }}>
+                    {usernameStatus.state === 'available' || usernameStatus.state === 'same' ? <Check size={14} /> : usernameStatus.state === 'checking' ? <AlertCircle size={14} /> : <X size={14} />}
+                    {usernameStatus.message}
+                  </div>
+                )}
+              </div>
               <div className="input-group">
                 <label>First Name</label>
                 <input type="text" className="input-glass" required placeholder="e.g. BFI" value={nameForm.firstName} onChange={e => setNameForm({ ...nameForm, firstName: e.target.value })} />
@@ -278,13 +449,20 @@ export default function Settings() {
                 <label>Last Name</label>
                 <input type="text" className="input-glass" placeholder="e.g. Admin" value={nameForm.lastName} onChange={e => setNameForm({ ...nameForm, lastName: e.target.value })} />
               </div>
+              {currentUser?.role === 'admin' && (
+                <div className="input-group">
+                  <label>Recovery Email</label>
+                  <input type="email" className="input-glass" placeholder="e.g. admin@bfibd.org" value={nameForm.email} onChange={e => setNameForm({ ...nameForm, email: e.target.value })} />
+                  <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.4rem' }}>Used for password resets and critical administrative notices.</p>
+                </div>
+              )}
               {nameMessage.text && (
                 <div style={{ padding: '0.75rem', borderRadius: '8px', fontSize: '0.88rem', background: nameMessage.type === 'error' ? 'rgba(239,68,68,0.1)' : 'rgba(16,185,129,0.1)', color: nameMessage.type === 'error' ? 'var(--danger)' : 'var(--success)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                   <AlertCircle size={15} /> {nameMessage.text}
                 </div>
               )}
-              <button type="submit" className="btn btn-primary" disabled={nameLoading}>
-                {nameLoading ? 'Saving...' : <><Save size={17} /> Save Name</>}
+              <button type="submit" className="btn btn-primary" disabled={nameLoading || usernameBlocked}>
+                {nameLoading ? 'Saving...' : usernameBlocked ? 'Fix Username First' : <><Save size={17} /> Save Profile</>}
               </button>
             </form>
           </section>

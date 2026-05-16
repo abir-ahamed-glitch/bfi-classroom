@@ -1,25 +1,59 @@
 import { useState, useEffect } from 'react';
 import { Megaphone, Trash2, Send, AlertTriangle } from 'lucide-react';
-import { useAuth } from '../../context/AuthContext';
+
 
 export default function AnnouncementsManager() {
-  const { currentUser } = useAuth();
   const [announcements, setAnnouncements] = useState([]);
+  const [courseOptions, setCourseOptions] = useState([]);
+  const [courseBatchesMap, setCourseBatchesMap] = useState({});
   const [loading, setLoading] = useState(false);
   
   const [formData, setFormData] = useState({
     title: '',
     content: '',
-    priority: 'normal'
+    priority: 'normal',
+    targetCourse: '',
+    targetBatch: ''
   });
 
   useEffect(() => {
     fetchAnnouncements();
+    fetchOptions();
   }, []);
+
+  const fetchOptions = async () => {
+    try {
+      const res = await fetch('/api/admin/targeting-options?_t=' + Date.now(), {
+        headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        
+        const sortBatches = (a, b) => {
+          const numA = parseInt(a, 10);
+          const numB = parseInt(b, 10);
+          if (!isNaN(numA) && !isNaN(numB) && numA !== numB) return numA - numB;
+          return String(a).localeCompare(String(b));
+        };
+        
+        const sortedCourseBatches = {};
+        if (data.courseBatches) {
+          for (const course in data.courseBatches) {
+            sortedCourseBatches[course] = [...data.courseBatches[course]].sort(sortBatches);
+          }
+        }
+
+        setCourseOptions(data.courses || []);
+        setCourseBatchesMap(sortedCourseBatches);
+      }
+    } catch (err) {
+      console.error('Fetch targeting options error', err);
+    }
+  };
 
   const fetchAnnouncements = async () => {
     try {
-      const res = await fetch('/api/student/dashboard', {
+      const res = await fetch('/api/admin/announcements', {
         headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
       });
       if (res.ok) {
@@ -44,7 +78,7 @@ export default function AnnouncementsManager() {
         body: JSON.stringify(formData)
       });
       if (res.ok) {
-        setFormData({ title: '', content: '', priority: 'normal' });
+        setFormData({ title: '', content: '', priority: 'normal', targetCourse: '', targetBatch: '' });
         fetchAnnouncements();
       } else {
         const data = await res.json();
@@ -99,6 +133,32 @@ export default function AnnouncementsManager() {
                 <option value="high">High (Urgent Warning)</option>
               </select>
             </div>
+            <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
+              <div style={{ flex: '1 1 200px', minWidth: 0 }}>
+                <label style={{ display: 'block', marginBottom: '0.4rem', color: 'var(--text-secondary)' }}>Target Course (Optional)</label>
+                <select className="input-glass" value={formData.targetCourse} onChange={e => setFormData({...formData, targetCourse: e.target.value, targetBatch: ''})}>
+                  <option value="">All Courses (Global)</option>
+                  {courseOptions.map((c, i) => <option key={i} value={c}>{c}</option>)}
+                </select>
+              </div>
+              <div style={{ flex: '1 1 200px', minWidth: 0 }}>
+                <label style={{ display: 'block', marginBottom: '0.4rem', color: 'var(--text-secondary)' }}>Target Batch (Optional)</label>
+                <select 
+                  className="input-glass" 
+                  value={formData.targetBatch} 
+                  onChange={e => setFormData({...formData, targetBatch: e.target.value})}
+                  disabled={!formData.targetCourse}
+                  style={{ 
+                    cursor: !formData.targetCourse ? 'not-allowed' : 'pointer',
+                    opacity: !formData.targetCourse ? 0.6 : 1
+                  }}
+                >
+                  <option value="">All Batches</option>
+                  {formData.targetCourse && courseBatchesMap[formData.targetCourse] && 
+                    courseBatchesMap[formData.targetCourse].map((b, i) => <option key={i} value={b}>Batch {b}</option>)}
+                </select>
+              </div>
+            </div>
             <button type="submit" className="btn btn-primary" disabled={loading} style={{ marginTop: '1rem' }}>
               <Send size={18} /> {loading ? 'Broadcasting...' : 'Send Announcement'}
             </button>
@@ -116,6 +176,12 @@ export default function AnnouncementsManager() {
                   <Trash2 size={18} className="card-hover" />
                 </button>
                 <h3 style={{ fontSize: '1.2rem', marginBottom: '0.5rem', marginRight: '2rem' }}>{a.title}</h3>
+                {(a.target_course || a.target_batch) && (
+                  <div style={{ marginBottom: '0.8rem', display: 'flex', gap: '0.5rem' }}>
+                    {a.target_course && <span style={{ background: 'var(--bg-secondary)', padding: '2px 8px', borderRadius: '4px', fontSize: '0.8rem', color: 'var(--text-primary)' }}>Course: {a.target_course}</span>}
+                    {a.target_batch && <span style={{ background: 'var(--bg-secondary)', padding: '2px 8px', borderRadius: '4px', fontSize: '0.8rem', color: 'var(--text-primary)' }}>Batch: {a.target_batch}</span>}
+                  </div>
+                )}
                 <p style={{ color: 'var(--text-secondary)', fontSize: '0.95rem', marginBottom: '1rem', whiteSpace: 'pre-wrap' }}>{a.content}</p>
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
                   <span>By {a.admin_name}</span>

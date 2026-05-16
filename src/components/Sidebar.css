@@ -1,25 +1,28 @@
 .sidebar {
   width: 280px;
   height: 100vh;
+  height: 100dvh;
   position: fixed;
   top: 0;
   left: 0;
   display: flex;
   flex-direction: column;
-  padding: 1.5rem;
+  padding: 0;
   z-index: 100;
   border-radius: 0;
   border-top: none;
   border-bottom: none;
   border-left: none;
+  overflow: hidden;
 }
 
 .sidebar-brand {
   display: flex;
   align-items: center;
   gap: 0.75rem;
-  margin-bottom: 2.5rem;
-  padding-left: 0.5rem;
+  margin-bottom: 0;
+  padding: 1.5rem 1.5rem 1rem 2rem;
+  flex-shrink: 0;
 }
 
 .brand-logo {
@@ -43,8 +46,11 @@
   display: flex;
   flex-direction: column;
   gap: 0.2rem;
+  padding: 0 1.5rem;
+  padding-right: 1rem;
   overflow-y: auto;
-  padding-right: 0.5rem;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
 }
 
 .nav-subtitle {
@@ -66,7 +72,29 @@
   border-radius: 8px;
   font-weight: 500;
   font-size: 0.95rem;
-  transition: all 0.2s ease;
+  transition: all 0.25s cubic-bezier(0.25, 0.8, 0.25, 1);
+  position: relative;
+  justify-content: flex-start;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+.nav-badge {
+  margin-left: 0.5rem;
+  min-width: 1.5rem;
+  height: 1.5rem;
+  padding: 0 0.38rem;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #ef4444, #e11d48);
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1;
+  box-shadow: 0 0 0 3px rgba(225, 29, 72, 0.12);
+  flex-shrink: 0;
 }
 
 .nav-item:hover {
@@ -85,7 +113,9 @@
 .sidebar-footer {
   margin-top: auto;
   border-top: 1px solid var(--glass-border);
-  padding-top: 1.5rem;
+  padding: 1.5rem;
+  padding-bottom: max(1.5rem, env(safe-area-inset-bottom));
+  flex-shrink: 0;
 }
 
 .user-mini-profile {
@@ -155,6 +185,9 @@
   font-size: 1.2rem;
   font-weight: 700;
   color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
 }
 
 .mobile-toggle {
@@ -177,13 +210,18 @@
 @media (max-width: 1024px) {
   .sidebar {
     transform: translateX(-100%);
-    transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    transition: transform 0.4s cubic-bezier(0.25, 1, 0.5, 1);
     box-shadow: 20px 0 50px rgba(0,0,0,0.5);
     border-right: 1px solid var(--glass-border);
+    padding-top: 4rem; /* push content below mobile header bar */
   }
 
   .sidebar.open {
     transform: translateX(0);
+  }
+
+  .sidebar-brand {
+    display: none; /* already shown in mobile-header-bar */
   }
 
   .mobile-header-bar {
@@ -197,21 +235,9 @@
     border-bottom: 1px solid var(--glass-border);
     z-index: 1000;
     align-items: center;
-    justify-content: space-between;
+    justify-content: center;
     padding: 0 1rem;
     box-shadow: 0 4px 20px rgba(0,0,0,0.5);
-  }
-
-  .mobile-toggle {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: transparent;
-    border: 1px solid var(--glass-border);
-    color: white;
-    padding: 0.4rem;
-    border-radius: 8px;
-    cursor: pointer;
   }
 
   .sidebar-backdrop {
@@ -223,5 +249,128 @@
   .sidebar {
     width: 100%;
     max-width: 300px;
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════
+   MOBILE BOTTOM NAVIGATION BAR
+   Persistent thumb-reachable navigation for mobile devices
+   ══════════════════════════════════════════════════════════════ */
+
+.mobile-bottom-nav {
+  display: none; /* Hidden on desktop */
+}
+
+@media (max-width: 1024px) {
+  .mobile-bottom-nav {
+    display: flex;
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    z-index: 1001;
+    height: 60px;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    background: rgba(6, 9, 16, 0.92);
+    -webkit-backdrop-filter: blur(20px) saturate(1.4);
+    backdrop-filter: blur(20px) saturate(1.4);
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+    box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.35);
+    align-items: center;
+    justify-content: space-around;
+  }
+
+  /* Light mode */
+  [data-mode="light"] .mobile-bottom-nav {
+    background: rgba(255, 255, 255, 0.88);
+    border-top-color: rgba(0, 0, 0, 0.08);
+    box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.08);
+  }
+}
+
+.bottom-nav-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  flex: 1;
+  height: 100%;
+  color: var(--text-muted, #64748b);
+  text-decoration: none;
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-family: inherit;
+  transition: color 0.2s ease, transform 0.15s ease;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+  position: relative;
+}
+
+.bottom-nav-item:active {
+  transform: scale(0.88);
+}
+
+.bottom-nav-item.active {
+  color: var(--accent-primary, #e11d48);
+}
+
+/* Active indicator dot */
+.bottom-nav-item.active::after {
+  content: '';
+  position: absolute;
+  top: 4px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--accent-primary, #e11d48);
+  box-shadow: 0 0 6px var(--accent-primary, #e11d48);
+}
+
+/* Icon wrapper for badge positioning */
+.bottom-nav-icon-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Inbox unread badge */
+.bottom-nav-badge {
+  position: absolute;
+  top: -6px;
+  right: -10px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #ef4444, #e11d48);
+  color: #fff;
+  font-size: 0.6rem;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+  box-shadow: 0 0 0 2px rgba(6, 9, 16, 0.92);
+}
+
+[data-mode="light"] .bottom-nav-badge {
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.88);
+}
+
+/* Hide bottom nav on specific pages (e.g., Inbox chat view) */
+.mobile-bottom-nav.bottom-nav-hidden {
+  transform: translateY(100%);
+  pointer-events: none;
+  opacity: 0;
+  transition: transform 0.25s cubic-bezier(0.25, 0.8, 0.25, 1), opacity 0.2s ease;
+}
+
+@media (max-width: 1024px) {
+  .mobile-bottom-nav {
+    transition: transform 0.25s cubic-bezier(0.25, 0.8, 0.25, 1), opacity 0.2s ease;
   }
 }

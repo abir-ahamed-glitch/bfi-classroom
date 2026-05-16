@@ -1,0 +1,321 @@
+.registry-page {
+  /* page-container container styles cover padding and max-width */
+}
+
+.registry-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 1rem 1.5rem;
+  margin-bottom: 2rem;
+  border-radius: 12px;
+}
+
+.breadcrumb-item {
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: color 0.2s;
+  font-weight: 500;
+}
+
+.breadcrumb-item:hover {
+  color: var(--accent-primary);
+}
+
+.breadcrumb-item.active {
+  color: var(--text-primary);
+  cursor: default;
+  pointer-events: none;
+}
+
+.registry-grid {
+  display: grid;
+  gap: 2rem;
+  grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
+}
+
+.registry-card {
+  display: flex;
+  align-items: center;
+  padding: 2rem;
+  gap: 1.5rem;
+  cursor: pointer;
+  border-radius: 16px;
+  background: var(--bg-secondary);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  position: relative;
+  overflow: hidden;
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+  transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.registry-card:hover {
+  transform: translateY(-1px);
+  background: rgba(255, 255, 255, 0.015);
+  border-color: rgba(255, 255, 255, 0.1);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.15);
+}
+
+.card-icon {
+  width: 72px;
+  height: 72px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  position: relative;
+  z-index: 1;
+}
+
+.card-icon::after {
+  content: '';
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  background: var(--accent-primary);
+  border-radius: 50%;
+  filter: blur(15px);
+  opacity: 0.15;
+  transition: all 0.4s ease;
+}
+
+.registry-card:hover .card-icon::after {
+  opacity: 0.25;
+  transform: scale(1.1);
+}
+
+.card-icon svg {
+  width: 32px;
+  height: 32px;
+  color: var(--text-primary);
+  position: relative;
+  z-index: 2;
+  transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+
+.registry-card:hover .card-icon svg {
+  color: var(--accent-primary);
+  transform: scale(1.02);
+}
+
+.card-details {
+  position: relative;
+  z-index: 1;
+  flex: 1;
+}
+
+.card-details h3 {
+  margin: 0 0 0.4rem 0;
+  font-size: 1.4rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  transition: color 0.3s ease;
+}
+
+.registry-card:hover .card-details h3 {
+  color: var(--accent-primary);
+}
+
+.card-details p {
+  margin: 0;
+  font-size: 1rem;
+  color: var(--text-secondary);
+}
+
+.card-chevron-wrapper {
+  margin-left: auto;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-secondary);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  position: relative;
+  z-index: 1;
+}
+
+.registry-card:hover .card-chevron-wrapper {
+  background: var(--accent-primary);
+  border-color: var(--accent-primary);
+  color: white;
+  transform: translateX(2px);
+  box-shadow: 0 8px 16px rgba(192, 39, 74, 0.25);
+}
+
+.card-chevron {
+  width: 20px;
+  height: 20px;
+}
+
+.students-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 2rem;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.registry-search-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  padding: 0.8rem 1.2rem;
+  border-radius: 12px;
+  flex: 1;
+  max-width: 400px;
+}
+
+.registry-search-bar input {
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text-primary);
+  width: 100%;
+  font-size: 0.95rem;
+}
+
+.registry-search-bar input::placeholder {
+  color: var(--text-secondary);
+}
+
+.registry-search-bar svg {
+  color: var(--text-secondary);
+}
+
+.students-count {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.8rem 1.2rem;
+  border-radius: 12px;
+  color: var(--accent-primary);
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+
+.students-grid {
+  display: grid;
+  gap: 1.5rem;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+}
+
+.student-card {
+  padding: 2rem 1.5rem;
+  border-radius: 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.student-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.15);
+}
+
+.student-avatar-wrapper {
+  width: 90px;
+  height: 90px;
+  border-radius: 50%;
+  padding: 3px;
+  background: var(--gradient-primary);
+  margin-bottom: 1rem;
+  cursor: pointer;
+}
+
+.student-avatar {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 3px solid var(--bg-secondary);
+}
+
+.student-name {
+  margin: 0 0 0.5rem 0;
+  font-size: 1.2rem;
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: color 0.2s;
+}
+
+.student-name:hover {
+  color: var(--accent-primary);
+}
+
+.student-meta {
+  margin-bottom: 1rem;
+}
+
+.batch-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.25rem 0.75rem;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  font-weight: 500;
+}
+
+.student-bio {
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  line-height: 1.5;
+  margin: 0 0 1.5rem 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  flex: 1;
+}
+
+.contact-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+}
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 4rem 2rem;
+  text-align: center;
+  border-radius: 16px;
+  color: var(--text-secondary);
+  font-size: 1.1rem;
+}
+
+/* Light mode adjustments */
+[data-mode="light"] .batch-badge {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+[data-mode="light"] .student-avatar {
+  border-color: #ffffff;
+}
+
+[data-mode="light"] .registry-card {
+  border-color: rgba(0, 0, 0, 0.06);
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.04);
+  background: #ffffff;
+}
+
+[data-mode="light"] .registry-card:hover {
+  background: #fafafa;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.05);
+  border-color: rgba(0, 0, 0, 0.12);
+}
+
+[data-mode="light"] .card-chevron-wrapper {
+  border-color: rgba(0, 0, 0, 0.08);
+  background: transparent;
+}
