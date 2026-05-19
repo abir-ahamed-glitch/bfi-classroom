@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { NavLink, useLocation } from 'react-router-dom';
+import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { haptic } from '../utils/haptics';
 import { io } from 'socket.io-client';
 import { useAuth } from '../context/AuthContext';
@@ -35,15 +35,20 @@ export default function Sidebar() {
   const { currentUser, logout } = useAuth();
   const { currentTheme, mode, toggleMode } = useTheme();
   const location = useLocation();
+  const navigate = useNavigate();
   const [isOpen, setIsOpen] = useState(false);
   const [unreadInboxCount, setUnreadInboxCount] = useState(0);
   const [unreadNoticeCount, setUnreadNoticeCount] = useState(localStorage.getItem('unreadNotice') === 'true' ? 1 : 0);
   const currentUserIdRef = useRef(null);
   const socketUrl = import.meta.env.VITE_SOCKET_URL || '';
-  const hideBottomNav = isOpen || location.pathname === '/inbox' || location.pathname.startsWith('/admin');
+  const hideBottomNav = isOpen || location.pathname.startsWith('/admin');
 
   const toggleSidebar = () => setIsOpen(!isOpen);
   const closeSidebar = () => setIsOpen(false);
+  const goToDashboard = () => {
+    closeSidebar();
+    navigate('/');
+  };
 
   useEffect(() => {
     // Mobile sidebar toggle no longer manipulates history to prevent breaking standard navigation stack
@@ -160,7 +165,7 @@ export default function Sidebar() {
     <>
       {/* Mobile Header Bar */}
       <div className="mobile-header-bar">
-        <div className="mobile-header-brand">
+        <button type="button" className="mobile-header-brand brand-home-button" onClick={goToDashboard} title="Go to Dashboard">
           <div style={{
             background: 'linear-gradient(135deg, #0284c7 0%, #2563eb 100%)',
             padding: '5px',
@@ -192,14 +197,14 @@ export default function Sidebar() {
               BFI Classroom
             </div>
           </div>
-        </div>
+        </button>
       </div>
 
       {/* Backdrop for mobile */}
       {isOpen && <div className="sidebar-backdrop" onClick={closeSidebar}></div>}
 
       <aside className={`sidebar glass-panel ${isOpen ? 'open' : ''}`}>
-        <div className="sidebar-brand">
+        <button type="button" className="sidebar-brand brand-home-button" onClick={goToDashboard} title="Go to Dashboard">
           <div style={{
             background: 'linear-gradient(135deg, #0284c7 0%, #2563eb 100%)',
             padding: '6px',
@@ -228,7 +233,7 @@ export default function Sidebar() {
               </div>
             )}
           </div>
-        </div>
+        </button>
 
         <nav className="sidebar-nav">
           <p className="nav-subtitle">Main Menu</p>
@@ -408,4 +413,3 @@ export default function Sidebar() {
     </>
   );
 }
-

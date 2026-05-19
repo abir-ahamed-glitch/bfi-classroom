@@ -262,12 +262,10 @@ const LinkPreviewCard = memo(({ url }) => {
 });
 
 // ─── MessageWithLinks ──────────────────────────────────────────────────────────
-export function MessageWithLinks({ content }) {
+export function MessageWithLinks({ content, renderText }) {
   if (!content) return null;
 
   const urls = extractUrls(content);
-
-  // Removed early return that hid link text
 
   // Mixed content: render text with clickable links, then preview cards below
   const rendered = [];
@@ -276,7 +274,8 @@ export function MessageWithLinks({ content }) {
   let match;
   while ((match = globalRegex.exec(content)) !== null) {
     if (match.index > cursor) {
-      rendered.push(<span key={`t-${cursor}`}>{content.slice(cursor, match.index)}</span>);
+      const textChunk = content.slice(cursor, match.index);
+      rendered.push(<span key={`t-${cursor}`}>{renderText ? renderText(textChunk) : textChunk}</span>);
     }
     rendered.push(
       <a
@@ -292,7 +291,8 @@ export function MessageWithLinks({ content }) {
     cursor = match.index + match[0].length;
   }
   if (cursor < content.length) {
-    rendered.push(<span key="t-end">{content.slice(cursor)}</span>);
+    const textChunk = content.slice(cursor);
+    rendered.push(<span key={`t-end-${cursor}`}>{renderText ? renderText(textChunk) : textChunk}</span>);
   }
 
   return (

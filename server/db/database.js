@@ -216,6 +216,19 @@ export function initializeDatabase() {
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS message_reports (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      message_id INTEGER NOT NULL,
+      reporter_id INTEGER NOT NULL,
+      reported_user_id INTEGER NOT NULL,
+      status TEXT DEFAULT 'open' CHECK(status IN ('open', 'reviewed', 'dismissed')),
+      created_at TEXT DEFAULT (datetime('now')),
+      UNIQUE(message_id, reporter_id),
+      FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE,
+      FOREIGN KEY (reporter_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (reported_user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
     -- Course materials
     CREATE TABLE IF NOT EXISTS course_materials (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -393,6 +406,8 @@ export function initializeDatabase() {
     CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(sender_id, receiver_id);
     CREATE INDEX IF NOT EXISTS idx_message_hidden_user ON message_hidden_for_users(user_id, message_id);
     CREATE INDEX IF NOT EXISTS idx_message_reactions_message ON message_reactions(message_id);
+    CREATE INDEX IF NOT EXISTS idx_message_reports_message ON message_reports(message_id);
+    CREATE INDEX IF NOT EXISTS idx_message_reports_reporter ON message_reports(reporter_id);
     CREATE INDEX IF NOT EXISTS idx_community_posts_user ON community_posts(user_id);
     CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id);
     CREATE INDEX IF NOT EXISTS idx_experiences_user_id ON student_experiences(user_id);

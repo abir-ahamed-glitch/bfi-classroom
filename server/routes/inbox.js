@@ -31,10 +31,17 @@ const ALLOWED_MIME_TYPES = [
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   'text/plain',
   'text/csv',
+  'audio/webm',
+  'audio/mpeg',
+  'audio/mp4',
+  'audio/ogg',
+  'audio/wav',
+  'video/mp4',
+  'video/webm',
   'application/octet-stream' // Allow E2E encrypted files
 ];
 
-const ALLOWED_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.txt', '.csv', '.e2e'];
+const ALLOWED_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.txt', '.csv', '.webm', '.mpeg', '.m4a', '.mp4', '.ogg', '.wav', '.e2e'];
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, uploadDir),
@@ -102,6 +109,21 @@ function getUserById(userId) {
   `).get(userId);
 }
 
+function formatReactionPreview(content, reactorName, reactedByViewer, viewerId = null) {
+  try {
+    const data = JSON.parse(content || '');
+    if (data?.type !== 'reaction') return null;
+
+    const emoji = data.emoji ? ` ${data.emoji}` : '';
+    const targetIsViewer = viewerId != null && Number(data.originalSenderId) === Number(viewerId);
+    return reactedByViewer
+      ? `You reacted${emoji} to a message`
+      : `Reacted${emoji} to ${targetIsViewer ? 'your message' : 'a message'}`;
+  } catch {
+    return null;
+  }
+}
+
 function getVisibleMessageById(messageId, viewerId) {
   const message = db.prepare(`
     SELECT *
@@ -162,6 +184,7 @@ function buildMessageResponse(messages, viewerId) {
       ...message,
       is_edited: !!message.edited_at,
       is_forwarded: !!message.forwarded_from_message_id,
+      is_pinned: !!message.is_pinned,
       reply_preview: message.reply_to_message_id
       ? {
           id: message.reply_to_message_id,
@@ -370,6 +393,21 @@ router.get('/conversations', authenticateToken, (req, res) => {
           LIMIT 1
         ) AS last_message_sender_id,
         (
+          SELECT lm.message_type
+          FROM messages lm
+          WHERE (
+            (lm.sender_id = ? AND lm.receiver_id = u.id)
+            OR (lm.sender_id = u.id AND lm.receiver_id = ?)
+          )
+            AND NOT EXISTS (
+              SELECT 1
+              FROM message_hidden_for_users hidden
+              WHERE hidden.message_id = lm.id AND hidden.user_id = ?
+            )
+          ORDER BY lm.created_at DESC, lm.id DESC
+          LIMIT 1
+        ) AS last_message_type,
+        (
           SELECT COUNT(*)
           FROM messages unread
           WHERE unread.sender_id = u.id
@@ -398,6 +436,7 @@ router.get('/conversations', authenticateToken, (req, res) => {
       userId, userId, userId,
       userId, userId, userId,
       userId, userId, userId,
+      userId, userId, userId,
       userId, userId,
       userId,
       userId, userId,
@@ -412,12 +451,19 @@ router.get('/conversations', authenticateToken, (req, res) => {
           if (chat.last_message_deleted_for_everyone) {
             last_message_display = chat.last_message_sender_id === userId ? 'You deleted a message' : `${chat.first_name} deleted a message`;
           } else {
-            last_message_display = decryptMessageContent(chat.last_message);
+            const decryptedLastMessage = decryptMessageContent(chat.last_message);
+            last_message_display = formatReactionPreview(
+              decryptedLastMessage,
+              `${chat.first_name || ''} ${chat.last_name || ''}`.trim(),
+              chat.last_message_sender_id === userId,
+              userId,
+            ) || decryptedLastMessage;
           }
 
           return {
             ...chat,
             last_message: last_message_display,
+            last_message_is_reaction: chat.last_message_type === 'reaction',
           };
         }),
     });
@@ -478,6 +524,23 @@ router.get('/attachments/:filename', authenticateToken, (req, res) => {
   }
 });
 
+router.post('/upload', authenticateToken, uploadAttachment.single('file'), (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file provided.' });
+    }
+
+    const attachment = buildAttachmentPayload(req.file);
+    res.status(201).json({
+      attachment_url: attachment.attachment_url,
+      attachment_type: attachment.attachment_type,
+    });
+  } catch (error) {
+    console.error('File upload error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 router.post('/messages', authenticateToken, sanitizeInput, (req, res) => {
   try {
     const senderId = req.user.id;
@@ -494,8 +557,8 @@ router.post('/messages', authenticateToken, sanitizeInput, (req, res) => {
     }
 
     let content = req.body.content?.trim() || '';
-    let attachmentUrl = null;
-    let attachmentType = null;
+    let attachmentUrl = req.body.attachment_url || null;
+    let attachmentType = req.body.attachment_type || null;
 
     if (forwardedFromMessageId) {
       const forwarded = resolveForwardedSource(forwardedFromMessageId, senderId);
@@ -639,17 +702,22 @@ router.post('/messages/:id/reactions', authenticateToken, sanitizeInput, (req, r
       return res.status(404).json({ error: 'Message not found.' });
     }
 
+    const noticeReceiverId = message.sender_id === userId ? message.receiver_id : message.sender_id;
+    const reactor = getUserById(userId);
+    const reactorName = `${reactor?.first_name || ''} ${reactor?.last_name || ''}`.trim() || 'Someone';
+    let reactionNoticeForSender = null;
+
     if (!reaction) {
       db.prepare('DELETE FROM message_reactions WHERE message_id = ? AND user_id = ?').run(messageId, userId);
 
-      if (message.sender_id !== userId) {
+      if (noticeReceiverId && noticeReceiverId !== userId) {
         db.prepare(`
           DELETE FROM messages 
           WHERE message_type = 'reaction' 
             AND sender_id = ? 
             AND receiver_id = ? 
             AND reply_to_message_id = ?
-        `).run(userId, message.sender_id, messageId);
+        `).run(userId, noticeReceiverId, messageId);
       }
     } else {
       db.prepare(`
@@ -658,9 +726,15 @@ router.post('/messages/:id/reactions', authenticateToken, sanitizeInput, (req, r
         ON CONFLICT(message_id, user_id) DO UPDATE SET reaction = excluded.reaction
       `).run(messageId, userId, reaction);
 
-      // If reacting to someone else's message, insert an invisible system message to act as a notification
-      if (message.sender_id !== userId) {
-        const contentStr = JSON.stringify({ type: 'reaction', emoji: reaction, originalMessageId: messageId, reactorId: userId });
+      // Insert an invisible system message so the other participant gets an inbox notification.
+      if (noticeReceiverId && noticeReceiverId !== userId) {
+        const contentStr = JSON.stringify({
+          type: 'reaction',
+          emoji: reaction,
+          originalMessageId: messageId,
+          originalSenderId: message.sender_id,
+          reactorId: userId,
+        });
         
         // Clean up any old reaction message before inserting the new one
         db.prepare(`
@@ -669,21 +743,40 @@ router.post('/messages/:id/reactions', authenticateToken, sanitizeInput, (req, r
             AND sender_id = ? 
             AND receiver_id = ? 
             AND reply_to_message_id = ?
-        `).run(userId, message.sender_id, messageId);
+        `).run(userId, noticeReceiverId, messageId);
 
         db.prepare(`
           INSERT INTO messages (sender_id, receiver_id, content, message_type, reply_to_message_id)
           VALUES (?, ?, ?, 'reaction', ?)
-        `).run(userId, message.sender_id, encryptMessageContent(contentStr), messageId);
+        `).run(userId, noticeReceiverId, encryptMessageContent(contentStr), messageId);
 
         // Fetch and emit the new system message so the receiver gets the badge instantly if online
         const newMsgId = db.prepare('SELECT last_insert_rowid() AS id').get().id;
-        const newMsgSender = getMessageForViewer(newMsgId, userId, message.sender_id);
-        const newMsgReceiver = getMessageForViewer(newMsgId, message.sender_id, userId);
+        const newMsgSender = getMessageForViewer(newMsgId, userId, noticeReceiverId);
+        const newMsgReceiver = getMessageForViewer(newMsgId, noticeReceiverId, userId);
+        if (newMsgSender) {
+          newMsgSender.reaction_preview = formatReactionPreview(newMsgSender.content, reactorName, true, userId);
+        }
+        if (newMsgReceiver) {
+          newMsgReceiver.reaction_preview = formatReactionPreview(newMsgReceiver.content, reactorName, false, noticeReceiverId);
+        }
+        reactionNoticeForSender = {
+          other_user_id: noticeReceiverId,
+          preview: formatReactionPreview(contentStr, reactorName, true, userId),
+          last_message_at: newMsgSender?.created_at || new Date().toISOString(),
+          unread: false,
+        };
 
         const io = req.app.get('io');
         if (io) {
-          emitMessageEvent(io, userId, message.sender_id, 'inbox:message', newMsgSender, newMsgReceiver);
+          emitMessageEvent(io, userId, noticeReceiverId, 'inbox:message', newMsgSender, newMsgReceiver);
+          io.to(`user:${userId}`).emit('inbox:reaction_notification', reactionNoticeForSender);
+          io.to(`user:${noticeReceiverId}`).emit('inbox:reaction_notification', {
+            other_user_id: userId,
+            preview: formatReactionPreview(contentStr, reactorName, false, noticeReceiverId),
+            last_message_at: newMsgReceiver?.created_at || new Date().toISOString(),
+            unread: true,
+          });
         }
       }
     }
@@ -699,6 +792,7 @@ router.post('/messages/:id/reactions', authenticateToken, sanitizeInput, (req, r
         userId,
         message.sender_id === userId ? message.receiver_id : message.sender_id,
       ),
+      reaction_notice: reactionNoticeForSender,
     });
   } catch (error) {
     console.error('Message reaction error:', error);
@@ -739,8 +833,15 @@ router.delete('/messages/:id', authenticateToken, (req, res) => {
       `).run(messageId);
 
       if (io) {
-        io.to(`user:${message.sender_id}`).emit('inbox:message_deleted', { id: messageId, mode: 'everyone' });
-        io.to(`user:${message.receiver_id}`).emit('inbox:message_deleted', { id: messageId, mode: 'everyone' });
+        const deletedPayload = {
+          id: messageId,
+          mode: 'everyone',
+          sender_id: message.sender_id,
+          receiver_id: message.receiver_id,
+          created_at: message.created_at,
+        };
+        io.to(`user:${message.sender_id}`).emit('inbox:message_deleted', deletedPayload);
+        io.to(`user:${message.receiver_id}`).emit('inbox:message_deleted', deletedPayload);
       }
 
       return res.json({ message: 'Message removed for everyone.' });
@@ -759,6 +860,48 @@ router.delete('/messages/:id', authenticateToken, (req, res) => {
     return res.json({ message: 'Message removed from your view.' });
   } catch (error) {
     console.error('Delete message error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+router.post('/messages/:id/report', authenticateToken, (req, res) => {
+  try {
+    const messageId = Number(req.params.id);
+    const reporterId = req.user.id;
+
+    if (!Number.isInteger(messageId)) {
+      return res.status(400).json({ error: 'Invalid message id.' });
+    }
+
+    const message = db.prepare(`
+      SELECT *
+      FROM messages
+      WHERE id = ?
+        AND deleted_for_everyone = 0
+        AND NOT EXISTS (
+          SELECT 1
+          FROM message_hidden_for_users h
+          WHERE h.message_id = messages.id AND h.user_id = ?
+        )
+    `).get(messageId, reporterId);
+
+    if (!message || ![message.sender_id, message.receiver_id].includes(reporterId)) {
+      return res.status(404).json({ error: 'Message not found.' });
+    }
+
+    const reportedUserId = message.sender_id === reporterId ? message.receiver_id : message.sender_id;
+
+    db.prepare(`
+      INSERT INTO message_reports (message_id, reporter_id, reported_user_id)
+      VALUES (?, ?, ?)
+      ON CONFLICT(message_id, reporter_id) DO UPDATE SET
+        status = 'open',
+        created_at = datetime('now')
+    `).run(messageId, reporterId, reportedUserId);
+
+    res.json({ message: 'Message reported.' });
+  } catch (error) {
+    console.error('Report message error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

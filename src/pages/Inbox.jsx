@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import { resolveMediaUrl } from '../utils/mediaUtils';
@@ -8,12 +8,13 @@ import {
   Bell,
   BellOff,
   CornerUpLeft,
-  File,
+  File as FileIcon,
   FileText,
   Forward,
   Hash,
   IdCard,
   Image as ImageIcon,
+  Link as LinkIcon,
   MoreVertical,
   Paperclip,
   Pencil,
@@ -28,12 +29,14 @@ import {
   Video,
   X,
   Mic,
-  Square,
   Plus,
   Play,
   Pause,
   Loader,
   Pin,
+  PinOff,
+  Flag,
+  Info,
   ChevronDown,
   ChevronRight,
   ChevronUp,
@@ -44,6 +47,7 @@ import {
   CopyPlus,
   Clock,
   Check,
+  Download,
 } from 'lucide-react';
 import { io } from 'socket.io-client';
 import { useAuth } from '../context/AuthContext';
@@ -61,6 +65,8 @@ import {
 } from '../utils/e2eCrypto';
 import data from '@emoji-mart/data';
 import { Picker } from 'emoji-mart';
+import GifPicker from '../components/GifPicker';
+import { MessageWithLinks } from '../components/LinkPreview';
 
 
 const NativeEmojiPicker = React.memo(({ onEmojiSelect, theme }) => {
@@ -100,6 +106,8 @@ const NativeEmojiPicker = React.memo(({ onEmojiSelect, theme }) => {
   return prevProps.theme === nextProps.theme;
 });
 
+const VOICE_WAVE_BARS = [10, 14, 8, 18, 12, 22, 9, 16, 28, 12, 20, 32, 14, 24, 11, 18, 26, 12, 30, 16, 22, 10, 18, 14, 24, 12, 20, 9, 16, 12];
+
 const QUICK_REACTIONS = [
   '\u2764\uFE0F',
   '\u{1F44D}',
@@ -107,6 +115,69 @@ const QUICK_REACTIONS = [
   '\u{1F525}',
   '\u{1F62E}',
   '\u{1F44F}',
+];
+
+const REACTION_EMOJIS = [
+  { emoji: '\u2764\uFE0F', name: 'Red heart', category: 'Your reactions', keywords: ['love', 'heart'] },
+  { emoji: '\u{1F606}', name: 'Grinning squinting face', category: 'Your reactions', keywords: ['laugh', 'happy'] },
+  { emoji: '\u{1F62E}', name: 'Face with open mouth', category: 'Your reactions', keywords: ['wow', 'surprised'] },
+  { emoji: '\u{1F622}', name: 'Crying face', category: 'Your reactions', keywords: ['sad', 'cry'] },
+  { emoji: '\u{1F621}', name: 'Pouting face', category: 'Your reactions', keywords: ['angry', 'mad'] },
+  { emoji: '\u{1F44D}', name: 'Thumbs up', category: 'Your reactions', keywords: ['like', 'agree'] },
+  { emoji: '\u{1F600}', name: 'Grinning face', category: 'Smileys & People', keywords: ['smile', 'happy'] },
+  { emoji: '\u{1F603}', name: 'Grinning face with big eyes', category: 'Smileys & People', keywords: ['smile', 'happy'] },
+  { emoji: '\u{1F604}', name: 'Grinning face with smiling eyes', category: 'Smileys & People', keywords: ['smile', 'happy'] },
+  { emoji: '\u{1F601}', name: 'Beaming face with smiling eyes', category: 'Smileys & People', keywords: ['smile', 'happy'] },
+  { emoji: '\u{1F606}', name: 'Grinning squinting face', category: 'Smileys & People', keywords: ['laugh'] },
+  { emoji: '\u{1F979}', name: 'Face holding back tears', category: 'Smileys & People', keywords: ['tears', 'touched'] },
+  { emoji: '\u{1F605}', name: 'Grinning face with sweat', category: 'Smileys & People', keywords: ['sweat', 'relief'] },
+  { emoji: '\u{1F602}', name: 'Face with tears of joy', category: 'Smileys & People', keywords: ['laugh', 'joy'] },
+  { emoji: '\u{1F923}', name: 'Rolling on the floor laughing', category: 'Smileys & People', keywords: ['laugh', 'funny'] },
+  { emoji: '\u{1F622}', name: 'Crying face', category: 'Smileys & People', keywords: ['sad'] },
+  { emoji: '\u{1F60C}', name: 'Relieved face', category: 'Smileys & People', keywords: ['relieved', 'calm'] },
+  { emoji: '\u{1F60A}', name: 'Smiling face with smiling eyes', category: 'Smileys & People', keywords: ['smile', 'blush'] },
+  { emoji: '\u{1F607}', name: 'Smiling face with halo', category: 'Smileys & People', keywords: ['angel', 'innocent'] },
+  { emoji: '\u{1F642}', name: 'Slightly smiling face', category: 'Smileys & People', keywords: ['smile'] },
+  { emoji: '\u{1F62E}', name: 'Face with open mouth', category: 'Smileys & People', keywords: ['wow', 'surprised'] },
+  { emoji: '\u{1F609}', name: 'Winking face', category: 'Smileys & People', keywords: ['wink'] },
+  { emoji: '\u{1F60E}', name: 'Smiling face with sunglasses', category: 'Smileys & People', keywords: ['cool'] },
+  { emoji: '\u{1F60D}', name: 'Smiling face with heart-eyes', category: 'Smileys & People', keywords: ['love', 'heart'] },
+  { emoji: '\u{1F618}', name: 'Face blowing a kiss', category: 'Smileys & People', keywords: ['kiss', 'love'] },
+  { emoji: '\u{1F970}', name: 'Smiling face with hearts', category: 'Smileys & People', keywords: ['love', 'hearts'] },
+  { emoji: '\u{1F914}', name: 'Thinking face', category: 'Smileys & People', keywords: ['think', 'curious'] },
+  { emoji: '\u{1F928}', name: 'Face with raised eyebrow', category: 'Smileys & People', keywords: ['skeptical', 'doubt'] },
+  { emoji: '\u{1F644}', name: 'Face with rolling eyes', category: 'Smileys & People', keywords: ['eyeroll', 'annoyed'] },
+  { emoji: '\u{1F62C}', name: 'Grimacing face', category: 'Smileys & People', keywords: ['awkward', 'nervous'] },
+  { emoji: '\u{1F634}', name: 'Sleeping face', category: 'Smileys & People', keywords: ['sleep', 'tired'] },
+  { emoji: '\u{1F92F}', name: 'Exploding head', category: 'Smileys & People', keywords: ['mind blown', 'shocked'] },
+  { emoji: '\u{1F973}', name: 'Partying face', category: 'Smileys & People', keywords: ['party', 'celebrate'] },
+  { emoji: '\u{1F97A}', name: 'Pleading face', category: 'Smileys & People', keywords: ['please', 'cute'] },
+  { emoji: '\u{1F910}', name: 'Zipper-mouth face', category: 'Smileys & People', keywords: ['secret', 'quiet'] },
+  { emoji: '\u{1F92B}', name: 'Shushing face', category: 'Smileys & People', keywords: ['shush', 'quiet'] },
+  { emoji: '\u{1F921}', name: 'Clown face', category: 'Smileys & People', keywords: ['silly', 'funny'] },
+  { emoji: '\u{1F47B}', name: 'Ghost', category: 'Smileys & People', keywords: ['ghost', 'spooky'] },
+  { emoji: '\u{1F480}', name: 'Skull', category: 'Smileys & People', keywords: ['dead', 'skull'] },
+  { emoji: '\u{1F44C}', name: 'OK hand', category: 'Gestures', keywords: ['ok', 'perfect'] },
+  { emoji: '\u{1F64F}', name: 'Folded hands', category: 'Gestures', keywords: ['thanks', 'pray'] },
+  { emoji: '\u{1F44A}', name: 'Oncoming fist', category: 'Gestures', keywords: ['fist', 'respect'] },
+  { emoji: '\u{1F91D}', name: 'Handshake', category: 'Gestures', keywords: ['deal', 'agreement'] },
+  { emoji: '\u270C\uFE0F', name: 'Victory hand', category: 'Gestures', keywords: ['peace', 'victory'] },
+  { emoji: '\u{1F4AA}', name: 'Flexed biceps', category: 'Gestures', keywords: ['strong', 'power'] },
+  { emoji: '\u{1F64C}', name: 'Raising hands', category: 'Gestures', keywords: ['hooray', 'celebrate'] },
+  { emoji: '\u{1F525}', name: 'Fire', category: 'Symbols', keywords: ['hot', 'great'] },
+  { emoji: '\u{1F389}', name: 'Party popper', category: 'Symbols', keywords: ['celebrate', 'congrats'] },
+  { emoji: '\u{1F44F}', name: 'Clapping hands', category: 'Symbols', keywords: ['clap', 'applause'] },
+  { emoji: '\u2728', name: 'Sparkles', category: 'Symbols', keywords: ['sparkle', 'magic'] },
+  { emoji: '\u2B50', name: 'Star', category: 'Symbols', keywords: ['star', 'favorite'] },
+  { emoji: '\u{1F4AF}', name: 'Hundred points', category: 'Symbols', keywords: ['perfect', 'hundred'] },
+  { emoji: '\u{1F3C6}', name: 'Trophy', category: 'Symbols', keywords: ['winner', 'award'] },
+  { emoji: '\u{1F680}', name: 'Rocket', category: 'Symbols', keywords: ['rocket', 'fast'] },
+  { emoji: '\u{1F4A1}', name: 'Light bulb', category: 'Symbols', keywords: ['idea', 'smart'] },
+  { emoji: '\u{1F3AC}', name: 'Clapper board', category: 'Symbols', keywords: ['film', 'movie'] },
+  { emoji: '\u{1F3A5}', name: 'Movie camera', category: 'Symbols', keywords: ['camera', 'film'] },
+  { emoji: '\u{1F3B5}', name: 'Musical note', category: 'Symbols', keywords: ['music', 'song'] },
+  { emoji: '\u{1F3A8}', name: 'Artist palette', category: 'Symbols', keywords: ['art', 'creative'] },
+  { emoji: '\u{1F451}', name: 'Crown', category: 'Symbols', keywords: ['king', 'best'] },
 ];
 
 const normalizeUserId = (value) => Number(value);
@@ -161,73 +232,143 @@ function getMessageSortTime(value) {
   return date && !Number.isNaN(date.getTime()) ? date.getTime() : 0;
 }
 
+function formatRelativeShortTime(value) {
+  const date = parseServerDate(value);
+  if (!date || Number.isNaN(date.getTime())) return '';
+
+  const diffMs = Date.now() - date.getTime();
+  const diffSeconds = Math.max(1, Math.floor(diffMs / 1000));
+  if (diffSeconds < 60) return 'now';
+
+  const diffMinutes = Math.floor(diffSeconds / 60);
+  if (diffMinutes < 60) return `${diffMinutes}m`;
+
+  const diffHours = Math.floor(diffMinutes / 60);
+  if (diffHours < 24) return `${diffHours}h`;
+
+  const diffDays = Math.floor(diffHours / 24);
+  if (diffDays < 7) return `${diffDays}d`;
+
+  return date.toLocaleDateString([], { month: 'short', day: 'numeric' });
+}
+
 const VoiceMessagePlayer = ({ src, isMine, avatarUrl }) => {
   const [isPlaying, setIsPlaying] = useState(false);
   const [progress, setProgress] = useState(0);
   const [duration, setDuration] = useState(0);
+  const [currentTime, setCurrentTime] = useState(0);
   const audioRef = useRef(null);
+  const rafRef = useRef(null);
+  const durationRef = useRef(0);
 
+  // Keep durationRef in sync with state
+  useEffect(() => { durationRef.current = duration; }, [duration]);
+
+  // Derive duration via AudioContext decoding (handles Infinity duration from streaming formats)
   useEffect(() => {
-    fetch(src).then(r => r.arrayBuffer()).then(ab => {
-      const actx = new (window.AudioContext || window.webkitAudioContext)();
-      return actx.decodeAudioData(ab);
-    }).then(decoded => {
-      if (decoded.duration && decoded.duration !== Infinity) {
-        setDuration(decoded.duration);
-      }
-    }).catch(() => {});
+    if (!src) return;
+    fetch(src)
+      .then(r => r.arrayBuffer())
+      .then(ab => {
+        const actx = new (window.AudioContext || window.webkitAudioContext)();
+        return actx.decodeAudioData(ab).then(decoded => {
+          actx.close();
+          return decoded;
+        });
+      })
+      .then(decoded => {
+        if (decoded.duration && decoded.duration !== Infinity) {
+          setDuration(decoded.duration);
+        }
+      })
+      .catch(() => {});
   }, [src]);
 
-  useEffect(() => {
-    let interval;
-    if (isPlaying) {
-      let lastTime = audioRef.current?.currentTime || 0;
-      let stallCount = 0;
-      interval = setInterval(() => {
-        if (audioRef.current) {
-          const current = audioRef.current.currentTime;
-          setProgress((current / (duration || audioRef.current.duration || 1)) * 100);
-          
-          if (Math.abs(current - lastTime) < 0.1 && current > 0) {
-            stallCount++;
-            if (stallCount >= 2) {
-              setIsPlaying(false);
-              audioRef.current.pause();
-              audioRef.current.currentTime = 0;
-              setProgress(0);
-              stallCount = 0;
-            }
-          } else {
-            stallCount = 0;
-          }
-          lastTime = current;
-        }
-      }, 300);
-    }
-    return () => clearInterval(interval);
-  }, [isPlaying, duration]);
+  // Smooth progress loop using requestAnimationFrame instead of timeupdate
+  const updateProgressLoop = useCallback(() => {
+    const audio = audioRef.current;
+    if (!audio || audio.paused) return;
+    const validAudioDur = (audio.duration && audio.duration !== Infinity && !isNaN(audio.duration)) ? audio.duration : 0;
+    const dur = durationRef.current || validAudioDur || 1;
+    const cur = audio.currentTime;
+    setCurrentTime(cur);
+    setProgress(dur > 0 ? Math.min((cur / dur) * 100, 100) : 0);
+    rafRef.current = requestAnimationFrame(updateProgressLoop);
+  }, []);
 
   const togglePlay = () => {
-    if (!audioRef.current) return;
+    const audio = audioRef.current;
+    if (!audio) return;
     if (isPlaying) {
-      audioRef.current.pause();
+      audio.pause();
     } else {
-      audioRef.current.play();
+      audio.play().catch(() => setIsPlaying(false));
     }
-    setIsPlaying(!isPlaying);
   };
+
+  const handlePlay = () => {
+    setIsPlaying(true);
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    rafRef.current = requestAnimationFrame(updateProgressLoop);
+  };
+  const handlePause = () => {
+    setIsPlaying(false);
+    if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
+  };
+
+  // Clean up RAF on unmount
+  useEffect(() => {
+    return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
+  }, []);
 
   const handleEnded = () => {
     setIsPlaying(false);
+    if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
     setProgress(0);
+    setCurrentTime(0);
     if (audioRef.current) audioRef.current.currentTime = 0;
+  };
+
+  const handleLoadedMetadata = (e) => {
+    const audio = e.target;
+    if (!audio.duration || audio.duration === Infinity || isNaN(audio.duration)) {
+      // Chrome WebM duration bug workaround
+      audio.currentTime = 1e8;
+      
+      const onDurationChange = () => {
+        if (audio.duration && audio.duration !== Infinity && !isNaN(audio.duration)) {
+          audio.removeEventListener('durationchange', onDurationChange);
+          audio.removeEventListener('timeupdate', onDurationChange);
+          setDuration(audio.duration);
+          audio.currentTime = 0;
+        }
+      };
+      
+      audio.addEventListener('durationchange', onDurationChange);
+      audio.addEventListener('timeupdate', onDurationChange);
+    } else if (audio.duration) {
+      setDuration(audio.duration);
+    }
   };
 
   const formatTime = (secs) => {
     const s = Math.round(secs);
     if (isNaN(s) || !isFinite(s)) return '0:00';
-    return `${Math.floor(s/60)}:${(s%60).toString().padStart(2, '0')}`;
+    return `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, '0')}`;
   };
+
+  // Handle fallback time update
+  const handleTimeUpdate = () => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    const validAudioDur = (audio.duration && audio.duration !== Infinity && !isNaN(audio.duration)) ? audio.duration : 0;
+    const dur = durationRef.current || validAudioDur || 1;
+    const cur = audio.currentTime;
+    setCurrentTime(cur);
+    setProgress(dur > 0 ? Math.min((cur / dur) * 100, 100) : 0);
+  };
+
+  const activeBarIndex = progress > 0 ? Math.floor((progress / 100) * (VOICE_WAVE_BARS.length - 1)) : -1;
 
   return (
     <div className={`voice-message-player ${isMine ? 'mine' : 'theirs'}`}>
@@ -239,39 +380,52 @@ const VoiceMessagePlayer = ({ src, isMine, avatarUrl }) => {
         {isPlaying ? <Pause size={18} fill="currentColor" /> : <Play size={18} fill="currentColor" />}
       </button>
       <div className="vmp-content">
-        <div className="vmp-waveform">
-          <input 
-            type="range" 
-            className="vmp-slider" 
-            min="0" 
-            max="100" 
-            value={progress} 
+        <div className="vmp-waveform" style={{ width: '148px' }}>
+          <div className="vmp-bars" aria-hidden="true">
+            {VOICE_WAVE_BARS.map((height, index) => (
+              <span
+                key={`vmp-bar-${index}`}
+                className={index <= activeBarIndex ? 'active' : ''}
+                style={{ height: `${height}px` }}
+              />
+            ))}
+          </div>
+
+          <input
+            type="range"
+            className="vmp-slider"
+            min="0"
+            max="100"
+            value={progress}
             onChange={(e) => {
               const val = Number(e.target.value);
               setProgress(val);
               if (audioRef.current) {
-                audioRef.current.currentTime = (val / 100) * (duration || audioRef.current.duration || 1);
+                const nextTime = (val / 100) * (duration || audioRef.current.duration || 1);
+                audioRef.current.currentTime = nextTime;
+                setCurrentTime(nextTime);
               }
             }}
             style={{ '--progress': `${progress}%` }}
+            aria-label="Seek voice message"
           />
         </div>
         <div className="vmp-meta">
           <span className="vmp-time">
-            {isPlaying && audioRef.current ? formatTime(audioRef.current.currentTime) : formatTime(duration || 0)}
+            {formatTime(isPlaying ? currentTime : duration || currentTime || 0)}
           </span>
         </div>
       </div>
-      <audio 
-        ref={audioRef} 
-        src={src} 
-        onEnded={handleEnded} 
-        style={{ display: 'none' }} 
-        onLoadedMetadata={(e) => {
-          if (!duration && e.target.duration && e.target.duration !== Infinity) {
-            setDuration(e.target.duration);
-          }
-        }} 
+      <audio
+        ref={audioRef}
+        src={src}
+        preload="auto"
+        onPlay={handlePlay}
+        onPause={handlePause}
+        onEnded={handleEnded}
+        onLoadedMetadata={handleLoadedMetadata}
+        onTimeUpdate={handleTimeUpdate}
+        style={{ display: 'none' }}
       />
     </div>
   );
@@ -319,67 +473,701 @@ export default function Inbox() {
   const [openMenuId, setOpenMenuId] = useState(null);
   const [openMenuDirection, setOpenMenuDirection] = useState('up');
   const [reactionBarId, setReactionBarId] = useState(null);
+  const [reactionPickerMessageId, setReactionPickerMessageId] = useState(null);
+  const [reactionPickerDirection, setReactionPickerDirection] = useState('up');
+  const [reactionSearchQuery, setReactionSearchQuery] = useState('');
+  const [recentReactions, setRecentReactions] = useState(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem('inbox_recent_reactions') || '[]');
+      return stored.filter((reaction) => REACTION_EMOJIS.some((item) => item.emoji === reaction)).slice(0, 6);
+    } catch {
+      return [];
+    }
+  });
   const [emojiPickerOpen, setEmojiPickerOpen] = useState(false);
   const [attachedFiles, setAttachedFiles] = useState([]);
   const [isPlusMenuOpen, setIsPlusMenuOpen] = useState(false);
   
   const [decryptedAttachmentUrls, setDecryptedAttachmentUrls] = useState({});
   const [imageViewer, setImageViewer] = useState(null);
-  const [showChatInfoPanel, setShowChatInfoPanel] = useState(true);
-  const [chatInfoAccordion, setChatInfoAccordion] = useState(true);
+  const [showChatInfoPanel, setShowChatInfoPanel] = useState(false);
+  const [gifPickerOpen, setGifPickerOpen] = useState(false);
+  const [chatInfoAccordion, setChatInfoAccordion] = useState(false);
   const [mediaAccordion, setMediaAccordion] = useState(false);
+  const [pinnedMessagesOpen, setPinnedMessagesOpen] = useState(false);
+  const [pinnedMessageMenuId, setPinnedMessageMenuId] = useState(null);
+  const [highlightedPinnedMessageId, setHighlightedPinnedMessageId] = useState(null);
 
   // Voice recording state
   const [isRecording, setIsRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
+  const [isRecordingPaused, setIsRecordingPaused] = useState(false);
+  const [recordingLevel, setRecordingLevel] = useState(0);
+  const [recordingWaveTick, setRecordingWaveTick] = useState(0);
+  const [isSendingVoice, setIsSendingVoice] = useState(false);
+  const [recordingPreviewUrl, setRecordingPreviewUrl] = useState(null);
+  const [isRecordingPreviewPlaying, setIsRecordingPreviewPlaying] = useState(false);
+  const [recordingPreviewPeaks, setRecordingPreviewPeaks] = useState([]);
+  const [recordingPlaybackProgress, setRecordingPlaybackProgress] = useState(0);
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
   const recordingTimerRef = useRef(null);
+  const recordingPreviewAudioRef = useRef(null);
+  const recordingPreviewFrameRef = useRef(null);
+  const recordingPreviewFileRef = useRef(null);
+  const recordingPreviewUrlRef = useRef(null);
+  const recordingPreviewDurationRef = useRef(0);
+  const recordingMimeTypeRef = useRef('audio/webm');
+  const recordingStreamRef = useRef(null);
+  const recordingAudioContextRef = useRef(null);
+  const recordingAnalyserFrameRef = useRef(null);
+  const discardRecordingRef = useRef(false);
+  const sendRecordingOnStopRef = useRef(false);
+  const previewRecordingOnStopRef = useRef(false);
 
-  const startRecording = async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      mediaRecorderRef.current = new MediaRecorder(stream);
-      audioChunksRef.current = [];
-      
-      mediaRecorderRef.current.ondataavailable = (e) => {
-        if (e.data.size > 0) audioChunksRef.current.push(e.data);
-      };
-
-      mediaRecorderRef.current.onstop = () => {
-        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-        const file = new File([audioBlob], `voice-message.webm`, { type: 'audio/webm', lastModified: Date.now() });
-        setAttachedFiles([{ id: Math.random().toString(36).substr(2, 9), file, previewUrl: URL.createObjectURL(audioBlob) }]);
-        stream.getTracks().forEach(track => track.stop());
-      };
-
-      mediaRecorderRef.current.start();
-      setIsRecording(true);
-      setRecordingTime(0);
-      recordingTimerRef.current = setInterval(() => {
-        setRecordingTime(prev => prev + 1);
-      }, 1000);
-    } catch (err) {
-      console.error("Microphone access denied", err);
-      alert("Microphone access is required to send voice messages.");
+  const stopRecordingTimer = () => {
+    if (recordingTimerRef.current) {
+      clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = null;
     }
   };
 
-  const stopRecording = () => {
-    if (mediaRecorderRef.current && isRecording) {
-      mediaRecorderRef.current.stop();
-      setIsRecording(false);
-      clearInterval(recordingTimerRef.current);
+  const startRecordingTimer = () => {
+    stopRecordingTimer();
+    recordingTimerRef.current = setInterval(() => {
+      setRecordingTime(prev => prev + 1);
+    }, 1000);
+  };
+
+  const cleanupRecordingStream = () => {
+    if (recordingAnalyserFrameRef.current) {
+      cancelAnimationFrame(recordingAnalyserFrameRef.current);
+      recordingAnalyserFrameRef.current = null;
     }
+    if (recordingAudioContextRef.current) {
+      recordingAudioContextRef.current.close().catch(() => {});
+      recordingAudioContextRef.current = null;
+    }
+    if (recordingStreamRef.current) {
+      recordingStreamRef.current.getTracks().forEach(track => track.stop());
+      recordingStreamRef.current = null;
+    }
+    setRecordingLevel(0);
+    setRecordingWaveTick(0);
+  };
+
+  const clearRecordingPreview = () => {
+    if (recordingPreviewFrameRef.current) {
+      cancelAnimationFrame(recordingPreviewFrameRef.current);
+      recordingPreviewFrameRef.current = null;
+    }
+    if (recordingPreviewAudioRef.current) {
+      recordingPreviewAudioRef.current.pause();
+      recordingPreviewAudioRef.current.currentTime = 0;
+    }
+    setRecordingPreviewUrl((currentUrl) => {
+      if (currentUrl) URL.revokeObjectURL(currentUrl);
+      return null;
+    });
+    recordingPreviewUrlRef.current = null;
+    recordingPreviewDurationRef.current = 0;
+    setIsRecordingPreviewPlaying(false);
+    setRecordingPlaybackProgress(0);
+    setRecordingPreviewPeaks([]);
+    recordingPreviewFileRef.current = null;
+  };
+
+  const getRecordingMimeType = () => recordingMimeTypeRef.current || mediaRecorderRef.current?.mimeType || 'audio/webm';
+
+  const createVoiceFileFromChunks = (chunks = audioChunksRef.current) => {
+    if (!chunks.length) return null;
+    const type = getRecordingMimeType();
+    const audioBlob = new Blob(chunks, { type });
+    if (!audioBlob.size) return null;
+    const audioExtension = type.includes('mp4') ? 'm4a' : 'webm';
+    return new File([audioBlob], `voice-message-${Date.now()}.${audioExtension}`, { type, lastModified: Date.now() });
+  };
+
+  const analyzeRecordingPreview = async (blob) => {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass || !blob?.size) {
+      setRecordingPreviewPeaks([]);
+      return;
+    }
+
+    try {
+      const audioContext = new AudioContextClass();
+      const decodedBuffer = await audioContext.decodeAudioData(await blob.arrayBuffer());
+      const decodedDuration = decodedBuffer.duration;
+      if (decodedDuration && decodedDuration !== Infinity) {
+        recordingPreviewDurationRef.current = decodedDuration;
+      }
+      const channelData = decodedBuffer.getChannelData(0);
+      const segmentSize = Math.max(1, Math.floor(channelData.length / VOICE_WAVE_BARS.length));
+      const peaks = VOICE_WAVE_BARS.map((_, barIndex) => {
+        const start = barIndex * segmentSize;
+        const end = Math.min(channelData.length, start + segmentSize);
+        let sum = 0;
+        for (let sampleIndex = start; sampleIndex < end; sampleIndex += 1) {
+          sum += channelData[sampleIndex] * channelData[sampleIndex];
+        }
+        return Math.min(1, Math.sqrt(sum / Math.max(1, end - start)) * 8);
+      });
+      const maxPeak = Math.max(...peaks, 0.01);
+      setRecordingPreviewPeaks(peaks.map((peak) => Math.max(0.12, peak / maxPeak)));
+      await audioContext.close();
+    } catch (error) {
+      console.warn('Could not analyze voice preview waveform', error);
+      setRecordingPreviewPeaks([]);
+    }
+  };
+
+  const buildRecordingPreview = () => {
+    const file = createVoiceFileFromChunks();
+    if (!file) return;
+    recordingPreviewFileRef.current = file;
+    setRecordingPreviewUrl((currentUrl) => {
+      if (currentUrl) URL.revokeObjectURL(currentUrl);
+      const url = URL.createObjectURL(file);
+      recordingPreviewUrlRef.current = url;
+      return url;
+    });
+    analyzeRecordingPreview(file);
+  };
+
+  const playRecordingPreview = () => {
+    // Use refs instead of closure state to avoid stale closures
+    const currentFile = recordingPreviewFileRef.current;
+    const currentUrl = recordingPreviewUrlRef.current;
+    const audio = recordingPreviewAudioRef.current;
+
+    console.log('[VOICE DEBUG] playRecordingPreview called', {
+      isRecordingPreviewPlaying,
+      hasUrl: !!currentUrl,
+      hasAudioRef: !!audio,
+      hasFile: !!currentFile,
+      chunksLength: audioChunksRef.current?.length,
+    });
+
+    // Toggle: if already playing, just pause
+    if (isRecordingPreviewPlaying && audio) {
+      audio.pause();
+      setIsRecordingPreviewPlaying(false);
+      return;
+    }
+
+    // Make sure we have audio data (use ref, not closure)
+    let file = currentFile;
+    if (!file) {
+      file = createVoiceFileFromChunks();
+      if (!file) {
+        console.warn('[VOICE DEBUG] No audio data to preview');
+        showModernAlert('No audio has been captured yet.', 'Voice Preview');
+        return;
+      }
+      recordingPreviewFileRef.current = file;
+    }
+
+    // Ensure preview URL exists (triggers React to render the <audio> element)
+    if (!currentUrl) {
+      console.log('[VOICE DEBUG] Creating preview URL from file');
+      const newUrl = URL.createObjectURL(file);
+      recordingPreviewUrlRef.current = newUrl;
+      setRecordingPreviewUrl(newUrl);
+      analyzeRecordingPreview(file);
+    }
+
+    // Wait for the <audio> element to appear in the DOM and be ready, then play
+    let attempts = 0;
+    const maxAttempts = 40; // 40 * 50ms = 2 seconds max wait
+    const waitAndPlay = () => {
+      attempts++;
+      const el = recordingPreviewAudioRef.current;
+      console.log('[VOICE DEBUG] waitAndPlay attempt', attempts, { hasEl: !!el, readyState: el?.readyState });
+
+      if (!el) {
+        if (attempts < maxAttempts) {
+          setTimeout(waitAndPlay, 50);
+        } else {
+          console.error('[VOICE DEBUG] Audio element never appeared in DOM');
+          showModernAlert('Voice preview failed to load. Please try again.', 'Voice Preview');
+        }
+        return;
+      }
+
+      // Reset to beginning if needed
+      if (el.ended || el.currentTime >= (el.duration || 0)) {
+        el.currentTime = 0;
+      }
+      setRecordingPlaybackProgress(0);
+
+      // Play - the onPlay event handler will set isRecordingPreviewPlaying=true
+      el.play()
+        .then(() => console.log('[VOICE DEBUG] Play succeeded'))
+        .catch((error) => {
+          console.error('[VOICE DEBUG] Play failed', error);
+          if (el.readyState < 2 && attempts < maxAttempts) {
+            setTimeout(waitAndPlay, 50);
+          } else {
+            setIsRecordingPreviewPlaying(false);
+            showModernAlert('Could not play this voice preview. Please record again.', 'Voice Preview Error');
+          }
+        });
+    };
+
+    waitAndPlay();
+  };
+
+  const handlePreviewAudioPlay = () => {
+    setIsRecordingPreviewPlaying(true);
+    const updatePreviewProgress = () => {
+      const audio = recordingPreviewAudioRef.current;
+      if (!audio) return;
+      // Use the decoded duration from AudioContext instead of audio.duration
+      // because WebM audio.duration often returns Infinity.
+      // Fallback to recordingTime if available.
+      const dur = recordingPreviewDurationRef.current || recordingTime || (audio.duration !== Infinity ? audio.duration : 0) || 1;
+      setRecordingPlaybackProgress(Math.min(1, audio.currentTime / dur));
+      recordingPreviewFrameRef.current = requestAnimationFrame(updatePreviewProgress);
+    };
+    if (recordingPreviewFrameRef.current) cancelAnimationFrame(recordingPreviewFrameRef.current);
+    updatePreviewProgress();
+  };
+
+  const handlePreviewAudioStop = () => {
+    if (recordingPreviewFrameRef.current) cancelAnimationFrame(recordingPreviewFrameRef.current);
+    recordingPreviewFrameRef.current = null;
+    setIsRecordingPreviewPlaying(false);
+    const audio = recordingPreviewAudioRef.current;
+    if (!audio || audio.ended) setRecordingPlaybackProgress(0);
+  };
+
+  const startRecordingMonitor = (stream) => {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) return;
+
+    const audioContext = new AudioContextClass();
+    const analyser = audioContext.createAnalyser();
+    const source = audioContext.createMediaStreamSource(stream);
+    analyser.fftSize = 256;
+    analyser.smoothingTimeConstant = 0.78;
+    const samples = new Uint8Array(analyser.fftSize);
+    source.connect(analyser);
+    recordingAudioContextRef.current = audioContext;
+
+    const updateLevel = () => {
+      analyser.getByteTimeDomainData(samples);
+      let sum = 0;
+      for (let index = 0; index < samples.length; index += 1) {
+        const normalized = (samples[index] - 128) / 128;
+        sum += normalized * normalized;
+      }
+      const rms = Math.sqrt(sum / samples.length);
+      const nextLevel = Math.min(1, Math.max(0, (rms - 0.012) * 9));
+      setRecordingLevel((previousLevel) => (
+        Math.abs(previousLevel - nextLevel) > 0.015 ? nextLevel : previousLevel
+      ));
+      if (nextLevel > 0.03) {
+        setRecordingWaveTick((tick) => (tick + 1) % 1000);
+      }
+      recordingAnalyserFrameRef.current = requestAnimationFrame(updateLevel);
+    };
+
+    updateLevel();
+  };
+
+  const audioBufferToWav = (buffer) => {
+    const numOfChan = buffer.numberOfChannels;
+    const sampleRate = buffer.sampleRate;
+    const length = buffer.length * numOfChan * 2;
+    const bufferArray = new ArrayBuffer(44 + length);
+    const view = new DataView(bufferArray);
+    let offset = 0;
+    let pos = 0;
+    const setUint16 = (data) => { view.setUint16(pos, data, true); pos += 2; };
+    const setUint32 = (data) => { view.setUint32(pos, data, true); pos += 4; };
+
+    setUint32(0x46464952); // "RIFF"
+    setUint32(36 + length);
+    setUint32(0x45564157); // "WAVE"
+    setUint32(0x20746d66); // "fmt "
+    setUint32(16);
+    setUint16(1); // PCM
+    setUint16(numOfChan);
+    setUint32(sampleRate);
+    setUint32(sampleRate * 2 * numOfChan);
+    setUint16(numOfChan * 2);
+    setUint16(16); // 16-bit
+    setUint32(0x61746164); // "data"
+    setUint32(length);
+
+    const channels = [];
+    for (let i = 0; i < numOfChan; i++) {
+      channels.push(buffer.getChannelData(i));
+    }
+
+    while (pos < 44 + length) {
+      for (let i = 0; i < numOfChan; i++) {
+        let sample = Math.max(-1, Math.min(1, channels[i][offset]));
+        sample = sample < 0 ? sample * 0x8000 : sample * 0x7FFF;
+        view.setInt16(pos, sample, true);
+        pos += 2;
+      }
+      offset++;
+    }
+    return new Blob([bufferArray], { type: 'audio/wav' });
+  };
+
+  const sendVoiceAttachment = async (originalFile) => {
+    if (!activeChat || !originalFile) {
+      setIsSendingVoice(false);
+      return;
+    }
+    if (!originalFile.size) {
+      showModernAlert('No audio was captured. Please try recording again.', 'Voice Message Error');
+      setIsSendingVoice(false);
+      return;
+    }
+
+    setIsSendingVoice(true);
+
+    let file = originalFile;
+    // Transcode WebM to highly-compatible uncompressed WAV (16kHz mono/stereo) so native players NEVER fail
+    if (file.type && file.type.includes('webm')) {
+      try {
+        const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+        if (AudioContextClass) {
+          // Force 16kHz to keep WAV size very small (~1.9MB/min)
+          const actx = new AudioContextClass({ sampleRate: 16000 });
+          const decoded = await actx.decodeAudioData(await file.arrayBuffer());
+          const wavBlob = audioBufferToWav(decoded);
+          const rawName = file.name.replace(/\.[^.]+$/, '');
+          file = new File([wavBlob], `${rawName}.wav`, { type: 'audio/wav', lastModified: Date.now() });
+        }
+      } catch (err) {
+        console.warn('Failed to transcode WebM to WAV:', err);
+      }
+    }
+
+    const optimisticId = `optimistic-voice-${Date.now()}`;
+    const optimisticUrl = URL.createObjectURL(file);
+    const tempMsg = {
+      id: optimisticId,
+      client_id: optimisticId,
+      sender_id: currentUser.id,
+      receiver_id: activeChat.other_user_id,
+      content: 'Voice message',
+      created_at: new Date().toISOString(),
+      is_pending: true,
+      message_type: 'file',
+      attachment_url: optimisticUrl,
+      attachment_type: file.type || 'audio/webm',
+      reply_to_message_id: replyToMessage?.id || null,
+      reply_preview: replyToMessage ? { ...replyToMessage } : null,
+    };
+
+    setMessages((prev) => [...prev, tempMsg]);
+    forceScrollToLatest('smooth');
+
+    try {
+      const encryptedContent = await encryptStringForUser('Voice message');
+      const encryptedFile = await encryptFileE2E(file, getMyPublicKey(), getRecipientPublicKey(activeChat));
+      const formData = new FormData();
+      formData.append('receiver_id', String(activeChat.other_user_id));
+      formData.append('content', encryptedContent);
+      formData.append('attachment_type', `e2e-file:${file.type || 'audio/webm'}`);
+      if (replyToMessage?.id) {
+        formData.append('reply_to_message_id', String(replyToMessage.id));
+      }
+      formData.append('attachment', encryptedFile, `${file.name}.e2e`);
+
+      const response = await apiFetch('/api/inbox/messages/upload', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${localStorage.getItem('token')}`,
+        },
+        body: formData,
+      });
+
+      const data = await readJson(response);
+      if (!response.ok) throw new Error(data.error || 'Failed to send voice message.');
+
+      if (data.sent_message) {
+        const processed = (await processIncomingMessages([data.sent_message]))[0];
+        processed.client_id = optimisticId;
+        setMessages((prev) => {
+          const filtered = prev.filter(m => m.id !== processed.id);
+          return filtered.map((m) => m.id === optimisticId ? processed : m);
+        });
+      }
+      setReplyToMessage(null);
+    } catch (err) {
+      console.error('Voice message send error:', err);
+      setMessages((prev) => prev.filter((m) => m.id !== optimisticId));
+      showModernAlert(err.message, 'Voice Message Error');
+    } finally {
+      URL.revokeObjectURL(optimisticUrl);
+      setIsSendingVoice(false);
+    }
+  };
+
+  const startRecording = async () => {
+    let stream;
+    try {
+      if (!window.MediaRecorder) {
+        showModernAlert('Voice recording is not supported in this browser.', 'Voice Message Error');
+        return;
+      }
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      });
+      const recorderMimeType = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'].find((type) => (
+        MediaRecorder.isTypeSupported?.(type)
+      ));
+      const recorderOptions = recorderMimeType ? { mimeType: recorderMimeType } : undefined;
+      const mimeType = recorderMimeType || 'audio/webm';
+      recordingMimeTypeRef.current = mimeType;
+      mediaRecorderRef.current = new MediaRecorder(stream, recorderOptions);
+      recordingStreamRef.current = stream;
+      audioChunksRef.current = [];
+      discardRecordingRef.current = false;
+      sendRecordingOnStopRef.current = false;
+      previewRecordingOnStopRef.current = false;
+      clearRecordingPreview();
+      setIsSendingVoice(false);
+      startRecordingMonitor(stream);
+      
+      mediaRecorderRef.current.ondataavailable = (e) => {
+        if (e.data.size > 0) {
+          audioChunksRef.current.push(e.data);
+          recordingPreviewFileRef.current = createVoiceFileFromChunks();
+          if (mediaRecorderRef.current?.state === 'paused') {
+            buildRecordingPreview();
+          }
+        }
+      };
+
+      mediaRecorderRef.current.onerror = (event) => {
+        console.error('Voice recorder error', event.error || event);
+        discardRecordingRef.current = true;
+        setIsSendingVoice(false);
+        showModernAlert('The voice recorder stopped unexpectedly. Please try again.', 'Voice Message Error');
+      };
+
+      mediaRecorderRef.current.onstop = () => {
+        try {
+          const chunks = audioChunksRef.current;
+          const shouldSend = sendRecordingOnStopRef.current;
+          const shouldPreview = previewRecordingOnStopRef.current;
+          console.log('[VOICE DEBUG] onstop fired', { chunksLength: chunks.length, shouldSend, shouldPreview, discard: discardRecordingRef.current });
+          cleanupRecordingStream();
+          stopRecordingTimer();
+
+          if (discardRecordingRef.current || chunks.length === 0) {
+            console.log('[VOICE DEBUG] onstop: discarding or no chunks');
+            clearRecordingPreview();
+            setIsRecording(false);
+            setIsRecordingPaused(false);
+            audioChunksRef.current = [];
+            discardRecordingRef.current = false;
+            sendRecordingOnStopRef.current = false;
+            previewRecordingOnStopRef.current = false;
+            setRecordingTime(0);
+            return;
+          }
+
+          const audioBlob = new Blob(chunks, { type: mimeType });
+          console.log('[VOICE DEBUG] onstop: blob created', { blobSize: audioBlob.size, mimeType });
+          if (!audioBlob.size) {
+            clearRecordingPreview();
+            setIsRecording(false);
+            setIsRecordingPaused(false);
+            setIsSendingVoice(false);
+            audioChunksRef.current = [];
+            sendRecordingOnStopRef.current = false;
+            previewRecordingOnStopRef.current = false;
+            setRecordingTime(0);
+            showModernAlert('No audio was captured. Please check your microphone and try again.', 'Voice Message Error');
+            return;
+          }
+          const audioExtension = mimeType.includes('mp4') ? 'm4a' : 'webm';
+          const file = new File([audioBlob], `voice-message-${Date.now()}.${audioExtension}`, { type: mimeType, lastModified: Date.now() });
+          recordingPreviewFileRef.current = file;
+          audioChunksRef.current = chunks;
+          previewRecordingOnStopRef.current = false;
+          sendRecordingOnStopRef.current = false;
+
+          if (shouldPreview) {
+            console.log('[VOICE DEBUG] onstop: entering preview branch, file size:', file.size);
+            const previewUrl = URL.createObjectURL(file);
+            recordingPreviewUrlRef.current = previewUrl;
+            setIsRecording(true);
+            setIsRecordingPaused(true);
+            setIsRecordingPreviewPlaying(false);
+            setRecordingPlaybackProgress(0);
+            setRecordingPreviewUrl((currentUrl) => {
+              if (currentUrl) URL.revokeObjectURL(currentUrl);
+              return previewUrl;
+            });
+            analyzeRecordingPreview(file);
+            console.log('[VOICE DEBUG] onstop: preview URL set:', previewUrl, 'file ref set:', !!recordingPreviewFileRef.current);
+            return;
+          }
+
+          clearRecordingPreview();
+          setIsRecording(false);
+          setIsRecordingPaused(false);
+          audioChunksRef.current = [];
+
+          if (shouldSend) {
+            sendVoiceAttachment(file);
+          } else {
+            setAttachedFiles([{ id: Math.random().toString(36).substr(2, 9), file, previewUrl: URL.createObjectURL(audioBlob) }]);
+          }
+        } catch (onstopError) {
+          console.error('[VOICE DEBUG] CRITICAL: onstop handler error!', onstopError);
+          // Try to recover
+          setIsRecording(false);
+          setIsRecordingPaused(false);
+          setIsSendingVoice(false);
+        }
+      };
+
+      mediaRecorderRef.current.start(250);
+      setIsRecording(true);
+      setIsRecordingPaused(false);
+      setRecordingTime(0);
+      startRecordingTimer();
+    } catch (err) {
+      if (stream) {
+        stream.getTracks().forEach(track => track.stop());
+      }
+      console.error("Microphone access denied", err);
+      showModernAlert("Microphone access is required to send voice messages.", "Microphone Error");
+    }
+  };
+
+  const stopRecording = (sendAfterStop = false) => {
+    console.log('[VOICE DEBUG] stopRecording called', { sendAfterStop, hasRecorder: !!mediaRecorderRef.current, isRecording, isRecordingPaused, recorderState: mediaRecorderRef.current?.state });
+    if (mediaRecorderRef.current && isRecording) {
+      if (sendAfterStop && isRecordingPaused) {
+        sendRecordingPreview();
+        return;
+      }
+
+      // If the recorder is already inactive (stopped for preview), we cannot
+      // call requestData/stop again. Fall back to using the already-collected chunks.
+      if (mediaRecorderRef.current.state === 'inactive') {
+        const file = recordingPreviewFileRef.current || createVoiceFileFromChunks();
+        if (file && sendAfterStop) {
+          sendVoiceAttachment(file);
+        }
+        if (!sendAfterStop) {
+          clearRecordingPreview();
+          setIsRecording(false);
+          setIsRecordingPaused(false);
+          setRecordingTime(0);
+          audioChunksRef.current = [];
+        }
+        return;
+      }
+
+      setIsSendingVoice(sendAfterStop);
+      if (recordingPreviewAudioRef.current) {
+        recordingPreviewAudioRef.current.pause();
+        setIsRecordingPreviewPlaying(false);
+      }
+      sendRecordingOnStopRef.current = sendAfterStop;
+      previewRecordingOnStopRef.current = false;
+      discardRecordingRef.current = false;
+      try {
+        if (mediaRecorderRef.current.state !== 'inactive') {
+          mediaRecorderRef.current.requestData();
+        }
+      } catch (error) {
+        console.warn('Could not flush voice recorder data before stopping', error);
+      }
+      mediaRecorderRef.current.stop();
+    }
+  };
+
+  const sendRecordingPreview = () => {
+    const file = recordingPreviewFileRef.current || createVoiceFileFromChunks();
+    console.log('[VOICE DEBUG] sendRecordingPreview called', { hasFile: !!file, fileSize: file?.size, chunksLength: audioChunksRef.current?.length });
+    if (!file) {
+      setIsSendingVoice(false);
+      showModernAlert('No audio was captured. Please try recording again.', 'Voice Message Error');
+      return;
+    }
+
+    if (recordingPreviewAudioRef.current) {
+      recordingPreviewAudioRef.current.pause();
+      recordingPreviewAudioRef.current.currentTime = 0;
+    }
+    if (recordingPreviewFrameRef.current) {
+      cancelAnimationFrame(recordingPreviewFrameRef.current);
+      recordingPreviewFrameRef.current = null;
+    }
+
+    sendRecordingOnStopRef.current = false;
+    previewRecordingOnStopRef.current = false;
+    cleanupRecordingStream();
+    clearRecordingPreview();
+    stopRecordingTimer();
+    setIsRecording(false);
+    setIsRecordingPaused(false);
+    setRecordingTime(0);
+    audioChunksRef.current = [];
+    recordingPreviewFileRef.current = null;
+    sendVoiceAttachment(file);
   };
 
   const cancelRecording = () => {
     if (mediaRecorderRef.current && isRecording) {
-      mediaRecorderRef.current.stop();
-      audioChunksRef.current = [];
-      setIsRecording(false);
-      clearInterval(recordingTimerRef.current);
+      discardRecordingRef.current = true;
+      sendRecordingOnStopRef.current = false;
+      previewRecordingOnStopRef.current = false;
+      setIsSendingVoice(false);
+      clearRecordingPreview();
+      if (mediaRecorderRef.current.state !== 'inactive') {
+        mediaRecorderRef.current.stop();
+      } else {
+        cleanupRecordingStream();
+        stopRecordingTimer();
+        setIsRecording(false);
+        setIsRecordingPaused(false);
+        setRecordingTime(0);
+        audioChunksRef.current = [];
+      }
       clearAttachments();
+    }
+  };
+
+  const toggleRecordingPause = () => {
+    const recorder = mediaRecorderRef.current;
+    console.log('[VOICE DEBUG] toggleRecordingPause called', { hasRecorder: !!recorder, recorderState: recorder?.state, isRecording, isRecordingPaused });
+    if (!recorder || !isRecording) return;
+
+    if (isRecordingPaused) {
+      playRecordingPreview();
+    } else {
+      try {
+        if (recorder.state === 'recording') recorder.requestData();
+      } catch (error) {
+        console.warn('Could not prepare voice preview', error);
+      }
+      previewRecordingOnStopRef.current = true;
+      sendRecordingOnStopRef.current = false;
+      discardRecordingRef.current = false;
+      if (recorder.state !== 'inactive') recorder.stop();
+      setIsRecordingPaused(true);
+      setRecordingLevel(0);
+      setRecordingWaveTick(0);
+      stopRecordingTimer();
     }
   };
 
@@ -398,12 +1186,17 @@ export default function Inbox() {
   const [chatSearchOpen, setChatSearchOpen] = useState(false);
   const [chatSearchQuery, setChatSearchQuery] = useState('');
   const [chatSearchIndex, setChatSearchIndex] = useState(0);
+  const [showScrollDown, setShowScrollDown] = useState(false);
+  const [unreadCountInScroll, setUnreadCountInScroll] = useState(0);
+  const [confirmConfig, setConfirmConfig] = useState(null); // { title, message, onConfirm, type, confirmText }
   const activeChatRef = useRef(null);
   const previousChatIdRef = useRef(null);
   const currentUserIdRef = useRef(null);
   const mutedChatsRef = useRef(mutedChats);
   const chatSearchInputRef = useRef(null);
   const chatMessagesRef = useRef(null);
+  const preservedChatScrollTopRef = useRef(null);
+  const reactionUpdateMessageIdsRef = useRef(new Set());
   const fileInputRef = useRef(null);
   const messageInputRef = useRef(null);
   const forceScrollToBottomRef = useRef(false);
@@ -431,6 +1224,28 @@ export default function Inbox() {
   useEffect(() => {
     activeChatStateRef.current = activeChat;
   }, [activeChat]);
+
+  useEffect(() => {
+    if (!activeChat?.other_user_id) return undefined;
+
+    const keepMobileChatInView = () => {
+      if (!window.matchMedia?.('(max-width: 1024px)').matches) return;
+      if (chatMessagesRef.current) {
+        chatMessagesRef.current.scrollLeft = 0;
+      }
+      document.documentElement.scrollLeft = 0;
+      document.body.scrollLeft = 0;
+    };
+
+    keepMobileChatInView();
+    window.addEventListener('resize', keepMobileChatInView);
+    window.addEventListener('orientationchange', keepMobileChatInView);
+
+    return () => {
+      window.removeEventListener('resize', keepMobileChatInView);
+      window.removeEventListener('orientationchange', keepMobileChatInView);
+    };
+  }, [activeChat?.other_user_id]);
 
   // Push history entry when chat opens, pop when it closes
   useEffect(() => {
@@ -556,13 +1371,35 @@ export default function Inbox() {
     }));
   };
 
+  const formatReactionPreview = (content, senderId) => {
+    try {
+      const data = JSON.parse(content || '');
+      if (data?.type !== 'reaction') return null;
+
+      const emoji = data.emoji ? ` ${data.emoji}` : '';
+      const targetIsCurrentUser = normalizeUserId(data.originalSenderId) === normalizeUserId(currentUser?.id);
+      return normalizeUserId(senderId) === normalizeUserId(currentUser?.id)
+        ? `You reacted${emoji} to a message`
+        : `Reacted${emoji} to ${targetIsCurrentUser ? 'your message' : 'a message'}`;
+    } catch {
+      return null;
+    }
+  };
+
+  const formatDeletedMessageText = (messageOrSenderId) => {
+    const senderId = typeof messageOrSenderId === 'object' ? messageOrSenderId?.sender_id : messageOrSenderId;
+    return normalizeUserId(senderId) === normalizeUserId(currentUser?.id)
+      ? 'You deleted a message'
+      : `${activeChatRef.current?.first_name || 'They'} deleted a message`;
+  };
+
   useEffect(() => {
     fetchConversations();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
-    previousChatIdRef.current = activeChatRef.current?.other_user_id ?? null;
+    // Only update the activeChatRef here, keep previousChatIdRef for the scroll effect to compare
     activeChatRef.current = activeChat;
   }, [activeChat]);
 
@@ -594,15 +1431,44 @@ export default function Inbox() {
 
       const processedMsgs = await processIncomingMessages([message]);
       const processedMessage = processedMsgs[0];
+      const isReactionNotice = processedMessage.message_type === 'reaction';
 
       if (senderId !== currentUserId && !mutedChatsRef.current.has(partnerId)) {
         soundManager.playMessageReceived();
       }
 
-      setConversations((prev) => {
+      if (isReactionNotice) {
+        setConversations((prev) => {
+          const existing = prev.find((chat) => normalizeUserId(chat.other_user_id) === partnerId);
+          if (!existing) {
+            fetchConversations(null, { silent: true });
+            return prev;
+          }
+
+          const updated = prev.map((chat) => (
+            normalizeUserId(chat.other_user_id) === partnerId
+              ? {
+                      ...chat,
+                  last_message: processedMessage.reaction_preview || formatReactionPreview(processedMessage.content, senderId) || 'Reacted to a message',
+                  last_message_at: processedMessage.created_at,
+                  last_message_is_reaction: true,
+                  last_message_type: 'reaction',
+                  unread_count: senderId === currentUserId || isActiveConversation
+                    ? 0
+                    : (chat.unread_count || 0) + 1,
+                }
+              : chat
+          ));
+
+          return [...updated].sort((a, b) => getMessageSortTime(b.last_message_at) - getMessageSortTime(a.last_message_at));
+        });
+        return;
+      }
+
+      if (!isReactionNotice) setConversations((prev) => {
         const existing = prev.find((chat) => normalizeUserId(chat.other_user_id) === partnerId);
         if (!existing) {
-          fetchConversations(partnerId, { silent: true });
+          fetchConversations(null, { silent: true });
           return prev;
         }
 
@@ -622,36 +1488,116 @@ export default function Inbox() {
         return [...updated].sort((a, b) => getMessageSortTime(b.last_message_at) - getMessageSortTime(a.last_message_at));
       });
 
-      setMessages((prev) => {
+      if (!isReactionNotice) setMessages((prev) => {
         if (!isActiveConversation) return prev;
-        if (prev.some((item) => item.id === processedMessage.id)) return prev;
-        
-        // Prevent duplicate if this is our own message and we have an optimistic version waiting
         if (normalizeUserId(processedMessage.sender_id) === normalizeUserId(currentUserId)) {
-          const hasOptimistic = prev.some(m => m.is_pending);
-          if (hasOptimistic) return prev;
+          const optimisticMatch = prev.find(m => m.client_id === processedMessage.client_id || (m.is_pending && m.content === processedMessage.content));
+          if (optimisticMatch) return prev;
+        }
+
+        // Increment unread count for scroll button if user is scrolled up
+        if (showScrollDown) {
+          setUnreadCountInScroll(c => c + 1);
         }
         
         return [...prev, processedMessage];
       });
 
-      if (isActiveConversation && senderId !== currentUserId && activeChatRef.current) {
+      if (!isReactionNotice && isActiveConversation && senderId !== currentUserId && activeChatRef.current) {
         selectChat(activeChatRef.current, { silent: true, markAsRead: true });
       }
     });
 
     socket.on('inbox:message_updated', async (message) => {
+      if (reactionUpdateMessageIdsRef.current.has(message.id)) {
+        reactionUpdateMessageIdsRef.current.delete(message.id);
+        setMessages((prev) => prev.map((item) => (
+          item.id === message.id
+            ? {
+                ...item,
+                reactions: message.reactions || [],
+                is_read: message.is_read,
+                is_edited: message.is_edited,
+              }
+            : item
+        )));
+        return;
+      }
+
       const processedMsgs = await processIncomingMessages([message]);
       const processedMessage = processedMsgs[0];
       setMessages((prev) => prev.map((item) => (item.id === processedMessage.id ? { ...processedMessage, client_id: item.client_id } : item)));
-      fetchConversations(activeChatRef.current?.other_user_id, { silent: true });
     });
 
-    socket.on('inbox:message_deleted', ({ id }) => {
-      setMessages((prev) => prev.filter((item) => item.id !== id));
+    socket.on('inbox:reaction_notification', (notice) => {
+      const partnerId = normalizeUserId(notice.other_user_id);
+      const activePartnerId = normalizeUserId(activeChatRef.current?.other_user_id);
+      const isActiveConversation = activePartnerId === partnerId;
+
+      setConversations((prev) => {
+        const existing = prev.find((chat) => normalizeUserId(chat.other_user_id) === partnerId);
+        if (!existing) {
+          fetchConversations(null, { silent: true });
+          return prev;
+        }
+
+        const updated = prev.map((chat) => (
+          normalizeUserId(chat.other_user_id) === partnerId
+            ? {
+                ...chat,
+                last_message: notice.preview || 'Reacted to a message',
+                last_message_at: notice.last_message_at || new Date().toISOString(),
+                last_message_is_reaction: true,
+                last_message_type: 'reaction',
+                unread_count: notice.unread && !isActiveConversation
+                  ? (chat.unread_count || 0) + 1
+                  : chat.unread_count || 0,
+              }
+            : chat
+        ));
+
+        return [...updated].sort((a, b) => getMessageSortTime(b.last_message_at) - getMessageSortTime(a.last_message_at));
+      });
+    });
+
+    socket.on('inbox:message_deleted', ({ id, mode, sender_id, receiver_id, created_at }) => {
+      if (mode === 'everyone') {
+        setMessages((prev) => prev.map((item) => (
+          item.id === id
+            ? { ...item, deleted_for_everyone: 1, content: 'Message removed', attachment_url: null, attachment_type: null, reactions: [] }
+            : item
+        )));
+
+        const otherUserId = normalizeUserId(sender_id) === normalizeUserId(currentUser?.id) ? receiver_id : sender_id;
+        setConversations((prev) => prev.map((chat) => {
+          if (normalizeUserId(chat.other_user_id) !== normalizeUserId(otherUserId)) return chat;
+          const chatTime = getMessageSortTime(chat.last_message_at);
+          const deletedTime = getMessageSortTime(created_at);
+          if (chat.last_message_at && deletedTime && Math.abs(chatTime - deletedTime) > 2000) return chat;
+          return {
+            ...chat,
+            last_message: normalizeUserId(sender_id) === normalizeUserId(currentUser?.id)
+              ? 'You deleted a message'
+              : `${chat.first_name} deleted a message`,
+            last_message_at: created_at || chat.last_message_at,
+            last_message_is_reaction: false,
+            last_message_type: 'deleted',
+            last_message_sender_id: sender_id,
+          };
+        }));
+      } else {
+        setMessages((prev) => prev.filter((item) => item.id !== id));
+      }
       setReplyToMessage((prev) => (prev?.id === id ? null : prev));
       setEditingMessage((prev) => (prev?.id === id ? null : prev));
-      fetchConversations(activeChatRef.current?.other_user_id, { silent: true });
+      // fetchConversations(null, { silent: true });
+    });
+
+    socket.on('inbox:message_pinned', ({ message_id, is_pinned }) => {
+      setMessages((prev) => prev.map((m) => normalizeUserId(m.id) === normalizeUserId(message_id) ? { ...m, is_pinned: !!is_pinned } : m));
+      if (!is_pinned) {
+        setPinnedMessageMenuId((currentId) => normalizeUserId(currentId) === normalizeUserId(message_id) ? null : currentId);
+      }
     });
 
     socket.on('inbox:conversation_deleted', ({ other_user_id }) => {
@@ -675,38 +1621,51 @@ export default function Inbox() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUser?.id, socketUrl]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const container = chatMessagesRef.current;
     if (!container) return;
+    const isMobileInbox = window.matchMedia?.('(max-width: 1024px)').matches;
+    if (isMobileInbox) {
+      container.scrollLeft = 0;
+      requestAnimationFrame(() => {
+        if (chatMessagesRef.current) chatMessagesRef.current.scrollLeft = 0;
+      });
+    }
 
-    const nearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 160;
+    // Use a larger threshold (300px) to handle images and multi-line messages
+    const nearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 300;
     const openedDifferentChat = normalizeUserId(activeChat?.other_user_id) !== normalizeUserId(previousChatIdRef.current);
-    const shouldStickToBottom = forceScrollToBottomRef.current || nearBottom || openedDifferentChat;
+    
+    // Check if we should scroll to bottom. 
+    // !showScrollDown means the user hasn't manually scrolled up away from the bottom.
+    const shouldStickToBottom = forceScrollToBottomRef.current || !showScrollDown || nearBottom || openedDifferentChat;
 
     if (shouldStickToBottom) {
-      let scrollBehavior = 'smooth';
-      if (openedDifferentChat) scrollBehavior = 'auto';
-      else if (typeof forceScrollToBottomRef.current === 'string') scrollBehavior = forceScrollToBottomRef.current;
-
+      const scrollBehavior = (openedDifferentChat || forceScrollToBottomRef.current === 'auto') ? 'auto' : 'smooth';
+      
       const executeScroll = () => {
-        if (!chatMessagesRef.current) return;
-        chatMessagesRef.current.scrollTo({
-          top: chatMessagesRef.current.scrollHeight,
+        const currentContainer = chatMessagesRef.current;
+        if (!currentContainer) return;
+        
+        currentContainer.scrollTo({
+          top: currentContainer.scrollHeight,
           behavior: scrollBehavior
         });
       };
 
-      requestAnimationFrame(() => {
-        executeScroll();
-        if (openedDifferentChat) {
-          window.setTimeout(executeScroll, 30);
-          window.setTimeout(executeScroll, 120);
-        }
-      });
+      if (scrollBehavior === 'auto') {
+        executeScroll(); // Execute synchronously before paint to prevent flashing
+      } else {
+        requestAnimationFrame(executeScroll);
+      }
     }
 
+    // Only update the ref AFTER we've checked it for scrolling
+    if (activeChat?.other_user_id) {
+      previousChatIdRef.current = activeChat.other_user_id;
+    }
     forceScrollToBottomRef.current = false;
-  }, [messages, activeChat?.other_user_id]);
+  }, [messages.length, activeChat?.other_user_id]);
 
   useEffect(() => {
     const query = sidebarQuery.trim();
@@ -790,7 +1749,7 @@ export default function Inbox() {
     // Sockets handle primary real-time message sync.
     const intervalId = window.setInterval(() => {
       if (!activeChatRef.current?.other_user_id) return;
-      fetchConversations(activeChatRef.current.other_user_id, { silent: true });
+      fetchConversations(null, { silent: true });
     }, 30000);
 
     return () => window.clearInterval(intervalId);
@@ -798,85 +1757,107 @@ export default function Inbox() {
   }, [activeChat?.other_user_id]);
 
   useEffect(() => {
-    if (!openMenuId && !reactionBarId && !emojiPickerOpen && !isPlusMenuOpen) return undefined;
+    if (!openMenuId && !reactionBarId && !reactionPickerMessageId && !emojiPickerOpen && !isPlusMenuOpen) return undefined;
 
     const handlePointerDown = (event) => {
       const target = event.target;
       if (!(target instanceof Element)) return;
 
       const clickedInsideInteractiveMenu = target.closest(
-        '.message-menu, .reaction-strip, .mini-action-btn, .reaction-pill, .emoji-picker, .fb-emoji-picker-container, .fb-emoji-btn, .emoji-toggle-btn, .fb-plus-menu, .collapse-btn',
+        '.message-menu, .reaction-strip, .reaction-picker-panel, .mini-action-btn, .reaction-pill, .emoji-picker, .fb-emoji-picker-container, .fb-emoji-btn, .emoji-toggle-btn, .fb-plus-menu, .collapse-btn, .gif-btn, .gif-picker-wrapper',
       );
 
       if (clickedInsideInteractiveMenu) return;
 
       setOpenMenuId(null);
       setReactionBarId(null);
+      setReactionPickerMessageId(null);
+      setReactionPickerDirection('up');
+      setReactionSearchQuery('');
       setEmojiPickerOpen(false);
       setIsPlusMenuOpen(false);
+      setGifPickerOpen(false);
     };
 
     document.addEventListener('pointerdown', handlePointerDown);
     return () => document.removeEventListener('pointerdown', handlePointerDown);
-  }, [openMenuId, reactionBarId, emojiPickerOpen, isPlusMenuOpen]);
+  }, [openMenuId, reactionBarId, reactionPickerMessageId, emojiPickerOpen, isPlusMenuOpen, gifPickerOpen]);
 
 
   useEffect(() => {
     const encryptedAttachments = messages.filter((message) => message.attachment_url);
 
     if (!encryptedAttachments.length) {
-      setDecryptedAttachmentUrls({});
       return undefined;
     }
 
     let cancelled = false;
-    const generatedUrls = [];
 
     const decryptAttachments = async () => {
-      const privateKey = getMyPrivateKey();
+      let privateKey = getMyPrivateKey();
 
-      const nextUrls = {};
+      if (!privateKey && currentUser) {
+        await new Promise(r => setTimeout(r, 500));
+        privateKey = getMyPrivateKey();
+      }
 
-      for (const message of encryptedAttachments) {
+      // Get the latest state without triggering a re-render
+      let currentUrls = {};
+      setDecryptedAttachmentUrls(prev => {
+        currentUrls = prev;
+        return prev;
+      });
+
+      const tasks = encryptedAttachments.map(async (message) => {
+        if (currentUrls[message.id]) return; // Skip already decrypted attachments
+
         try {
           const role = normalizeUserId(message.sender_id) === normalizeUserId(currentUser?.id) ? 'sender' : 'receiver';
           const fileUrl = getAttachmentFileUrl(message.attachment_url);
+
+          // Skip fetch for external URLs (like GIFs)
+          if (message.attachment_type === 'image/gif' && message.attachment_url.startsWith('http')) {
+            if (!cancelled) {
+              setDecryptedAttachmentUrls(prev => ({ ...prev, [message.id]: { url: message.attachment_url, type: 'image/gif' } }));
+            }
+            return;
+          }
+
           const response = await fetch(fileUrl, {
             headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
           });
           if (!response.ok) throw new Error(`Attachment fetch failed (${response.status})`);
 
           const isEncryptedFile = (message.attachment_type || '').startsWith('e2e-file:');
-          if (isEncryptedFile && !privateKey) continue;
+          if (isEncryptedFile && !privateKey) return;
           const originalType = isEncryptedFile
             ? message.attachment_type.replace(/^e2e-file:/, '') || 'application/octet-stream'
             : message.attachment_type || response.headers.get('content-type') || 'application/octet-stream';
           let blob;
           if (isEncryptedFile) {
             const decryptedBuffer = await decryptFileE2E(await response.text(), privateKey, role);
-            if (!decryptedBuffer) continue;
+            if (!decryptedBuffer) return;
             blob = new Blob([decryptedBuffer], { type: originalType });
           } else {
             blob = await response.blob();
           }
           const objectUrl = URL.createObjectURL(blob);
-          generatedUrls.push(objectUrl);
-          nextUrls[message.id] = { url: objectUrl, type: originalType };
+          
+          if (!cancelled) {
+            setDecryptedAttachmentUrls(prev => ({ ...prev, [message.id]: { url: objectUrl, type: originalType } }));
+          }
         } catch (error) {
           console.error('Failed to decrypt attachment', error);
         }
-      }
+      });
 
-      if (!cancelled) {
-        setDecryptedAttachmentUrls(nextUrls);
-      }
+      await Promise.all(tasks);
     };
 
     decryptAttachments();
 
     return () => {
       cancelled = true;
-      generatedUrls.forEach((url) => URL.revokeObjectURL(url));
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages, currentUser?.id]);
@@ -910,22 +1891,23 @@ export default function Inbox() {
 
       setConversations(processedChats);
 
-      // Auto-select first unread chat if no active chat
-      if (!activeChat && processedChats.length > 0) {
-        const firstUnread = processedChats.find(c => c.unread_count > 0);
-        if (firstUnread) {
-          selectChat(firstUnread);
+      // Persist active chat on refresh (desktop only to prevent hiding the mobile sidebar)
+      const isMobileView = window.innerWidth <= 768;
+      const savedActiveChatId = localStorage.getItem('inbox_last_active_chat');
+      if (!activeChat && processedChats.length > 0 && !isMobileView) {
+        const match = savedActiveChatId 
+          ? processedChats.find(c => normalizeUserId(c.other_user_id) === normalizeUserId(savedActiveChatId))
+          : processedChats.find(c => c.unread_count > 0);
+        
+        if (match) {
+          selectChat(match);
         }
       }
 
       if (preferredUserId) {
         const match = processedChats.find((chat) => normalizeUserId(chat.other_user_id) === normalizeUserId(preferredUserId));
         if (match) {
-          setActiveChat((prev) => (
-            normalizeUserId(prev?.other_user_id) === normalizeUserId(match.other_user_id)
-              ? { ...prev, ...match }
-              : match
-          ));
+          selectChat(match, options);
         }
       }
     } catch (error) {
@@ -939,12 +1921,15 @@ export default function Inbox() {
     if (!options.silent) {
       forceScrollToBottomRef.current = true;
       setActiveChat(chat);
+      setMessages([]); // Clear previous messages to prevent blinking
+      localStorage.setItem('inbox_last_active_chat', chat.other_user_id);
       setOpenMenuId(null);
       setReactionBarId(null);
       setEmojiPickerOpen(false);
       setChatSearchOpen(false);
       setChatSearchQuery('');
       setChatSearchIndex(0);
+      setShowChatInfoPanel(false); // Always reset info panel when switching chats
     }
 
     try {
@@ -969,31 +1954,38 @@ export default function Inbox() {
         setMessages((prev) => {
           if (!options.silent) return decryptedMessages;
 
-          const prevMap = new Map(prev.map(m => [m.id, m]));
+          const newMap = new Map(decryptedMessages.map(m => [m.id, m]));
           const pendingMessages = prev.filter(m => m.is_pending);
           
-          const merged = decryptedMessages.map(m => {
-            const existing = prevMap.get(m.id);
-            // Preserve client_id for stable React keys to prevent blinking
-            if (existing && existing.client_id) {
-              return { ...m, client_id: existing.client_id };
+          // First, keep all existing messages, updating them if the new payload has fresh data
+          const merged = prev.map(m => {
+            if (newMap.has(m.id)) {
+              const newMsg = newMap.get(m.id);
+              newMap.delete(m.id); // Mark as processed
+              return { ...newMsg, client_id: m.client_id || m.id };
             }
             return m;
           });
 
+          // Add any brand new messages that weren't in prev
+          const remainingNew = Array.from(newMap.values());
+          const combined = [...merged, ...remainingNew].sort((a, b) => getMessageSortTime(a.created_at) - getMessageSortTime(b.created_at));
+
           // Preserve optimistic messages that haven't been confirmed by the server yet
           for (const pending of pendingMessages) {
-            if (!merged.some(m => m.id === pending.id)) {
-              merged.push(pending);
+            if (!combined.some(m => m.id === pending.id)) {
+              combined.push(pending);
             }
           }
           
-          return merged;
+          return combined;
         });
       
-        // Trigger a single smooth scroll after state updates
-        forceScrollToBottomRef.current = true;
-        setTimeout(() => { forceScrollToBottomRef.current = false; }, 500);
+        if (!options.silent) {
+          // Trigger a single instant scroll after state updates for non-silent chat switching
+          forceScrollToBottomRef.current = 'auto';
+          setTimeout(() => { forceScrollToBottomRef.current = false; }, 500);
+        }
       
 
         if (data.other_user) {
@@ -1040,16 +2032,85 @@ export default function Inbox() {
   };
 
   const scrollToLatest = (behavior = 'auto') => {
-    if (!chatMessagesRef.current) return;
-    chatMessagesRef.current.scrollTo({
-      top: chatMessagesRef.current.scrollHeight,
-      behavior,
+    const container = chatMessagesRef.current;
+    if (!container) return;
+    if (window.matchMedia?.('(max-width: 1024px)').matches) {
+      container.scrollLeft = 0;
+    }
+
+    const targetTop = container.scrollHeight - container.clientHeight;
+    if (behavior !== 'smooth') {
+      container.scrollTop = targetTop;
+      setUnreadCountInScroll(0);
+      setShowScrollDown(false);
+      return;
+    }
+
+    const startTop = container.scrollTop;
+    const distance = targetTop - startTop;
+    const duration = Math.min(620, Math.max(280, Math.abs(distance) * 0.28));
+    const startedAt = performance.now();
+
+    const easeOutCubic = (value) => 1 - Math.pow(1 - value, 3);
+    const animate = (now) => {
+      const progress = Math.min(1, (now - startedAt) / duration);
+      container.scrollTop = startTop + distance * easeOutCubic(progress);
+
+      if (progress < 1) {
+        requestAnimationFrame(animate);
+        return;
+      }
+
+      setUnreadCountInScroll(0);
+      setShowScrollDown(false);
+    };
+
+    requestAnimationFrame(animate);
+  };
+
+  const preserveChatScrollPosition = () => {
+    const container = chatMessagesRef.current;
+    if (!container) return;
+
+    preservedChatScrollTopRef.current = container.scrollTop;
+    requestAnimationFrame(() => {
+      if (preservedChatScrollTopRef.current == null || !chatMessagesRef.current) return;
+      chatMessagesRef.current.scrollTop = preservedChatScrollTopRef.current;
+      preservedChatScrollTopRef.current = null;
+    });
+  };
+
+  const showModernAlert = (message, title = 'Notice') => {
+    setConfirmConfig({
+      title,
+      message,
+      confirmText: 'Got it',
+      onConfirm: () => {},
+      isAlert: true
     });
   };
 
   const forceScrollToLatest = (behavior = 'smooth') => {
     forceScrollToBottomRef.current = behavior;
+    setUnreadCountInScroll(0);
+    setShowScrollDown(false);
   };
+
+  const handleChatScroll = useCallback(() => {
+    const container = chatMessagesRef.current;
+    if (!container) return;
+    if (window.matchMedia?.('(max-width: 1024px)').matches && container.scrollLeft !== 0) {
+      container.scrollLeft = 0;
+    }
+    
+    // threshold of 150px from bottom to hide the button
+    const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 150;
+    
+    setShowScrollDown(!isNearBottom);
+    if (isNearBottom) {
+      setUnreadCountInScroll(0);
+    }
+  }, []);
 
   const sendJsonMessage = async (overrideContent) => {
     const textToSend = (typeof overrideContent === 'string' ? overrideContent : newMessage).trim();
@@ -1131,7 +2192,7 @@ export default function Inbox() {
       console.error('Send error:', err);
       // Remove optimistic message on error
       setMessages((prev) => prev.filter((m) => m.id !== optimisticId));
-      alert(err.message);
+      showModernAlert(err.message, "Send Error");
     }
   };
 
@@ -1218,7 +2279,8 @@ export default function Inbox() {
       } catch (err) {
         console.error('Attachment send error:', err);
         setMessages((prev) => prev.filter((m) => m.id !== optimisticId));
-        alert(`Failed to send ${file.name}: ${err.message}`);
+        console.error(`Failed to send ${file.name}: ${err.message}`);
+        showModernAlert(`Failed to send ${file.name}: ${err.message}`, 'Send Error');
       }
     }
     
@@ -1234,7 +2296,65 @@ export default function Inbox() {
       await sendJsonMessage('❤️');
     } catch (error) {
       console.error(error);
-      alert(error.message);
+      showModernAlert(error.message, 'Forwarding Error');
+    }
+  };
+
+  const sendGifMessage = async (gifUrl) => {
+    const optimisticId = `optimistic-${Date.now()}`;
+    const tempMsg = {
+      id: optimisticId,
+      client_id: optimisticId,
+      sender_id: currentUser.id,
+      receiver_id: activeChat.other_user_id,
+      content: '',
+      created_at: new Date().toISOString(),
+      is_pending: true,
+      attachment_url: gifUrl,
+      attachment_type: 'image/gif',
+      reply_to_message_id: replyToMessage?.id || null,
+      reply_preview: replyToMessage ? { ...replyToMessage } : null,
+    };
+    setMessages((prev) => [...prev, tempMsg]);
+    setEmojiPickerOpen(false);
+    setGifPickerOpen(false);
+    forceScrollToLatest('smooth');
+
+    try {
+      const encryptedContent = await encryptStringForUser('');
+      const payload = {
+        receiver_id: activeChat.other_user_id,
+        content: encryptedContent,
+        attachment_url: gifUrl,
+        attachment_type: 'image/gif',
+        reply_to_message_id: replyToMessage?.id || null,
+        forwarded_from_message_id: null,
+      };
+
+      const response = await apiFetch('/api/inbox/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${localStorage.getItem('token')}`,
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await readJson(response);
+      if (!response.ok) throw new Error(data.error || 'Failed to send GIF.');
+
+      if (data.sent_message) {
+        const processed = (await processIncomingMessages([data.sent_message]))[0];
+        processed.client_id = optimisticId; // Match the key to prevent re-animation
+        setMessages((prev) => {
+          const filtered = prev.filter(m => m.id !== processed.id);
+          return filtered.map((m) => m.id === optimisticId ? processed : m);
+        });
+      }
+    } catch (err) {
+      console.error('Send GIF error:', err);
+      setMessages((prev) => prev.filter((m) => m.id !== optimisticId));
+      showModernAlert(err.message, "Send Error");
     }
   };
 
@@ -1251,15 +2371,90 @@ export default function Inbox() {
       }
     } catch (error) {
       console.error(error);
-      alert(error.message);
+      showModernAlert(error.message, 'Forwarding Error');
     }
+  };
+
+  const getReactionName = (reaction) => (
+    REACTION_EMOJIS.find((item) => item.emoji === reaction)?.name || 'Reaction'
+  );
+
+  const rememberReaction = (reaction) => {
+    setRecentReactions((previous) => {
+      const next = [reaction, ...previous.filter((item) => item !== reaction)].slice(0, 6);
+      localStorage.setItem('inbox_recent_reactions', JSON.stringify(next));
+      return next;
+    });
+  };
+
+  const filteredReactionGroups = useMemo(() => {
+    const query = reactionSearchQuery.trim().toLowerCase();
+    const searchMatches = (item) => !query || [
+      item.name,
+      item.category,
+      ...(item.keywords || []),
+    ].join(' ').toLowerCase().includes(query);
+
+    const groups = [];
+    const recentItems = recentReactions
+      .map((reaction) => REACTION_EMOJIS.find((item) => item.emoji === reaction))
+      .filter(Boolean)
+      .filter(searchMatches);
+
+    if (recentItems.length) {
+      groups.push({ title: 'Recent reactions', items: recentItems });
+    }
+
+    const categories = [...new Set(REACTION_EMOJIS.map((item) => item.category))];
+    for (const category of categories) {
+      const items = REACTION_EMOJIS
+        .filter((item) => item.category === category)
+        .filter(searchMatches);
+
+      if (items.length) groups.push({ title: category, items });
+    }
+
+    return groups;
+  }, [reactionSearchQuery, recentReactions]);
+
+  const applyReactionNoticeToConversations = (notice) => {
+    if (!notice?.other_user_id) return;
+
+    const partnerId = normalizeUserId(notice.other_user_id);
+    const activePartnerId = normalizeUserId(activeChatRef.current?.other_user_id);
+    const isActiveConversation = activePartnerId === partnerId;
+
+    setConversations((prev) => {
+      const existing = prev.find((chat) => normalizeUserId(chat.other_user_id) === partnerId);
+      if (!existing) {
+        fetchConversations(null, { silent: true });
+        return prev;
+      }
+
+      const updated = prev.map((chat) => (
+        normalizeUserId(chat.other_user_id) === partnerId
+          ? {
+              ...chat,
+              last_message: notice.preview || 'Reacted to a message',
+              last_message_at: notice.last_message_at || new Date().toISOString(),
+              unread_count: notice.unread && !isActiveConversation
+                ? (chat.unread_count || 0) + 1
+                : chat.unread_count || 0,
+            }
+          : chat
+      ));
+
+      return [...updated].sort((a, b) => getMessageSortTime(b.last_message_at) - getMessageSortTime(a.last_message_at));
+    });
   };
 
   const handleReaction = async (message, reaction) => {
     try {
-      const myReaction = message.reactions?.find((item) => item.reacted_by_me)?.reaction || null;
+      const messageReactions = Array.isArray(message.reactions) ? message.reactions : [];
+      const myReaction = messageReactions.find((item) => item.reacted_by_me)?.reaction || null;
       const nextReaction = myReaction === reaction ? '' : reaction;
 
+      reactionUpdateMessageIdsRef.current.add(message.id);
       const response = await apiFetch(`/api/inbox/messages/${message.id}/reactions`, {
         method: 'POST',
         headers: {
@@ -1272,70 +2467,187 @@ export default function Inbox() {
       const data = await readJson(response);
       if (!response.ok) throw new Error(data.error || 'Failed to update reaction.');
 
-      if (data.updated_message) {
-        const processed = (await processIncomingMessages([data.updated_message]))[0];
-        setMessages((prev) => prev.map((item) => item.id === message.id ? { ...processed, client_id: item.client_id } : item));
+      if (data.reaction_notice) {
+        applyReactionNoticeToConversations(data.reaction_notice);
       }
+
+      if (data.updated_message) {
+        const updated = data.updated_message;
+        setMessages((prev) => prev.map((item) => (
+          item.id === message.id
+            ? {
+                ...item,
+                reactions: updated.reactions || [],
+                is_read: updated.is_read,
+                is_edited: updated.is_edited,
+              }
+            : item
+        )));
+      }
+      if (nextReaction) rememberReaction(nextReaction);
       setReactionBarId(null);
+      setReactionPickerMessageId(null);
+      setReactionPickerDirection('up');
+      setReactionSearchQuery('');
+      window.setTimeout(() => {
+        reactionUpdateMessageIdsRef.current.delete(message.id);
+      }, 1500);
     } catch (error) {
+      reactionUpdateMessageIdsRef.current.delete(message.id);
       console.error(error);
-      alert(error.message);
+      showModernAlert(error.message, 'Reaction Error');
     }
   };
 
-  const handleDeleteMessage = async (message, mode) => {
-    const confirmText = mode === 'everyone'
-      ? 'Unsend this message for everyone?'
-      : 'Delete this message from your inbox?';
+  const handleDeleteMessage = (message, mode) => {
+    const isUnsend = mode === 'everyone';
+    const isDeletedBubble = !!message.deleted_for_everyone;
+    const title = isUnsend ? 'Unsend Message' : isDeletedBubble ? 'Remove Deleted Message' : 'Delete Message';
+    const messageText = isUnsend
+      ? 'Unsend this message for everyone? This will remove the message for all participants in the chat.'
+      : isDeletedBubble
+      ? 'Remove this deleted-message bubble from your inbox? The other participant will still see their own copy.'
+      : 'Delete this message from your inbox? Other participants will still be able to see it.';
+    const confirmText = isUnsend ? 'Unsend' : isDeletedBubble ? 'Remove' : 'Delete for me';
 
-    if (!window.confirm(confirmText)) return;
+    setConfirmConfig({
+      title,
+      message: messageText,
+      confirmText,
+      type: 'danger',
+      onConfirm: async () => {
+        preserveChatScrollPosition();
+        try {
+          const response = await apiFetch(`/api/inbox/messages/${message.id}?mode=${mode}`, {
+            method: 'DELETE',
+            headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
+          });
+
+          const data = await readJson(response);
+          if (!response.ok) throw new Error(data.error || 'Failed to delete message.');
+
+          if (isUnsend) {
+            setMessages((prev) =>
+              prev.map((item) =>
+                item.id === message.id
+                  ? { ...item, deleted_for_everyone: 1, content: 'Message removed', attachment_url: null, attachment_type: null, reactions: [] }
+                  : item
+              )
+            );
+            const otherUserId = normalizeUserId(message.sender_id) === normalizeUserId(currentUser?.id) ? message.receiver_id : message.sender_id;
+            setConversations((prev) => prev.map((chat) => {
+              if (normalizeUserId(chat.other_user_id) !== normalizeUserId(otherUserId)) return chat;
+              const chatTime = getMessageSortTime(chat.last_message_at);
+              const deletedTime = getMessageSortTime(message.created_at);
+              if (chat.last_message_at && deletedTime && Math.abs(chatTime - deletedTime) > 2000) return chat;
+              return {
+                ...chat,
+                last_message: 'You deleted a message',
+                last_message_at: message.created_at || chat.last_message_at,
+                last_message_is_reaction: false,
+                last_message_type: 'deleted',
+                last_message_sender_id: message.sender_id,
+              };
+            }));
+          } else {
+            setMessages((prev) => prev.filter((item) => item.id !== message.id));
+          }
+          
+          setReplyToMessage((prev) => (prev?.id === message.id ? null : prev));
+          setEditingMessage((prev) => (prev?.id === message.id ? null : prev));
+          setOpenMenuId(null);
+        } catch (error) {
+          console.error(error);
+          showModernAlert(error.message, 'Delete Error');
+        }
+      }
+    });
+    setOpenMenuId(null);
+  };
+
+  const handleTogglePin = async (message) => {
+    const isCurrentlyPinned = !!message.is_pinned;
+    const url = `/api/inbox/messages/${message.id}/pin`;
+    const method = isCurrentlyPinned ? 'DELETE' : 'POST';
 
     try {
-      const response = await apiFetch(`/api/inbox/messages/${message.id}?mode=${mode}`, {
-        method: 'DELETE',
+      const response = await apiFetch(url, {
+        method,
         headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
       });
 
       const data = await readJson(response);
-      if (!response.ok) throw new Error(data.error || 'Failed to delete message.');
+      if (!response.ok) throw new Error(data.error || 'Failed to update pin status.');
 
-      setMessages((prev) => prev.filter((item) => item.id !== message.id));
-      setReplyToMessage((prev) => (prev?.id === message.id ? null : prev));
-      setEditingMessage((prev) => (prev?.id === message.id ? null : prev));
-      setOpenMenuId(null);
-      // Removed fetchConversations to prevent race condition and UI blinking
+      setMessages((prev) => prev.map((m) => normalizeUserId(m.id) === normalizeUserId(message.id) ? { ...m, is_pinned: isCurrentlyPinned ? 0 : 1 } : m));
+      if (isCurrentlyPinned) {
+        setPinnedMessageMenuId(null);
+      }
     } catch (error) {
-      console.error(error);
-      alert(error.message);
-    }
-  };
-
-  const handleDeleteConversation = async () => {
-    if (!activeChat) return;
-    if (!window.confirm(`Delete the entire conversation with ${activeChat.first_name} ${activeChat.last_name} from your inbox?`)) {
-      return;
-    }
-
-    try {
-      setDeletingConversation(true);
-      const response = await apiFetch(`/api/inbox/conversations/${activeChat.other_user_id}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
-      });
-
-      const data = await readJson(response);
-      if (!response.ok) throw new Error(data.error || 'Failed to delete conversation.');
-
-      setConversations((prev) => prev.filter((chat) => normalizeUserId(chat.other_user_id) !== normalizeUserId(activeChat.other_user_id)));
-      setActiveChat(null);
-      setMessages([]);
-      resetComposerContext();
-    } catch (error) {
-      console.error(error);
-      alert(error.message);
+      console.error('Toggle pin error:', error);
+      showModernAlert(error.message, 'Pin Error');
     } finally {
-      setDeletingConversation(false);
+      setOpenMenuId(null);
     }
+  };
+
+  const handleReportMessage = (message) => {
+    setConfirmConfig({
+      title: 'Report Message',
+      message: 'Are you sure you want to report this message to community moderators? Our team will review the content within 24 hours.',
+      confirmText: 'Submit Report',
+      type: 'danger',
+      onConfirm: async () => {
+        try {
+          const response = await apiFetch(`/api/inbox/messages/${message.id}/report`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
+          });
+
+          const data = await readJson(response);
+          if (!response.ok) throw new Error(data.error || 'Failed to report message.');
+
+          showModernAlert('Thank you for your report. Our moderation team has been notified and will investigate this message.', 'Report Submitted');
+        } catch (error) {
+          console.error('Report message error:', error);
+          showModernAlert(error.message, 'Report Error');
+        }
+      }
+    });
+    setOpenMenuId(null);
+  };
+
+  const handleDeleteConversation = () => {
+    if (!activeChat) return;
+    
+    setConfirmConfig({
+      title: 'Delete Conversation',
+      message: `Are you sure you want to delete the entire conversation with ${activeChat.first_name} ${activeChat.last_name}? This action cannot be undone.`,
+      confirmText: 'Delete Everything',
+      type: 'danger',
+      onConfirm: async () => {
+        try {
+          setDeletingConversation(true);
+          const response = await apiFetch(`/api/inbox/conversations/${activeChat.other_user_id}`, {
+            method: 'DELETE',
+            headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
+          });
+
+          const data = await readJson(response);
+          if (!response.ok) throw new Error(data.error || 'Failed to delete conversation.');
+
+          setConversations((prev) => prev.filter((chat) => normalizeUserId(chat.other_user_id) !== normalizeUserId(activeChat.other_user_id)));
+          setActiveChat(null);
+          setMessages([]);
+          resetComposerContext();
+        } catch (error) {
+          console.error(error);
+          showModernAlert(error.message, "Delete Error");
+        } finally {
+          setDeletingConversation(false);
+        }
+      }
+    });
   };
 
   const beginReply = (message) => {
@@ -1427,38 +2739,75 @@ export default function Inbox() {
            const res = await fetch(decryptedUrl);
            rawBlob = await res.blob();
            originalFileName = decryptedAttachmentUrls[forwardingMessage.id]?.name || 'forwarded_file';
+        } else if (forwardingMessage.attachment_type && forwardingMessage.attachment_type.startsWith('e2e-file:')) {
+           const fileUrl = getAttachmentFileUrl(forwardingMessage.attachment_url);
+           const res = await fetch(fileUrl, { headers: { Authorization: `Bearer ${localStorage.getItem('token')}` } });
+           if (res.ok) {
+             const role = normalizeUserId(forwardingMessage.sender_id) === normalizeUserId(currentUser.id) ? 'sender' : 'receiver';
+             const decryptedBuffer = await decryptFileE2E(await res.text(), getMyPrivateKey(), role);
+             if (decryptedBuffer) {
+               const originalType = forwardingMessage.attachment_type.replace(/^e2e-file:/, '') || 'application/octet-stream';
+               rawBlob = new Blob([decryptedBuffer], { type: originalType });
+               originalFileName = forwardingMessage.original_file_name || 'forwarded_file';
+             }
+           }
         } else if (forwardingMessage.attachment_type && !forwardingMessage.attachment_type.startsWith('e2e-file:')) {
            const res = await fetch(resolveMediaUrl(forwardingMessage.attachment_url));
            rawBlob = await res.blob();
         }
 
+        if (!rawBlob) {
+          throw new Error('Failed to retrieve or decrypt attachment for forwarding.');
+        }
+        
+        if (!originalFileName.includes('.')) {
+          if (rawBlob.type.includes('audio/webm')) originalFileName += '.webm';
+          else if (rawBlob.type.includes('audio/mpeg')) originalFileName += '.mpeg';
+          else if (rawBlob.type.includes('image/jpeg')) originalFileName += '.jpg';
+          else if (rawBlob.type.includes('image/png')) originalFileName += '.png';
+          else if (rawBlob.type.includes('application/pdf')) originalFileName += '.pdf';
+          else if (rawBlob.type.includes('video/mp4')) originalFileName += '.mp4';
+          else originalFileName += '.webm'; // default to webm for audio messages just in case
+        }
+
         if (rawBlob) {
           const fileToUpload = new File([rawBlob], originalFileName, { type: rawBlob.type });
-          const { encryptedFile, keyBuffer, ivBuffer, saltBuffer } = await encryptFileE2E(fileToUpload);
-
+          
+          const myPublicKey = getMyPublicKey();
+          const recipientPubKey = user?.public_key || user?.publicKey;
+          const recipientPublicKey = recipientPubKey ? (typeof recipientPubKey === 'string' ? JSON.parse(recipientPubKey) : recipientPubKey) : null;
+          
           const formData = new FormData();
-          formData.append('file', encryptedFile);
 
-          const uploadResponse = await apiFetch('/api/inbox/upload', {
+          if (myPublicKey && recipientPublicKey) {
+            // Recipient has E2E keys — encrypt the attachment
+            const encryptedFileBlob = await encryptFileE2E(fileToUpload, myPublicKey, recipientPublicKey);
+            formData.append('file', encryptedFileBlob, `encrypted_${originalFileName}.e2e`);
+          } else {
+            // Recipient has no E2E keys yet — upload raw attachment
+            formData.append('file', fileToUpload, originalFileName);
+          }
+          
+          const uploadRes = await apiFetch('/api/inbox/upload', {
             method: 'POST',
             headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
             body: formData,
           });
-          const uploadData = await readJson(uploadResponse);
-          if (!uploadResponse.ok) throw new Error(uploadData.error || 'Failed to upload forwarded attachment.');
-
-          attachmentUrl = uploadData.file_path;
-          attachmentId = uploadData.attachment_id || null;
-
-          const combinedKeys = new Uint8Array([...saltBuffer, ...ivBuffer, ...keyBuffer]);
-          const keysBase64 = btoa(String.fromCharCode(...combinedKeys));
-          const keysJson = JSON.stringify({ [user.id]: keysBase64 });
-          finalAttachmentType = `e2e-file:${fileToUpload.type}|${btoa(fileToUpload.name)}|${keysJson}`;
+          
+          const uploadData = await readJson(uploadRes);
+          if (!uploadRes.ok) throw new Error(uploadData.error || 'Failed to upload forwarded attachment');
+          
+          attachmentUrl = uploadData.attachment_url;
+          attachmentId = uploadData.attachment_id;
+          finalAttachmentType = (myPublicKey && recipientPublicKey) ? `e2e-file:${rawBlob.type}` : rawBlob.type;
         }
       }
-
-      const encryptedContent = await encryptStringForUser(forwardingMessage.content || '', user);
       
+      const recipientHasKeys = !!(user?.public_key || user?.publicKey);
+      const encryptedContent = recipientHasKeys
+        ? await encryptStringForUser(forwardingMessage.content || '', user)
+        : (forwardingMessage.content || '');
+
       const payload = {
         receiver_id: user.id,
         forwarded_from_message_id: forwardingMessage.id,
@@ -1497,10 +2846,10 @@ export default function Inbox() {
         await startConversation(user);
       }
 
-      fetchConversations(user.id, { silent: true });
+      fetchConversations(null, { silent: true });
     } catch (error) {
       console.error(error);
-      alert(error.message);
+      showModernAlert(error.message, 'Forwarding Error');
     }
   };
 
@@ -1530,8 +2879,12 @@ export default function Inbox() {
     if (!message.attachment_url) return null;
 
     const decryptedAttachment = decryptedAttachmentUrls[message.id] || null;
-    const fileUrl = decryptedAttachment?.url || null;
-    const attachmentType = decryptedAttachment?.type || message.attachment_type || '';
+    const rawAttachmentType = message.attachment_type || '';
+    const attachmentType = decryptedAttachment?.type || rawAttachmentType;
+    const optimisticAudioUrl = rawAttachmentType.startsWith('audio/') && message.attachment_url?.startsWith('blob:')
+      ? message.attachment_url
+      : null;
+    const fileUrl = decryptedAttachment?.url || optimisticAudioUrl || null;
 
     if (!fileUrl || (attachmentType.startsWith('e2e-file:') && !decryptedAttachment)) {
       return (
@@ -1544,7 +2897,7 @@ export default function Inbox() {
 
     if (attachmentType.startsWith('image/')) {
       return (
-        <button
+          <button
           type="button"
           className="attachment-card image attachment-image-btn"
           onClick={() => setImageViewer({
@@ -1556,13 +2909,6 @@ export default function Inbox() {
             <img 
               src={fileUrl} 
               alt={message.content || 'Attachment'} 
-              onLoad={() => {
-                const container = chatMessagesRef.current;
-                if (!container) return;
-                // If user is near bottom (within 300px), snap to latest after image loads
-                const distFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
-                if (distFromBottom < 300) scrollToLatest('smooth');
-              }}
             />
           </button>
         );
@@ -1588,9 +2934,6 @@ export default function Inbox() {
                 // Seek to capture a frame as thumbnail
                 if (e.target.currentTime === 0) e.target.currentTime = 0.5;
               }}
-              onLoadedData={() => {
-                if (forceScrollToBottomRef.current) scrollToLatest('smooth');
-              }}
             />
           </div>
         );
@@ -1600,7 +2943,7 @@ export default function Inbox() {
         const isMine = message.sender_id === currentUser.id || message.sender_id === currentUserIdRef.current;
         return (
           <div className="attachment-card audio" style={{ background: 'transparent', padding: 0, border: 'none', boxShadow: 'none' }}>
-            <VoiceMessagePlayer src={fileUrl} isMine={isMine} avatarUrl={isMine ? currentUser?.profile_picture : activeChat?.profile_picture} />
+            <VoiceMessagePlayer key={fileUrl || message.id} src={fileUrl} isMine={isMine} avatarUrl={isMine ? currentUser?.profile_picture : activeChat?.profile_picture} />
           </div>
         );
       }
@@ -1667,6 +3010,80 @@ export default function Inbox() {
 
   const activeChatId = activeChat ? normalizeUserId(activeChat.other_user_id) : null;
   const activeChatMuted = activeChatId != null && mutedChats.has(activeChatId);
+  const pinnedMessages = useMemo(() => (
+    messages
+      .filter((message) => message.is_pinned && !message.deleted_for_everyone && message.message_type !== 'reaction')
+      .sort((a, b) => getMessageSortTime(a.created_at) - getMessageSortTime(b.created_at))
+  ), [messages]);
+  const latestPinnedMessage = pinnedMessages[pinnedMessages.length - 1] || null;
+  const mediaFilesLinks = useMemo(() => {
+    const urlPattern = /https?:\/\/[^\s<>"']+/gi;
+    const cleanUrl = (value) => value.replace(/[),.;!?]+$/g, '');
+    const seenLinks = new Set();
+    const media = [];
+    const files = [];
+    const links = [];
+
+    messages
+      .filter((message) => !message.deleted_for_everyone && message.message_type !== 'reaction' && message.message_type !== 'call_log')
+      .forEach((message) => {
+        if (message.attachment_url) {
+          const decryptedAttachment = decryptedAttachmentUrls[message.id] || null;
+          const rawAttachmentType = message.attachment_type || '';
+          if (rawAttachmentType.startsWith('e2e-file:') && !decryptedAttachment) return;
+          const attachmentType = decryptedAttachment?.type || rawAttachmentType.replace(/^e2e-file:/, '') || 'application/octet-stream';
+          const attachmentUrl = decryptedAttachment?.url || getAttachmentFileUrl(message.attachment_url);
+          const fallbackName = (() => {
+            const rawUrlName = message.attachment_url?.split('/').pop()?.split('?')[0];
+            if (!rawUrlName) return null;
+            try {
+              return decodeURIComponent(rawUrlName);
+            } catch {
+              return rawUrlName;
+            }
+          })();
+          const attachmentName = decryptedAttachment?.name
+            || message.attachment_name
+            || (message.content && message.content !== 'Voice message' ? message.content : null)
+            || fallbackName
+            || (attachmentType.startsWith('audio/') ? 'Voice message' : 'Attachment');
+          const item = {
+            id: message.id,
+            url: attachmentUrl,
+            type: attachmentType,
+            name: attachmentName,
+            createdAt: message.created_at,
+          };
+
+          if (attachmentType.startsWith('image/') || attachmentType.startsWith('video/')) {
+            media.push(item);
+          } else {
+            files.push(item);
+          }
+        }
+
+        const matches = String(message.content || '').match(urlPattern) || [];
+        matches.forEach((match) => {
+          const url = cleanUrl(match);
+          if (!url || seenLinks.has(url)) return;
+          seenLinks.add(url);
+          let host = url;
+          try {
+            host = new URL(url).hostname.replace(/^www\./, '');
+          } catch {
+            host = url;
+          }
+          links.push({
+            id: `${message.id}-${links.length}`,
+            url,
+            host,
+            createdAt: message.created_at,
+          });
+        });
+      });
+
+    return { media, files, links };
+  }, [decryptedAttachmentUrls, messages]);
 
   const chatSearchResults = useMemo(() => {
     const query = chatSearchQuery.trim().toLowerCase();
@@ -1691,6 +3108,12 @@ export default function Inbox() {
   }, [chatSearchQuery, activeChatId]);
 
   useEffect(() => {
+    setPinnedMessagesOpen(false);
+    setPinnedMessageMenuId(null);
+    setHighlightedPinnedMessageId(null);
+  }, [activeChatId]);
+
+  useEffect(() => {
     if (chatSearchIndex < chatSearchResults.length) return;
     setChatSearchIndex(0);
   }, [chatSearchIndex, chatSearchResults.length]);
@@ -1706,6 +3129,37 @@ export default function Inbox() {
     if (!messageId) return;
     const messageElement = document.getElementById(`msg-${messageId}`);
     messageElement?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }, []);
+
+  const getPinnedSenderLabel = useCallback((message) => {
+    return normalizeUserId(message.sender_id) === normalizeUserId(currentUser?.id)
+      ? 'You'
+      : `${activeChat?.first_name || ''} ${activeChat?.last_name || ''}`.trim() || 'Them';
+  }, [activeChat, currentUser?.id]);
+
+  const getPinnedPreviewText = useCallback((message) => {
+    if (message.message_type === 'call_log') return 'Call';
+    if (message.attachment_url) {
+      const type = message.attachment_type || '';
+      if (type.includes('audio')) return message.content && message.content !== 'Voice message' ? message.content : 'Voice message';
+      if (type.includes('image')) return message.content || 'Photo';
+      if (type.includes('video')) return message.content || 'Video';
+      return message.content || 'Attachment';
+    }
+    return message.content || 'Message';
+  }, []);
+
+  const showPinnedMessageInChat = useCallback((messageId) => {
+    setPinnedMessagesOpen(false);
+    setPinnedMessageMenuId(null);
+    window.setTimeout(() => {
+      const messageElement = document.getElementById(`msg-${messageId}`);
+      messageElement?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      setHighlightedPinnedMessageId(messageId);
+      window.setTimeout(() => {
+        setHighlightedPinnedMessageId((currentId) => currentId === messageId ? null : currentId);
+      }, 2600);
+    }, 60);
   }, []);
 
   const openChatSearch = useCallback(() => {
@@ -1786,20 +3240,26 @@ export default function Inbox() {
   // Wrap selectChat to add slide-in animation
   const selectChatWithTransition = useCallback(async (chat, options = {}) => {
     if (!options.silent) {
+      // Start animation immediately (don't await) — run in parallel with data fetch
       setSlideDirection('enter');
-      await selectChat(chat, options);
-      requestAnimationFrame(() => {
-        setTimeout(() => setSlideDirection(null), 300);
-      });
+      // Clear animation class after it finishes (300ms), regardless of fetch status
+      const clearAnimation = setTimeout(() => setSlideDirection(null), 350);
+      try {
+        await selectChat(chat, options);
+      } finally {
+        // If fetch was fast, clearAnimation already scheduled; if slow, clear now
+        clearTimeout(clearAnimation);
+        setSlideDirection(null);
+      }
     } else {
       await selectChat(chat, options);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [selectChat]);
 
   if (loading) {
     return (
-      <div className="page-container container inbox-page" style={{ display: 'flex', paddingBottom: 0 }}>
+      <div className="page-container container inbox-page" style={{ display: 'flex', alignItems: 'stretch', flexDirection: 'row', gap: 0, paddingBottom: 0 }}>
         <div className="inbox-sidebar glass-panel" style={{ flex: 1 }}>
           <SkeletonLoader variant="inbox" count={8} />
         </div>
@@ -1812,7 +3272,7 @@ export default function Inbox() {
       <div className="page-container container inbox-page" style={{ display: 'flex', paddingBottom: 0 }}>
       <input ref={fileInputRef} type="file" multiple style={{ display: 'none' }} onChange={handleFilePick} />
 
-      <div className={`inbox-sidebar glass-panel ${slideDirection === 'exit' ? 'slide-in-from-left' : ''}`}>
+      <div className={`inbox-sidebar glass-panel ${slideDirection === 'exit' ? 'slide-in-from-left' : ''}`} style={{ width: 320, flexShrink: 0 }}>
         <div className="inbox-header font-display">
           <h2>
             Messages
@@ -1829,12 +3289,8 @@ export default function Inbox() {
               }}
             />
           </h2>
-          <button className="new-msg-btn" onClick={() => setComposerMode('new')}>
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M12 20h9"/>
-              <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
-            </svg>
-            New Message
+          <button className="new-msg-btn" onClick={() => setComposerMode('new')} title="New Message">
+            <Pencil size={18} strokeWidth={3} />
           </button>
         </div>
 
@@ -1853,6 +3309,7 @@ export default function Inbox() {
             (() => {
               const isActiveChat = normalizeUserId(activeChat?.other_user_id) === normalizeUserId(chat.other_user_id);
               const isUnreadChat = chat.unread_count > 0 && !isActiveChat;
+              const isReactionPreview = chat.last_message_is_reaction || chat.last_message_type === 'reaction';
               const isMutedChat = mutedChats.has(normalizeUserId(chat.other_user_id));
 
               return (
@@ -1876,7 +3333,10 @@ export default function Inbox() {
                   <h4>{chat.first_name} {chat.last_name}</h4>
                   <div className="chat-status-stack">
                     {isMutedChat && <BellOff size={14} className="muted-chat-indicator" aria-label="Muted chat" />}
-                    {isUnreadChat && (
+                    {isUnreadChat && isReactionPreview && (
+                      <span className="reaction-unread-dot" aria-label="New reaction" />
+                    )}
+                    {isUnreadChat && !isReactionPreview && (
                       <>
                       <span className="new-indicator">New</span>
                       <span className="unread-badge">{chat.unread_count}</span>
@@ -1887,14 +3347,13 @@ export default function Inbox() {
                 <p className="chat-preview">
                   {(() => {
                     const lm = chat.last_message || '';
+                    const metaTime = chat.last_message_at ? ` · ${formatRelativeShortTime(chat.last_message_at)}` : '';
                     // If it looks like a reaction JSON, show a friendly label
                     if (lm.startsWith('{') && lm.includes('"type":"reaction"')) {
-                      try {
-                        const d = JSON.parse(lm);
-                        const isMe = normalizeUserId(d.reactorId) === normalizeUserId(currentUser?.id);
-                        return isMe ? `You reacted ${d.emoji}` : `Reacted ${d.emoji} to your message`;
-                      } catch { /* fall through */ }
+                      const reactionPreview = formatReactionPreview(lm, chat.last_message_sender_id, chat);
+                      if (reactionPreview) return `${reactionPreview}${metaTime}`;
                     }
+                    if (isReactionPreview) return `${lm}${metaTime}`;
 
                     // If it looks like a call_log JSON, show a friendly label
                     if (lm.startsWith('{') && lm.includes('call_type')) {
@@ -1953,13 +3412,14 @@ export default function Inbox() {
 
       <div
         ref={inboxMainRef}
-        className={`inbox-main glass-panel ${activeChat ? 'has-details-panel' : ''} ${slideDirection === 'enter' ? 'slide-in-from-right' : ''} ${slideDirection === 'exit' ? 'slide-out-to-right' : ''}`}
+        className={`inbox-main glass-panel ${activeChat && showChatInfoPanel ? 'has-details-panel' : ''} ${slideDirection === 'enter' ? 'slide-in-from-right' : ''} ${slideDirection === 'exit' ? 'slide-out-to-right' : ''}`}
+        style={{ flex: '1 1 auto', minWidth: 0, display: 'flex', flexDirection: 'column' }}
       >
         {activeChat ? (
           <>
             <div className="chat-header">
               {/* Left: back + avatar + name */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem', flex: 1, minWidth: 0 }}>
+              <div className="chat-header-left" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flex: 1, minWidth: 0, overflow: 'hidden' }}>
                 <button
                   className="hdr-icon-btn chat-back-btn"
                   onClick={() => {
@@ -1985,16 +3445,16 @@ export default function Inbox() {
                     <span className="online-dot" title="Online" />
                   )}
                 </div>
-                <div style={{ minWidth: 0 }}>
+                <div className="chat-header-text" style={{ minWidth: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
                   <h3 style={{ margin: 0, fontSize: '0.97rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                     {activeChat.first_name} {activeChat.last_name}
                   </h3>
-                  <span className="text-muted text-sm">{activeChat.role}</span>
+                  <span className="text-muted text-sm" style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{activeChat.role}</span>
                 </div>
               </div>
 
               {/* Right: 4 uniform circle icon buttons */}
-              <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexShrink: 0 }}>
+              <div className="chat-header-right" style={{ display: 'flex', gap: '4px', alignItems: 'center', flexShrink: 0 }}>
                 {/* Audio Call */}
                 <button
                   className="hdr-icon-btn hdr-icon-btn--call-audio"
@@ -2030,10 +3490,11 @@ export default function Inbox() {
                 </button>
                 {/* Chat Info Toggle */}
                 <button
-                  className="chat-info-toggle-btn"
+                  className={`hdr-icon-btn hdr-icon-btn--info ${showChatInfoPanel ? 'active' : ''}`}
                   onClick={() => setShowChatInfoPanel(!showChatInfoPanel)}
+                  title={showChatInfoPanel ? 'Hide Chat Details' : 'View Chat Details'}
                 >
-                  Chat info
+                  <Info size={16} />
                 </button>
               </div>
             </div>
@@ -2074,16 +3535,64 @@ export default function Inbox() {
               </div>
             )}
 
-            <div ref={chatMessagesRef} className="chat-messages custom-scrollbar">
+            {latestPinnedMessage && (
+              <button type="button" className="pinned-message-bar" onClick={() => setPinnedMessagesOpen(true)}>
+                <Pin size={17} />
+                <div className="pinned-message-bar-text">
+                  <span>{getPinnedSenderLabel(latestPinnedMessage)}</span>
+                  <strong>{getPinnedPreviewText(latestPinnedMessage)}</strong>
+                </div>
+                <ChevronDown size={16} />
+              </button>
+            )}
+
+            <div 
+              ref={chatMessagesRef} 
+              className="chat-messages custom-scrollbar"
+              onScroll={handleChatScroll}
+            >
               {messages.map((message) => {
                 const isMine = normalizeUserId(message.sender_id) === normalizeUserId(currentUser.id);
-                const myReaction = message.reactions?.find((item) => item.reacted_by_me)?.reaction || '';
+                const messageReactions = Array.isArray(message.reactions) ? message.reactions : [];
+                const myReaction = messageReactions.find((item) => item.reacted_by_me)?.reaction || '';
+                const senderAvatarSrc = activeChat?.profile_picture
+                  ? resolveMediaUrl(activeChat.profile_picture)
+                  : `${import.meta.env.BASE_URL}avatars/male1.png`;
 
                 if (message.message_type === 'reaction') {
                   return null;
                 }
 
                 // ╬ô├╢├ç╬ô├╢├ç Messenger-style Call Log Bubble ╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç
+                if (message.deleted_for_everyone) {
+                  return (
+                    <div
+                      id={`msg-${message.id}`}
+                      key={message.client_id || message.id}
+                      className={`message-wrapper ${isMine ? 'mine' : 'theirs'} ${!isMine ? 'with-sender-avatar' : ''} ${highlightedPinnedMessageId === message.id ? 'pinned-message-highlight' : ''}`}
+                    >
+                      {!isMine && <img className="message-sender-avatar" src={senderAvatarSrc} alt="" />}
+                      <div className={`message-shell deleted-message-shell ${openMenuId === message.id ? 'controls-open' : ''}`}>
+                        <div className={`message-tools ${isMine ? 'mine' : 'theirs'} deleted-message-tools`}>
+                          <button type="button" className={`mini-action-btn ${openMenuId === message.id ? 'active' : ''}`} onPointerDown={(event) => event.preventDefault()} onClick={(event) => toggleMessageMenu(message.id, event)} title="More">
+                            <MoreVertical size={14} />
+                          </button>
+                        </div>
+                        {openMenuId === message.id && (
+                          <div className={`message-menu ${isMine ? 'mine' : 'theirs'} ${openMenuDirection}`}>
+                            <button type="button" className="message-menu-item" onClick={() => handleDeleteMessage(message, 'me')}>
+                              <Trash2 size={14} /> Remove
+                            </button>
+                          </div>
+                        )}
+                        <div className={`message-bubble deleted-message-bubble ${isMine ? 'mine' : 'theirs'}`}>
+                          <span>{formatDeletedMessageText(message)}</span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                }
+
                 if (message.message_type === 'call_log') {
                   let callData = {};
                   try {
@@ -2106,7 +3615,7 @@ export default function Inbox() {
                     : status === 'declined' ? 'Call declined' : 'Missed call';
 
                   return (
-                    <div id={`msg-${message.id}`} key={message.id} className={`message-wrapper ${isMine ? 'mine' : 'theirs'}`}>
+                    <div id={`msg-${message.id}`} key={message.id} className={`message-wrapper ${isMine ? 'mine' : 'theirs'} ${highlightedPinnedMessageId === message.id ? 'pinned-message-highlight' : ''}`}>
                       <div className="call-log-bubble">
                         {/* Icon circle */}
                         <div className="call-log-circle" style={{ background: iconBg }}>
@@ -2144,15 +3653,39 @@ export default function Inbox() {
                     </div>
                   );
                 }
-                // ╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç
+                // ╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç
 
+
+                let contentToShow = message.content;
+                const actualAttachmentType = decryptedAttachmentUrls[message.id]?.type || (message.attachment_type?.replace('e2e-file:', '') || '');
+                const messageAttachmentUrl = typeof message.attachment_url === 'string' ? message.attachment_url : '';
+                const isImageOrVideo = messageAttachmentUrl && (actualAttachmentType.startsWith('image/') || actualAttachmentType.startsWith('video/'));
+                const isAudioAttachment = messageAttachmentUrl && (actualAttachmentType.startsWith('audio/') || messageAttachmentUrl.endsWith('.webm'));
+
+                if (isImageOrVideo && contentToShow) {
+                  const fileExts = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.mp4', '.mov', '.webm'];
+                  const lowerContent = contentToShow.toLowerCase();
+                  if (fileExts.some(ext => lowerContent.endsWith(ext)) && contentToShow.length < 100 && !contentToShow.includes('\n')) {
+                     contentToShow = '';
+                  }
+                }
+
+                if (isAudioAttachment && contentToShow) {
+                  const lowerContent = contentToShow.toLowerCase();
+                  if (lowerContent === 'voice message' || lowerContent.endsWith('.webm')) {
+                    contentToShow = '';
+                  }
+                }
+
+                const isMediaOnly = message.attachment_url && (actualAttachmentType.startsWith('image/') || actualAttachmentType === 'image/gif') && !contentToShow && !message.is_forwarded && !message.reply_preview;
 
                 return (
                   <div
                     id={`msg-${message.id}`}
                     key={message.client_id || message.id}
-                    className={`message-wrapper ${isMine ? 'mine' : 'theirs'} ${chatSearchResults.includes(message.id) ? 'chat-search-match' : ''} ${chatSearchResults[chatSearchIndex] === message.id ? 'current' : ''}`}
+                    className={`message-wrapper ${isMine ? 'mine' : 'theirs'} ${!isMine && !isAudioAttachment ? 'with-sender-avatar' : ''} ${highlightedPinnedMessageId === message.id ? 'pinned-message-highlight' : ''} ${chatSearchResults.includes(message.id) ? 'chat-search-match' : ''} ${chatSearchResults[chatSearchIndex] === message.id ? 'current' : ''}`}
                   >
+                    {!isMine && !isAudioAttachment && <img className="message-sender-avatar" src={senderAvatarSrc} alt="" />}
                     <div className={`message-shell ${openMenuId === message.id || reactionBarId === message.id ? 'controls-open' : ''}`}>
                       <div className={`message-tools ${isMine ? 'mine' : 'theirs'}`}>
                         <button type="button" className="mini-action-btn" onPointerDown={(event) => event.preventDefault()} onClick={() => beginReply(message)} title="Reply">
@@ -2160,7 +3693,15 @@ export default function Inbox() {
                         </button>
                         <button type="button" className={`mini-action-btn ${reactionBarId === message.id ? 'active' : ''}`} onPointerDown={(event) => event.preventDefault()} onClick={() => {
                           preserveChatScrollPosition();
-                          setReactionBarId((prev) => prev === message.id ? null : message.id);
+                          setReactionBarId((prev) => {
+                            const nextId = prev === message.id ? null : message.id;
+                            if (nextId !== message.id) {
+                              setReactionPickerMessageId(null);
+                              setReactionPickerDirection('up');
+                              setReactionSearchQuery('');
+                            }
+                            return nextId;
+                          });
                         }} title="React">
                           <SmilePlus size={14} />
                         </button>
@@ -2177,38 +3718,148 @@ export default function Inbox() {
                               type="button"
                               className={`reaction-option ${myReaction === reaction ? 'selected' : ''}`}
                               onClick={() => handleReaction(message, reaction)}
+                              aria-label={getReactionName(reaction)}
                             >
-                              {reaction}
+                              <span className="reaction-emoji-glyph">{reaction}</span>
                             </button>
                           ))}
+                          <button
+                            type="button"
+                            className={`reaction-option reaction-plus-btn ${reactionPickerMessageId === message.id ? 'selected' : ''}`}
+                            onPointerDown={(event) => event.preventDefault()}
+                            onClick={(event) => {
+                              const pickerHeight = 360;
+                              const buttonRect = event.currentTarget.getBoundingClientRect();
+                              const chatRect = chatMessagesRef.current?.getBoundingClientRect();
+                              const boundaryTop = chatRect?.top ?? 0;
+                              const boundaryBottom = chatRect?.bottom ?? window.innerHeight;
+                              const spaceAbove = buttonRect.top - boundaryTop;
+                              const spaceBelow = boundaryBottom - buttonRect.bottom;
+                              if (reactionPickerMessageId !== message.id) {
+                                setReactionPickerDirection(spaceAbove < pickerHeight + 24 && spaceBelow > spaceAbove ? 'down' : 'up');
+                              }
+                              setReactionPickerMessageId((prev) => prev === message.id ? null : message.id);
+                              setReactionSearchQuery('');
+                            }}
+                            aria-label="More reactions"
+                          >
+                            <Plus size={16} />
+                          </button>
+
+                          {reactionPickerMessageId === message.id && (
+                            <div className={`reaction-picker-panel ${isMine ? 'mine' : 'theirs'} ${reactionPickerDirection}`}>
+                              <label className="reaction-search-box">
+                                <Search size={16} />
+                                <input
+                                  value={reactionSearchQuery}
+                                  onChange={(event) => setReactionSearchQuery(event.target.value)}
+                                  placeholder="Search emoji"
+                                />
+                              </label>
+
+                              <div className="reaction-picker-groups">
+                                {filteredReactionGroups.length > 0 ? (
+                                  filteredReactionGroups.map((group) => (
+                                    <section key={group.title} className="reaction-picker-group">
+                                      <div className="reaction-picker-title">{group.title}</div>
+                                      <div className="reaction-picker-grid">
+                                        {group.items.map((item) => (
+                                          <button
+                                            key={`${group.title}-${item.emoji}`}
+                                            type="button"
+                                            className={`reaction-picker-emoji ${myReaction === item.emoji ? 'selected' : ''}`}
+                                            onClick={() => handleReaction(message, item.emoji)}
+                                            aria-label={item.name}
+                                          >
+                                            <span className="reaction-emoji-glyph">{item.emoji}</span>
+                                          </button>
+                                        ))}
+                                      </div>
+                                    </section>
+                                  ))
+                                ) : (
+                                  <div className="reaction-empty-state">No reactions found</div>
+                                )}
+                              </div>
+                            </div>
+                          )}
                         </div>
                       )}
 
                         {openMenuId === message.id && (
                           <div className={`message-menu ${isMine ? 'mine' : 'theirs'} ${openMenuDirection}`}>
-                            <button type="button" className="message-menu-item" onClick={() => beginReply(message)}>
-                              <CornerUpLeft size={14} /> Reply
-                            </button>
-                          <button type="button" className="message-menu-item" onClick={() => beginForward(message)}>
-                            <Forward size={14} /> Forward
-                          </button>
-                          {isMine && (
-                            <button type="button" className="message-menu-item" onClick={() => beginEdit(message)}>
-                              <Pencil size={14} /> Edit
-                            </button>
-                          )}
-                          <button type="button" className="message-menu-item danger" onClick={() => handleDeleteMessage(message, 'me')}>
-                            <Trash2 size={14} /> Delete for me
-                          </button>
-                          {isMine && (
-                            <button type="button" className="message-menu-item danger" onClick={() => handleDeleteMessage(message, 'everyone')}>
-                              <Trash2 size={14} /> Unsend
-                            </button>
-                          )}
-                        </div>
-                      )}
-
-                      <div className="message-bubble" style={(message.attachment_type?.startsWith('audio/') || message.attachment_url?.endsWith('.webm')) ? { '--message-mine-bg': '#dcf8c6', '--message-theirs-bg': '#fff', background: isMine ? '#dcf8c6' : '#fff', color: '#000' } : {}}>
+                            {isMine ? (
+                              <>
+                                <button type="button" className="message-menu-item" onClick={() => beginEdit(message)}>
+                                  <Pencil size={14} /> {isAudioAttachment ? 'Rename voice' : 'Edit'}
+                                </button>
+                                <button type="button" className="message-menu-item danger" onClick={() => handleDeleteMessage(message, 'everyone')}>
+                                  <Trash2 size={14} /> Unsend
+                                </button>
+                                <button type="button" className="message-menu-item" onClick={() => beginForward(message)}>
+                                  <Forward size={14} /> Forward
+                                </button>
+                                {isAudioAttachment && (
+                                  <button type="button" className="message-menu-item" onClick={() => {
+                                    const a = document.createElement('a');
+                                    a.href = decryptedAttachmentUrls[message.id]?.url || resolveMediaUrl(messageAttachmentUrl);
+                                    let ext = 'wav';
+                                    if (message.attachment_type) {
+                                      if (message.attachment_type.includes('webm')) ext = 'webm';
+                                      else if (message.attachment_type.includes('mp4')) ext = 'm4a';
+                                      else if (message.attachment_type.includes('mpeg')) ext = 'mp3';
+                                    }
+                                    a.download = (message.content || 'voice-message').replace(/\.[^.]+$/, '') + '.' + ext;
+                                    a.click();
+                                  }}>
+                                    <Download size={14} /> Download
+                                  </button>
+                                )}
+                                <button type="button" className="message-menu-item" onClick={() => handleTogglePin(message)}>
+                                  {message.is_pinned ? <><PinOff size={14} /> Unpin</> : <><Pin size={14} /> Pin</>}
+                                </button>
+                                <button type="button" className="message-menu-item danger" onClick={() => handleReportMessage(message)}>
+                                  <Flag size={14} /> Report
+                                </button>
+                                <button type="button" className="message-menu-item danger" onClick={() => handleDeleteMessage(message, 'me')}>
+                                  <Trash2 size={14} /> Delete for me
+                                </button>
+                              </>
+                            ) : (
+                              <>
+                                <button type="button" className="message-menu-item" onClick={() => beginForward(message)}>
+                                  <Forward size={14} /> Forward
+                                </button>
+                                {isAudioAttachment && (
+                                  <button type="button" className="message-menu-item" onClick={() => {
+                                    const a = document.createElement('a');
+                                    a.href = decryptedAttachmentUrls[message.id]?.url || resolveMediaUrl(messageAttachmentUrl);
+                                    let ext = 'wav';
+                                    if (message.attachment_type) {
+                                      if (message.attachment_type.includes('webm')) ext = 'webm';
+                                      else if (message.attachment_type.includes('mp4')) ext = 'm4a';
+                                      else if (message.attachment_type.includes('mpeg')) ext = 'mp3';
+                                    }
+                                    a.download = (message.content || 'voice-message').replace(/\.[^.]+$/, '') + '.' + ext;
+                                    a.click();
+                                  }}>
+                                    <Download size={14} /> Download
+                                  </button>
+                                )}
+                                <button type="button" className="message-menu-item" onClick={() => handleTogglePin(message)}>
+                                  {message.is_pinned ? <><PinOff size={14} /> Unpin</> : <><Pin size={14} /> Pin</>}
+                                </button>
+                                <button type="button" className="message-menu-item danger" onClick={() => handleDeleteMessage(message, 'me')}>
+                                  <Trash2 size={14} /> Delete for me
+                                </button>
+                                <button type="button" className="message-menu-item danger" onClick={() => handleReportMessage(message)}>
+                                  <Flag size={14} /> Report
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        )}
+                      <div className={`message-bubble ${isMediaOnly ? 'media-only' : ''}`} style={isAudioAttachment ? { '--message-mine-bg': '#dcf8c6', '--message-theirs-bg': '#fff', background: isMine ? '#dcf8c6' : '#fff', color: '#000' } : {}}>
                         {message.is_forwarded && (
                           <div className="message-flag">
                             <Forward size={12} /> Forwarded message
@@ -2224,9 +3875,9 @@ export default function Inbox() {
 
                         {renderAttachment(message)}
 
-                        {message.content && <p>{renderMessageContent(message.content)}</p>}
+                        {contentToShow && <MessageWithLinks content={contentToShow} renderText={renderMessageContent} />}
 
-                        <span className="message-time" style={(message.attachment_type?.startsWith('audio/') || message.attachment_url?.endsWith('.webm')) ? { color: 'rgba(0,0,0,0.5)' } : {}}>
+                        <span className="message-time" style={isAudioAttachment ? { color: 'rgba(0,0,0,0.5)' } : {}}>
                           {formatLocalTime(message.created_at)}
                           {message.is_edited ? ' | edited' : ''}
                           {isMine && (
@@ -2241,9 +3892,9 @@ export default function Inbox() {
                         </span>
                       </div>
 
-                      {message.reactions?.length > 0 && (
+                      {messageReactions.length > 0 && (
                         <div className={`message-reactions ${isMine ? 'mine' : 'theirs'}`}>
-                          {message.reactions.map((reaction) => (
+                          {messageReactions.map((reaction) => (
                             <button
                               key={`${message.id}-${reaction.reaction}`}
                               type="button"
@@ -2261,6 +3912,22 @@ export default function Inbox() {
                 );
               })}
             </div>
+
+            {showScrollDown && (
+              <button
+                type="button"
+                className="scroll-bottom-btn"
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => scrollToLatest('smooth')}
+                aria-label="Scroll to latest message"
+                title="Scroll to latest message"
+              >
+                <ChevronDown size={22} strokeWidth={2.6} />
+                {unreadCountInScroll > 0 && (
+                  <span className="scroll-unread-badge">{unreadCountInScroll}</span>
+                )}
+              </button>
+            )}
 
             <form className="chat-input-area" onSubmit={submitMessage}>
               <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
@@ -2290,7 +3957,7 @@ export default function Inbox() {
 
                 <div className="input-row fb-messenger-style">
                   {/* Left icon cluster */}
-                  {(!newMessage.trim() && attachedFiles.length === 0 && !isRecording) ? (
+                  {isRecording ? null : (!newMessage.trim() && attachedFiles.length === 0) ? (
                     <div className="fb-icons-left">
                       <button type="button" className="fb-icon-btn" title="Voice message" onClick={startRecording}>
                         <Mic size={20} />
@@ -2298,12 +3965,12 @@ export default function Inbox() {
                       <button type="button" className="fb-icon-btn" onClick={() => fileInputRef.current?.click()} title="Attach photo">
                         <ImageIcon size={20} />
                       </button>
-                      <button type="button" className="fb-icon-btn" title="Choose sticker">
-                        <Sticker size={20} />
-                      </button>
-                      <button type="button" className="fb-icon-btn gif-btn" title="Choose GIF">
-                        <span style={{ fontSize: '11px', fontWeight: 'bold' }}>GIF</span>
-                      </button>
+                      {/* Sticker and GIF buttons removed per request */}
+                      {gifPickerOpen && (
+                        <div style={{ position: 'absolute', bottom: 'calc(100% + 15px)', left: '0px', zIndex: 50 }}>
+                          <GifPicker onSelect={sendGifMessage} onClose={() => setGifPickerOpen(false)} />
+                        </div>
+                      )}
                     </div>
                   ) : (
                     <div className="fb-icons-left" style={{ position: 'relative' }}>
@@ -2312,14 +3979,10 @@ export default function Inbox() {
                         className="fb-icon-btn collapse-btn" 
                         style={{ background: '#0084ff', color: 'white', width: '28px', height: '28px', marginLeft: '4px' }} 
                         onClick={() => {
-                          if (isRecording) {
-                            stopRecording();
-                          } else {
-                            setIsPlusMenuOpen(!isPlusMenuOpen);
-                          }
+                          setIsPlusMenuOpen(!isPlusMenuOpen);
                         }}
                       >
-                        {isRecording ? <Square size={16} fill="currentColor" /> : isPlusMenuOpen ? <X size={20} strokeWidth={3} /> : <Plus size={20} strokeWidth={3} />}
+                        {isPlusMenuOpen ? <X size={20} strokeWidth={3} /> : <Plus size={20} strokeWidth={3} />}
                       </button>
                       
                       {isPlusMenuOpen && !isRecording && (
@@ -2350,10 +4013,15 @@ export default function Inbox() {
                             <Sticker size={20} color="#0084ff" />
                             <span>Choose a sticker</span>
                           </button>
-                          <button type="button" className="fb-plus-menu-item" onClick={() => setIsPlusMenuOpen(false)}>
+                          <button type="button" className="fb-plus-menu-item" onClick={() => { setIsPlusMenuOpen(false); setGifPickerOpen(true); }}>
                             <span style={{ fontSize: '11px', fontWeight: 'bold', color: '#0084ff', background: 'rgba(0,132,255,0.1)', padding: '2px 4px', borderRadius: '4px' }}>GIF</span>
                             <span>Choose a GIF</span>
                           </button>
+                        </div>
+                      )}
+                      {gifPickerOpen && !isRecording && (
+                        <div style={{ position: 'absolute', bottom: 'calc(100% + 15px)', left: '0px', zIndex: 50 }}>
+                          <GifPicker onSelect={sendGifMessage} onClose={() => setGifPickerOpen(false)} />
                         </div>
                       )}
                     </div>
@@ -2362,12 +4030,82 @@ export default function Inbox() {
                   {/* Text input / Recording UI */}
                   <div className="chat-composer fb-input-wrapper">
                     {isRecording ? (
-                      <div className="recording-state">
-                        <div className="recording-pulse" />
-                        <span>{formatRecordingTime(recordingTime)}</span>
-                        <button type="button" onClick={cancelRecording} className="recording-cancel">
-                          <Trash2 size={16} />
+                      <div className={`recording-state whatsapp-voice-recorder ${isRecordingPaused ? 'paused' : ''} ${recordingPreviewUrl ? 'has-preview' : ''}`}>
+                        {recordingPreviewUrl && (
+                          <audio
+                            ref={recordingPreviewAudioRef}
+                            src={recordingPreviewUrl}
+                            preload="auto"
+                            onPlay={handlePreviewAudioPlay}
+                            onPause={handlePreviewAudioStop}
+                            onEnded={handlePreviewAudioStop}
+                            onError={() => {
+                              setIsRecordingPreviewPlaying(false);
+                              showModernAlert('Could not load this voice preview. Please record again.', 'Voice Preview Error');
+                            }}
+                            style={{ display: 'none' }}
+                          />
+                        )}
+                        <button type="button" onClick={cancelRecording} className="recording-cancel" aria-label="Discard voice message">
+                          <Trash2 size={18} />
                         </button>
+                        <div className="recording-time-wrap">
+                          <span className="recording-pulse" />
+                          <span className="recording-time">{formatRecordingTime(recordingTime)}</span>
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '16px', flex: 1 }}>
+                          <button type="button" onClick={toggleRecordingPause} className="recording-pause-btn" aria-label={isRecordingPaused ? 'Play voice preview' : 'Pause voice recording'}>
+                            {isRecordingPaused && !isRecordingPreviewPlaying ? <Play size={16} fill="currentColor" /> : <Pause size={16} fill="currentColor" />}
+                          </button>
+                          <div className="recording-wave-container" style={{ flex: 'none' }}>
+                            <div className="recording-wave" aria-hidden="true">
+                              {VOICE_WAVE_BARS.map((height, index) => {
+                                const normalizedLevel = isRecordingPaused ? 0 : recordingLevel;
+                                const previewPeak = recordingPreviewPeaks[index] || 0.18;
+                                const previewActiveIndex = Math.floor(recordingPlaybackProgress * (VOICE_WAVE_BARS.length - 1));
+                                const previewProximity = isRecordingPreviewPlaying
+                                  ? Math.max(0, 1 - Math.abs(index - previewActiveIndex) / 4)
+                                  : 0;
+                                const ripple = normalizedLevel > 0.03 ? 0.72 + (Math.sin(recordingWaveTick * 0.28 + index) * 0.18) : 0.35;
+                                const liveHeight = Math.max(4, Math.round((height - 4) * (0.38 + normalizedLevel * ripple) + 4));
+                                const previewHeight = Math.max(4, Math.round((height - 4) * (0.28 + previewPeak * (0.62 + previewProximity * 0.32)) + 4));
+                                const reactiveHeight = isRecordingPaused ? previewHeight : liveHeight;
+                                const isActive = isRecordingPaused ? index <= previewActiveIndex && isRecordingPreviewPlaying : normalizedLevel > 0.03;
+                                return (
+                                  <span
+                                    key={`recording-bar-${index}`}
+                                    className={isActive ? 'active' : ''}
+                                    style={{
+                                      height: `${reactiveHeight}px`,
+                                      opacity: isRecordingPaused ? 0.42 + previewPeak * 0.44 + previewProximity * 0.14 : 0.35 + normalizedLevel * 0.65,
+                                    }}
+                                  />
+                                );
+                              })}
+                              {isRecordingPaused && (
+                                <>
+                                  <div className="recording-wave-dot" style={{ left: `${recordingPlaybackProgress * 100}%` }} />
+                                  <input
+                                    type="range"
+                                    className="recording-wave-slider"
+                                    min="0"
+                                    max="100"
+                                    value={recordingPlaybackProgress * 100}
+                                    onChange={(e) => {
+                                      const val = Number(e.target.value) / 100;
+                                      setRecordingPlaybackProgress(val);
+                                      if (recordingPreviewAudioRef.current) {
+                                        const dur = recordingPreviewDurationRef.current || recordingTime || (recordingPreviewAudioRef.current.duration !== Infinity ? recordingPreviewAudioRef.current.duration : 0) || 1;
+                                        recordingPreviewAudioRef.current.currentTime = val * dur;
+                                      }
+                                    }}
+                                    aria-label="Seek voice preview"
+                                  />
+                                </>
+                              )}
+                            </div>
+                          </div>
+                        </div>
                       </div>
                     ) : (
                       <div className="fb-input-inner">
@@ -2446,7 +4184,11 @@ export default function Inbox() {
 
                   {/* Right side action */}
                   <div className="composer-action fb-icons-right">
-                    {newMessage.trim() || attachedFiles.length > 0 ? (
+                    {isRecording ? (
+                      <button type="button" className="fb-icon-btn send voice-send-btn" onClick={isRecordingPaused ? sendRecordingPreview : () => stopRecording(true)} disabled={isSendingVoice} aria-label="Send voice message">
+                        {isSendingVoice ? <Loader size={20} className="spin" /> : <SendHorizontal size={24} fill="currentColor" />}
+                      </button>
+                    ) : newMessage.trim() || attachedFiles.length > 0 ? (
                       <button type="submit" className="fb-icon-btn send">
                         <SendHorizontal size={24} fill="currentColor" />
                       </button>
@@ -2473,24 +4215,36 @@ export default function Inbox() {
         )}
       </div>
 
-      {activeChat && showChatInfoPanel && (
-        <aside className="chat-details-panel glass-panel">
-          <div className="chat-details-profile">
-            <div className="chat-details-avatar" style={{ background: activeChat.role === 'admin' ? 'var(--warning)' : 'var(--bg-gradient-primary)' }}>
-              {activeChat.profile_picture ? (
-                <img src={resolveMediaUrl(activeChat.profile_picture)} alt="" />
-              ) : (
-                <span>{activeChat.first_name?.[0] || 'U'}</span>
-              )}
+      <aside className={`chat-details-panel glass-panel ${(!activeChat || !showChatInfoPanel) ? 'collapsed' : ''}`} style={(!activeChat || !showChatInfoPanel) ? { flexShrink: 0, overflow: 'hidden' } : { width: 300, flexShrink: 0 }}>
+        {activeChat && (
+          <>
+            <div className="mobile-chat-details-header">
+              <button
+                className="hdr-icon-btn"
+                onClick={() => setShowChatInfoPanel(false)}
+                title="Close"
+              >
+                <X size={20} />
+              </button>
+              <h3 style={{ margin: 0, fontSize: '1.1rem' }}>Contact Info</h3>
+              <div style={{ width: 32 }}></div> {/* Spacer for centering */}
             </div>
-            <h3>{activeChat.first_name} {activeChat.last_name}</h3>
-            <p>{activeChat.role}</p>
-          </div>
+            <div className="chat-details-profile">
+              <div className="chat-details-avatar" style={{ background: activeChat.role === 'admin' ? 'var(--warning)' : 'var(--bg-gradient-primary)' }}>
+                {activeChat.profile_picture ? (
+                  <img src={resolveMediaUrl(activeChat.profile_picture)} alt="" />
+                ) : (
+                  <span>{activeChat.first_name?.[0] || 'U'}</span>
+                )}
+              </div>
+              <h3>{activeChat.first_name} {activeChat.last_name}</h3>
+              <p>{activeChat.role}</p>
+            </div>
 
-          <div className="chat-details-actions">
-            <button
-              type="button"
-              className="chat-details-action"
+            <div className="chat-details-actions">
+              <button
+                type="button"
+                className="chat-details-action"
               onClick={() => {
                 if (activeChat?.other_user_id) {
                   navigate(`/profile/${activeChat.other_user_id}`);
@@ -2529,7 +4283,7 @@ export default function Inbox() {
               </button>
               {chatInfoAccordion && (
                 <div className="chat-accordion-content">
-                  <button type="button" className="chat-details-row" onClick={() => alert('Pinned messages feature is currently under maintenance.')}>
+                  <button type="button" className="chat-details-row" onClick={() => setPinnedMessagesOpen(true)}>
                     <Pin size={16} />
                     View pinned messages
                   </button>
@@ -2544,29 +4298,170 @@ export default function Inbox() {
               </button>
               {mediaAccordion && (
                 <div className="chat-accordion-content">
-                  <div className="media-gallery" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '4px', padding: '0.5rem' }}>
-                    {messages.filter(m => m.attachment_url && m.attachment_url.match(/\.(jpeg|jpg|gif|png|webp|avif)$/i)).length > 0 ? (
-                      messages.filter(m => m.attachment_url && m.attachment_url.match(/\.(jpeg|jpg|gif|png|webp|avif)$/i)).map((m) => {
-                         const fileUrl = (m.attachment_name && m.attachment_url.includes('/inbox-attachments/')) 
-                          ? `/api/inbox/attachments/${encodeURIComponent(m.attachment_name)}` 
-                          : resolveMediaUrl(m.attachment_url);
-                         const displayUrl = decryptedAttachmentUrls[fileUrl] || fileUrl;
-                         return (
-                           <div key={m.id || m.uid} className="media-gallery-item" onClick={() => setImageViewer({ src: displayUrl, alt: 'Media' })} style={{ aspectRatio: '1/1', overflow: 'hidden', borderRadius: '4px', cursor: 'pointer' }}>
-                             <img src={displayUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                           </div>
-                         );
-                      })
-                    ) : (
-                      <div className="empty-results" style={{ gridColumn: '1 / -1', padding: '0.5rem', fontSize: '0.8rem', opacity: 0.7 }}>No media found</div>
+                  <div className="media-links-panel">
+                    {mediaFilesLinks.media.length > 0 && (
+                      <section className="media-links-section">
+                        <h4>Media</h4>
+                        <div className="media-gallery">
+                          {mediaFilesLinks.media.map((item) => (
+                            <button
+                              key={`media-${item.id}`}
+                              type="button"
+                              className="media-gallery-item"
+                              onClick={() => {
+                                if (item.type.startsWith('video/')) {
+                                  window.open(item.url, '_blank', 'noopener,noreferrer');
+                                  return;
+                                }
+                                setImageViewer({ src: item.url, alt: item.name, caption: item.name });
+                              }}
+                              title={item.name}
+                            >
+                              {item.type.startsWith('video/') ? (
+                                <>
+                                  <video src={`${item.url}#t=0.5`} muted playsInline preload="metadata" />
+                                  <span className="media-tile-icon"><Video size={16} /></span>
+                                </>
+                              ) : (
+                                <img src={item.url} alt={item.name} />
+                              )}
+                            </button>
+                          ))}
+                        </div>
+                      </section>
+                    )}
+
+                    {mediaFilesLinks.files.length > 0 && (
+                      <section className="media-links-section">
+                        <h4>Files</h4>
+                        <div className="media-link-list">
+                          {mediaFilesLinks.files.map((item) => (
+                            <div key={`file-${item.id}`} className="media-link-row">
+                              <button
+                                type="button"
+                                className="media-link-main"
+                                onClick={() => window.open(item.url, '_blank', 'noopener,noreferrer')}
+                                title={item.name}
+                              >
+                                <span className="media-link-icon">
+                                  {item.type.startsWith('audio/') ? <Mic size={16} /> : <FileText size={16} />}
+                                </span>
+                                <span className="media-link-copy">
+                                  <span>{item.type.startsWith('audio/') ? 'Voice message' : item.name}</span>
+                                  <small>{formatLocalTime(item.createdAt)}</small>
+                                </span>
+                              </button>
+                              <a className="media-link-download" href={item.url} download={item.name} title="Download">
+                                <Download size={15} />
+                              </a>
+                            </div>
+                          ))}
+                        </div>
+                      </section>
+                    )}
+
+                    {mediaFilesLinks.links.length > 0 && (
+                      <section className="media-links-section">
+                        <h4>Links</h4>
+                        <div className="media-link-list">
+                          {mediaFilesLinks.links.map((item) => (
+                            <div key={`link-${item.id}`} className="media-link-row">
+                              <a
+                                className="media-link-main"
+                                href={item.url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                title={item.url}
+                              >
+                                <span className="media-link-icon"><LinkIcon size={16} /></span>
+                                <span className="media-link-copy">
+                                  <span>{item.host}</span>
+                                  <small>{item.url}</small>
+                                </span>
+                              </a>
+                            </div>
+                          ))}
+                        </div>
+                      </section>
+                    )}
+
+                    {!mediaFilesLinks.media.length && !mediaFilesLinks.files.length && !mediaFilesLinks.links.length && (
+                      <div className="empty-results media-links-empty">No media, files or links yet.</div>
                     )}
                   </div>
                 </div>
               )}
             </div>
           </div>
-        </aside>
+        </>
       )}
+    </aside>
+
+      {pinnedMessagesOpen && activeChat && createPortal((
+        <div className="pinned-modal-overlay" onClick={() => { setPinnedMessagesOpen(false); setPinnedMessageMenuId(null); }}>
+          <div className="pinned-modal" onClick={(event) => { event.stopPropagation(); setPinnedMessageMenuId(null); }}>
+            <div className="pinned-modal-header">
+              <h3>Pinned messages</h3>
+              <button type="button" className="pinned-modal-close" onClick={() => { setPinnedMessagesOpen(false); setPinnedMessageMenuId(null); }} aria-label="Close pinned messages">
+                <X size={22} />
+              </button>
+            </div>
+            <div className="pinned-modal-list custom-scrollbar">
+              {pinnedMessages.length > 0 ? (
+                pinnedMessages.map((message) => {
+                  const isMine = normalizeUserId(message.sender_id) === normalizeUserId(currentUser?.id);
+                  const avatarSrc = isMine
+                    ? (currentUser?.profile_picture ? resolveMediaUrl(currentUser.profile_picture) : `${import.meta.env.BASE_URL}avatars/male1.png`)
+                    : (activeChat.profile_picture ? resolveMediaUrl(activeChat.profile_picture) : `${import.meta.env.BASE_URL}avatars/male1.png`);
+
+                  return (
+                    <div key={`pinned-${message.id}`} className={`pinned-message-item ${isMine ? 'mine' : 'theirs'} ${pinnedMessageMenuId === message.id ? 'menu-open' : ''}`}>
+                      <img className="pinned-message-avatar" src={avatarSrc} alt="" />
+                      <div className="pinned-message-main">
+                        <div className="pinned-message-meta">
+                          <span>{getPinnedSenderLabel(message)}</span>
+                          <time>{formatLocalTime(message.created_at)}</time>
+                        </div>
+                        <div className={`pinned-message-preview ${isMine ? 'mine' : 'theirs'}`}>
+                          {getPinnedPreviewText(message)}
+                        </div>
+                      </div>
+                      <div className="pinned-message-actions">
+                        <button
+                          type="button"
+                          className={`pinned-message-more ${pinnedMessageMenuId === message.id ? 'active' : ''}`}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setPinnedMessageMenuId((currentId) => currentId === message.id ? null : message.id);
+                          }}
+                          aria-label="Pinned message options"
+                        >
+                          <MoreVertical size={16} />
+                        </button>
+                        {pinnedMessageMenuId === message.id && (
+                          <div className="pinned-message-menu" onClick={(event) => event.stopPropagation()}>
+                            <button type="button" onClick={() => showPinnedMessageInChat(message.id)}>
+                              See in chat
+                            </button>
+                            <button type="button" onClick={() => handleTogglePin(message)}>
+                              Unpin
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })
+              ) : (
+                <div className="pinned-empty-state">
+                  <Pin size={26} />
+                  <p>No pinned messages yet.</p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      ), document.body)}
 
       {composerMode && (
         <div className="compose-overlay" onClick={() => { setComposerMode(null); setForwardingMessage(null); }}>
@@ -2644,6 +4539,36 @@ export default function Inbox() {
         </div>
       )}
 
+      {confirmConfig && typeof document !== 'undefined' && createPortal(
+        <div className="modern-modal-overlay" onClick={() => setConfirmConfig(null)}>
+          <div className="modern-modal-content glass-panel shadow-2xl" onClick={e => e.stopPropagation()}>
+            <div className="modern-modal-header">
+              <h3 className="font-display">{confirmConfig.title}</h3>
+              <button className="icon-btn-ghost" onClick={() => setConfirmConfig(null)} aria-label="Close"><X size={20} /></button>
+            </div>
+            <div className="modern-modal-body">
+              <p>{confirmConfig.message}</p>
+            </div>
+            <div className="modern-modal-footer">
+              {!confirmConfig.isAlert && (
+                <button className="modern-btn modern-btn--secondary" onClick={() => setConfirmConfig(null)}>Cancel</button>
+              )}
+              <button 
+                className={`modern-btn ${confirmConfig.type === 'danger' ? 'modern-btn--danger' : 'modern-btn--primary'}`}
+                style={confirmConfig.isAlert ? { width: '100%', maxWidth: '200px', margin: '0 auto' } : {}}
+                onClick={() => {
+                  confirmConfig.onConfirm();
+                  setConfirmConfig(null);
+                }}
+              >
+                {confirmConfig.confirmText || 'Confirm'}
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
       {imageViewer && typeof document !== 'undefined' && createPortal(
         <div className="image-viewer-overlay" onClick={() => setImageViewer(null)}>
           <div className="image-viewer-shell" onClick={(event) => event.stopPropagation()}>
@@ -2658,6 +4583,122 @@ export default function Inbox() {
       )}
 
       <style>{`
+        /* --- Modern Modal --- */
+        .modern-modal-overlay {
+          position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+          background: rgba(0,0,0,0.4);
+          backdrop-filter: blur(8px);
+          -webkit-backdrop-filter: blur(8px);
+          display: flex; align-items: center; justify-content: center;
+          z-index: 10000;
+          padding: 2rem;
+          animation: modalFadeIn 0.2s ease-out;
+        }
+        @keyframes modalFadeIn {
+          from { opacity: 0; } to { opacity: 1; }
+        }
+        .modern-modal-content {
+          width: 100%;
+          max-width: 440px;
+          background: var(--bg-secondary);
+          border: 1px solid var(--glass-border);
+          border-radius: 24px;
+          overflow: hidden;
+          animation: modalScaleIn 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+          box-shadow: 0 25px 50px -12px rgba(0,0,0,0.5);
+        }
+        @keyframes modalScaleIn {
+          from { transform: scale(0.9) translateY(20px); opacity: 0; }
+          to { transform: scale(1) translateY(0); opacity: 1; }
+        }
+        .modern-modal-header {
+          display: flex; align-items: center; justify-content: space-between;
+          padding: 1.5rem 1.5rem 1rem;
+        }
+        .modern-modal-header h3 { margin: 0; font-size: 1.25rem; font-weight: 700; color: var(--text-primary); }
+        .modern-modal-body { padding: 0 1.5rem 1.5rem; color: var(--text-secondary); line-height: 1.5; font-size: 0.95rem; }
+        .modern-modal-footer {
+          padding: 1rem 1.5rem 1.5rem;
+          display: flex; gap: 0.75rem; justify-content: flex-end;
+          background: rgba(255,255,255,0.02);
+        }
+        .modern-btn {
+          padding: 10px 20px; border-radius: 14px; font-weight: 600; font-size: 0.9rem;
+          cursor: pointer; border: none; transition: all 0.2s;
+        }
+        .modern-btn--primary {
+          background: linear-gradient(135deg, var(--accent-primary), #2563eb);
+          color: white; box-shadow: 0 4px 12px rgba(59,130,246,0.3);
+        }
+        .modern-btn--danger {
+          background: linear-gradient(135deg, #ef4444, #dc2626);
+          color: white; box-shadow: 0 4px 12px rgba(239,68,68,0.3);
+        }
+        .modern-btn--secondary {
+          background: rgba(255,255,255,0.05); color: var(--text-secondary);
+          border: 1px solid var(--glass-border);
+        }
+        .modern-btn:hover { transform: translateY(-2px); filter: brightness(1.1); box-shadow: 0 6px 16px rgba(0,0,0,0.2); }
+        .modern-btn:active { transform: translateY(0) scale(0.96); }
+
+        /* --- Scroll Down Button --- */
+        .scroll-bottom-btn {
+          position: absolute;
+          bottom: 104px;
+          left: 50%;
+          transform: translateX(-50%) translateY(0);
+          width: 42px;
+          height: 42px;
+          padding: 0;
+          border-radius: 50%;
+          background: rgba(255,255,255,0.96);
+          border: 1px solid rgba(15,23,42,0.08);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          color: #0084ff;
+          cursor: pointer;
+          z-index: 1000;
+          box-shadow: 0 8px 24px rgba(0,0,0,0.22);
+          transition: background 0.22s ease, color 0.22s ease, border-color 0.22s ease, box-shadow 0.22s ease, transform 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
+          backdrop-filter: blur(12px);
+          -webkit-backdrop-filter: blur(12px);
+          animation: slideUpScrollBtn 0.3s ease-out;
+        }
+        [data-mode="light"] .scroll-bottom-btn {
+          background: rgba(255,255,255,0.98);
+          border-color: rgba(15,23,42,0.08);
+          box-shadow: 0 8px 22px rgba(15,23,42,0.16);
+        }
+        @keyframes slideUpScrollBtn {
+          from { transform: translateX(-50%) translateY(30px) scale(0.6); opacity: 0; }
+          to { transform: translateX(-50%) translateY(0) scale(1); opacity: 1; }
+        }
+        .scroll-bottom-btn:hover {
+          transform: translateX(-50%) translateY(-3px);
+          background: #0084ff;
+          color: white;
+          border-color: transparent;
+          box-shadow: 0 12px 32px rgba(0, 132, 255, 0.4);
+        }
+        .scroll-bottom-btn:active {
+          transform: translateX(-50%) translateY(-1px) scale(0.98);
+          transition-duration: 0.12s;
+        }
+        .scroll-unread-badge {
+          position: absolute;
+          top: -6px;
+          right: -6px;
+          background: #1877f2;
+          color: white;
+          font-size: 0.7rem;
+          font-weight: 800;
+          padding: 2px 6px;
+          border-radius: 12px;
+          min-width: 20px;
+          border: 2px solid var(--bg-primary);
+        }
+
         /* ╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç Inbox Page Layout Fix ╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç */
         html, body {
           overflow: hidden !important;
@@ -2693,6 +4734,7 @@ export default function Inbox() {
             margin-left: 0 !important;
             height: auto !important;
             padding-top: 4rem !important;
+            box-sizing: border-box !important;
             z-index: 10;
             overscroll-behavior: none;
           }
@@ -2716,15 +4758,15 @@ export default function Inbox() {
           100% { transform: translateX(0);     opacity: 1; }
         }
 
-        @media (max-width: 768px) {
+        @media (max-width: 1024px) {
           .inbox-main.slide-in-from-right {
-            animation: slideInFromRight 0.28s cubic-bezier(0.25, 0.8, 0.25, 1) forwards;
+            animation: slideInFromRight 0.28s cubic-bezier(0.25, 0.8, 0.25, 1) none;
           }
           .inbox-main.slide-out-to-right {
             animation: slideOutToRight 0.22s cubic-bezier(0.25, 0.8, 0.25, 1) forwards;
           }
           .inbox-sidebar.slide-in-from-left {
-            animation: slideInFromLeft 0.22s cubic-bezier(0.25, 0.8, 0.25, 1) forwards;
+            animation: slideInFromLeft 0.22s cubic-bezier(0.25, 0.8, 0.25, 1) none;
           }
         }
 
@@ -2811,6 +4853,17 @@ export default function Inbox() {
         }
         .hdr-icon-btn--delete:hover { box-shadow: 0 6px 18px rgba(244,63,94,0.6); }
 
+        /* Chat Info ╬ô├ç├╢ blue */
+        .hdr-icon-btn--info {
+          background: linear-gradient(135deg,#3b82f6,#2563eb);
+          box-shadow: 0 4px 12px rgba(59,130,246,0.35);
+        }
+        .hdr-icon-btn--info:hover { box-shadow: 0 6px 18px rgba(59,130,246,0.6); }
+        .hdr-icon-btn--info.active {
+          box-shadow: inset 0 3px 6px rgba(0,0,0,0.2);
+          transform: scale(0.96);
+        }
+
         /* Back button (mobile only) */
         .chat-back-btn {
           display: none;
@@ -2822,7 +4875,7 @@ export default function Inbox() {
         .chat-back-btn:hover { background: rgba(255,255,255,0.18); }
         .chat-back-btn:active { transform: scale(0.88); }
 
-        @media (max-width: 768px) {
+        @media (max-width: 1024px) {
           .chat-back-btn { display: flex; }
         }
 
@@ -2894,6 +4947,30 @@ export default function Inbox() {
         .call-log-again-btn:hover {
           background: rgba(255,255,255,0.20);
         }
+        .new-msg-btn {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          width: 40px;
+          height: 40px;
+          min-width: 40px;
+          background: #0084ff;
+          color: white;
+          border: none;
+          border-radius: 12px;
+          cursor: pointer;
+          transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+          box-shadow: 0 4px 10px rgba(0, 132, 255, 0.3);
+        }
+        .new-msg-btn:hover {
+          background: #0073e6;
+          transform: translateY(-1px);
+          box-shadow: 0 6px 14px rgba(0, 132, 255, 0.4);
+        }
+        .new-msg-btn:active {
+          transform: translateY(0) scale(0.96);
+        }
+
 
         .inbox-sidebar {
           width: 320px;
@@ -2911,8 +4988,16 @@ export default function Inbox() {
           display: flex;
           justify-content: space-between;
           align-items: center;
-          padding: 1.5rem;
+          padding: 1.5rem 1.25rem;
           border-bottom: 1px solid var(--glass-border);
+          gap: 1rem;
+        }
+        .inbox-header h2 {
+          display: flex;
+          align-items: center;
+          font-size: 1.5rem;
+          margin: 0;
+          color: var(--text-primary);
         }
         .inbox-search {
           margin: 1rem;
@@ -2937,6 +5022,8 @@ export default function Inbox() {
         }
         .chat-item {
           display: flex;
+          flex-wrap: nowrap;
+          align-items: center;
           gap: 1rem;
           padding: 1rem 1.25rem;
           cursor: pointer;
@@ -3052,6 +5139,14 @@ export default function Inbox() {
           font-size: 0.7rem;
           font-weight: bold;
         }
+        .reaction-unread-dot {
+          width: 10px;
+          height: 10px;
+          border-radius: 50%;
+          background: #1877f2;
+          box-shadow: 0 0 0 3px rgba(24,119,242,0.12);
+          flex-shrink: 0;
+        }
         .directory-badge {
           display: inline-flex;
           align-items: center;
@@ -3076,6 +5171,7 @@ export default function Inbox() {
           flex: 1;
           display: flex;
           flex-direction: column;
+          flex-wrap: nowrap;
           border-radius: 0 16px 16px 0;
           border-left: none;
           min-height: 0;
@@ -3083,15 +5179,35 @@ export default function Inbox() {
           box-shadow: none;
           -webkit-backdrop-filter: none;
           backdrop-filter: none;
+          transition: border-radius 0.3s ease;
           background:
             radial-gradient(circle at top right, rgba(59,130,246,0.08), transparent 28%),
             linear-gradient(180deg, rgba(8,11,18,0.95), rgba(10,14,24,0.98));
+          position: relative;
+        }
+        .inbox-main::before {
+          content: '';
+          position: absolute;
+          inset: 0;
+          background-image: url('/bfi-classroom/assets/images/chat_bg_film_unique.png');
+          background-size: 400px;
+          background-repeat: repeat;
+          opacity: 0.2;
+          pointer-events: none;
+          z-index: 0;
+          filter: invert(1);
+          mix-blend-mode: screen;
+        }
+        [data-mode="light"] .inbox-main::before {
+          filter: none;
+          opacity: 0.25;
+          mix-blend-mode: multiply;
         }
         .inbox-main.has-details-panel {
           border-radius: 0;
         }
         .chat-details-panel {
-          width: 270px;
+          width: 300px;
           flex-shrink: 0;
           border-left: 1px solid var(--glass-border);
           border-radius: 0 16px 16px 0;
@@ -3100,10 +5216,26 @@ export default function Inbox() {
           flex-direction: column;
           gap: 1.35rem;
           overflow-y: auto;
+          overflow-x: hidden;
           background: rgba(8,11,18,0.88);
           box-shadow: none;
           -webkit-backdrop-filter: none;
           backdrop-filter: none;
+          transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1), 
+                      padding 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+                      opacity 0.2s ease,
+                      border-left 0.3s ease;
+        }
+        .chat-details-panel.collapsed {
+          width: 0;
+          padding-left: 0;
+          padding-right: 0;
+          opacity: 0;
+          border-left-width: 0;
+          pointer-events: none;
+        }
+        .mobile-chat-details-header {
+          display: none;
         }
         .chat-details-profile {
           display: flex;
@@ -3210,6 +5342,140 @@ export default function Inbox() {
         .chat-accordion-content {
           padding: 0 0.35rem 0.8rem 0.35rem;
         }
+        .media-links-panel {
+          display: flex;
+          flex-direction: column;
+          gap: 0.9rem;
+        }
+        .media-links-section {
+          display: flex;
+          flex-direction: column;
+          gap: 0.45rem;
+        }
+        .media-links-section h4 {
+          margin: 0;
+          color: var(--text-secondary);
+          font-size: 0.76rem;
+          font-weight: 700;
+          letter-spacing: 0.02em;
+        }
+        .media-gallery {
+          display: grid;
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+          gap: 0.35rem;
+        }
+        .media-gallery-item {
+          position: relative;
+          aspect-ratio: 1 / 1;
+          overflow: hidden;
+          border: 1px solid rgba(148, 163, 184, 0.18);
+          border-radius: 8px;
+          background: rgba(148, 163, 184, 0.12);
+          cursor: pointer;
+          padding: 0;
+        }
+        .media-gallery-item img,
+        .media-gallery-item video {
+          width: 100%;
+          height: 100%;
+          display: block;
+          object-fit: cover;
+        }
+        .media-tile-icon {
+          position: absolute;
+          left: 50%;
+          top: 50%;
+          display: inline-flex;
+          width: 2rem;
+          height: 2rem;
+          align-items: center;
+          justify-content: center;
+          border-radius: 999px;
+          background: rgba(2, 6, 23, 0.7);
+          color: #fff;
+          transform: translate(-50%, -50%);
+        }
+        .media-link-list {
+          display: flex;
+          flex-direction: column;
+          gap: 0.35rem;
+        }
+        .media-link-row {
+          display: flex;
+          align-items: center;
+          gap: 0.45rem;
+          min-width: 0;
+        }
+        .media-link-main {
+          flex: 1;
+          min-width: 0;
+          display: flex;
+          align-items: center;
+          gap: 0.55rem;
+          border: none;
+          border-radius: 10px;
+          background: rgba(148, 163, 184, 0.1);
+          color: var(--text-primary);
+          padding: 0.55rem;
+          text-align: left;
+          text-decoration: none;
+          cursor: pointer;
+        }
+        .media-link-main:hover {
+          background: rgba(59, 130, 246, 0.14);
+        }
+        .media-link-icon {
+          flex: 0 0 auto;
+          display: inline-flex;
+          width: 2rem;
+          height: 2rem;
+          align-items: center;
+          justify-content: center;
+          border-radius: 999px;
+          background: rgba(59, 130, 246, 0.16);
+          color: #60a5fa;
+        }
+        .media-link-copy {
+          min-width: 0;
+          display: flex;
+          flex-direction: column;
+          gap: 0.1rem;
+        }
+        .media-link-copy span,
+        .media-link-copy small {
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .media-link-copy span {
+          font-size: 0.84rem;
+          font-weight: 700;
+        }
+        .media-link-copy small {
+          color: var(--text-secondary);
+          font-size: 0.72rem;
+        }
+        .media-link-download {
+          flex: 0 0 auto;
+          display: inline-flex;
+          width: 2.15rem;
+          height: 2.15rem;
+          align-items: center;
+          justify-content: center;
+          border-radius: 999px;
+          background: rgba(148, 163, 184, 0.12);
+          color: var(--text-primary);
+          text-decoration: none;
+        }
+        .media-link-download:hover {
+          background: rgba(59, 130, 246, 0.18);
+          color: #60a5fa;
+        }
+        .media-links-empty {
+          padding: 0.65rem 0.5rem;
+          font-size: 0.82rem;
+          opacity: 0.72;
+        }
         .chat-details-row {
           border: none;
           background: transparent;
@@ -3228,24 +5494,7 @@ export default function Inbox() {
         .chat-details-row:hover {
           background: rgba(255,255,255,0.06);
         }
-        .chat-info-toggle-btn {
-          background: rgba(255,255,255,0.1);
-          border: 1px solid rgba(255,255,255,0.15);
-          color: var(--text-primary);
-          padding: 0 0.85rem;
-          height: 36px;
-          border-radius: 18px;
-          font-size: 0.85rem;
-          font-weight: 600;
-          cursor: pointer;
-          transition: all 0.2s ease;
-          display: flex;
-          align-items: center;
-          margin-left: 0.5rem;
-        }
-        .chat-info-toggle-btn:hover {
-          background: rgba(255,255,255,0.18);
-        }
+
         
         [data-mode="light"] .chat-details-panel {
           background: #ffffff;
@@ -3260,17 +5509,21 @@ export default function Inbox() {
           background: rgba(59,130,246,0.16);
           color: #3b82f6;
         }
-        [data-mode="light"] .chat-accordion-header:hover,
         [data-mode="light"] .chat-details-row:hover {
           background: rgba(0,0,0,0.04);
         }
-        [data-mode="light"] .chat-info-toggle-btn {
-          background: rgba(0,0,0,0.04);
-          border: 1px solid rgba(0,0,0,0.08);
-          color: #09090b;
+        [data-mode="light"] .media-gallery-item {
+          border-color: rgba(15, 23, 42, 0.12);
+          background: rgba(15, 23, 42, 0.06);
         }
-        [data-mode="light"] .chat-info-toggle-btn:hover {
-          background: rgba(0,0,0,0.08);
+        [data-mode="light"] .media-link-main {
+          background: rgba(15, 23, 42, 0.05);
+        }
+        [data-mode="light"] .media-link-main:hover {
+          background: rgba(59, 130, 246, 0.12);
+        }
+        [data-mode="light"] .media-link-download {
+          background: rgba(15, 23, 42, 0.06);
         }
 
         .chat-header {
@@ -3281,6 +5534,8 @@ export default function Inbox() {
           border-bottom: 1px solid var(--glass-border);
           background: rgba(6,9,16,0.8);
           backdrop-filter: blur(10px);
+          position: relative;
+          z-index: 1;
         }
         .chat-search-panel {
           flex-shrink: 0;
@@ -3290,6 +5545,8 @@ export default function Inbox() {
           padding: 0.75rem 1.5rem;
           border-bottom: 1px solid var(--glass-border);
           background: rgba(6,9,16,0.88);
+          position: relative;
+          z-index: 1;
         }
         .chat-search-panel-icon {
           color: var(--text-secondary);
@@ -3334,6 +5591,47 @@ export default function Inbox() {
           opacity: 0.35;
           cursor: not-allowed;
         }
+        .pinned-message-bar {
+          flex-shrink: 0;
+          display: flex;
+          align-items: center;
+          gap: 0.7rem;
+          width: 100%;
+          padding: 0.72rem 1.5rem;
+          border: none;
+          border-bottom: 1px solid var(--glass-border);
+          background: rgba(6,9,16,0.9);
+          color: var(--text-primary);
+          cursor: pointer;
+          text-align: left;
+          position: relative;
+          z-index: 1;
+        }
+        .pinned-message-bar:hover {
+          background: rgba(255,255,255,0.055);
+        }
+        .pinned-message-bar-text {
+          flex: 1;
+          min-width: 0;
+          display: flex;
+          flex-direction: column;
+          gap: 0.12rem;
+        }
+        .pinned-message-bar-text span {
+          color: var(--text-secondary);
+          font-size: 0.76rem;
+          font-weight: 600;
+        }
+        .pinned-message-bar-text strong {
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          font-size: 0.86rem;
+          font-weight: 600;
+        }
+        [data-mode="light"] .pinned-message-bar {
+          background: rgba(255,255,255,0.92);
+        }
         .chat-messages {
           flex: 1;
           min-height: 0;
@@ -3345,9 +5643,11 @@ export default function Inbox() {
           gap: 1.4rem;
           overscroll-behavior: contain;
           overscroll-behavior-x: none;
-          overflow-anchor: none;
+          overflow-anchor: auto;
           -webkit-overflow-scrolling: touch;
           touch-action: pan-y;
+          position: relative;
+          z-index: 1;
         }
         @keyframes messagePop {
           0% { opacity: 0; }
@@ -3356,6 +5656,7 @@ export default function Inbox() {
         .message-wrapper {
           display: flex;
           flex-direction: column;
+          width: 100%;
           transition: opacity 0.3s ease, filter 0.3s ease;
         }
         .message-wrapper.mine {
@@ -3363,6 +5664,19 @@ export default function Inbox() {
         }
         .message-wrapper.theirs {
           align-items: flex-start;
+        }
+        .message-wrapper.theirs.with-sender-avatar {
+          flex-direction: row;
+          align-items: flex-end;
+          gap: 0.45rem;
+        }
+        .message-sender-avatar {
+          width: 28px;
+          height: 28px;
+          border-radius: 50%;
+          object-fit: cover;
+          flex: 0 0 28px;
+          box-shadow: 0 2px 8px rgba(0,0,0,0.2);
         }
         .message-shell {
           position: relative;
@@ -3373,7 +5687,8 @@ export default function Inbox() {
         }
         .message-tools {
           position: absolute;
-          top: 0.2rem;
+          top: 50%;
+          transform: translateY(-50%);
           display: flex;
           gap: 0.35rem;
           opacity: 0;
@@ -3382,6 +5697,7 @@ export default function Inbox() {
           pointer-events: none;
         }
         .message-shell:hover .message-tools,
+        .message-wrapper:hover .message-tools,
         .message-shell.controls-open .message-tools,
         .message-tools:hover,
         .message-tools:focus-within {
@@ -3389,11 +5705,17 @@ export default function Inbox() {
           pointer-events: auto;
         }
         .message-tools.mine {
-          right: 0;
-          justify-content: flex-end;
+          right: 100%;
+          margin-right: 0.5rem;
+          width: max-content;
+          flex-direction: row-reverse;
+          justify-content: flex-start;
         }
         .message-tools.theirs {
-          left: 0;
+          left: 100%;
+          margin-left: 0.5rem;
+          width: max-content;
+          flex-direction: row;
           justify-content: flex-start;
         }
         .mini-action-btn {
@@ -3414,6 +5736,8 @@ export default function Inbox() {
           border-color: rgba(255,255,255,0.18);
         }
         .reaction-strip {
+          position: absolute;
+          bottom: calc(100% + 8px);
           display: inline-flex;
           gap: 0.35rem;
           padding: 0.45rem;
@@ -3422,27 +5746,194 @@ export default function Inbox() {
           border: 1px solid rgba(255,255,255,0.08);
           box-shadow: 0 18px 40px rgba(0,0,0,0.35);
           width: fit-content;
-          max-width: 100%;
-          overflow-x: auto;
+          max-width: min(420px, 80vw);
+          overflow: visible;
+          z-index: 95;
+          animation: reactionFloatIn 0.18s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+        }
+        @keyframes reactionFloatIn {
+          from { opacity: 0; transform: translateY(8px) scale(0.96); }
+          to { opacity: 1; transform: translateY(0) scale(1); }
         }
         .reaction-strip.mine {
-          align-self: flex-end;
+          right: 0;
         }
         .reaction-strip.theirs {
-          align-self: flex-start;
+          left: 0;
         }
         .reaction-option {
+          position: relative;
           width: 34px;
           height: 34px;
           border-radius: 50%;
           border: none;
           background: transparent;
           cursor: pointer;
-          font-size: 1rem;
+          font-size: 1.2rem;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          transition: background 0.18s ease, box-shadow 0.18s ease;
         }
         .reaction-option:hover,
         .reaction-option.selected {
           background: rgba(255,255,255,0.1);
+        }
+        .reaction-plus-btn {
+          color: var(--text-secondary);
+          border: 1px solid rgba(255,255,255,0.08);
+          background: rgba(255,255,255,0.04);
+        }
+        .reaction-emoji-glyph {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          line-height: 1;
+          transform: translate3d(0,0,0) scale(1);
+          transition: transform 0.18s cubic-bezier(0.2, 0.8, 0.2, 1), filter 0.18s ease;
+          backface-visibility: hidden;
+          will-change: transform;
+        }
+        .reaction-option:hover .reaction-emoji-glyph,
+        .reaction-picker-emoji:hover .reaction-emoji-glyph {
+          transform: translate3d(0,-2px,0) scale(1.12);
+          filter: drop-shadow(0 4px 7px rgba(15,23,42,0.16));
+        }
+        .reaction-picker-panel {
+          position: absolute;
+          bottom: calc(100% + 10px);
+          width: min(275px, 78vw);
+          max-height: 360px;
+          display: flex;
+          flex-direction: column;
+          gap: 0.7rem;
+          padding: 0.72rem;
+          border-radius: 16px;
+          background: rgba(255,255,255,0.98);
+          color: #111827;
+          border: 1px solid rgba(15,23,42,0.08);
+          box-shadow: 0 20px 52px rgba(15,23,42,0.28);
+          animation: reactionPickerIn 0.2s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+          z-index: 105;
+          overflow: hidden;
+        }
+        .reaction-picker-panel.down {
+          top: calc(100% + 10px);
+          bottom: auto;
+        }
+        .reaction-picker-panel.mine {
+          right: 0;
+        }
+        .reaction-picker-panel.theirs {
+          left: 0;
+        }
+        @keyframes reactionPickerIn {
+          from { opacity: 0; transform: translateY(10px) scale(0.97); }
+          to { opacity: 1; transform: translateY(0) scale(1); }
+        }
+        .reaction-search-box {
+          display: flex;
+          align-items: center;
+          gap: 0.45rem;
+          padding: 0.5rem 0.65rem;
+          border-radius: 999px;
+          background: #eef0f4;
+          color: #6b7280;
+        }
+        .reaction-search-box input {
+          flex: 1;
+          min-width: 0;
+          border: none;
+          outline: none;
+          background: transparent;
+          color: #111827;
+          font-size: 0.9rem;
+        }
+        .reaction-picker-groups {
+          overflow-y: auto;
+          overflow-x: hidden;
+          padding: 0 0.45rem 0.2rem 0;
+          overscroll-behavior: contain;
+          scrollbar-width: thin;
+          scrollbar-color: rgba(148,163,184,0.72) transparent;
+        }
+        .reaction-picker-groups::-webkit-scrollbar {
+          width: 7px;
+          height: 0;
+        }
+        .reaction-picker-groups::-webkit-scrollbar-track {
+          background: transparent;
+        }
+        .reaction-picker-groups::-webkit-scrollbar-thumb {
+          background: rgba(148,163,184,0.7);
+          border-radius: 999px;
+        }
+        .reaction-picker-groups::-webkit-scrollbar-thumb:hover {
+          background: rgba(100,116,139,0.9);
+        }
+        .reaction-picker-groups::-webkit-scrollbar-corner {
+          background: transparent;
+        }
+        .reaction-picker-group {
+          padding-bottom: 0.7rem;
+        }
+        .reaction-picker-group:last-child {
+          padding-bottom: 0;
+        }
+        .reaction-picker-group + .reaction-picker-group {
+          margin-top: 0.55rem;
+        }
+        .reaction-picker-title {
+          margin-bottom: 0.45rem;
+          color: #6b7280;
+          font-size: 0.78rem;
+          font-weight: 600;
+        }
+        .reaction-picker-grid {
+          display: grid;
+          grid-template-columns: repeat(6, 1fr);
+          column-gap: 0.32rem;
+          row-gap: 1.08rem;
+          overflow: visible;
+        }
+        .reaction-picker-emoji {
+          position: relative;
+          width: 36px;
+          height: 36px;
+          border: none;
+          border-radius: 10px;
+          background: transparent;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 1.35rem;
+          cursor: pointer;
+          transition: background 0.18s ease, box-shadow 0.18s ease;
+        }
+        .reaction-picker-emoji:hover,
+        .reaction-picker-emoji.selected {
+          background: #eef4ff;
+          box-shadow: 0 6px 16px rgba(37,99,235,0.12);
+        }
+        .reaction-empty-state {
+          padding: 1rem 0.5rem;
+          text-align: center;
+          color: #6b7280;
+          font-size: 0.85rem;
+        }
+        [data-mode="light"] .reaction-strip {
+          background: #ffffff;
+          border-color: rgba(15,23,42,0.08);
+          box-shadow: 0 16px 36px rgba(15,23,42,0.18);
+        }
+        [data-mode="light"] .reaction-plus-btn {
+          background: rgba(15,23,42,0.04);
+          border-color: rgba(15,23,42,0.08);
+          color: #4b5563;
+        }
+        [data-mode="light"] .reaction-option:hover,
+        [data-mode="light"] .reaction-option.selected {
+          background: rgba(15,23,42,0.06);
         }
         .message-menu {
           position: absolute;
@@ -3455,16 +5946,16 @@ export default function Inbox() {
           z-index: 90;
         }
         .message-menu.up {
-          bottom: calc(100% + 0.35rem);
+          bottom: -0.2rem;
         }
         .message-menu.down {
-          top: calc(100% + 0.35rem);
+          top: 0.2rem;
         }
         .message-menu.mine {
-          right: 0;
+          right: calc(100% + 0.5rem);
         }
         .message-menu.theirs {
-          left: 0;
+          left: calc(100% + 0.5rem);
         }
         .message-menu-item {
           width: 100%;
@@ -3484,6 +5975,20 @@ export default function Inbox() {
         .message-menu-item.danger {
           color: #fda4af;
         }
+        [data-mode="light"] .message-menu {
+          background: #ffffff;
+          border-color: rgba(15,23,42,0.12);
+          box-shadow: 0 18px 45px rgba(15,23,42,0.18);
+        }
+        [data-mode="light"] .message-menu-item {
+          color: #111827;
+        }
+        [data-mode="light"] .message-menu-item:hover {
+          background: rgba(15,23,42,0.06);
+        }
+        [data-mode="light"] .message-menu-item.danger {
+          color: #dc2626;
+        }
         .message-bubble {
           padding: 0.65rem 0.85rem;
           border-radius: 12px;
@@ -3491,6 +5996,43 @@ export default function Inbox() {
           box-shadow: 0 1px 1px rgba(0,0,0,0.15);
           transition: background 0.3s ease, filter 0.3s ease;
           animation: messagePop 0.2s cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
+        }
+        .message-bubble.media-only {
+          padding: 0;
+          background: transparent !important;
+          box-shadow: 0 1px 2px rgba(0,0,0,0.2) !important;
+        }
+        .message-bubble.media-only .attachment-card {
+          margin-bottom: 0;
+          border: none;
+          background: transparent;
+        }
+        .message-bubble.media-only .attachment-card.image img {
+          border-radius: 12px;
+          display: block;
+        }
+        .message-wrapper.mine .message-bubble.media-only .attachment-image-btn img {
+          border-top-right-radius: 4px;
+        }
+        .message-wrapper.theirs .message-bubble.media-only .attachment-image-btn img {
+          border-top-left-radius: 4px;
+        }
+        .message-bubble.media-only .message-time {
+          position: absolute;
+          bottom: 8px;
+          right: 8px;
+          color: rgba(255,255,255,0.95) !important;
+          text-shadow: 0 1px 3px rgba(0,0,0,0.6);
+          z-index: 2;
+          display: flex;
+          align-items: center;
+          padding: 2px 4px;
+          border-radius: 4px;
+          background: radial-gradient(circle at bottom right, rgba(0,0,0,0.4) 0%, transparent 80%);
+        }
+        .message-bubble.media-only .status-icon svg {
+          color: #34b7f1 !important;
+          filter: drop-shadow(0 1px 1px rgba(0,0,0,0.4));
         }
         .message-wrapper.mine .message-bubble {
           background: #056162;
@@ -3501,6 +6043,40 @@ export default function Inbox() {
           background: #202c33;
           color: #e9edef;
           border-top-left-radius: 4px;
+        }
+        .deleted-message-shell {
+          max-width: min(76%, 420px);
+        }
+        .deleted-message-bubble {
+          font-size: 0.88rem;
+          font-style: italic;
+          line-height: 1.35;
+          box-shadow: none !important;
+          opacity: 0.72;
+        }
+        .message-wrapper.mine .deleted-message-bubble {
+          background: rgba(5,97,98,0.2);
+          color: rgba(233,237,239,0.58);
+          border: 1px solid rgba(233,237,239,0.05);
+          border-radius: 18px;
+          border-top-right-radius: 6px;
+        }
+        .message-wrapper.theirs .deleted-message-bubble {
+          background: rgba(255,255,255,0.035);
+          color: rgba(148,163,184,0.68);
+          border: 1px solid rgba(255,255,255,0.04);
+          border-radius: 18px;
+          border-top-left-radius: 6px;
+        }
+        [data-mode="light"] .message-wrapper.theirs .deleted-message-bubble {
+          background: rgba(15,23,42,0.028);
+          border-color: rgba(15,23,42,0.045);
+          color: rgba(100,116,139,0.62);
+        }
+        [data-mode="light"] .message-wrapper.mine .deleted-message-bubble {
+          background: rgba(187,247,208,0.28);
+          border-color: rgba(34,197,94,0.08);
+          color: rgba(22,101,52,0.58);
         }
         .message-bubble p {
           margin: 0 0 0.45rem 0;
@@ -3519,6 +6095,15 @@ export default function Inbox() {
         }
         .message-wrapper.chat-search-match.current .message-bubble {
           box-shadow: 0 0 0 3px rgba(250,204,21,0.68), 0 18px 42px rgba(250,204,21,0.16);
+        }
+        .message-wrapper.pinned-message-highlight .message-bubble,
+        .message-wrapper.pinned-message-highlight .call-log-bubble {
+          box-shadow: 0 0 0 3px rgba(59,130,246,0.78), 0 16px 38px rgba(59,130,246,0.22) !important;
+          animation: pinnedMessagePulse 1.15s ease-in-out 2;
+        }
+        @keyframes pinnedMessagePulse {
+          0%, 100% { filter: brightness(1); }
+          50% { filter: brightness(1.18); }
         }
         .status-icon {
           display: inline-flex;
@@ -3605,14 +6190,20 @@ export default function Inbox() {
           display: none;
         }
         .message-reactions {
+          position: absolute;
+          bottom: -0.95rem;
           display: flex;
           flex-wrap: wrap;
           gap: 0.35rem;
+          z-index: 3;
+          pointer-events: auto;
         }
         .message-reactions.mine {
+          right: 0.35rem;
           justify-content: flex-end;
         }
         .message-reactions.theirs {
+          left: 0.35rem;
           justify-content: flex-start;
         }
         .reaction-pill {
@@ -3626,6 +6217,12 @@ export default function Inbox() {
           align-items: center;
           cursor: pointer;
           font-size: 0.82rem;
+          box-shadow: 0 4px 10px rgba(0,0,0,0.12);
+          transition: background 0.16s ease, transform 0.16s ease, box-shadow 0.16s ease;
+        }
+        .reaction-pill:hover {
+          transform: translateY(-1px);
+          box-shadow: 0 6px 14px rgba(0,0,0,0.16);
         }
         .reaction-pill.mine {
           border-color: rgba(255,255,255,0.22);
@@ -3635,6 +6232,8 @@ export default function Inbox() {
           padding: 0.8rem 1.4rem;
           border-top: 1px solid var(--glass-border);
           background: rgba(6,9,16,0.9);
+          position: relative;
+          z-index: 1;
         }
         [data-mode="light"] .chat-input-area {
           background: #ffffff !important;
@@ -3642,8 +6241,10 @@ export default function Inbox() {
         }
         .inbox-page {
           height: calc(100vh - 4rem) !important;
+          height: calc(100dvh - 4rem) !important;
           min-height: 0 !important;
           overflow: hidden !important;
+          position: relative !important;
         }
 
         /* ── FB Messenger Style Input ── */
@@ -3884,30 +6485,264 @@ export default function Inbox() {
           background: rgba(0, 132, 255, 0.1);
         }
         
-        .recording-state {
+        .voice-message-player {
           display: flex;
           align-items: center;
-          gap: 12px;
-          background: rgba(239, 68, 68, 0.1);
-          color: #ef4444;
-          padding: 8px 16px;
-          border-radius: 20px;
+          gap: 10px;
+          min-width: 260px;
+          max-width: 340px;
+          padding: 2px 0 4px;
+          color: inherit;
+        }
+        .voice-message-player.mine {
+          color: inherit;
+        }
+        .voice-message-player.theirs {
+          color: inherit;
+        }
+        .vmp-avatar-container {
+          position: relative;
+          width: 38px;
+          height: 38px;
+          flex: 0 0 38px;
+        }
+        .vmp-avatar-img {
+          width: 38px;
+          height: 38px;
+          border-radius: 50%;
+          object-fit: cover;
+          display: block;
+        }
+        .vmp-mic-badge {
+          position: absolute;
+          right: -2px;
+          bottom: -2px;
+          width: 16px;
+          height: 16px;
+          border-radius: 50%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          color: #16a34a;
+          background: #1f2937;
+          box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+        }
+        .vmp-play-btn {
+          width: 34px;
+          height: 34px;
+          border-radius: 50%;
+          border: none;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          flex: 0 0 34px;
+          color: inherit;
+          background: transparent;
+          cursor: pointer;
+          transition: transform 0.18s ease, background 0.18s ease;
+        }
+        .vmp-play-btn:hover {
+          background: rgba(128, 128, 128, 0.15);
+          transform: scale(1.04);
+        }
+        .vmp-play-btn svg {
+          margin-left: 2px;
+        }
+        .vmp-content {
+          min-width: 0;
+          flex: 1;
+        }
+        .vmp-waveform {
+          position: relative;
+          height: 34px;
+          display: flex;
+          align-items: center;
+        }
+        .vmp-bars {
+          position: absolute;
+          inset: 0;
+          display: flex;
+          align-items: center;
+          gap: 2px;
+          pointer-events: none;
+        }
+        .vmp-bars span {
+          width: 3px;
+          border-radius: 999px;
+          background: currentColor;
+          opacity: 0.35;
+        }
+        .vmp-bars span.active {
+          opacity: 0.8;
+        }
+        .vmp-slider {
+          position: absolute;
+          inset: 0;
           width: 100%;
+          height: 34px;
+          opacity: 0;
+          cursor: pointer;
+          z-index: 2;
+        }
+        .vmp-meta {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          margin-top: -4px;
+        }
+        .vmp-time {
+          font-size: 11px;
+          color: currentColor;
+          opacity: 0.7;
+          line-height: 1;
+        }
+        .recording-state.whatsapp-voice-recorder {
+          display: flex;
+          align-items: center;
+          gap: 14px;
+          background: #ffffff;
+          color: #111827;
+          padding: 8px 10px 8px 14px;
+          border-radius: 999px;
+          width: 100%;
+          min-height: 48px;
+          box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
+          animation: voiceRecordIn 0.18s ease both;
+        }
+        [data-mode="dark"] .recording-state.whatsapp-voice-recorder {
+          background: #1f2937;
+          color: #f9fafb;
+          box-shadow: 0 8px 24px rgba(0, 0, 0, 0.24);
+        }
+        .recording-time-wrap {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          min-width: 58px;
         }
         .recording-pulse {
-          width: 8px;
-          height: 8px;
-          background: #ef4444;
+          width: 9px;
+          height: 9px;
+          background: #d9043d;
           border-radius: 50%;
-          animation: pulse 1s infinite;
+          animation: recordingPulse 1.15s ease-in-out infinite;
+        }
+        .recording-state.paused .recording-pulse {
+          background: #22c55e;
+          animation: none;
+        }
+        .recording-time {
+          font-size: 15px;
+          font-weight: 600;
+          font-variant-numeric: tabular-nums;
+        }
+        .recording-wave-container {
+          flex: 1;
+          display: flex;
+          align-items: center;
+          justify-content: flex-start;
+          height: 30px;
+        }
+        .recording-wave {
+          position: relative;
+          width: 148px;
+          display: flex;
+          align-items: center;
+          gap: 2px;
+          height: 30px;
+        }
+        .recording-wave-dot {
+          position: absolute;
+          width: 14px;
+          height: 14px;
+          border-radius: 50%;
+          background: #34b7f1;
+          top: 50%;
+          transform: translate(-50%, -50%);
+          z-index: 5;
+          pointer-events: none;
+          box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+        }
+        .recording-wave-slider {
+          position: absolute;
+          inset: 0;
+          width: 100%;
+          height: 100%;
+          opacity: 0;
+          cursor: pointer;
+          z-index: 6;
+        }
+        .recording-wave span {
+          width: 3px;
+          border-radius: 999px;
+          background: #9ca3af;
+          transform-origin: center;
+          transition: height 0.08s linear, opacity 0.08s linear, background 0.16s ease;
+        }
+        .recording-wave span.active {
+          background: #34b7f1;
+        }
+        .recording-state.paused .recording-wave span {
+          background: #93c5fd;
+        }
+        .recording-state.paused .recording-wave span.active {
+          background: #34b7f1;
+        }
+        .recording-cancel,
+        .recording-pause-btn {
+          width: 34px;
+          height: 34px;
+          border-radius: 50%;
+          border: none;
+          cursor: pointer;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          padding: 0;
+          flex: 0 0 34px;
+          transition: transform 0.18s ease, background 0.18s ease, color 0.18s ease;
         }
         .recording-cancel {
-          background: none;
-          border: none;
+          color: #111827;
+          background: transparent;
+        }
+        [data-mode="dark"] .recording-cancel {
+          color: #f9fafb;
+        }
+        .recording-cancel:hover {
           color: #ef4444;
-          cursor: pointer;
-          padding: 4px;
-          margin-left: auto;
+          background: rgba(239, 68, 68, 0.1);
+          transform: scale(1.04);
+        }
+        .recording-pause-btn {
+          color: #d9043d;
+          background: rgba(217, 4, 61, 0.08);
+        }
+        .recording-state.paused .recording-pause-btn {
+          color: #16a34a;
+          background: rgba(34, 197, 94, 0.12);
+        }
+        .recording-pause-btn:hover {
+          transform: scale(1.04);
+        }
+        .voice-send-btn {
+          background: #22c55e !important;
+          color: #ffffff !important;
+          box-shadow: 0 8px 18px rgba(34, 197, 94, 0.28);
+          transition: transform 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
+        }
+        .voice-send-btn:hover {
+          background: #16a34a !important;
+          transform: scale(1.05);
+          box-shadow: 0 10px 22px rgba(34, 197, 94, 0.34);
+        }
+        @keyframes recordingPulse {
+          0%, 100% { opacity: 0.45; transform: scale(0.9); }
+          50% { opacity: 1; transform: scale(1.08); }
+        }
+        @keyframes voiceRecordIn {
+          from { opacity: 0; transform: translateY(4px) scale(0.99); }
+          to { opacity: 1; transform: translateY(0) scale(1); }
         }
 
         .composer-banner {
@@ -3972,28 +6807,6 @@ export default function Inbox() {
           background: rgba(99,102,241,0.12);
         }
         /* ╬ô├╢├ç╬ô├╢├ç New Message button ╬ô├╢├ç╬ô├╢├ç */
-        .new-msg-btn {
-          display: inline-flex;
-          align-items: center;
-          gap: 6px;
-          padding: 7px 14px;
-          border-radius: 999px;
-          border: none;
-          cursor: pointer;
-          font-size: 0.8rem;
-          font-weight: 600;
-          color: #fff;
-          background: linear-gradient(135deg, #6366f1, #3b82f6);
-          box-shadow: 0 4px 14px rgba(99,102,241,0.35);
-          transition: transform 0.15s ease, box-shadow 0.15s ease;
-          white-space: nowrap;
-          flex-shrink: 0;
-        }
-        .new-msg-btn:hover {
-          transform: translateY(-1px) scale(1.03);
-          box-shadow: 0 6px 20px rgba(99,102,241,0.55);
-        }
-        .new-msg-btn:active { transform: scale(0.96); }
         .fb-emoji-picker-container {
           position: absolute;
           bottom: calc(100% + 15px);
@@ -4137,12 +6950,216 @@ export default function Inbox() {
         .compose-overlay {
           position: fixed;
           inset: 0;
-          background: rgba(0,0,0,0.65);
+          background: rgba(0,0,0,0.4);
+          backdrop-filter: blur(8px);
+          -webkit-backdrop-filter: blur(8px);
           display: flex;
           align-items: center;
           justify-content: center;
           z-index: 9999;
-          padding: 1rem;
+          padding: 2rem;
+          animation: modalFadeIn 0.2s ease-out;
+        }
+        .pinned-modal-overlay {
+          position: fixed;
+          inset: 0;
+          z-index: 100000;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          padding: 1.5rem;
+          background: rgba(3,6,12,0.48);
+          backdrop-filter: blur(8px);
+          -webkit-backdrop-filter: blur(8px);
+          animation: modalFadeIn 0.18s ease-out;
+        }
+        .pinned-modal {
+          width: min(560px, 100%);
+          max-height: min(74vh, 660px);
+          display: flex;
+          flex-direction: column;
+          overflow: hidden;
+          border-radius: 18px;
+          background: rgba(10,14,24,0.98);
+          border: 1px solid rgba(255,255,255,0.1);
+          box-shadow: 0 24px 70px rgba(0,0,0,0.45);
+          color: var(--text-primary);
+          animation: modalScaleIn 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
+        }
+        .pinned-modal-header {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          position: relative;
+          min-height: 58px;
+          padding: 0 4.25rem;
+          border-bottom: 1px solid var(--glass-border);
+        }
+        .pinned-modal-header h3 {
+          margin: 0;
+          font-size: 1.1rem;
+        }
+        .pinned-modal-close {
+          position: absolute;
+          right: 1rem;
+          top: 50%;
+          transform: translateY(-50%);
+          width: 36px;
+          height: 36px;
+          border: none;
+          border-radius: 50%;
+          background: rgba(255,255,255,0.09);
+          color: var(--text-secondary);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          cursor: pointer;
+        }
+        .pinned-modal-list {
+          overflow-y: auto;
+          padding: 0.9rem 1rem 1.1rem;
+        }
+        .pinned-message-item {
+          position: relative;
+          display: flex;
+          align-items: flex-end;
+          gap: 0.65rem;
+          padding: 0.85rem 2.75rem 0.85rem 0.2rem;
+          border-bottom: 1px solid rgba(255,255,255,0.08);
+        }
+        .pinned-message-item.menu-open {
+          z-index: 30;
+        }
+        .pinned-message-item:last-child {
+          border-bottom: none;
+        }
+        .pinned-message-avatar {
+          width: 30px;
+          height: 30px;
+          border-radius: 50%;
+          object-fit: cover;
+          flex: 0 0 30px;
+        }
+        .pinned-message-main {
+          min-width: 0;
+          flex: 1;
+        }
+        .pinned-message-meta {
+          display: flex;
+          justify-content: space-between;
+          gap: 1rem;
+          margin-bottom: 0.35rem;
+          color: var(--text-secondary);
+          font-size: 0.78rem;
+        }
+        .pinned-message-preview {
+          display: inline-block;
+          max-width: 100%;
+          padding: 0.65rem 0.8rem;
+          border-radius: 16px;
+          background: rgba(255,255,255,0.08);
+          color: var(--text-primary);
+          white-space: pre-wrap;
+          word-break: break-word;
+          line-height: 1.4;
+        }
+        .pinned-message-preview.mine {
+          background: rgba(5,97,98,0.55);
+        }
+        .pinned-message-actions {
+          position: absolute;
+          right: 0.2rem;
+          top: 50%;
+          transform: translateY(-50%);
+          z-index: 4;
+        }
+        .pinned-message-more {
+          width: 32px;
+          height: 32px;
+          border: none;
+          border-radius: 50%;
+          background: #242b38;
+          color: #f8fafc;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          cursor: pointer;
+        }
+        .pinned-message-more:hover,
+        .pinned-message-more.active {
+          color: #ffffff;
+          background: #303849;
+        }
+        .pinned-message-menu {
+          position: absolute;
+          right: 0;
+          top: calc(100% + 0.45rem);
+          min-width: 150px;
+          overflow: hidden;
+          border-radius: 12px;
+          background: #0b111d;
+          border: 1px solid rgba(255,255,255,0.16);
+          box-shadow: 0 18px 44px rgba(0,0,0,0.42);
+          z-index: 60;
+          isolation: isolate;
+        }
+        .pinned-message-menu button {
+          width: 100%;
+          border: none;
+          background: transparent;
+          color: var(--text-primary);
+          padding: 0.78rem 0.9rem;
+          text-align: left;
+          cursor: pointer;
+          font: inherit;
+        }
+        .pinned-message-menu button:hover {
+          background: rgba(255,255,255,0.08);
+        }
+        .pinned-empty-state {
+          min-height: 180px;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          gap: 0.75rem;
+          color: var(--text-secondary);
+        }
+        [data-mode="light"] .pinned-modal {
+          background: #ffffff;
+          border-color: rgba(15,23,42,0.08);
+          box-shadow: 0 24px 70px rgba(15,23,42,0.18);
+        }
+        [data-mode="light"] .pinned-message-item {
+          border-bottom-color: rgba(15,23,42,0.1);
+        }
+        [data-mode="light"] .pinned-message-preview {
+          background: #f1f5f9;
+          color: #0f172a;
+        }
+        [data-mode="light"] .pinned-message-preview.mine {
+          background: #dcf8c6;
+        }
+        [data-mode="light"] .pinned-message-more,
+        [data-mode="light"] .pinned-modal-close {
+          background: #eef2f7;
+          color: #0f172a;
+        }
+        [data-mode="light"] .pinned-message-more:hover,
+        [data-mode="light"] .pinned-message-more.active {
+          background: #e2e8f0;
+          color: #020617;
+        }
+        [data-mode="light"] .pinned-message-menu {
+          background: #ffffff;
+          border-color: rgba(15,23,42,0.16);
+          box-shadow: 0 18px 44px rgba(15,23,42,0.18);
+        }
+        [data-mode="light"] .pinned-message-menu button {
+          color: #0f172a;
+        }
+        [data-mode="light"] .pinned-message-menu button:hover {
+          background: rgba(15,23,42,0.06);
         }
         .image-viewer-overlay {
           position: fixed;
@@ -4201,7 +7218,7 @@ export default function Inbox() {
           font-size: 0.92rem;
           word-break: break-word;
         }
-        @media (max-width: 768px) {
+        @media (max-width: 1024px) {
           .image-viewer-overlay {
             align-items: center;
             justify-content: center;
@@ -4229,8 +7246,12 @@ export default function Inbox() {
           max-height: 80vh;
           display: flex;
           flex-direction: column;
-          border-radius: 20px;
+          border-radius: 24px;
           overflow: hidden;
+          background: var(--bg-secondary);
+          border: 1px solid var(--glass-border);
+          box-shadow: 0 25px 50px -12px rgba(0,0,0,0.5);
+          animation: modalScaleIn 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
         }
         .compose-header {
           display: flex;
@@ -4330,49 +7351,144 @@ export default function Inbox() {
         .icon-btn.danger {
           color: #fda4af;
         }
-        @media (max-width: 768px) {
+        @media (max-width: 1024px) {
           .inbox-page {
+            flex-wrap: nowrap !important;
             padding-left: 0 !important;
             padding-right: 0 !important;
             /* Prevent all horizontal overscroll on mobile inbox */
             overscroll-behavior-x: none;
             touch-action: pan-y pinch-zoom;
+            height: 100% !important;
+            inline-size: 100vw !important;
+            width: 100vw !important;
+            min-width: 0 !important;
+            max-width: 100vw !important;
+            margin-left: 0 !important;
+            margin-right: 0 !important;
           }
           .inbox-sidebar {
-            width: 100%;
-            display: ${activeChat ? 'none' : 'flex'};
+            width: 100% !important;
+            display: ${activeChat ? 'none' : 'flex'} !important;
             border-radius: 16px;
             min-height: 0;
           }
-          .inbox-main {
-            display: ${activeChat ? 'flex' : 'none'};
-            border-radius: 16px;
+          .inbox-page .inbox-main.glass-panel {
+            display: ${activeChat ? 'flex' : 'none'} !important;
+            flex-direction: column !important;
+            flex-wrap: nowrap !important;
+            flex: 0 0 100vw !important;
+            border-radius: 0;
             min-height: 0;
+            min-width: 0 !important;
+            height: 100% !important;
             max-height: 100%;
+            inline-size: 100vw !important;
+            width: 100vw !important;
+            max-inline-size: 100vw !important;
+            max-width: 100vw !important;
             position: relative;
             overflow: hidden;
             will-change: transform;
             /* Prevent browser horizontal swipe hijacking */
             overscroll-behavior-x: none;
             touch-action: pan-y pinch-zoom;
+            padding: 0 !important; /* Override .glass-panel padding from index.css */
           }
           .inbox-main.has-details-panel {
-            border-radius: 16px;
+            border-radius: 0;
           }
           .chat-details-panel {
-            display: none;
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            right: 0;
+            z-index: 100;
+            width: 100% !important;
+            background: rgba(6, 9, 16, 0.95);
+            backdrop-filter: blur(20px);
+            border-left: none;
+            border-radius: 16px;
+            transition: transform 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+          }
+          .chat-details-panel.collapsed {
+            transform: translateX(100%);
+            width: 100% !important; /* Keep width for smooth slide out */
+            opacity: 1 !important; /* Keep opacity for smooth slide out */
+            pointer-events: none;
+          }
+          .chat-details-panel:not(.collapsed) {
+            transform: translateX(0);
+          }
+          .mobile-chat-details-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding-bottom: 1rem;
+            margin-bottom: 1rem;
+            border-bottom: 1px solid var(--glass-border);
           }
           .chat-header {
+            inline-size: 100%;
+            max-inline-size: 100%;
+            box-sizing: border-box;
             flex-shrink: 0;
             /* Suppress blue tap flash on touch */
             -webkit-tap-highlight-color: transparent;
+            padding: 0.65rem 0.75rem;
+            flex-wrap: nowrap;
+            gap: 0.45rem;
+          }
+          .chat-header-left {
+            flex: 1 1 auto !important;
+            min-width: 0 !important;
+          }
+          .chat-header-right {
+            display: flex !important;
+            gap: 0.25rem !important;
+            flex-shrink: 0 !important;
+            min-width: max-content !important;
+          }
+          .chat-header .chat-avatar {
+            width: 32px;
+            height: 32px;
+          }
+          .chat-header h3 {
+            font-size: 0.9rem !important;
+            max-width: 140px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+          }
+          .hdr-icon-btn {
+            width: 30px !important;
+            height: 30px !important;
+          }
+          .hdr-icon-btn svg {
+            width: 13px;
+            height: 13px;
+          }
+          .hdr-icon-btn--new,
+          .hdr-icon-btn--delete {
+            display: flex !important;
+            visibility: visible !important;
+            opacity: 1 !important;
           }
           .chat-messages {
             flex: 1 1 auto;
             min-height: 0;
             max-height: 100%;
+            inline-size: 100%;
+            width: 100%;
+            max-inline-size: 100%;
+            max-width: 100%;
+            box-sizing: border-box;
+            padding: 0.9rem 0.7rem 1rem;
+            margin: 0;
+            contain: layout paint;
             overscroll-behavior: contain;
             overscroll-behavior-x: none;
+            overflow-x: clip !important;
             touch-action: pan-y;
           }
           .chat-search-panel {
@@ -4388,8 +7504,101 @@ export default function Inbox() {
             width: 30px;
             height: 30px;
           }
+          .pinned-message-bar {
+            padding: 0.62rem 0.75rem;
+            gap: 0.55rem;
+          }
+          .pinned-modal-overlay {
+            align-items: center;
+            padding: max(0.75rem, env(safe-area-inset-top)) 0.75rem max(0.75rem, env(safe-area-inset-bottom));
+          }
+          .pinned-modal {
+            width: min(430px, 100%);
+            max-height: min(74dvh, 620px);
+            border-radius: 18px;
+          }
+          .pinned-modal-list {
+            padding: 0.75rem 0.85rem 1rem;
+          }
+          .pinned-message-item {
+            padding-right: 2.45rem;
+          }
+          .pinned-message-menu {
+            right: 0;
+          }
           .message-shell {
+            max-width: min(82vw, 360px);
+            min-width: 0;
+          }
+          .message-wrapper {
+            inline-size: 100% !important;
+            width: 100% !important;
+            min-width: 0 !important;
+            max-width: 100% !important;
+            align-self: stretch;
+            box-sizing: border-box;
+          }
+          .message-wrapper.mine {
+            align-items: flex-end !important;
+          }
+          .message-wrapper.theirs {
+            align-items: flex-start !important;
+          }
+          .message-wrapper.mine .message-shell {
+            margin-left: auto;
+            margin-right: 0;
+          }
+          .message-wrapper.theirs .message-shell {
+            margin-left: 0;
+            margin-right: auto;
+          }
+          .message-bubble {
             max-width: 100%;
+            min-width: 0;
+            box-sizing: border-box;
+            overflow-wrap: anywhere;
+          }
+          .message-tools.mine,
+          .message-tools.theirs {
+            width: max-content;
+            max-width: 104px;
+          }
+          .message-bubble[style] {
+            box-sizing: border-box;
+          }
+          .attachment-card.audio {
+            width: 100%;
+            max-width: 100%;
+            box-sizing: border-box;
+          }
+          .voice-message-player {
+            min-width: 0;
+            width: min(68vw, 300px);
+            max-width: 100%;
+            box-sizing: border-box;
+          }
+          .vmp-avatar-container {
+            width: 34px;
+            height: 34px;
+            flex-basis: 34px;
+          }
+          .vmp-avatar-img {
+            width: 34px;
+            height: 34px;
+          }
+          .vmp-play-btn {
+            width: 32px;
+            height: 32px;
+            flex-basis: 32px;
+          }
+          .vmp-waveform {
+            min-width: 0;
+          }
+          .vmp-bars {
+            gap: 1px;
+          }
+          .vmp-bars span {
+            width: 2px;
           }
           .emoji-picker {
             left: 0;
@@ -4410,7 +7619,13 @@ export default function Inbox() {
             font-size: 0.8rem;
           }
           .chat-input-area {
-            padding: 0.8rem 1.5rem 0.8rem 0.8rem;
+            inline-size: 100%;
+            max-inline-size: 100%;
+            box-sizing: border-box;
+            flex-shrink: 0;
+            padding: 0.65rem 0.7rem 0.7rem;
+            position: relative;
+            z-index: 2;
             /* Prevent accidental horizontal overscroll on input area */
             overscroll-behavior-x: none;
             touch-action: pan-y;

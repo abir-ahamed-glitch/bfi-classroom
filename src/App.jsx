@@ -90,7 +90,7 @@ const Layout = ({ children }) => {
         </div>
 
         <Sidebar />
-        <main ref={mainRef} className="main-content" style={{ position: 'relative', zIndex: 1 }}>
+        <main ref={mainRef} className={`main-content ${hideHeader ? 'inbox-main-content' : ''}`} style={{ position: 'relative', zIndex: 1 }}>
           {/* Desktop Institutional Header */}
           {!hideHeader && (
           <div className="desktop-only-header" style={{

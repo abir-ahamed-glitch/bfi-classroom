@@ -176,7 +176,7 @@ export default function Dashboard() {
     const match = url.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|watch\?.+&v=))([^&?]+)/);
     if (!match) return null;
     const id = match[1];
-    const rawUrl = `https://img.youtube.com/vi/${id}/hqdefault.jpg`;
+    const rawUrl = `https://i.ytimg.com/vi/${id}/hqdefault.jpg`;
     const base = import.meta.env.BASE_URL.endsWith('/') ? import.meta.env.BASE_URL : `${import.meta.env.BASE_URL}/`;
     return `${base}api/proxy-image?url=${encodeURIComponent(rawUrl)}`;
   };
@@ -651,7 +651,7 @@ export default function Dashboard() {
                 </div>
                 <div className="movie-info">
                   <h4>{proj.title}</h4>
-                  <p className="movie-creator" onClick={(e) => { e.stopPropagation(); alert(`View profile of ${proj.first_name}`); }}>
+                  <p className="movie-creator" onClick={(e) => { e.stopPropagation(); navigate(`/profile/${proj.user_id}`); }}>
                     By {proj.first_name} {proj.last_name}
                   </p>
                   <div className="movie-meta">

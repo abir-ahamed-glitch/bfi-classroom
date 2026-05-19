@@ -190,6 +190,27 @@
   gap: 0.6rem;
 }
 
+.brand-home-button {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.brand-home-button:focus-visible {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 4px;
+  border-radius: 10px;
+}
+
+.sidebar-brand.brand-home-button {
+  width: 100%;
+  padding: 1.75rem 1.5rem 1rem 2rem;
+}
+
 .mobile-toggle {
   display: none;
 }

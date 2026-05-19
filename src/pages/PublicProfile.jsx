@@ -41,7 +41,7 @@ export default function PublicProfile() {
     const match = url.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|watch\?.+&v=))([^&?]+)/);
     if (!match) return null;
     const id = match[1];
-    const rawUrl = `https://img.youtube.com/vi/${id}/hqdefault.jpg`;
+    const rawUrl = `https://i.ytimg.com/vi/${id}/hqdefault.jpg`;
     const API_BASE = import.meta.env.VITE_API_URL || '';
     return `${API_BASE}/api/proxy-image?url=${encodeURIComponent(rawUrl)}`;
   };

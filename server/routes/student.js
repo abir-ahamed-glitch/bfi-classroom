@@ -187,7 +187,7 @@ router.get('/dashboard', authenticateToken, (req, res) => {
     // 2. Recommended Projects from others
     // Priorities: 1. Awards, 2. Full Length, 3. Short/Doc
     const recommendedProjects = db.prepare(`
-      SELECT p.*, u.first_name, u.last_name, u.profile_picture,
+      SELECT p.*, u.id as user_id, u.first_name, u.last_name, u.profile_picture,
         (SELECT count(*) FROM awards WHERE project_id = p.id) as awards_count
       FROM projects p
       JOIN users u ON p.user_id = u.id

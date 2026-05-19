@@ -281,14 +281,15 @@ select option {
   border: 1px solid rgba(0,0,0,0.04) !important;
 }
 [data-mode="light"] .message-wrapper.mine .message-bubble {
-  background: linear-gradient(135deg, #3b82f6, #2563eb) !important;
-  color: #ffffff !important;
+  background: #dcf8c6 !important;
+  color: #111b21 !important;
+  border: 1px solid rgba(0,0,0,0.04) !important;
 }
 [data-mode="light"] .message-time {
   color: rgba(0,0,0,0.4) !important;
 }
 [data-mode="light"] .message-wrapper.mine .message-time {
-  color: rgba(255,255,255,0.8) !important;
+  color: rgba(0,0,0,0.45) !important;
 }
 [data-mode="light"] .message-menu {
   background: #ffffff !important;
@@ -602,7 +603,10 @@ html {
     padding-bottom: calc(60px + env(safe-area-inset-bottom, 0px)) !important; /* Space for bottom nav */
     width: 100%;
   }
-  .container {
+  .main-content.inbox-main-content {
+    padding-bottom: 0 !important;
+  }
+  .container:not(.inbox-page) {
     padding: 0 1.25rem;
   }
 }
@@ -709,23 +713,35 @@ html {
    ---------------------------------------------------------------------------- */
 
 @media (max-width: 768px) {
-  /* Enforce standard container padding */
-  .container {
+  /* Enforce standard container padding — exclude inbox which needs full width */
+  .container:not(.inbox-page) {
     padding: 0 1rem !important;
   }
   
-  /* Make all hardcoded inline flex rows wrap properly */
-  div[style*="display: flex"] {
+  /* Make all hardcoded inline flex rows wrap properly
+     BUT exclude EVERYTHING inside .inbox-page — inbox manages its own flex layout */
+  div[style*="display: flex"]:not(.inbox-page) {
     flex-wrap: wrap;
   }
+  /* Undo the wrap for any flex container that lives inside the inbox */
+  .inbox-page div[style*="display: flex"],
+  .inbox-page[style*="display: flex"] {
+    flex-wrap: nowrap;
+  }
   
-  /* Target any component that flex-wraps to ensure its children don't overflow */
-  div[style*="display: flex"] > * {
+  /* Target any component that flex-wraps to ensure its children don't overflow
+     BUT exclude inbox elements */
+  div[style*="display: flex"]:not(.inbox-page) > * {
     max-width: 100%;
   }
+  .inbox-page div[style*="display: flex"] > *,
+  .inbox-page[style*="display: flex"] > * {
+    max-width: none;
+  }
 
-  /* Force inline grids that use minmax to shrink on very small screens instead of overflowing */
-  div[style*="display: grid"] {
+  /* Force inline grids that use minmax to shrink on very small screens instead of overflowing
+     BUT exclude inbox detail grids */
+  div[style*="display: grid"]:not(.chat-details-actions):not(.media-gallery) {
     grid-template-columns: 1fr !important;
   }
 
@@ -738,13 +754,15 @@ html {
     font-size: 1.5rem !important;
   }
   
-  /* Reduce glass-panel padding for mobile screens */
-  .glass-panel {
+  /* Reduce glass-panel padding for mobile screens
+     BUT exclude inbox panels that manage their own padding */
+  .glass-panel:not(.inbox-sidebar):not(.inbox-main) {
     padding: 1.25rem !important;
   }
 
-  /* For any component hardcoding height like 100vh / specific heights, let them expand */
-  .page-container {
+  /* For any component hardcoding height like 100vh / specific heights, let them expand
+     BUT exclude inbox which manages its own height */
+  .page-container:not(.inbox-page) {
     height: auto !important;
     min-height: 100vh;
   }
@@ -755,11 +773,45 @@ html {
     height: auto;
     aspect-ratio: 16/9;
   }
+
+  /* ── Inbox Mobile Layout Fixes ── */
+  .inbox-page {
+    flex-wrap: nowrap !important;
+  }
+  .chat-item {
+    display: flex !important;
+    flex-wrap: nowrap !important;
+    align-items: center !important;
+  }
+  .chat-item .chat-avatar {
+    flex-shrink: 0 !important;
+    width: 44px !important;
+    height: 44px !important;
+  }
+  .chat-item .chat-info {
+    flex: 1 !important;
+    min-width: 0 !important;
+    overflow: hidden !important;
+  }
+  .chat-item .chat-name-row {
+    flex-wrap: nowrap !important;
+  }
+  .chat-item .chat-preview {
+    white-space: nowrap !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+  }
+  .inbox-sidebar {
+    padding: 0 !important;
+  }
+  .inbox-sidebar.glass-panel {
+    padding: 0 !important;
+  }
 }
 
 @media (max-width: 480px) {
-  /* Extra tight adjustments for portrait mobile */
-  .btn {
+  /* Extra tight adjustments for portrait mobile — exclude inbox buttons */
+  .btn:not(.new-msg-btn):not(.hdr-icon-btn):not(.fb-icon-btn):not(.send-btn) {
     width: 100%;
     justify-content: center;
     margin-bottom: 0.5rem;
@@ -893,15 +945,15 @@ html {
   margin-top: 8px;
   border-radius: 12px;
   overflow: hidden;
-  background: var(--bg-secondary);
-  border: 1px solid var(--glass-border);
+  background: var(--bg-primary) !important;
+  border: 1px solid var(--glass-border) !important;
   cursor: pointer;
   text-decoration: none;
   color: inherit;
   max-width: 320px;
   position: relative;
   transition: transform 0.15s ease, box-shadow 0.15s ease;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.05);
 }
 .link-preview-card:hover {
   transform: translateY(-2px);
@@ -929,7 +981,6 @@ html {
 
 /* Link Preview inside Mine Bubble */
 .message-bubble.mine .link-preview-card {
-  background: transparent;
   border-color: rgba(255, 255, 255, 0.2);
   color: #fff;
 }
@@ -940,7 +991,6 @@ html {
   color: rgba(255, 255, 255, 0.7);
 }
 [data-mode="light"] .message-bubble.mine .link-preview-card {
-  background: transparent !important;
   border-color: rgba(255, 255, 255, 0.3) !important;
   color: #fff !important;
 }
@@ -1174,6 +1224,18 @@ html {
   gap: 8px;
   width: 100%;
   max-width: 320px;
+  --track-color: rgba(0,0,0,0.15);
+  --fill-color: var(--accent-primary, #128C7E);
+}
+
+.voice-message-player.mine {
+  --track-color: rgba(255,255,255,0.2);
+  --fill-color: #34B7F1;
+}
+
+[data-mode="dark"] .voice-message-player.theirs {
+  --track-color: rgba(255,255,255,0.1);
+  --fill-color: #34B7F1;
 }
 
 .vmp-avatar-container {
@@ -1208,10 +1270,6 @@ html {
 
 .voice-message-player.mine .vmp-mic-badge {
   background: #34B7F1;
-  border-color: var(--message-mine-bg, #dcf8c6);
-}
-
-[data-mode="dark"] .voice-message-player.mine .vmp-mic-badge {
   border-color: #056162;
 }
 
@@ -1246,10 +1304,33 @@ html {
 }
 
 .vmp-waveform {
+  position: relative;
   width: 100%;
   display: flex;
   align-items: center;
   height: 24px;
+}
+
+.vmp-bars {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  pointer-events: none;
+}
+
+.vmp-bars span {
+  width: 3px;
+  border-radius: 999px;
+  background: var(--track-color);
+}
+
+.vmp-bars span.active {
+  background: var(--fill-color);
 }
 
 .vmp-slider {
@@ -1264,27 +1345,10 @@ html {
   z-index: 1;
   cursor: pointer;
   border-radius: 3px;
-  --track-color: rgba(0,0,0,0.15);
-  --fill-color: var(--accent-primary, #128C7E);
   background-image: linear-gradient(var(--fill-color), var(--fill-color));
   background-size: var(--progress, 0%) 100%;
   background-repeat: no-repeat;
   background-color: var(--track-color);
-}
-
-.voice-message-player.mine .vmp-slider {
-  --track-color: rgba(255,255,255,0.3);
-  --fill-color: #fff;
-}
-
-[data-mode="dark"] .voice-message-player.mine .vmp-slider {
-  --track-color: rgba(255,255,255,0.2);
-  --fill-color: #34B7F1;
-}
-
-[data-mode="dark"] .voice-message-player.theirs .vmp-slider {
-  --track-color: rgba(255,255,255,0.1);
-  --fill-color: #34B7F1;
 }
 
 .vmp-slider::-webkit-slider-thumb {
@@ -1337,3 +1401,121 @@ html {
 }
 
 
+/* Modern Modal Styles */
+.modern-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background: rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+  animation: fadeIn 0.2s ease-out;
+}
+
+.modern-modal-content {
+  background: var(--surface);
+  border-radius: 12px;
+  width: 90%;
+  max-width: 400px;
+  box-shadow: 0 10px 25px rgba(0,0,0,0.1);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: slideUpFade 0.2s ease-out;
+}
+
+[data-mode='dark'] .modern-modal-content {
+  background: #242526;
+  border: 1px solid rgba(255,255,255,0.1);
+}
+
+.modern-modal-header {
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.modern-modal-header h3 {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.modern-modal-body {
+  padding: 20px;
+  color: var(--text-secondary);
+  font-size: 0.95rem;
+  line-height: 1.5;
+}
+
+.modern-modal-footer {
+  padding: 16px 20px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.modern-btn {
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-weight: 500;
+  font-size: 0.9rem;
+  cursor: pointer;
+  border: none;
+  transition: all 0.2s;
+}
+
+.modern-btn--primary {
+  background: #0084ff;
+  color: white;
+}
+
+.modern-btn--primary:hover {
+  background: #0073e6;
+}
+
+.modern-btn--secondary {
+  background: rgba(0,0,0,0.05);
+  color: var(--text-primary);
+}
+
+[data-mode='dark'] .modern-btn--secondary {
+  background: rgba(255,255,255,0.1);
+}
+
+.modern-btn--secondary:hover {
+  background: rgba(0,0,0,0.1);
+}
+
+[data-mode='dark'] .modern-btn--secondary:hover {
+  background: rgba(255,255,255,0.15);
+}
+
+.modern-btn--danger {
+  background: #e41e3f;
+  color: white;
+}
+
+.modern-btn--danger:hover {
+  background: #c91835;
+}
+
+@keyframes slideUpFade {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
