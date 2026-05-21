@@ -97,7 +97,7 @@ export default function CourseMaterials() {
 
       <div className="materials-grid">
         {filteredMaterials.map((material) => (
-          <div key={material.id} className="material-card glass-panel">
+          <div key={material.id} className="material-card glass-panel dashboard-highlight-outline">
             <div className="material-icon">
               {getIcon(material.type)}
             </div>

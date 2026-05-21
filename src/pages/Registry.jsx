@@ -267,7 +267,7 @@ export default function Registry() {
             {!selectedCourse && !masterSearchQuery.trim() && (
               <div className="registry-grid courses-grid">
                 {(isStudent ? myCourses : allCourses).map((course, idx) => (
-                  <div key={idx} className="registry-card glass-panel" onClick={() => {
+                  <div key={idx} className="registry-card glass-panel dashboard-highlight-outline" onClick={() => {
                     setSelectedCourse(course);
                     if (isStudent && myBatchNumber) {
                       setSelectedBatch(myBatchNumber);
@@ -295,7 +295,7 @@ export default function Registry() {
             {selectedCourse && !selectedBatch && !isStudent && !masterSearchQuery.trim() && (
               <div className="registry-grid batches-grid">
                 {courseBatches.map((batch, idx) => (
-                  <div key={idx} className="registry-card glass-panel" onClick={() => setSelectedBatch(batch)}>
+                  <div key={idx} className="registry-card glass-panel dashboard-highlight-outline" onClick={() => setSelectedBatch(batch)}>
                     <div className="card-icon"><Layers size={24} /></div>
                     <div className="card-details">
                       <h3>{getOrdinalSuffix(batch)} Batch</h3>
