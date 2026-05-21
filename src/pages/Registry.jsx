@@ -183,13 +183,34 @@ export default function Registry() {
     return sName.includes(query);
   });
 
+  // Handle browser back button via hash
+  useEffect(() => {
+    const handleHashChange = () => {
+      if (!window.location.hash) {
+        if (!isStudent) {
+          setSelectedCourse(null);
+          setSelectedBatch(null);
+        } else if (myCourses.length > 1) {
+          setSelectedCourse(null);
+          setSelectedBatch(null);
+        }
+      } else if (window.location.hash === '#course') {
+        setSelectedBatch(null);
+      }
+    };
+    window.addEventListener('hashchange', handleHashChange);
+    return () => window.removeEventListener('hashchange', handleHashChange);
+  }, [isStudent, myCourses]);
+
   const goBackToCourses = () => {
+    window.location.hash = '';
     setSelectedCourse(null);
     setSelectedBatch(null);
     setSearchQuery('');
   };
 
   const goBackToBatches = () => {
+    window.location.hash = 'course';
     setSelectedBatch(null);
     setSearchQuery('');
   };
@@ -271,6 +292,9 @@ export default function Registry() {
                     setSelectedCourse(course);
                     if (isStudent && myBatchNumber) {
                       setSelectedBatch(myBatchNumber);
+                      window.location.hash = 'students';
+                    } else {
+                      window.location.hash = 'course';
                     }
                   }}>
                     <div className="card-icon"><BookOpen size={24} /></div>
@@ -295,7 +319,10 @@ export default function Registry() {
             {selectedCourse && !selectedBatch && !isStudent && !masterSearchQuery.trim() && (
               <div className="registry-grid batches-grid">
                 {courseBatches.map((batch, idx) => (
-                  <div key={idx} className="registry-card glass-panel dashboard-highlight-outline" onClick={() => setSelectedBatch(batch)}>
+                  <div key={idx} className="registry-card glass-panel dashboard-highlight-outline" onClick={() => {
+                    setSelectedBatch(batch);
+                    window.location.hash = 'batch';
+                  }}>
                     <div className="card-icon"><Layers size={24} /></div>
                     <div className="card-details">
                       <h3>{getOrdinalSuffix(batch)} Batch</h3>
