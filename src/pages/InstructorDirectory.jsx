@@ -59,7 +59,7 @@ export default function InstructorDirectory() {
             {teachersList.length > 0 ? (
               <div className="students-grid">
                 {teachersList.map(teacher => (
-                  <div key={teacher.id} className="student-card glass-panel" style={{ borderTop: '3px solid var(--primary-color)' }}>
+                  <div key={teacher.id} className="student-card glass-panel dashboard-highlight-outline" style={{ borderTop: '3px solid var(--primary-color)' }}>
                     <div className="student-avatar-wrapper" onClick={() => navigate(`/profile/${teacher.id}`)}>
                       <img 
                         src={teacher.profile_picture ? resolveMediaUrl(teacher.profile_picture) : `${import.meta.env.BASE_URL}avatars/male1.png`} 

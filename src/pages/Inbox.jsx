@@ -4586,60 +4586,355 @@ export default function Inbox() {
         /* --- Modern Modal --- */
         .modern-modal-overlay {
           position: fixed; top: 0; left: 0; right: 0; bottom: 0;
-          background: rgba(0,0,0,0.4);
-          backdrop-filter: blur(8px);
-          -webkit-backdrop-filter: blur(8px);
+          background: radial-gradient(circle at 10% 10%, rgba(96, 165, 250, 0.1) 0%, rgba(255, 255, 255, 0.02) 40%, transparent 70%), rgba(4, 5, 8, 0.78);
+          backdrop-filter: blur(12px);
+          -webkit-backdrop-filter: blur(12px);
           display: flex; align-items: center; justify-content: center;
           z-index: 10000;
           padding: 2rem;
-          animation: modalFadeIn 0.2s ease-out;
+          animation: modalFadeIn 0.25s ease-out;
         }
         @keyframes modalFadeIn {
           from { opacity: 0; } to { opacity: 1; }
         }
         .modern-modal-content {
+          position: relative;
           width: 100%;
           max-width: 440px;
-          background: var(--bg-secondary);
+          background-image: 
+            /* 1. Film Reel Watermark SVG (top layer) */
+            url("data:image/svg+xml,%3Csvg viewBox='0 0 100 100' xmlns='http://www.w3.org/2000/svg'%3E%3Ccircle cx='50' cy='50' r='45' fill='none' stroke='%2360a5fa' stroke-width='2' stroke-opacity='0.08'/%3E%3Ccircle cx='50' cy='50' r='12' fill='none' stroke='%2360a5fa' stroke-width='2' stroke-opacity='0.08'/%3E%3Ccircle cx='50' cy='50' r='4' fill='none' stroke='%2360a5fa' stroke-width='2' stroke-opacity='0.08'/%3E%3Ccircle cx='50' cy='24' r='10' fill='none' stroke='%2360a5fa' stroke-width='1.5' stroke-opacity='0.06'/%3E%3Ccircle cx='26' cy='41' r='10' fill='none' stroke='%2360a5fa' stroke-width='1.5' stroke-opacity='0.06'/%3E%3Ccircle cx='35' cy='69' r='10' fill='none' stroke='%2360a5fa' stroke-width='1.5' stroke-opacity='0.06'/%3E%3Ccircle cx='65' cy='69' r='10' fill='none' stroke='%2360a5fa' stroke-width='1.5' stroke-opacity='0.06'/%3E%3Ccircle cx='74' cy='41' r='10' fill='none' stroke='%2360a5fa' stroke-width='1.5' stroke-opacity='0.06'/%3E%3C/svg%3E"),
+            /* 2. Radial spotlight from center-right, dark vignette at edges — velvet/suede felt style */
+            radial-gradient(ellipse at 70% 40%, #fdfcf5 0%, #f2edd8 35%, #ddd6c0 65%, #c8c0a8 100%);
+          background-size: 180px 180px, auto;
+          background-position: bottom -30px right -30px, center;
+          background-repeat: no-repeat, no-repeat;
           border: 1px solid var(--glass-border);
-          border-radius: 24px;
+          border-radius: 12px;
           overflow: hidden;
-          animation: modalScaleIn 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
-          box-shadow: 0 25px 50px -12px rgba(0,0,0,0.5);
+          animation: modalScaleIn 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+          box-shadow: 0 25px 60px rgba(0, 0, 0, 0.25), inset 0 0 80px rgba(0,0,0,0.06);
+          padding: 6px;
+        }
+        .modern-modal-content::before {
+          content: '';
+          position: absolute;
+          top: 8px;
+          left: 8px;
+          right: 8px;
+          bottom: 8px;
+          border: 1px solid rgba(255, 255, 255, 0.08);
+          border-radius: 8px;
+          pointer-events: none;
+          z-index: 1;
+        }
+        /* Dense uniform velvet/suede grain texture overlay — high density fine noise like reference image */
+        .modern-modal-content::after {
+          content: '';
+          position: absolute;
+          top: 0; left: 0; right: 0; bottom: 0;
+          background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.95' numOctaves='4' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+          opacity: 0.09;
+          pointer-events: none;
+          z-index: 3;
+        }
+        [data-mode='dark'] .modern-modal-content {
+          background-image: 
+            /* 1. Film Reel Watermark SVG (top layer) */
+            url("data:image/svg+xml,%3Csvg viewBox='0 0 100 100' xmlns='http://www.w3.org/2000/svg'%3E%3Ccircle cx='50' cy='50' r='45' fill='none' stroke='%2360a5fa' stroke-width='2' stroke-opacity='0.08'/%3E%3Ccircle cx='50' cy='50' r='12' fill='none' stroke='%2360a5fa' stroke-width='2' stroke-opacity='0.08'/%3E%3Ccircle cx='50' cy='50' r='4' fill='none' stroke='%2360a5fa' stroke-width='2' stroke-opacity='0.08'/%3E%3Ccircle cx='50' cy='24' r='10' fill='none' stroke='%2360a5fa' stroke-width='1.5' stroke-opacity='0.06'/%3E%3Ccircle cx='26' cy='41' r='10' fill='none' stroke='%2360a5fa' stroke-width='1.5' stroke-opacity='0.06'/%3E%3Ccircle cx='35' cy='69' r='10' fill='none' stroke='%2360a5fa' stroke-width='1.5' stroke-opacity='0.06'/%3E%3Ccircle cx='65' cy='69' r='10' fill='none' stroke='%2360a5fa' stroke-width='1.5' stroke-opacity='0.06'/%3E%3Ccircle cx='74' cy='41' r='10' fill='none' stroke='%2360a5fa' stroke-width='1.5' stroke-opacity='0.06'/%3E%3C/svg%3E"),
+            /* 2. Radial spotlight from center-right, deep vignette at edges — velvet dark felt style */
+            radial-gradient(ellipse at 70% 40%, #1a5c43 0%, #0c3524 35%, #041a10 65%, #010806 100%);
+          background-size: 180px 180px, auto;
+          background-position: bottom -30px right -30px, center;
+          background-repeat: no-repeat, no-repeat;
+          border: 1px solid var(--glass-border);
+          box-shadow: 0 30px 70px rgba(0, 0, 0, 0.8), inset 0 0 100px rgba(0, 0, 0, 0.4);
+        }
+        [data-mode='dark'] .modern-modal-content::after {
+          opacity: 0.12;
+        }
+        [data-mode='dark'] .modern-modal-content::before {
+          border: 1px solid rgba(255, 255, 255, 0.06);
         }
         @keyframes modalScaleIn {
-          from { transform: scale(0.9) translateY(20px); opacity: 0; }
+          from { transform: scale(0.95) translateY(20px); opacity: 0; }
           to { transform: scale(1) translateY(0); opacity: 1; }
         }
         .modern-modal-header {
           display: flex; align-items: center; justify-content: space-between;
-          padding: 1.5rem 1.5rem 1rem;
+          padding: 20px 24px 18px;
+          border-bottom: none !important;
+          background: transparent;
+          position: relative;
+          z-index: 2;
         }
-        .modern-modal-header h3 { margin: 0; font-size: 1.25rem; font-weight: 700; color: var(--text-primary); }
-        .modern-modal-body { padding: 0 1.5rem 1.5rem; color: var(--text-secondary); line-height: 1.5; font-size: 0.95rem; }
+        /* Beautiful Golden Film Strip Sprocket Separator Line */
+        .modern-modal-header::after {
+          content: '';
+          position: absolute;
+          bottom: 0;
+          left: 12px;
+          right: 12px;
+          height: 6px;
+          background-image: repeating-linear-gradient(90deg, 
+            rgba(255, 255, 255, 0.18) 0px, 
+            rgba(255, 255, 255, 0.18) 4px, 
+            transparent 4px, 
+            transparent 10px
+          );
+          border-top: 1px solid rgba(255, 255, 255, 0.12);
+          border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+          pointer-events: none;
+        }
+        [data-mode='dark'] .modern-modal-header {
+          border-bottom: none !important;
+        }
+        .modern-modal-header h3 {
+          margin: 0;
+          font-family: 'Playfair Display', Georgia, serif;
+          font-size: 1.35rem;
+          font-weight: 700;
+          letter-spacing: 0.03em;
+          color: #082e23;
+          display: flex;
+          align-items: center;
+        }
+        .modern-modal-header h3::before {
+          content: '';
+          display: inline-block;
+          width: 32px;
+          height: 32px;
+          background-image: url('/bfi-classroom/bfi-logo.jpg'), linear-gradient(135deg, #ffffff 0%, #fdfcf7 100%);
+          background-size: contain, cover;
+          background-repeat: no-repeat, no-repeat;
+          background-position: center, center;
+          background-blend-mode: multiply;
+          margin-right: 12px;
+          border-radius: 6px;
+          flex-shrink: 0;
+          padding: 3px;
+          box-sizing: border-box;
+          border: 1.5px solid rgba(255, 255, 255, 0.20);
+          box-shadow: 0 2px 6px rgba(0, 0, 0, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.8);
+        }
+        [data-mode='dark'] .modern-modal-header h3 {
+          color: #f7f4eb;
+          text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+        }
+        
+        /* Close button circular reset */
+        .icon-btn-ghost {
+          background: transparent !important;
+          border: none !important;
+          outline: none !important;
+          color: #64748b !important;
+          cursor: pointer;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          width: 32px;
+          height: 32px;
+          border-radius: 50% !important;
+          transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1) !important;
+          padding: 0 !important;
+          position: relative;
+          z-index: 10;
+        }
+        .icon-btn-ghost:hover {
+          background: rgba(96, 165, 250, 0.12) !important;
+          color: #082e23 !important;
+          transform: scale(1.05) rotate(90deg);
+        }
+        [data-mode='dark'] .icon-btn-ghost:hover {
+          background: rgba(96, 165, 250, 0.12) !important;
+          color: #f7f4eb !important;
+        }
+
+        .modern-modal-body {
+          padding: 24px 28px;
+          color: #1c2e24;
+          font-family: Georgia, serif;
+          font-size: 1.05rem;
+          line-height: 1.65;
+          letter-spacing: 0.01em;
+          position: relative;
+          z-index: 2;
+        }
+        [data-mode='dark'] .modern-modal-body {
+          color: #cbd5e1;
+        }
         .modern-modal-footer {
-          padding: 1rem 1.5rem 1.5rem;
-          display: flex; gap: 0.75rem; justify-content: flex-end;
-          background: rgba(255,255,255,0.02);
+          padding: 16px 28px 20px;
+          display: flex; gap: 14px; justify-content: flex-end;
+          border-top: 1px solid rgba(255, 255, 255, 0.10);
+          background: rgba(8, 46, 35, 0.02);
+          position: relative;
+          z-index: 2;
+        }
+        [data-mode='dark'] .modern-modal-footer {
+          border-top: 1px solid rgba(255, 255, 255, 0.10);
+          background: rgba(0, 0, 0, 0.35);
         }
         .modern-btn {
-          padding: 10px 20px; border-radius: 14px; font-weight: 600; font-size: 0.9rem;
-          cursor: pointer; border: none; transition: all 0.2s;
+          padding: 10px 22px; border-radius: 6px;
+          font-family: 'Playfair Display', Georgia, serif;
+          text-transform: uppercase;
+          font-weight: 700; font-size: 0.85rem;
+          letter-spacing: 0.08em; cursor: pointer; border: none;
+          transition: all 0.25s cubic-bezier(0.25, 0.8, 0.25, 1);
         }
         .modern-btn--primary {
-          background: linear-gradient(135deg, var(--accent-primary), #2563eb);
-          color: white; box-shadow: 0 4px 12px rgba(59,130,246,0.3);
+          background: #082e23;
+          color: #fdfbf7;
+          border: 1px solid #60a5fa;
+          box-shadow: 0 4px 10px rgba(8, 46, 35, 0.15);
+        }
+        [data-mode='dark'] .modern-btn--primary {
+          background: #051c15;
+          color: #f7f4eb;
+          border: 1px solid #60a5fa;
+        }
+        .modern-btn--primary:hover {
+          background: #60a5fa !important;
+          color: #051c15 !important;
+          border-color: #60a5fa;
+          box-shadow: 0 6px 16px rgba(96, 165, 250, 0.3);
         }
         .modern-btn--danger {
-          background: linear-gradient(135deg, #ef4444, #dc2626);
-          color: white; box-shadow: 0 4px 12px rgba(239,68,68,0.3);
+          background: #7a1c1c;
+          color: #fdfbf7;
+          border: 1px solid #60a5fa;
+          box-shadow: 0 4px 10px rgba(122, 28, 28, 0.2);
+        }
+        .modern-btn--danger:hover {
+          background: #60a5fa;
+          color: #3a0808 !important;
+          border-color: #60a5fa;
+          box-shadow: 0 6px 16px rgba(96, 165, 250, 0.3);
         }
         .modern-btn--secondary {
-          background: rgba(255,255,255,0.05); color: var(--text-secondary);
-          border: 1px solid var(--glass-border);
+          background: transparent; color: #082e23;
+          border: 1px solid rgba(8, 46, 35, 0.35);
         }
-        .modern-btn:hover { transform: translateY(-2px); filter: brightness(1.1); box-shadow: 0 6px 16px rgba(0,0,0,0.2); }
-        .modern-btn:active { transform: translateY(0) scale(0.96); }
+        [data-mode='dark'] .modern-btn--secondary {
+          background: transparent; color: #cbd5e1;
+          border: 1px solid rgba(255, 255, 255, 0.15);
+        }
+        .modern-btn--secondary:hover {
+          background: rgba(8, 46, 35, 0.06); color: #082e23;
+          border-color: rgba(8, 46, 35, 0.6);
+        }
+        [data-mode='dark'] .modern-btn--secondary:hover {
+          background: rgba(96, 165, 250, 0.08); color: #ffffff;
+          border-color: rgba(255, 255, 255, 0.25);
+        }
+        .modern-btn:hover { transform: translateY(-2px); }
+        .modern-btn:active { transform: translateY(0); }
+
+        /* Current app modal style */
+        .modern-modal-overlay {
+          background: rgba(2, 6, 17, 0.74) !important;
+          backdrop-filter: blur(10px) saturate(1.2) !important;
+          -webkit-backdrop-filter: blur(10px) saturate(1.2) !important;
+        }
+        .modern-modal-content {
+          padding: 0 !important;
+          background-image:
+            url("data:image/svg+xml,%3Csvg viewBox='0 0 512 512' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='1.2' numOctaves='4' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"),
+            linear-gradient(160deg, rgba(8, 24, 44, 0.96) 0%, rgba(4, 13, 26, 0.98) 100%) !important;
+          background-size: 256px 256px, auto !important;
+          background-repeat: repeat, no-repeat !important;
+          background-blend-mode: overlay, normal !important;
+          border: 1px solid var(--glass-border) !important;
+          border-radius: 14px !important;
+          box-shadow: 0 24px 70px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
+        }
+        [data-mode="light"] .modern-modal-content {
+          background-image: none !important;
+          background: #ffffff !important;
+          border-color: rgba(15, 23, 42, 0.12) !important;
+          box-shadow: 0 24px 70px rgba(15, 23, 42, 0.22) !important;
+        }
+        .modern-modal-content::before,
+        .modern-modal-content::after,
+        .modern-modal-header::after {
+          display: none !important;
+        }
+        .modern-modal-header {
+          padding: 20px 24px !important;
+          border-bottom: 1px solid rgba(255, 255, 255, 0.08) !important;
+          background: rgba(255, 255, 255, 0.02) !important;
+        }
+        [data-mode="light"] .modern-modal-header {
+          background: #ffffff !important;
+          border-bottom-color: rgba(15, 23, 42, 0.1) !important;
+        }
+        .modern-modal-header h3 {
+          font-family: var(--font-display) !important;
+          font-size: 1.18rem !important;
+          letter-spacing: 0 !important;
+          color: var(--text-primary) !important;
+          text-shadow: none !important;
+        }
+        .modern-modal-header h3::before {
+          border: 1px solid rgba(255, 255, 255, 0.10) !important;
+          box-shadow: 0 6px 18px rgba(37, 99, 235, 0.24) !important;
+        }
+        .modern-modal-body {
+          padding: 24px !important;
+          color: var(--text-secondary) !important;
+          font-family: var(--font-sans) !important;
+          font-size: 0.95rem !important;
+          line-height: 1.6 !important;
+          letter-spacing: 0 !important;
+        }
+        .modern-modal-footer {
+          padding: 16px 24px 22px !important;
+          border-top: 1px solid rgba(255, 255, 255, 0.08) !important;
+          background: rgba(2, 6, 17, 0.22) !important;
+        }
+        [data-mode="light"] .modern-modal-footer {
+          background: #f8fafc !important;
+          border-top-color: rgba(15, 23, 42, 0.1) !important;
+        }
+        .modern-btn {
+          border-radius: 8px !important;
+          font-family: var(--font-sans) !important;
+          text-transform: none !important;
+          letter-spacing: 0 !important;
+        }
+        .modern-btn--primary {
+          background: var(--accent-primary) !important;
+          color: #ffffff !important;
+          border: 1px solid var(--accent-primary) !important;
+          box-shadow: 0 10px 26px rgba(225, 29, 72, 0.24) !important;
+        }
+        .modern-btn--primary:hover {
+          background: var(--accent-primary-hover) !important;
+          color: #ffffff !important;
+          border-color: var(--accent-primary-hover) !important;
+        }
+        .modern-btn--secondary {
+          background: rgba(255, 255, 255, 0.04) !important;
+          color: var(--text-primary) !important;
+          border: 1px solid rgba(255, 255, 255, 0.10) !important;
+        }
+        [data-mode="light"] .modern-btn--secondary {
+          background: #eef2f7 !important;
+          border-color: rgba(15, 23, 42, 0.1) !important;
+          color: #0f172a !important;
+        }
+        .modern-btn--danger {
+          background: rgba(239, 68, 68, 0.12) !important;
+          color: #fecaca !important;
+          border: 1px solid rgba(239, 68, 68, 0.35) !important;
+          box-shadow: none !important;
+        }
+        [data-mode="light"] .modern-btn--danger {
+          background: #fff1f2 !important;
+          color: #be123c !important;
+          border-color: rgba(225, 29, 72, 0.28) !important;
+        }
 
         /* --- Scroll Down Button --- */
         .scroll-bottom-btn {

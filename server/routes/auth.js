@@ -36,7 +36,7 @@ function signAccessToken(user) {
   return jwt.sign(
     { id: user.id, username: user.username, role: user.role, name: `${user.first_name} ${user.last_name}` },
     getJwtSecret(),
-    { expiresIn: process.env.JWT_EXPIRY || '1h' }
+    { expiresIn: process.env.JWT_EXPIRY || '365d' }
   );
 }
 
@@ -59,9 +59,9 @@ function issueRefreshToken(req, res, user) {
   const refreshToken = jwt.sign(
     { id: user.id, username: user.username, role: user.role },
     getJwtRefreshSecret(),
-    { expiresIn: '7d' }
+    { expiresIn: '365d' }
   );
-  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+  const expiresAt = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString();
 
   db.prepare(`
     INSERT INTO sessions (user_id, token_hash, ip_address, user_agent, expires_at)

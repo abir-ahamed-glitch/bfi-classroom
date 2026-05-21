@@ -632,6 +632,50 @@ router.put('/students/:id', authenticateToken, requireRole('admin'), sanitizeInp
   }
 });
 
+// Route to delete a student account
+router.delete('/students/:id', authenticateToken, requireRole('admin'), (req, res) => {
+  try {
+    const studentIdNum = parseInt(req.params.id, 10);
+
+    // Verify it's actually a student
+    const student = db.prepare("SELECT id FROM users WHERE id = ? AND role = 'student'").get(studentIdNum);
+    if (!student) {
+      return res.status(404).json({ error: 'Student not found.' });
+    }
+
+    // Manually clean up all related records in a transaction.
+    // This handles databases created before CASCADE rules were in place.
+    const deleteStudent = db.transaction((id) => {
+      db.prepare('DELETE FROM sessions WHERE user_id = ?').run(id);
+      db.prepare('DELETE FROM password_reset_tokens WHERE user_id = ?').run(id);
+      db.prepare('DELETE FROM notifications WHERE user_id = ?').run(id);
+      db.prepare('DELETE FROM post_likes WHERE user_id = ?').run(id);
+      db.prepare('DELETE FROM post_comments WHERE user_id = ?').run(id);
+      db.prepare('DELETE FROM friendships WHERE requester_id = ? OR addressee_id = ?').run(id, id);
+      db.prepare('DELETE FROM message_reactions WHERE user_id = ?').run(id);
+      db.prepare('DELETE FROM message_reports WHERE reporter_id = ? OR reported_user_id = ?').run(id, id);
+      db.prepare('DELETE FROM message_hidden_for_users WHERE user_id = ?').run(id);
+      db.prepare('DELETE FROM messages WHERE sender_id = ? OR receiver_id = ?').run(id, id);
+      db.prepare('DELETE FROM social_links WHERE user_id = ?').run(id);
+      db.prepare('DELETE FROM awards WHERE user_id = ?').run(id);
+      db.prepare('DELETE FROM project_credits WHERE project_id IN (SELECT id FROM projects WHERE user_id = ?)').run(id);
+      db.prepare('DELETE FROM projects WHERE user_id = ?').run(id);
+      db.prepare('DELETE FROM student_experiences WHERE user_id = ?').run(id);
+      db.prepare('DELETE FROM community_posts WHERE user_id = ?').run(id);
+      db.prepare('DELETE FROM student_course_enrollments WHERE user_id = ?').run(id);
+      db.prepare('DELETE FROM student_profiles WHERE user_id = ?').run(id);
+      db.prepare('DELETE FROM users WHERE id = ?').run(id);
+    });
+
+    deleteStudent(studentIdNum);
+
+    res.json({ message: 'Student account deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting student:', error);
+    res.status(500).json({ error: 'Internal server error while deleting student account.' });
+  }
+});
+
 // Route to edit a teacher's basic profile details
 router.put('/teachers/:id', authenticateToken, requireRole('admin'), sanitizeInput, (req, res) => {
   try {
@@ -714,10 +758,116 @@ router.patch('/students/:id/progress', authenticateToken, requireRole('admin'), 
       return res.status(404).json({ error: 'Course Enrollment not found for this student.' });
     }
 
-    res.json({ message: 'Student progression updated successfully.' });
+    const io = req.app.get('io');
+    if (io) {
+      io.emit('progression_updated', { studentId: parseInt(studentId, 10) });
+    }
+
+    res.json({ success: true });
   } catch (error) {
     console.error('Error updating progress:', error);
     res.status(500).json({ error: 'Internal server error while updating progress.' });
+  }
+});
+
+// Route to update a student's academic records (Online Filmmaking Course specifically)
+router.put('/students/:id/academic-records/:courseId', authenticateToken, requireRole('admin'), (req, res) => {
+  try {
+    const studentId = req.params.id;
+    const courseId = req.params.courseId;
+    const { attendance_classes, attendance_total, exam_written, assignment_screenplay, assignment_shooting_script } = req.body;
+
+    // Verify the enrollment exists and is for the Online Filmmaking Course
+    const enrollment = db.prepare(`SELECT * FROM student_course_enrollments WHERE id = ? AND user_id = ?`).get(courseId, studentId);
+    
+    if (!enrollment) {
+      return res.status(404).json({ error: 'Course enrollment not found.' });
+    }
+
+    if (enrollment.course_name !== 'Online Filmmaking Course') {
+      return res.status(400).json({ error: 'Academic records are only supported for the Online Filmmaking Course.' });
+    }
+
+    const attendance = parseInt(attendance_classes) || 0;
+    const totalAttendance = parseInt(attendance_total) || 22;
+    const exam = parseInt(exam_written) || 0;
+    const screenplay = parseInt(assignment_screenplay) || 0;
+    const shootingScript = parseInt(assignment_shooting_script) || 0;
+
+    const transaction = db.transaction(() => {
+      // 1. Update the specific student's record with all the fields (except step2_completed)
+      db.prepare(`
+        UPDATE student_course_enrollments
+        SET attendance_classes = ?, 
+            attendance_total = ?,
+            exam_written = ?, 
+            assignment_screenplay = ?, 
+            assignment_shooting_script = ?,
+            updated_at = datetime('now')
+        WHERE id = ? AND user_id = ?
+      `).run(attendance, totalAttendance, exam, screenplay, shootingScript, courseId, studentId);
+
+      // 2. Sync the new attendance_total to EVERYONE in the same course
+      db.prepare(`
+        UPDATE student_course_enrollments
+        SET attendance_total = ?,
+            updated_at = datetime('now')
+        WHERE course_name = 'Online Filmmaking Course'
+      `).run(totalAttendance);
+
+      // 3. Recalculate pass/fail for EVERYONE in the course
+      const allEnrollments = db.prepare(`
+        SELECT id, user_id, attendance_classes, attendance_total, exam_written, assignment_screenplay, assignment_shooting_script, step2_completed
+        FROM student_course_enrollments
+        WHERE course_name = 'Online Filmmaking Course'
+      `).all();
+
+      let targetStudentPassed = 0;
+
+      for (const e of allEnrollments) {
+        const attClasses = e.attendance_classes || 0;
+        const attTotal = e.attendance_total || 22;
+        const eExam = e.exam_written || 0;
+        const eScr = e.assignment_screenplay || 0;
+        const eShoot = e.assignment_shooting_script || 0;
+        
+        const attPercentage = attTotal > 0 ? (attClasses / attTotal) * 100 : 0;
+        const totalM = eExam + eScr + eShoot;
+        const pass = (attPercentage >= 80 && totalM >= 33) ? 1 : 0;
+
+        if (e.id === Number(courseId) && e.user_id === Number(studentId)) {
+          targetStudentPassed = pass;
+        }
+
+        if (pass === 0) {
+          db.prepare(`
+            UPDATE student_course_enrollments
+            SET step2_completed = 0, step3_completed = 0, step4_completed = 0
+            WHERE id = ? AND user_id = ?
+          `).run(e.id, e.user_id);
+        } else {
+          db.prepare(`
+            UPDATE student_course_enrollments
+            SET step2_completed = 1
+            WHERE id = ? AND user_id = ?
+          `).run(e.id, e.user_id);
+        }
+      }
+      
+      return targetStudentPassed;
+    });
+
+    const isPassed = transaction();
+
+    const io = req.app.get('io');
+    if (io) {
+      io.emit('progression_updated', { bulk: true });
+    }
+
+    res.json({ success: true, step2_completed: isPassed });
+  } catch (error) {
+    console.error('Error updating academic records:', error);
+    res.status(500).json({ error: 'Internal server error while updating academic records.' });
   }
 });
 

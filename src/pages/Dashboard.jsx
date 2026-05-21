@@ -19,6 +19,11 @@ export default function Dashboard() {
   const [activeVideo, setActiveVideo] = useState(null);
   const [brokenThumbs, setBrokenThumbs] = useState({});
   const socketRef = useRef(null);
+  const currentUserRef = useRef(currentUser?.id);
+
+  useEffect(() => {
+    currentUserRef.current = currentUser?.id;
+  }, [currentUser]);
 
   useEffect(() => {
     fetchDashboardData();
@@ -30,6 +35,12 @@ export default function Dashboard() {
     socketRef.current = socket;
     socket.on('new_announcement', () => {
       fetchDashboardData();
+    });
+    socket.on('progression_updated', (payload) => {
+      const currentId = currentUserRef.current;
+      if (payload.bulk || String(payload.studentId) === String(currentId)) {
+        fetchDashboardData();
+      }
     });
     return () => {
       socket.disconnect();
@@ -222,7 +233,7 @@ export default function Dashboard() {
       
       {/* Header Profile Summary */}
       <header className="dashboard-header" style={{ 
-        position: 'relative', overflow: 'hidden', padding: '1.75rem 2.5rem', 
+        position: 'relative', padding: '1.75rem 2.5rem', 
         borderRadius: '24px', background: 'var(--bg-secondary)', 
         border: '1px solid var(--glass-border)', 
         borderTop: '4px solid var(--accent-primary)',
@@ -231,11 +242,13 @@ export default function Dashboard() {
       }}>
         
         {/* Subtle Decorative Cinematic Elements */}
-        <div style={{ position: 'absolute', right: '5%', top: '-20px', opacity: 0.05, transform: 'rotate(12deg)', pointerEvents: 'none', color: 'var(--text-primary)' }}>
-          <Clapperboard size={200} strokeWidth={1} />
-        </div>
-        <div style={{ position: 'absolute', left: '20%', bottom: '-50px', opacity: 0.04, transform: 'rotate(-8deg)', pointerEvents: 'none', color: 'var(--accent-primary)' }}>
-          <Camera size={160} strokeWidth={1} />
+        <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, overflow: 'hidden', borderRadius: 'inherit', pointerEvents: 'none', zIndex: 0 }}>
+          <div style={{ position: 'absolute', right: '5%', top: '-20px', opacity: 0.05, transform: 'rotate(12deg)', color: 'var(--text-primary)' }}>
+            <Clapperboard size={200} strokeWidth={1} />
+          </div>
+          <div style={{ position: 'absolute', left: '20%', bottom: '-50px', opacity: 0.04, transform: 'rotate(-8deg)', color: 'var(--accent-primary)' }}>
+            <Camera size={160} strokeWidth={1} />
+          </div>
         </div>
 
         <div className="header-text" style={{ position: 'relative', zIndex: 1 }}>
@@ -314,7 +327,7 @@ export default function Dashboard() {
           <div style={{ position: 'absolute', right: '1%', top: '5%', opacity: 0.03, transform: 'rotate(-5deg)', pointerEvents: 'none', color: 'var(--text-primary)' }}>
             <Megaphone size={120} strokeWidth={1} />
           </div>
-          <div className="glass-panel" style={{ padding: '1.5rem', position: 'relative', zIndex: 1 }}>
+          <div className="glass-panel dashboard-highlight-outline" style={{ padding: '1.5rem', position: 'relative', zIndex: 1, background: 'rgba(255, 255, 255, 0.02)' }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.5rem' }}>
               <h2 style={{ fontSize: '1.3rem', fontWeight: 700, margin: 0, display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
                 <Megaphone className="text-accent" size={20} /> Notice Board
@@ -330,7 +343,7 @@ export default function Dashboard() {
                 background: 'rgba(255,255,255,0.04)',
                 padding: '0.4rem 0.8rem',
                 borderRadius: '8px',
-                border: '1px solid rgba(255,255,255,0.05)',
+                border: 'none',
                 transition: 'all 0.2s ease'
               }}
               onMouseEnter={e => {
@@ -357,7 +370,7 @@ export default function Dashboard() {
                   fontSize: '0.95rem',
                   background: 'rgba(255,255,255,0.015)',
                   borderRadius: '12px',
-                  border: '1px solid rgba(255,255,255,0.04)',
+                  border: 'none',
                   display: 'flex',
                   flexDirection: 'column',
                   alignItems: 'center',
@@ -378,9 +391,9 @@ export default function Dashboard() {
                   <div key={ann.id} style={{
                     padding: '1.25rem 1.5rem',
                     borderRadius: '12px',
+                    border: 'none',
                     borderLeft: `4px solid ${priorityColor}`,
                     background: ann.priority === 'high' ? 'rgba(239, 68, 68, 0.05)' : 'rgba(255,255,255,0.02)',
-                    border: '1px solid rgba(255,255,255,0.05)',
                     position: 'relative',
                     overflow: 'hidden'
                   }}>
@@ -471,19 +484,37 @@ export default function Dashboard() {
               </h2>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
                 {enrolledCourses.map((course, idx) => (
-                  <div key={idx} className="glass-panel" style={{ padding: '2rem', display: 'flex', flexDirection: 'column', gap: '2rem', background: 'rgba(255, 255, 255, 0.02)' }}>
+                  <div key={idx} className="glass-panel dashboard-highlight-outline" style={{ padding: '2rem', display: 'flex', flexDirection: 'column', gap: '2rem', background: 'rgba(255, 255, 255, 0.02)' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem' }}>
                       <h3 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '0.75rem', fontSize: '1.2rem', color: 'var(--text-secondary)' }}>
                         <Film size={20} /> {course.title}
                       </h3>
-                      <button 
-                        className="btn btn-primary" 
-                        style={{ padding: '0.6rem 1.2rem', boxShadow: course.completed ? '0 4px 20px rgba(59, 130, 246, 0.4)' : 'none' }} 
-                        disabled={!course.completed}
-                        onClick={() => navigate('/certificates')}
-                      >
-                        <Download size={16} /> Download Certificate
-                      </button>
+                      <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
+                        <button 
+                          className="btn btn-primary" 
+                          style={{ 
+                            display: 'flex', alignItems: 'center', gap: '0.5rem', 
+                            padding: '0.6rem 1.2rem',
+                            fontWeight: '500'
+                          }}
+                          onClick={() => navigate('/student-portal')}
+                        >
+                          <FileText size={16} /> View Full Progression
+                        </button>
+                        
+                        <button 
+                          className={course.completed ? "btn btn-primary" : "btn"} 
+                          style={
+                            course.completed 
+                              ? { padding: '0.6rem 1.2rem', boxShadow: '0 4px 20px rgba(225, 29, 72, 0.4)' } 
+                              : { display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.6rem 1.2rem', opacity: 0.6, cursor: 'not-allowed', background: 'var(--bg-tertiary)', color: 'var(--text-muted)', border: '1px solid var(--glass-border)' }
+                          }
+                          disabled={!course.completed}
+                          onClick={() => navigate('/certificates')}
+                        >
+                          <Download size={16} /> Download Certificate
+                        </button>
+                      </div>
                     </div>
                     <div style={{ display: 'flex', gap: '4rem', flexWrap: 'wrap' }}>
                       {course.course_type === 'filmmaking' ? (
@@ -537,7 +568,7 @@ export default function Dashboard() {
         </h2>
         
         {pinnedProjects.length > 0 ? (
-          <div className="hero-card">
+          <div className="hero-card dashboard-highlight-outline">
             {/* Thumbnail side */}
             <div className="hero-thumb">
               {(() => {
@@ -587,7 +618,7 @@ export default function Dashboard() {
             </div>
           </div>
         ) : (
-          <div className="glass-panel" style={{ padding: '3rem', textAlign: 'center', color: 'var(--text-muted)' }}>
+          <div className="glass-panel dashboard-highlight-outline" style={{ padding: '3rem', textAlign: 'center', color: 'var(--text-muted)', background: 'rgba(255, 255, 255, 0.02)' }}>
             <Film size={48} style={{ margin: '0 auto 1rem auto', opacity: 0.3 }} />
             <p>You haven't pinned any projects to your dashboard yet.</p>
             <button className="btn btn-glass" style={{ marginTop: '1rem' }} onClick={() => navigate('/portfolio')}>Go to Portfolio</button>
@@ -731,9 +762,9 @@ export default function Dashboard() {
           transition: opacity 0.2s ease, transform 0.2s ease;
           transform: translateY(8px);
           background: var(--bg-secondary, #1e1e2e);
-          border: 1px solid var(--glass-border, rgba(255,255,255,0.12));
+          border: none;
           border-radius: 14px;
-          box-shadow: 0 16px 48px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.06);
+          box-shadow: 0 16px 48px rgba(0,0,0,0.55);
           backdrop-filter: blur(20px);
           -webkit-backdrop-filter: blur(20px);
         }
@@ -779,8 +810,11 @@ export default function Dashboard() {
           gap: 0;
           border-radius: 20px;
           overflow: hidden;
-          border: 1px solid var(--glass-border);
-          background: var(--bg-secondary);
+          border: none;
+          background: rgba(255, 255, 255, 0.02);
+          box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
+          backdrop-filter: blur(16px);
+          -webkit-backdrop-filter: blur(16px);
           min-height: 300px;
         }
         .hero-thumb {
@@ -1023,13 +1057,14 @@ export default function Dashboard() {
           overflow: hidden;
           box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
           animation: dashboardSlideUp 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+          border: 1px solid var(--glass-border);
         }
         .video-modal-close {
           position: absolute;
           top: 1.5rem;
           right: 1.5rem;
           background: rgba(0, 0, 0, 0.5);
-          border: 1px solid rgba(255, 255, 255, 0.1);
+          border: 1px solid var(--glass-border);
           color: white;
           width: 44px;
           height: 44px;

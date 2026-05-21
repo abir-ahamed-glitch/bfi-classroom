@@ -347,7 +347,7 @@ export default function Registry() {
                 ) : (masterSearchQuery.trim() ? masterSearchResults : filteredBatchmates).length > 0 ? (
                   <div className="students-grid">
                     {(masterSearchQuery.trim() ? masterSearchResults : filteredBatchmates).map(student => (
-                      <div key={student.id} className="student-card glass-panel">
+                      <div key={student.id} className="student-card glass-panel dashboard-highlight-outline">
                           <div className="student-avatar-wrapper" onClick={() => navigate(`/profile/${student.id}`)}>
                             <img 
                               src={student.profile_picture ? resolveMediaUrl(student.profile_picture) : `${import.meta.env.BASE_URL}avatars/male1.png`} 

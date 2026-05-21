@@ -237,7 +237,7 @@ export default function NoticeBoard() {
                   background: 'rgba(255,255,255,0.02)', 
                   padding: '1.5rem', 
                   borderRadius: '12px',
-                  border: '1px solid rgba(255,255,255,0.05)',
+                  border: '1px solid rgba(255,255,255,0.04)',
                   lineHeight: 1.6,
                   color: 'var(--text-secondary)',
                   fontSize: '1.05rem',
@@ -262,7 +262,7 @@ export default function NoticeBoard() {
                       marginTop: '1rem',
                       padding: '0.6rem 1.2rem',
                       background: 'rgba(255,255,255,0.04)',
-                      border: '1px solid rgba(255,255,255,0.08)',
+                      border: '1px solid rgba(255,255,255,0.04)',
                       borderRadius: '8px',
                       color: 'var(--accent-primary, #60a5fa)',
                       cursor: 'pointer',
@@ -278,7 +278,7 @@ export default function NoticeBoard() {
                     }}
                     onMouseLeave={e => {
                       e.currentTarget.style.background = 'rgba(255,255,255,0.04)';
-                      e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)';
+                      e.currentTarget.style.borderColor = 'rgba(255,255,255,0.04)';
                       e.currentTarget.style.transform = 'translateY(0)';
                     }}
                   >

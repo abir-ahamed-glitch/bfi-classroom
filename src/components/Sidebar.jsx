@@ -250,6 +250,11 @@ export default function Sidebar() {
           </NavLink>
           
           <p className="nav-subtitle">BFI Classroom</p>
+          {currentUser?.role === 'student' && (
+            <NavLink to="/student-portal" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
+              <Award size={20} /> Student Portal
+            </NavLink>
+          )}
           <NavLink to="/classroom" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
             <BookOpen size={20} /> Classroom
           </NavLink>
@@ -319,18 +324,8 @@ export default function Sidebar() {
           {/* Dark / Light Mode Toggle */}
           <button
             onClick={toggleMode}
+            className="theme-toggle-btn"
             title={mode === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
-            style={{
-              display: 'flex', alignItems: 'center', gap: '0.6rem',
-              width: '100%', padding: '0.65rem 0.85rem', borderRadius: '10px',
-              background: 'var(--bg-secondary)', border: '1px solid var(--glass-border)',
-              color: 'var(--text-secondary)', cursor: 'pointer', marginBottom: '0.5rem',
-              fontFamily: 'var(--font-sans)', fontSize: '0.88rem', fontWeight: 500,
-              transition: 'all 0.2s ease',
-              justifyContent: 'space-between',
-            }}
-            onMouseEnter={e => { e.currentTarget.style.background = 'var(--hover-bg)'; e.currentTarget.style.color = 'var(--text-primary)'; }}
-            onMouseLeave={e => { e.currentTarget.style.background = 'var(--bg-secondary)'; e.currentTarget.style.color = 'var(--text-secondary)'; }}
           >
             <span style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
               {mode === 'dark' ? <Moon size={17} /> : <Sun size={17} />}

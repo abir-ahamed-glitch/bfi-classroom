@@ -488,6 +488,22 @@ export function initializeDatabase() {
     }
   }
 
+  const enrollmentMigrations = [
+    "ALTER TABLE student_course_enrollments ADD COLUMN attendance_classes INTEGER DEFAULT 0",
+    "ALTER TABLE student_course_enrollments ADD COLUMN exam_written INTEGER DEFAULT 0",
+    "ALTER TABLE student_course_enrollments ADD COLUMN assignment_screenplay INTEGER DEFAULT 0",
+    "ALTER TABLE student_course_enrollments ADD COLUMN assignment_shooting_script INTEGER DEFAULT 0",
+    "ALTER TABLE student_course_enrollments ADD COLUMN attendance_total INTEGER DEFAULT 22"
+  ];
+  for (const migration of enrollmentMigrations) {
+    try {
+      db.prepare(migration).run();
+    } catch {
+      // Column probably already exists
+    }
+  }
+
+
   const plainMessages = db.prepare(`
     SELECT id, content
     FROM messages

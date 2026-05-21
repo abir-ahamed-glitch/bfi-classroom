@@ -1,0 +1,1 @@
+const db = require('better-sqlite3')('server/bfi_classroom.db'); db.prepare('INSERT INTO messages (sender_id, receiver_id, content, deleted_for_everyone, created_at, deleted_at) VALUES (14, 12, \'enc:v1:test\', 1, datetime(\'now\'), datetime(\'now\'))').run(); console.log('Inserted');

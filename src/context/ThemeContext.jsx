@@ -73,7 +73,7 @@ const DARK_VARS = {
   'golden-hour':      { bg: '#0d0a05', bg2: '#1a1208', bg3: '#241b0c', glass: 'rgba(255,200,100,0.04)', border: 'rgba(251,191,36,0.12)',  t1: '#fef3c7', t2: '#d4a85a', tm: '#9a7040' },
   'silver-screen':    { bg: '#0a0c10', bg2: '#111827', bg3: '#1a2436', glass: 'rgba(100,149,237,0.04)', border: 'rgba(100,149,237,0.1)',  t1: '#e2e8f0', t2: '#94a3b8', tm: '#64748b' },
   'deep-ocean':       { bg: '#020d1a', bg2: '#061525', bg3: '#0a1f35', glass: 'rgba(14,165,233,0.06)',  border: 'rgba(14,165,233,0.15)',  t1: '#e0f2fe', t2: '#7dd3fc', tm: '#38bdf8' },
-  'forest-dusk':      { bg: '#050d08', bg2: '#0a1a10', bg3: '#0f2518', glass: 'rgba(16,185,129,0.04)', border: 'rgba(16,185,129,0.1)',   t1: '#ecfdf5', t2: '#6ee7b7', tm: '#34d399' },
+  'forest-dusk':      { bg: '#01040d', bg2: '#030b19', bg3: '#061326', glass: 'rgba(14,165,233,0.03)', border: 'rgba(14,165,233,0.1)',   t1: '#e0f2fe', t2: '#93c5fd', tm: '#60a5fa' },
   'midnight-festival':{ bg: '#07050f', bg2: '#0f0c1c', bg3: '#17132a', glass: 'rgba(124,58,237,0.05)', border: 'rgba(124,58,237,0.12)',  t1: '#f3e8ff', t2: '#c4b5fd', tm: '#7c5dbf' },
   'vintage-sepia':    { bg: '#110c06', bg2: '#1c1409', bg3: '#271d0e', glass: 'rgba(180,120,60,0.06)', border: 'rgba(180,120,60,0.14)',  t1: '#fdf0d5', t2: '#c8a96a', tm: '#8b6a3a' },
 };

@@ -35,6 +35,7 @@ import CertificateDesigner from './pages/admin/CertificateDesigner';
 import AnnouncementsManager from './pages/admin/AnnouncementsManager';
 import CourseMaterialsManager from './pages/admin/CourseMaterialsManager';
 import Certificates from './pages/Certificates';
+import StudentPortal from './pages/StudentPortal';
 import Sidebar from './components/Sidebar';
 import ErrorBoundary from './components/ErrorBoundary';
 import SkeletonLoader from './components/SkeletonLoader';
@@ -79,7 +80,7 @@ const Layout = ({ children }) => {
 
   return (
     <CallProvider>
-      <div style={{ display: 'flex', position: 'relative', minHeight: '100vh' }}>
+      <div style={{ display: 'flex', position: 'relative', minHeight: '100vh', zIndex: 1 }}>
         
         {/* Global Cinematic Watermarks */}
         <div style={{ position: 'fixed', top: '10%', right: '-5%', opacity: 0.02, transform: 'rotate(15deg)', pointerEvents: 'none', zIndex: 0, color: 'var(--text-primary)' }}>
@@ -201,6 +202,14 @@ function App() {
             <ProtectedRoute>
               <Layout>
                 <Inbox />
+              </Layout>
+            </ProtectedRoute>
+          } />
+
+          <Route path="/student-portal" element={
+            <ProtectedRoute requiredRole={['student']}>
+              <Layout>
+                <StudentPortal />
               </Layout>
             </ProtectedRoute>
           } />

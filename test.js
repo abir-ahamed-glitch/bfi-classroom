@@ -1,0 +1,1 @@
+const db = require('better-sqlite3')('server/database.sqlite'); console.log(db.prepare('SELECT id, sender_id, receiver_id, content, message_type, attachment_type, original_file_name FROM messages WHERE message_type = \'file\' ORDER BY id DESC LIMIT 5').all());
