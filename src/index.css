@@ -540,6 +540,12 @@ body::before {
   transform: translate3d(0, 0, 0);
 }
 
+/* Apply the requested glowing outline globally to all major glass panels */
+[data-mode='dark'] .glass-panel:not(.sidebar):not(.nav-bar):not(.modal-content):not(.login-form):not(.dropdown-menu):not(.standalone-project-view):not(.btn) {
+  box-shadow: 0 0 0 1px rgba(96, 165, 250, 0.2), 0 0 16px rgba(96, 165, 250, 0.15), 0 8px 32px rgba(0, 0, 0, 0.4) !important;
+  border: none !important;
+}
+
 .text-gradient {
   background: linear-gradient(135deg, var(--accent-primary) 0%, var(--accent-secondary) 60%, var(--accent-tertiary) 100%);
   -webkit-background-clip: text;
