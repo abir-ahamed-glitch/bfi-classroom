@@ -95,7 +95,7 @@ const THEME_KEY = 'bfi-classroom-theme';
 const MODE_KEY  = 'bfi-classroom-mode';
 
 export function ThemeProvider({ children }) {
-  const [themeId, setThemeId] = useState(() => localStorage.getItem(THEME_KEY) || 'cinema-noir');
+  const [themeId, setThemeId] = useState(() => localStorage.getItem(THEME_KEY) || 'forest-dusk');
   const [mode,    setModeState] = useState(() => localStorage.getItem(MODE_KEY)  || 'dark');
 
   const applyVars = (id, m) => {
