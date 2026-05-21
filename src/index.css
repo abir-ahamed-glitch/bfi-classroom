@@ -53,7 +53,7 @@ body.modal-open, html.modal-open {
   background-size: 256px 256px, auto !important;
   background-repeat: repeat, no-repeat !important;
   background-blend-mode: overlay, normal !important;
-  border: 1px solid rgba(180, 160, 100, 0.15) !important;
+  border: none !important;
   box-shadow: 0 4px 24px rgba(0,0,0,0.06), 0 1px 3px rgba(0,0,0,0.03), inset 0 1px 0 rgba(255,255,255,0.8) !important;
 }
 
