@@ -181,7 +181,7 @@ export default function UserHoverCard({ userId, children, className = '', style 
   return (
     <div 
       ref={wrapperRef}
-      className={`user-hover-card-wrapper ${className}`} 
+      className={`user-hover-card-wrapper ${isOpen ? 'active' : ''} ${className}`} 
       style={style} 
       onMouseEnter={handleMouseEnter} 
       onMouseLeave={handleMouseLeave}

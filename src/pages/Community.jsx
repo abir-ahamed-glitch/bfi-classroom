@@ -1,8 +1,10 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, memo } from 'react';
 import { createPortal } from 'react-dom';
 import { useAuth } from '../context/AuthContext';
 import { io } from 'socket.io-client';
-import { MessageSquare, Heart, Image as ImageIcon, Send, Film, Share2, Trash2, Pin, PinOff, Play, Video, GripVertical, X, Pencil, ChevronLeft, ChevronRight } from 'lucide-react';
+import { MessageSquare, Heart, Image as ImageIcon, Send, Film, Share2, Trash2, Pin, PinOff, Play, Video, GripVertical, X, Pencil, ChevronLeft, ChevronRight, Smile, MoreVertical } from 'lucide-react';
+import data from '@emoji-mart/data';
+import { Picker } from 'emoji-mart';
 import { resolveMediaUrl } from '../utils/mediaUtils';
 import UserHoverCard from '../components/UserHoverCard';
 import { useModal } from '../components/BFIModal';
@@ -10,6 +12,54 @@ import PhotoEditorModal from '../components/PhotoEditorModal';
 let cachedCommunityPosts = [];
 let cachedCommunityScrollY = 0;
 let cachedCommunityUserId = null;
+
+const NativeEmojiPicker = memo(({ onEmojiSelect, theme }) => {
+  const containerRef = useRef(null);
+  const onSelectRef = useRef(onEmojiSelect);
+
+  useEffect(() => {
+    onSelectRef.current = onEmojiSelect;
+  }, [onEmojiSelect]);
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+    containerRef.current.innerHTML = '';
+    const picker = new Picker({
+      data,
+      onEmojiSelect: (emoji) => onSelectRef.current?.(emoji),
+      theme,
+      previewPosition: 'none',
+    });
+    containerRef.current.appendChild(picker);
+    return () => {
+      if (containerRef.current) {
+        containerRef.current.innerHTML = '';
+      }
+    };
+  }, [theme]);
+
+  return <div ref={containerRef} />;
+}, (prevProps, nextProps) => {
+  return prevProps.theme === nextProps.theme;
+});
+
+const parseCommentContent = (content) => {
+  if (!content) return { text: '', image: '' };
+  if (content.startsWith('{') && content.endsWith('}')) {
+    try {
+      const parsed = JSON.parse(content);
+      if (parsed.text || parsed.image) {
+        return { text: parsed.text || '', image: parsed.image || '' };
+      }
+    } catch (e) {
+      // Failed to parse, fallback to legacy
+    }
+  }
+  if (content.startsWith('data:image/')) {
+    return { text: '', image: content };
+  }
+  return { text: content, image: '' };
+};
 
 export default function Community() {
   const { currentUser } = useAuth();
@@ -24,7 +74,6 @@ export default function Community() {
   const [mediaImages, setMediaImages] = useState([]);
   const [selectedProjectId, setSelectedProjectId] = useState(null);
   const [selectedProjectTitle, setSelectedProjectTitle] = useState('');
-  const [showImageOptions, setShowImageOptions] = useState(false);
   const [showProjectOptions, setShowProjectOptions] = useState(false);
   const [userProjects, setUserProjects] = useState([]);
   const [socket, setSocket] = useState(null);
@@ -32,8 +81,13 @@ export default function Community() {
   const [brokenPostImages, setBrokenPostImages] = useState({});
   const [activeCommentPostId, setActiveCommentPostId] = useState(null);
   const [commentContent, setCommentContent] = useState('');
-  const [showImageLinkInput, setShowImageLinkInput] = useState(false);
-  const [tempImageUrl, setTempImageUrl] = useState('');
+  const [commentImage, setCommentImage] = useState(null);
+  const [commentEmojiPickerPostId, setCommentEmojiPickerPostId] = useState(null);
+  const [activeCommentMenuId, setActiveCommentMenuId] = useState(null);
+  const [editingCommentId, setEditingCommentId] = useState(null);
+  const [editingCommentText, setEditingCommentText] = useState('');
+  const [editingCommentImage, setEditingCommentImage] = useState(null);
+  const [editingCommentEmojiPickerId, setEditingCommentEmojiPickerId] = useState(null);
   // Photo editor modal state
   const [photoEditorOpen, setPhotoEditorOpen] = useState(false);
   const [photoEditorIndex, setPhotoEditorIndex] = useState(0);
@@ -106,13 +160,6 @@ export default function Community() {
     dragOverItem.current = null;
   };
 
-  // Reset image link sub-view whenever the main image dropdown is closed
-  useEffect(() => {
-    if (!showImageOptions) {
-      setShowImageLinkInput(false);
-      setTempImageUrl('');
-    }
-  }, [showImageOptions]);
 
   // YouTube Thumbnail Helper
   const getYoutubeThumbnail = (url) => {
@@ -165,12 +212,24 @@ export default function Community() {
     });
 
     const handleClickOutside = (e) => {
-      if (!e.target.closest('.relative-container')) {
-        setShowImageOptions(false);
+      const path = e.composedPath?.() || [];
+      const clickedCommentPickerOrBtn = path.some(el => 
+        el instanceof Element && (el.closest('.comment-emoji-picker-container') || el.closest('.comment-icon-btn'))
+      );
+      const clickedMenuOrRelative = path.some(el => 
+        el instanceof Element && (el.closest('.relative-container') || el.closest('.comment-menu-wrapper'))
+      );
+
+      if (!clickedMenuOrRelative) {
         setShowProjectOptions(false);
+        setActiveCommentMenuId(null);
+      }
+      if (!clickedCommentPickerOrBtn) {
+        setCommentEmojiPickerPostId(null);
+        setEditingCommentEmojiPickerId(null);
       }
     };
-    document.addEventListener('mousedown', handleClickOutside);
+    document.addEventListener('pointerdown', handleClickOutside);
 
     // Restore scroll position
     if (cachedCommunityPosts.length > 0) {
@@ -184,7 +243,7 @@ export default function Community() {
 
     return () => {
       newSocket.disconnect();
-      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('pointerdown', handleClickOutside);
       window.removeEventListener('scroll', handleScroll);
     };
   }, [socketUrl]);
@@ -201,7 +260,6 @@ export default function Community() {
       fetchUserProjects().finally(() => setFetchingProjects(false));
     }
     setShowProjectOptions(!showProjectOptions);
-    setShowImageOptions(false);
   };
 
   const fetchUserProjects = async () => {
@@ -214,6 +272,57 @@ export default function Community() {
       console.error('Fetch user projects failed', err);
     }
   };
+
+  const handlePaste = useCallback((e) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    
+    const files = [];
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].type.indexOf('image') !== -1) {
+        const file = items[i].getAsFile();
+        if (file) {
+          files.push(file);
+        }
+      }
+    }
+    
+    if (files.length > 0) {
+      e.preventDefault();
+      const readers = files.map(file => new Promise(resolve => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result);
+        reader.readAsDataURL(file);
+      }));
+      Promise.all(readers).then(urls => {
+        addImages(urls);
+        setSelectedProjectId(null);
+        setSelectedProjectTitle('');
+      });
+    }
+  }, [addImages]);
+
+  const handleCommentPaste = useCallback((e) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    
+    let file = null;
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].type.indexOf('image') !== -1) {
+        file = items[i].getAsFile();
+        break;
+      }
+    }
+    
+    if (file) {
+      e.preventDefault();
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setCommentImage(reader.result);
+      };
+      reader.readAsDataURL(file);
+    }
+  }, []);
 
   const fetchPosts = async () => {
     try {
@@ -289,7 +398,6 @@ export default function Community() {
       addImages(urls);
       setSelectedProjectId(null);
       setSelectedProjectTitle('');
-      setShowImageOptions(false);
     });
     e.target.value = '';
   };
@@ -299,31 +407,6 @@ export default function Community() {
     setSelectedProjectTitle(proj.title);
     setMediaImages([]);
     setShowProjectOptions(false);
-  };
-
-  const handleImageLinkSubmit = () => {
-    let url = tempImageUrl.trim();
-    if (url) {
-      try {
-        if (url.includes('google.com/imgres')) {
-          const urlObj = new URL(url);
-          const imgUrl = urlObj.searchParams.get('imgurl');
-          if (imgUrl) url = decodeURIComponent(imgUrl);
-        } else if (url.includes('google.com/url')) {
-          const urlObj = new URL(url);
-          const redirectUrl = urlObj.searchParams.get('url');
-          if (redirectUrl) url = decodeURIComponent(redirectUrl);
-        }
-      } catch (e) {
-        console.error('URL parsing failed', e);
-      }
-      addImages([{ url, editedUrl: undefined, caption: '' }]);
-      setSelectedProjectId(null);
-      setSelectedProjectTitle('');
-      setShowImageLinkInput(false);
-      setShowImageOptions(false);
-      setTempImageUrl('');
-    }
   };
 
   const handleDeletePost = async (postId) => {
@@ -405,7 +488,16 @@ export default function Community() {
   };
 
   const handleCommentSubmit = async (postId) => {
-    if (!commentContent.trim()) return;
+    if (!commentContent.trim() && !commentImage) return;
+
+    let finalContent = '';
+    if (commentImage && commentContent.trim()) {
+      finalContent = JSON.stringify({ text: commentContent.trim(), image: commentImage });
+    } else if (commentImage) {
+      finalContent = commentImage;
+    } else {
+      finalContent = commentContent.trim();
+    }
 
     try {
       const res = await fetch(`/api/community/posts/${postId}/comments`, {
@@ -414,15 +506,114 @@ export default function Community() {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${localStorage.getItem('token')}`
         },
-        body: JSON.stringify({ content: commentContent })
+        body: JSON.stringify({ content: finalContent })
       });
       
       if (res.ok) {
         setCommentContent('');
+        setCommentImage(null);
         fetchPosts();
       }
     } catch (err) {
       console.error(err);
+    }
+  };
+
+  const handleCommentDelete = async (postId, commentId) => {
+    setActiveCommentMenuId(null);
+    const confirmed = await showConfirm(
+      "Are you sure you want to delete this comment?",
+      { title: 'Delete Comment', confirmLabel: 'Delete', cancelLabel: 'Cancel' }
+    );
+    if (!confirmed) return;
+
+    try {
+      const res = await fetch(`/api/community/posts/${postId}/comments/${commentId}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
+      });
+      if (res.ok) {
+        fetchPosts();
+      } else {
+        const err = await res.json();
+        showAlert(err.error || 'Failed to delete comment', { title: 'Error' });
+      }
+    } catch (err) {
+      console.error(err);
+      showAlert('Failed to delete comment', { title: 'Error' });
+    }
+  };
+
+  const handleCommentEditStart = (comment) => {
+    setActiveCommentMenuId(null);
+    setEditingCommentId(comment.id);
+    const { text, image } = parseCommentContent(comment.content);
+    setEditingCommentText(text || comment.content);
+    setEditingCommentImage(image || null);
+    setEditingCommentEmojiPickerId(null);
+  };
+
+  const handleCommentEditCancel = () => {
+    setEditingCommentId(null);
+    setEditingCommentText('');
+    setEditingCommentImage(null);
+    setEditingCommentEmojiPickerId(null);
+  };
+
+  const handleCommentEditSave = async (postId, comment) => {
+    if (!editingCommentText.trim() && !editingCommentImage) return;
+    
+    let finalContent = editingCommentText.trim();
+    if (editingCommentImage) {
+      finalContent = JSON.stringify({ text: editingCommentText.trim(), image: editingCommentImage });
+    }
+
+    try {
+      const res = await fetch(`/api/community/posts/${postId}/comments/${comment.id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
+        },
+        body: JSON.stringify({ content: finalContent })
+      });
+      if (res.ok) {
+        setEditingCommentId(null);
+        setEditingCommentText('');
+        setEditingCommentImage(null);
+        setEditingCommentEmojiPickerId(null);
+        fetchPosts();
+      } else {
+        const err = await res.json();
+        showAlert(err.error || 'Failed to update comment', { title: 'Error' });
+      }
+    } catch (err) {
+      console.error(err);
+      showAlert('Failed to update comment', { title: 'Error' });
+    }
+  };
+
+  const handleCommentReport = async (postId, commentId) => {
+    setActiveCommentMenuId(null);
+    const confirmed = await showConfirm(
+      "Do you want to report this comment for moderation?",
+      { title: 'Report Comment', confirmLabel: 'Report', cancelLabel: 'Cancel' }
+    );
+    if (!confirmed) return;
+
+    try {
+      const res = await fetch(`/api/community/posts/${postId}/comments/${commentId}/report`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
+      });
+      if (res.ok) {
+        showAlert('Thank you for reporting. Our moderation team will review this comment.', { title: 'Comment Reported' });
+      } else {
+        showAlert('Failed to report comment', { title: 'Error' });
+      }
+    } catch (err) {
+      console.error(err);
+      showAlert('Failed to report comment', { title: 'Error' });
     }
   };
 
@@ -488,6 +679,7 @@ export default function Community() {
             value={content}
             onChange={(e) => setContent(e.target.value)}
             style={{ flex: 1, minHeight: '80px', padding: '1rem', resize: 'vertical' }}
+            onPaste={handlePaste}
           />
         </div>
         
@@ -606,55 +798,21 @@ export default function Community() {
 
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginLeft: '3.5rem' }}>
           <div className="relative-container" style={{ display: 'flex', gap: '0.5rem', position: 'relative', zIndex: 10000 }}>
-            <div style={{ position: 'relative' }}>
-              <button 
-                className={`btn btn-glass ${showImageOptions ? 'active' : ''}`} 
-                style={{ padding: '0.4rem 0.8rem', fontSize: '0.85rem' }}
-                onClick={() => {
-                  setShowImageOptions(!showImageOptions);
-                  setShowProjectOptions(false);
-                }}
+            <div>
+              <label 
+                className="btn btn-glass" 
+                style={{ padding: '0.4rem 0.8rem', fontSize: '0.85rem', cursor: 'pointer' }}
+                onClick={() => setShowProjectOptions(false)}
               >
                 <ImageIcon size={16} /> Image
-              </button>
-              
-              {showImageOptions && (
-                <div className="bfi-community-dropdown animate-fade-in">
-                  {!showImageLinkInput ? (
-                    <>
-                      <label className="option-item">
-                        <Send size={14} style={{ transform: 'rotate(-90deg)', color: 'var(--accent-primary)' }} /> 
-                        <span>Upload from Device</span>
-                        <input type="file" accept="image/*" multiple onChange={handleFileChange} style={{ display: 'none' }} />
-                      </label>
-                      <button className="option-item" onClick={() => setShowImageLinkInput(true)}>
-                        <ImageIcon size={14} style={{ color: 'var(--accent-primary)' }} /> 
-                        <span>Paste Image Link</span>
-                      </button>
-                    </>
-                  ) : (
-                    <div style={{ padding: '1rem', display: 'flex', flexDirection: 'column', gap: '0.75rem', background: 'transparent' }}>
-                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '-0.25rem', lineHeight: '1.4' }}>
-                        <strong style={{ color: 'var(--accent-primary)' }}>Tip:</strong> For Google images, right-click and select <span style={{ color: 'var(--text-primary)', fontWeight: 'bold' }}>"Copy Image Address"</span> for best results.
-                      </div>
-                      <input 
-                        type="url" 
-                        className="input-glass" 
-                        placeholder="Paste image link here..." 
-                        value={tempImageUrl}
-                        onChange={(e) => setTempImageUrl(e.target.value)}
-                        autoFocus
-                        onKeyDown={(e) => e.key === 'Enter' && handleImageLinkSubmit()}
-                        style={{ fontSize: '0.85rem', padding: '0.6rem' }}
-                      />
-                      <div style={{ display: 'flex', gap: '0.5rem' }}>
-                        <button className="btn btn-primary" onClick={handleImageLinkSubmit} style={{ flex: 1, fontSize: '0.75rem', padding: '0.3rem' }}>Add to Post</button>
-                        <button className="btn btn-glass" onClick={() => setShowImageLinkInput(false)} style={{ flex: 1, fontSize: '0.75rem', padding: '0.3rem' }}>Cancel</button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
+                <input 
+                  type="file" 
+                  accept="image/*" 
+                  multiple 
+                  onChange={handleFileChange} 
+                  style={{ display: 'none' }} 
+                />
+              </label>
             </div>
 
             <div style={{ position: 'relative' }}>
@@ -716,8 +874,10 @@ export default function Community() {
 
       {/* Feed Area */}
       <div className="feed-container" style={{ position: 'relative', zIndex: 1 }}>
-        {posts.map(post => (
-          <div key={post.id} className={`post-card glass-panel ${post.is_pinned ? 'pinned-post' : ''}`}>
+        {posts.map(post => {
+          const hasActivePicker = commentEmojiPickerPostId === post.id || (editingCommentId && post.comments?.some(c => c.id === editingCommentId));
+          return (
+            <div key={post.id} className={`post-card glass-panel ${post.is_pinned ? 'pinned-post' : ''} ${hasActivePicker ? 'active-picker' : ''}`}>
             
             {/* Post Header */}
             <div className="post-header">
@@ -946,42 +1106,361 @@ export default function Community() {
                         )}
                       </div>
                     </UserHoverCard>
-                    <div className="comment-content-box">
-                      <UserHoverCard userId={comment.user_id}>
-                        <div className="comment-author" style={{ display: 'inline-block' }}>{comment.first_name} {comment.last_name}</div>
-                      </UserHoverCard>
-                      <div className="comment-text">{comment.content}</div>
+                    <div className="comment-content-box" style={{ position: 'relative' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                        <UserHoverCard userId={comment.user_id}>
+                          <div className="comment-author" style={{ display: 'inline-block' }}>{comment.first_name} {comment.last_name}</div>
+                        </UserHoverCard>
+
+                        {/* Comment Menu wrapper */}
+                        <div className="comment-menu-wrapper" style={{ position: 'relative' }}>
+                          <button 
+                            type="button"
+                            className="comment-menu-trigger"
+                            onClick={() => setActiveCommentMenuId(activeCommentMenuId === comment.id ? null : comment.id)}
+                            style={{ 
+                              background: 'transparent', 
+                              border: 'none', 
+                              color: 'var(--text-muted)', 
+                              cursor: 'pointer',
+                              padding: '2px 4px',
+                              borderRadius: '4px',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              transition: 'all 0.2s ease'
+                            }}
+                          >
+                            <MoreVertical size={14} />
+                          </button>
+                          
+                          {activeCommentMenuId === comment.id && (
+                            <div className="comment-dropdown animate-fade-in">
+                              {comment.user_id === currentUser?.id && (
+                                <button 
+                                  onClick={() => handleCommentEditStart(comment)}
+                                  className="comment-dropdown-item"
+                                >
+                                  Edit
+                                </button>
+                              )}
+                              
+                              {(comment.user_id === currentUser?.id || post.user_id === currentUser?.id || currentUser?.role === 'admin') && (
+                                <button 
+                                  onClick={() => handleCommentDelete(post.id, comment.id)}
+                                  className="comment-dropdown-item comment-delete"
+                                >
+                                  Delete
+                                </button>
+                              )}
+                              
+                              {comment.user_id !== currentUser?.id && (
+                                <button 
+                                  onClick={() => handleCommentReport(post.id, comment.id)}
+                                  className="comment-dropdown-item"
+                                >
+                                  Report
+                                </button>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      {editingCommentId === comment.id ? (
+                        <div className="comment-edit-area" style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '0.4rem', position: 'relative' }}>
+                          {editingCommentImage && (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                              <div style={{ position: 'relative', width: '60px', height: '60px', borderRadius: '6px', overflow: 'hidden', border: '1px solid var(--glass-border)', background: 'rgba(0,0,0,0.2)' }}>
+                                <img src={editingCommentImage} alt="Pasted attachment" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                                <button 
+                                  type="button"
+                                  onClick={() => setEditingCommentImage(null)}
+                                  style={{ position: 'absolute', top: '2px', right: '2px', background: 'rgba(239, 68, 68, 0.9)', color: 'white', border: 'none', borderRadius: '50%', width: '16px', height: '16px', fontSize: '9px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', fontWeight: 'bold' }}
+                                >
+                                  ✕
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                          <div style={{ display: 'flex', alignItems: 'center', position: 'relative', width: '100%' }}>
+                            <input 
+                              type="text"
+                              className="input-glass"
+                              value={editingCommentText}
+                              onChange={(e) => setEditingCommentText(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') handleCommentEditSave(post.id, comment);
+                              }}
+                              autoFocus
+                              style={{ width: '100%', fontSize: '0.9rem', padding: '0.4rem 5rem 0.4rem 0.8rem' }}
+                            />
+                            <div style={{ position: 'absolute', right: '0.5rem', display: 'flex', gap: '0.4rem', alignItems: 'center', zIndex: 10 }}>
+                              {/* Edit Image Upload Button */}
+                              <label 
+                                htmlFor={`comment-edit-image-upload-${comment.id}`} 
+                                style={{ 
+                                  display: 'flex', 
+                                  alignItems: 'center', 
+                                  justifyContent: 'center', 
+                                  width: '30px', 
+                                  height: '30px', 
+                                  borderRadius: '50%', 
+                                  cursor: 'pointer', 
+                                  color: 'var(--text-muted)',
+                                  transition: 'all 0.2s ease',
+                                  background: 'transparent'
+                                }}
+                                className="comment-icon-btn"
+                                title="Add image"
+                              >
+                                <ImageIcon size={16} />
+                              </label>
+
+                              {/* Edit Emoji Picker Button */}
+                              <button
+                                type="button"
+                                onClick={() => setEditingCommentEmojiPickerId(editingCommentEmojiPickerId === comment.id ? null : comment.id)}
+                                style={{ 
+                                  display: 'flex', 
+                                  alignItems: 'center', 
+                                  justifyContent: 'center', 
+                                  width: '30px', 
+                                  height: '30px', 
+                                  borderRadius: '50%', 
+                                  cursor: 'pointer', 
+                                  color: editingCommentEmojiPickerId === comment.id ? 'var(--accent-primary)' : 'var(--text-muted)',
+                                  background: 'transparent',
+                                  border: 'none',
+                                  padding: 0,
+                                  outline: 'none'
+                                }}
+                                className="comment-icon-btn"
+                                title="Insert emoji"
+                              >
+                                <Smile size={16} />
+                              </button>
+                            </div>
+                            
+                            <input 
+                              type="file" 
+                              accept="image/*" 
+                              id={`comment-edit-image-upload-${comment.id}`}
+                              onChange={(e) => {
+                                const file = e.target.files?.[0];
+                                if (file) {
+                                  const reader = new FileReader();
+                                  reader.onloadend = () => {
+                                    setEditingCommentImage(reader.result);
+                                  };
+                                  reader.readAsDataURL(file);
+                                }
+                                e.target.value = '';
+                              }}
+                              style={{ display: 'none' }}
+                            />
+
+                            {editingCommentEmojiPickerId === comment.id && (
+                              <div 
+                                className="comment-emoji-picker-container animate-fade-in" 
+                                style={{ 
+                                  position: 'absolute', 
+                                  bottom: '100%', 
+                                  right: '0.5rem', 
+                                  marginBottom: '0.5rem', 
+                                  zIndex: 100000 
+                                }}
+                              >
+                                <NativeEmojiPicker
+                                  onEmojiSelect={(emojiData) => {
+                                    setEditingCommentText(prev => prev + emojiData.native);
+                                  }}
+                                  theme={document.documentElement.getAttribute('data-mode') === 'dark' ? 'dark' : 'light'}
+                                />
+                              </div>
+                            )}
+                          </div>
+
+                          <div style={{ display: 'flex', gap: '0.4rem', alignSelf: 'flex-end', zIndex: 5 }}>
+                            <button 
+                              className="btn btn-primary" 
+                              onClick={() => handleCommentEditSave(post.id, comment)}
+                              style={{ padding: '0.2rem 0.6rem', fontSize: '0.75rem', borderRadius: '4px' }}
+                            >
+                              Save
+                            </button>
+                            <button 
+                              className="btn btn-glass" 
+                              onClick={handleCommentEditCancel}
+                              style={{ padding: '0.2rem 0.6rem', fontSize: '0.75rem', borderRadius: '4px' }}
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="comment-text">
+                          {(() => {
+                            const { text, image } = parseCommentContent(comment.content);
+                            return (
+                              <>
+                                {text && <div style={{ marginBottom: image ? '0.4rem' : 0 }}>{text}</div>}
+                                {image && (
+                                  <img 
+                                    src={image} 
+                                    alt="Comment image" 
+                                    onClick={() => openLightbox([{ url: image, caption: 'Comment Image' }], 0)}
+                                    style={{ 
+                                      maxWidth: '100%', 
+                                      maxHeight: '200px', 
+                                      borderRadius: '8px', 
+                                      border: '1px solid var(--glass-border)',
+                                      display: 'block',
+                                      cursor: 'pointer',
+                                      marginTop: '0.2rem'
+                                    }} 
+                                  />
+                                )}
+                              </>
+                            );
+                          })()}
+                        </div>
+                      )}
                       <div className="comment-time">{formatTime(comment.created_at)}</div>
                     </div>
                   </div>
                 ))}
                 
                 {activeCommentPostId === post.id && (
-                  <div className="comment-input-area">
-                    <div className="comment-avatar min" style={{ overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                      {currentUser?.profile_picture ? (
-                        <img src={resolveMediaUrl(currentUser.profile_picture)} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                      ) : (
-                        <img src={`${import.meta.env.BASE_URL}avatars/male1.png`} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: 0.5 }} />
+                  <div className="comment-input-area" style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', alignItems: 'stretch' }}>
+                    {commentImage && (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', paddingLeft: '2.5rem' }}>
+                        <div style={{ position: 'relative', width: '60px', height: '60px', borderRadius: '6px', overflow: 'hidden', border: '1px solid var(--glass-border)', background: 'rgba(0,0,0,0.2)' }}>
+                          <img src={commentImage} alt="Pasted attachment" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                          <button 
+                            type="button"
+                            onClick={() => setCommentImage(null)}
+                            style={{ position: 'absolute', top: '2px', right: '2px', background: 'rgba(239, 68, 68, 0.9)', color: 'white', border: 'none', borderRadius: '50%', width: '16px', height: '16px', fontSize: '9px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', fontWeight: 'bold' }}
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                    <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', width: '100%', position: 'relative' }}>
+                      <div className="comment-avatar min" style={{ overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                        {currentUser?.profile_picture ? (
+                          <img src={resolveMediaUrl(currentUser.profile_picture)} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                        ) : (
+                          <img src={`${import.meta.env.BASE_URL}avatars/male1.png`} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: 0.5 }} />
+                        )}
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', flex: 1, position: 'relative' }}>
+                        <input 
+                          type="text" 
+                          className="input-glass" 
+                          placeholder="Write a comment..." 
+                          value={commentContent}
+                          onChange={(e) => setCommentContent(e.target.value)}
+                          onKeyDown={(e) => {
+                            if(e.key === 'Enter') handleCommentSubmit(post.id);
+                          }}
+                          onPaste={handleCommentPaste}
+                          style={{ flex: 1, paddingRight: '5rem' }} 
+                        />
+                        <div style={{ position: 'absolute', right: '0.5rem', display: 'flex', gap: '0.4rem', alignItems: 'center', zIndex: 10 }}>
+                          {/* Image Upload Button */}
+                          <label 
+                            htmlFor={`comment-image-upload-${post.id}`} 
+                            style={{ 
+                              display: 'flex', 
+                              alignItems: 'center', 
+                              justifyContent: 'center', 
+                              width: '30px', 
+                              height: '30px', 
+                              borderRadius: '50%', 
+                              cursor: 'pointer', 
+                              color: 'var(--text-muted)',
+                              transition: 'all 0.2s ease',
+                              background: 'transparent'
+                            }}
+                            className="comment-icon-btn"
+                            title="Add image"
+                          >
+                            <ImageIcon size={16} />
+                          </label>
+
+                          {/* Emoji Picker Button */}
+                          <button
+                            type="button"
+                            onClick={() => setCommentEmojiPickerPostId(commentEmojiPickerPostId === post.id ? null : post.id)}
+                            style={{ 
+                              display: 'flex', 
+                              alignItems: 'center', 
+                              justifyContent: 'center', 
+                              width: '30px', 
+                              height: '30px', 
+                              borderRadius: '50%', 
+                              cursor: 'pointer', 
+                              color: commentEmojiPickerPostId === post.id ? 'var(--accent-primary)' : 'var(--text-muted)',
+                              background: 'transparent',
+                              border: 'none',
+                              padding: 0,
+                              outline: 'none'
+                            }}
+                            className="comment-icon-btn"
+                            title="Insert emoji"
+                          >
+                            <Smile size={16} />
+                          </button>
+                        </div>
+                        <input 
+                          type="file" 
+                          accept="image/*" 
+                          id={`comment-image-upload-${post.id}`}
+                          onChange={(e) => {
+                            const file = e.target.files?.[0];
+                            if (file) {
+                              const reader = new FileReader();
+                              reader.onloadend = () => {
+                                setCommentImage(reader.result);
+                              };
+                              reader.readAsDataURL(file);
+                            }
+                            e.target.value = '';
+                          }}
+                          style={{ display: 'none' }}
+                        />
+                      </div>
+                      <button className="btn btn-primary" onClick={() => handleCommentSubmit(post.id)}>Reply</button>
+
+                      {commentEmojiPickerPostId === post.id && (
+                        <div 
+                          className="comment-emoji-picker-container animate-fade-in" 
+                          style={{ 
+                            position: 'absolute', 
+                            bottom: '100%', 
+                            right: '4.5rem', 
+                            marginBottom: '0.5rem', 
+                            zIndex: 100000 
+                          }}
+                        >
+                          <NativeEmojiPicker
+                            onEmojiSelect={(emojiData) => {
+                              setCommentContent(prev => prev + emojiData.native);
+                            }}
+                            theme={document.documentElement.getAttribute('data-mode') === 'dark' ? 'dark' : 'light'}
+                          />
+                        </div>
                       )}
                     </div>
-                    <input 
-                      type="text" 
-                      className="input-glass" 
-                      placeholder="Write a comment..." 
-                      value={commentContent}
-                      onChange={(e) => setCommentContent(e.target.value)}
-                      onKeyDown={(e) => {
-                        if(e.key === 'Enter') handleCommentSubmit(post.id);
-                      }}
-                    />
-                    <button className="btn btn-primary" onClick={() => handleCommentSubmit(post.id)}>Reply</button>
                   </div>
                 )}
               </div>
             )}
           </div>
-        ))}
+          );
+        })}
         {posts.length === 0 && (
           <div style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-muted)' }}>
             No posts yet. Be the first to start a discussion!
@@ -995,6 +1474,7 @@ export default function Community() {
         .feed-container { display: flex; flex-direction: column; gap: 1.5rem; isolation: isolate; }
         .post-card { padding: 1.5rem; transition: transform 0.2s; position: relative; z-index: 1; transform: translate3d(0, 0, 0); }
         .post-card:hover, .post-card:focus-within { z-index: 10; }
+        .post-card.active-picker { z-index: 50 !important; }
         
         [data-mode="dark"] .composer-card,
         [data-mode="dark"] .post-card {
@@ -1050,9 +1530,6 @@ export default function Community() {
           object-fit: cover;
           display: block;
           transition: transform 0.35s ease;
-        }
-        .post-media-cell:hover img {
-          transform: scale(1.03);
         }
         .post-media-cell--hero img { max-height: none; }
         .post-media-broken {
@@ -1111,7 +1588,6 @@ export default function Community() {
           transition: transform 0.3s ease;
         }
         .media-grid-item--hero img { max-height: none; }
-        .media-grid-item:hover img { transform: scale(1.04); }
 
         .media-grid-remove {
           position: absolute; top: 8px; right: 8px;
@@ -1218,6 +1694,88 @@ export default function Community() {
         
         .comment-input-area { display: flex; gap: 1rem; align-items: center; margin-top: 0.5rem; }
         .comment-input-area input { flex: 1; }
+        .comment-icon-btn { display: inline-flex; align-items: center; justify-content: center; transition: all 0.2s ease; cursor: pointer; }
+        .comment-icon-btn:hover { background: rgba(255,255,255,0.08) !important; color: var(--text-primary) !important; }
+        [data-mode="light"] .comment-icon-btn:hover { background: rgba(0,0,0,0.05) !important; }
+        
+        .comment-emoji-picker-container {
+          background: #07172d;
+          border: 1px solid rgba(96, 165, 250, 0.2);
+          border-radius: 10px;
+          box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+          overflow: hidden;
+        }
+        [data-mode="light"] .comment-emoji-picker-container {
+          background: #ffffff;
+          border: 1px solid rgba(0, 0, 0, 0.08);
+          box-shadow: 0 10px 30px rgba(0, 0, 0, 0.15);
+        }
+        
+        .comment-dropdown {
+          position: absolute;
+          right: 0;
+          top: 100%;
+          min-width: 120px;
+          background: #07172d;
+          border: 1px solid rgba(96, 165, 250, 0.2);
+          border-radius: 8px;
+          padding: 4px;
+          z-index: 10000;
+          box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+        }
+        
+        .comment-dropdown-item {
+          width: 100%;
+          text-align: left;
+          background: transparent;
+          border: none;
+          color: #e4e6eb;
+          padding: 6px 12px;
+          font-size: 0.85rem;
+          border-radius: 6px;
+          cursor: pointer;
+          transition: all 0.2s;
+          display: block;
+        }
+        
+        .comment-dropdown-item:hover {
+          background: rgba(255, 255, 255, 0.08);
+          color: #ffffff;
+        }
+        
+        .comment-dropdown-item.comment-delete {
+          color: #f87171;
+        }
+        
+        .comment-dropdown-item.comment-delete:hover {
+          background: rgba(239, 68, 68, 0.15);
+          color: #ef4444;
+        }
+
+        /* ── Light Mode overrides ── */
+        [data-mode="light"] .comment-dropdown {
+          background: #ffffff;
+          border: 1px solid rgba(0, 0, 0, 0.08);
+          box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+        }
+        
+        [data-mode="light"] .comment-dropdown-item {
+          color: #374151;
+        }
+        
+        [data-mode="light"] .comment-dropdown-item:hover {
+          background: rgba(0, 0, 0, 0.04);
+          color: #111827;
+        }
+        
+        [data-mode="light"] .comment-dropdown-item.comment-delete {
+          color: #dc2626;
+        }
+        
+        [data-mode="light"] .comment-dropdown-item.comment-delete:hover {
+          background: rgba(220, 38, 38, 0.05);
+          color: #b91c1c;
+        }
 
         .bfi-community-dropdown {
           position: absolute;
@@ -1293,9 +1851,6 @@ export default function Community() {
           height: 100%;
           object-fit: cover;
           transition: transform 0.5s ease;
-        }
-        .proj-thumbnail-placeholder:hover img {
-          transform: scale(1.05);
         }
         .proj-thumbnail-placeholder .play-overlay {
           position: absolute;
@@ -1582,7 +2137,10 @@ export default function Community() {
           onClick={e => { if (e.target === e.currentTarget) closeLightbox(); }}
         >
           {/* Top bar */}
-          <div className="lb-topbar">
+          <div 
+            className="lb-topbar"
+            onClick={e => { if (e.target === e.currentTarget) closeLightbox(); }}
+          >
             <div className="lb-counter">
               {lightbox.idx + 1} / {lightbox.images.length}
             </div>
@@ -1592,7 +2150,10 @@ export default function Community() {
           </div>
 
           {/* Main image area */}
-          <div className="lb-main">
+          <div 
+            className="lb-main"
+            onClick={e => { if (e.target === e.currentTarget) closeLightbox(); }}
+          >
             {/* Prev arrow */}
             <button
               className="lb-arrow lb-arrow--left"

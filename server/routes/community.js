@@ -221,6 +221,85 @@ router.post('/posts/:id/comments', authenticateToken, sanitizeInput, (req, res) 
   }
 });
 
+// Edit a comment
+router.put('/posts/:id/comments/:commentId', authenticateToken, sanitizeInput, (req, res) => {
+  try {
+    const { content } = req.body;
+    const { commentId } = req.params;
+
+    if (!content || !content.trim()) {
+      return res.status(400).json({ error: 'Comment content cannot be empty.' });
+    }
+
+    const result = db.prepare('UPDATE post_comments SET content = ? WHERE id = ? AND user_id = ?')
+      .run(content.trim(), commentId, req.user.id);
+
+    if (result.changes === 0) {
+      return res.status(403).json({ error: 'Unauthorized to edit this comment or comment not found.' });
+    }
+
+    res.json({ message: 'Comment updated successfully.' });
+  } catch (error) {
+    console.error('Edit comment error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Delete a comment
+router.delete('/posts/:id/comments/:commentId', authenticateToken, (req, res) => {
+  try {
+    const { commentId, id: postId } = req.params;
+    const userId = req.user.id;
+    const userRole = req.user.role?.toLowerCase();
+
+    // Check if user is the comment author, post author, or admin
+    const comment = db.prepare('SELECT user_id FROM post_comments WHERE id = ?').get(commentId);
+    if (!comment) {
+      return res.status(404).json({ error: 'Comment not found.' });
+    }
+
+    const post = db.prepare('SELECT user_id FROM community_posts WHERE id = ?').get(postId);
+    const isPostAuthor = post && post.user_id == userId;
+    const isCommentAuthor = comment.user_id == userId;
+    const isAdmin = userRole === 'admin';
+
+    if (!isCommentAuthor && !isPostAuthor && !isAdmin) {
+      return res.status(403).json({ error: 'Unauthorized to delete this comment.' });
+    }
+
+    db.prepare('DELETE FROM post_comments WHERE id = ?').run(commentId);
+    res.json({ message: 'Comment deleted successfully.' });
+  } catch (error) {
+    console.error('Delete comment error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Report a comment
+router.post('/posts/:id/comments/:commentId/report', authenticateToken, (req, res) => {
+  try {
+    const { commentId } = req.params;
+    const reporterId = req.user.id;
+
+    // Check if comment exists
+    const comment = db.prepare('SELECT id FROM post_comments WHERE id = ?').get(commentId);
+    if (!comment) {
+      return res.status(404).json({ error: 'Comment not found.' });
+    }
+
+    db.prepare(`
+      INSERT INTO comment_reports (comment_id, reporter_id)
+      VALUES (?, ?)
+      ON CONFLICT(comment_id, reporter_id) DO NOTHING
+    `).run(commentId, reporterId);
+
+    res.json({ message: 'Comment reported successfully.' });
+  } catch (error) {
+    console.error('Report comment error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // Delete a post
 router.delete('/posts/:id', authenticateToken, (req, res) => {
   try {

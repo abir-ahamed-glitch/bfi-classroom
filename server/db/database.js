@@ -283,6 +283,18 @@ export function initializeDatabase() {
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
 
+    -- Comment reports
+    CREATE TABLE IF NOT EXISTS comment_reports (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      comment_id INTEGER NOT NULL,
+      reporter_id INTEGER NOT NULL,
+      status TEXT DEFAULT 'open' CHECK(status IN ('open', 'reviewed', 'dismissed')),
+      created_at TEXT DEFAULT (datetime('now')),
+      UNIQUE(comment_id, reporter_id),
+      FOREIGN KEY (comment_id) REFERENCES post_comments(id) ON DELETE CASCADE,
+      FOREIGN KEY (reporter_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
     -- Post likes
     CREATE TABLE IF NOT EXISTS post_likes (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

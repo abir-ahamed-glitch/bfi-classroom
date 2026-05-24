@@ -4,6 +4,7 @@ import {
   X, RotateCcw, RotateCw, Crop, Check, ZoomIn, ZoomOut,
   FlipHorizontal, FlipVertical, RefreshCcw, MessageSquare, ChevronLeft, ChevronRight
 } from 'lucide-react';
+import { resolveMediaUrl } from '../utils/mediaUtils';
 
 /* ─────────────────────────────────────────────────────────────
    PhotoEditorModal
@@ -177,7 +178,7 @@ export default function PhotoEditorModal({ images, initialIndex = 0, onSave, onC
   const applyEdits = useCallback(() => {
     return new Promise((resolve) => {
       const canvas = canvasRef.current;
-      const src = currentImg.editedUrl ?? currentImg.url;
+      const src = resolveMediaUrl(currentImg.editedUrl ?? currentImg.url);
       const img = new Image();
       img.crossOrigin = 'anonymous';
       img.onload = () => {
@@ -339,7 +340,7 @@ export default function PhotoEditorModal({ images, initialIndex = 0, onSave, onC
                   onClick={() => setCurrentIdx(i)}
                 >
                   <img
-                    src={img.editedUrl ?? img.url}
+                    src={resolveMediaUrl(img.editedUrl ?? img.url)}
                     alt={`Photo ${i + 1}`}
                   />
                   {img.editedUrl && (
@@ -372,7 +373,7 @@ export default function PhotoEditorModal({ images, initialIndex = 0, onSave, onC
             >
               <img
                 ref={imgRef}
-                src={previewSrc}
+                src={resolveMediaUrl(previewSrc)}
                 alt="Edit preview"
                 className="pe-preview-img"
                 style={{ transform: imgTransform, transformOrigin: 'center center' }}

@@ -4,11 +4,15 @@
   cursor: pointer;
 }
 
+.user-hover-card-wrapper.active {
+  z-index: 99999;
+}
+
 .user-hover-card-popover {
   position: absolute;
   top: 100%;
-  left: 50%;
-  transform: translateX(-50%) translateY(10px);
+  left: 0;
+  transform: translateY(10px);
   width: 320px;
   background-image: 
     url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='grain'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='1.35' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23grain)' opacity='0.12'/%3E%3C/svg%3E"),
@@ -37,8 +41,8 @@
 }
 
 @keyframes hoverCardFadeIn {
-  from { opacity: 0; transform: translateX(-50%) translateY(15px); }
-  to { opacity: 1; transform: translateX(-50%) translateY(10px); }
+  from { opacity: 0; transform: translateY(15px); }
+  to { opacity: 1; transform: translateY(10px); }
 }
 
 .user-hover-card-loading,

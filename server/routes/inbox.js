@@ -954,9 +954,12 @@ router.get('/users', authenticateToken, (req, res) => {
               OR lower(u.first_name) LIKE lower(?)
               OR lower(u.last_name) LIKE lower(?)
               OR lower(u.email) LIKE lower(?)
-              OR u.mobile_number LIKE ?
-              OR sp.student_id LIKE ?
+              OR lower(u.mobile_number) LIKE lower(?)
+              OR lower(sp.student_id) LIKE lower(?)
               OR CAST(u.id AS TEXT) = ?
+              OR lower(u.role) LIKE lower(?)
+              OR (lower(u.role) = 'instructor' AND lower(?) LIKE '%teacher%')
+              OR (lower(u.role) = 'instructor' AND lower(?) LIKE '%instructor%')
             )
           ORDER BY
             CASE
@@ -979,6 +982,9 @@ router.get('/users', authenticateToken, (req, res) => {
           likeQuery,
           likeQuery,
           likeQuery,
+          query,
+          likeQuery,
+          query,
           query,
           query,
           query,
@@ -1032,6 +1038,67 @@ router.get('/users', authenticateToken, (req, res) => {
     res.status(500).json({ error: 'Internal server error' });
   }
 });
+
+router.get('/search-messages', authenticateToken, (req, res) => {
+  try {
+    const userId = req.user.id;
+    const query = req.query.q?.toString().trim().toLowerCase() || '';
+
+    if (!query) {
+      return res.json({ results: [] });
+    }
+
+    // Fetch all non-deleted, non-system messages involving the current user
+    const rows = db.prepare(`
+      SELECT m.id, m.sender_id, m.receiver_id, m.content, m.created_at, m.message_type,
+             m.attachment_url, m.attachment_type,
+             u.id AS other_user_id, u.first_name, u.last_name, u.profile_picture, u.role,
+             sp.batch_number
+      FROM messages m
+      JOIN users u ON u.id = CASE WHEN m.sender_id = ? THEN m.receiver_id ELSE m.sender_id END
+      LEFT JOIN student_profiles sp ON sp.user_id = u.id
+      WHERE (m.sender_id = ? OR m.receiver_id = ?)
+        AND m.deleted_for_everyone = 0
+        AND (m.message_type IS NULL OR m.message_type NOT IN ('reaction', 'quick_emoji', 'call_log'))
+        AND NOT EXISTS (
+          SELECT 1
+          FROM message_hidden_for_users hidden
+          WHERE hidden.message_id = m.id AND hidden.user_id = ?
+        )
+      ORDER BY m.created_at DESC
+    `).all(userId, userId, userId, userId);
+
+    const results = [];
+    for (const row of rows) {
+      const decryptedContent = decryptMessageContent(row.content);
+      if (decryptedContent && decryptedContent.toLowerCase().includes(query)) {
+        results.push({
+          id: row.id,
+          sender_id: row.sender_id,
+          receiver_id: row.receiver_id,
+          content: decryptedContent,
+          created_at: row.created_at,
+          attachment_url: row.attachment_url,
+          attachment_type: row.attachment_type,
+          user: {
+            id: row.other_user_id,
+            first_name: row.first_name,
+            last_name: row.last_name,
+            profile_picture: row.profile_picture,
+            role: row.role,
+            batch_number: row.batch_number
+          }
+        });
+      }
+    }
+
+    res.json({ results: results.slice(0, 100) });
+  } catch (error) {
+    console.error('Search messages error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 
 /**
  * POST /api/inbox/quick-emoji

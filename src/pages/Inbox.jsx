@@ -433,6 +433,24 @@ const VoiceMessagePlayer = ({ src, isMine, avatarUrl }) => {
   );
 };
 
+const getOrdinalSuffix = (i) => {
+  if (!i) return '';
+  const num = parseInt(i, 10);
+  if (isNaN(num)) return i;
+  const j = num % 10, k = num % 100;
+  if (j === 1 && k !== 11) return num + "st";
+  if (j === 2 && k !== 12) return num + "nd";
+  if (j === 3 && k !== 13) return num + "rd";
+  return num + "th";
+};
+
+const getRoleDisplayText = (role, batch) => {
+  if (role === 'student') return batch ? `Student - ${getOrdinalSuffix(batch)} Batch` : 'Student';
+  if (role === 'admin') return 'Admin';
+  if (role === 'instructor') return 'Teacher';
+  return role || 'User';
+};
+
 export default function Inbox() {
   const navigate = useNavigate();
   const { currentUser } = useAuth();
@@ -442,6 +460,29 @@ export default function Inbox() {
   const [activeChat, setActiveChat] = useState(null);
   const [messages, setMessages] = useState([]);
   const [newMessage, setNewMessage] = useState('');
+  const [drafts, setDrafts] = useState(() => {
+    try {
+      const parsed = JSON.parse(localStorage.getItem('chat_drafts') || '{}');
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+      return {};
+    }
+  });
+  
+  // Auto-save drafts
+  useEffect(() => {
+    if (activeChat?.other_user_id && typeof newMessage === 'string') {
+      try {
+        const parsed = JSON.parse(localStorage.getItem('chat_drafts') || '{}');
+        const stored = parsed && typeof parsed === 'object' ? parsed : {};
+        stored[activeChat.other_user_id] = newMessage;
+        localStorage.setItem('chat_drafts', JSON.stringify(stored));
+        setDrafts(stored);
+      } catch (e) {
+        console.error('Failed to save draft', e);
+      }
+    }
+  }, [newMessage, activeChat?.other_user_id]);
   
   const clearAttachments = () => {
     setAttachedFiles(prev => {
@@ -465,6 +506,13 @@ export default function Inbox() {
   const [sidebarQuery, setSidebarQuery] = useState('');
   const [sidebarSearchResults, setSidebarSearchResults] = useState([]);
   const [searchingSidebarUsers, setSearchingSidebarUsers] = useState(false);
+  
+  // Global message search states
+  const [isGlobalMessageSearchActive, setIsGlobalMessageSearchActive] = useState(false);
+  const [globalMessageSearchQuery, setGlobalMessageSearchQuery] = useState('');
+  const [globalMessageSearchResults, setGlobalMessageSearchResults] = useState([]);
+  const [searchingGlobalMessages, setSearchingGlobalMessages] = useState(false);
+  const [pendingScrollMessageId, setPendingScrollMessageId] = useState(null);
   const [composerMode, setComposerMode] = useState(null);
   const [userSearch, setUserSearch] = useState('');
   const [userResults, setUserResults] = useState([]);
@@ -492,7 +540,7 @@ export default function Inbox() {
   
   const [decryptedAttachmentUrls, setDecryptedAttachmentUrls] = useState({});
   const [imageViewer, setImageViewer] = useState(null);
-  const [showChatInfoPanel, setShowChatInfoPanel] = useState(false);
+  const [showChatInfoPanel, setShowChatInfoPanel] = useState(true);
   const [gifPickerOpen, setGifPickerOpen] = useState(false);
   const [chatInfoAccordion, setChatInfoAccordion] = useState(false);
   const [chatOptionsAccordion, setChatOptionsAccordion] = useState(false);
@@ -1669,7 +1717,7 @@ export default function Inbox() {
     
     // Check if we should scroll to bottom. 
     // !showScrollDown means the user hasn't manually scrolled up away from the bottom.
-    const shouldStickToBottom = forceScrollToBottomRef.current || !showScrollDown || nearBottom || openedDifferentChat;
+    const shouldStickToBottom = (forceScrollToBottomRef.current || !showScrollDown || nearBottom || openedDifferentChat) && !pendingScrollMessageId;
 
     if (shouldStickToBottom) {
       const scrollBehavior = (openedDifferentChat || forceScrollToBottomRef.current === 'auto') ? 'auto' : 'smooth';
@@ -1696,7 +1744,32 @@ export default function Inbox() {
       previousChatIdRef.current = activeChat.other_user_id;
     }
     forceScrollToBottomRef.current = false;
-  }, [messages.length, activeChat?.other_user_id]);
+  }, [messages.length, activeChat?.other_user_id, pendingScrollMessageId]);
+
+  // Scroll to target search message when it loads
+  useEffect(() => {
+    if (!pendingScrollMessageId || !messages.length) return;
+    
+    const hasMessage = messages.some(msg => msg.id === pendingScrollMessageId);
+    if (!hasMessage) return;
+
+    const timeoutId = window.setTimeout(() => {
+      const messageElement = document.getElementById(`msg-${pendingScrollMessageId}`);
+      if (messageElement) {
+        messageElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        setHighlightedPinnedMessageId(pendingScrollMessageId);
+        
+        const clearHighlightTimeout = window.setTimeout(() => {
+          setHighlightedPinnedMessageId(currentId => currentId === pendingScrollMessageId ? null : currentId);
+        }, 2600);
+        
+        setPendingScrollMessageId(null);
+        return () => window.clearTimeout(clearHighlightTimeout);
+      }
+    }, 150);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [messages, pendingScrollMessageId]);
 
   useEffect(() => {
     const query = sidebarQuery.trim();
@@ -1733,6 +1806,43 @@ export default function Inbox() {
       window.clearTimeout(timeoutId);
     };
   }, [sidebarQuery]);
+
+  // Debounced search for global messages
+  useEffect(() => {
+    const query = globalMessageSearchQuery.trim();
+    if (!query) {
+      setGlobalMessageSearchResults([]);
+      setSearchingGlobalMessages(false);
+      return undefined;
+    }
+
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(async () => {
+      try {
+        setSearchingGlobalMessages(true);
+        const response = await apiFetch(`/api/inbox/search-messages?q=${encodeURIComponent(query)}`, {
+          headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
+          signal: controller.signal,
+        });
+
+        if (response.ok) {
+          const data = await readJson(response);
+          setGlobalMessageSearchResults(data.results || []);
+        }
+      } catch (error) {
+        if (error.name !== 'AbortError') {
+          console.error('Failed to search global messages', error);
+        }
+      } finally {
+        setSearchingGlobalMessages(false);
+      }
+    }, 250);
+
+    return () => {
+      controller.abort();
+      window.clearTimeout(timeoutId);
+    };
+  }, [globalMessageSearchQuery]);
 
   useEffect(() => {
     if (!composerMode) {
@@ -1951,6 +2061,15 @@ export default function Inbox() {
   const selectChat = async (chat, options = {}) => {
     if (!options.silent) {
       forceScrollToBottomRef.current = true;
+      
+      try {
+        const parsed = JSON.parse(localStorage.getItem('chat_drafts') || '{}');
+        const drafts = parsed && typeof parsed === 'object' ? parsed : {};
+        setNewMessage(drafts[chat.other_user_id] || '');
+      } catch (e) {
+        setNewMessage('');
+      }
+
       setActiveChat(chat);
       setMessages([]); // Clear previous messages to prevent blinking
       localStorage.setItem('inbox_last_active_chat', chat.other_user_id);
@@ -1960,7 +2079,7 @@ export default function Inbox() {
       setChatSearchOpen(false);
       setChatSearchQuery('');
       setChatSearchIndex(0);
-      setShowChatInfoPanel(false); // Always reset info panel when switching chats
+      setShowChatInfoPanel(true); // Keep info panel open by default when switching chats
     }
 
     try {
@@ -3319,9 +3438,64 @@ export default function Inbox() {
     }, 60);
   }, []);
 
+  const highlightSearchQuery = (text, query) => {
+    if (!text) return '';
+    if (!query) return text;
+    
+    const lowerText = text.toLowerCase();
+    const lowerQuery = query.toLowerCase();
+    const matchIndex = lowerText.indexOf(lowerQuery);
+    
+    if (matchIndex === -1) return text;
+    
+    const start = Math.max(0, matchIndex - 30);
+    const end = Math.min(text.length, matchIndex + query.length + 30);
+    
+    let snippet = text.slice(start, end);
+    const prefix = start > 0 ? '...' : '';
+    const suffix = end < text.length ? '...' : '';
+    
+    const snippetLower = snippet.toLowerCase();
+    const snippetMatchIndex = snippetLower.indexOf(lowerQuery);
+    
+    if (snippetMatchIndex === -1) return text;
+    
+    const before = snippet.slice(0, snippetMatchIndex);
+    const match = snippet.slice(snippetMatchIndex, snippetMatchIndex + query.length);
+    const after = snippet.slice(snippetMatchIndex + query.length);
+    
+    return (
+      <>
+        {prefix}
+        {before}
+        <strong className="global-search-highlight" style={{ color: '#3b82f6', fontWeight: 'bold' }}>{match}</strong>
+        {after}
+        {suffix}
+      </>
+    );
+  };
+
+  const handleGlobalMessageSearchResultClick = async (result) => {
+    const existingChat = conversations.find(
+      (c) => normalizeUserId(c.other_user_id) === normalizeUserId(result.user.id)
+    );
+    
+    setSlideDirection('enter');
+    setPendingScrollMessageId(result.id);
+    
+    if (existingChat) {
+      await selectChat(existingChat);
+    } else {
+      await startConversation(result.user);
+    }
+    
+    window.setTimeout(() => setSlideDirection(null), 350);
+  };
+
   const openChatSearch = useCallback(() => {
     setChatSearchOpen(true);
-    window.setTimeout(() => chatSearchInputRef.current?.focus(), 60);
+    setShowChatInfoPanel(true);
+    window.setTimeout(() => chatSearchInputRef.current?.focus(), 100);
   }, []);
 
   const moveChatSearch = useCallback((direction) => {
@@ -3334,10 +3508,7 @@ export default function Inbox() {
     });
   }, [chatSearchResults, scrollToChatSearchResult]);
 
-  useEffect(() => {
-    if (!chatSearchOpen || !chatSearchResults.length) return;
-    scrollToChatSearchResult(chatSearchResults[chatSearchIndex] || chatSearchResults[0]);
-  }, [chatSearchOpen, chatSearchResults, chatSearchIndex, scrollToChatSearchResult]);
+
 
   const toggleMuteActiveChat = useCallback(() => {
     if (activeChatId == null) return;
@@ -3430,145 +3601,305 @@ export default function Inbox() {
       <input ref={fileInputRef} type="file" multiple style={{ display: 'none' }} onChange={handleFilePick} />
 
       <div className={`inbox-sidebar glass-panel ${slideDirection === 'exit' ? 'slide-in-from-left' : ''}`} style={{ width: 320, flexShrink: 0 }}>
-        <div className="inbox-header font-display">
-          <h2>
-            Messages
-            <span 
-              title={onlineUsers?.has(String(currentUser?.id)) ? "Socket Connected" : "Socket Disconnected"}
-              style={{
-                display: 'inline-block',
-                width: '8px',
-                height: '8px',
-                borderRadius: '50%',
-                background: onlineUsers?.has(String(currentUser?.id)) ? '#10b981' : '#ef4444',
-                marginLeft: '8px',
-                marginBottom: '2px'
-              }}
-            />
-          </h2>
-          <button className="new-msg-btn" onClick={() => setComposerMode('new')} title="New Message">
-            <Pencil size={18} strokeWidth={3} />
-          </button>
-        </div>
+        {isGlobalMessageSearchActive ? (
+          <div className="global-message-search-view" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+            <div className="global-search-header" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', padding: '1.25rem 1.25rem 0.8rem' }}>
+              <button 
+                type="button" 
+                className="global-search-back-btn" 
+                onClick={() => {
+                  setIsGlobalMessageSearchActive(false);
+                  setGlobalMessageSearchQuery('');
+                  setGlobalMessageSearchResults([]);
+                }}
+                style={{
+                  border: 'none',
+                  background: 'transparent',
+                  color: 'var(--text-primary)',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  padding: 0
+                }}
+              >
+                <X size={20} />
+              </button>
+              <h2 style={{ margin: 0, fontSize: '1.25rem', fontWeight: 700 }}>Search</h2>
+            </div>
+            
+            <div className="search-bar inbox-search" style={{ margin: '0 1.25rem 0.75rem' }}>
+              <SearchIcon size={16} className="text-muted" style={{ marginRight: '0.5rem' }} />
+              <input
+                type="text"
+                placeholder="Search messages..."
+                value={globalMessageSearchQuery}
+                onChange={(event) => setGlobalMessageSearchQuery(event.target.value)}
+                autoFocus
+              />
+              {globalMessageSearchQuery.trim() && (
+                <span className="search-result-count-badge" style={{ fontSize: '0.72rem', color: 'var(--text-muted)', whiteSpace: 'nowrap', marginRight: '0.35rem' }}>
+                  {searchingGlobalMessages 
+                    ? 'searching...' 
+                    : globalMessageSearchResults.length > 99 
+                      ? '99+ results' 
+                      : `${globalMessageSearchResults.length} results`}
+                </span>
+              )}
+              {globalMessageSearchQuery && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setGlobalMessageSearchQuery('');
+                    setGlobalMessageSearchResults([]);
+                  }}
+                  style={{ border: 'none', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', padding: 0 }}
+                >
+                  <X size={14} />
+                </button>
+              )}
+            </div>
 
-        <div className="search-bar inbox-search">
-          <SearchIcon size={16} className="text-muted" style={{ marginRight: '0.5rem' }} />
-          <input
-            type="text"
-            placeholder="Search by name, username, ID, email, or phone..."
-            value={sidebarQuery}
-            onChange={(event) => setSidebarQuery(event.target.value)}
-          />
-        </div>
+            <div className="chat-list custom-scrollbar" style={{ flex: 1, overflowY: 'auto' }}>
+              {searchingGlobalMessages && (
+                <div className="empty-results">Searching matching messages...</div>
+              )}
+              
+              {!searchingGlobalMessages && globalMessageSearchQuery.trim() && globalMessageSearchResults.length === 0 && (
+                <div className="empty-results">No messages found for that search.</div>
+              )}
 
-        <div className="chat-list custom-scrollbar">
-          {filteredConversations.map((chat) => (
-            (() => {
-              const isActiveChat = normalizeUserId(activeChat?.other_user_id) === normalizeUserId(chat.other_user_id);
-              const isUnreadChat = chat.unread_count > 0 && !isActiveChat;
-              const isReactionPreview = chat.last_message_is_reaction || chat.last_message_type === 'reaction';
-              const isMutedChat = mutedChats.has(normalizeUserId(chat.other_user_id));
+              {!searchingGlobalMessages && globalMessageSearchResults.map((result) => {
+                const isOnline = onlineUsers?.has(String(result.user.id));
+                return (
+                  <button
+                    key={`search-msg-${result.id}`}
+                    type="button"
+                    className="chat-item chat-item-search-result"
+                    onClick={() => handleGlobalMessageSearchResultClick(result)}
+                  >
+                    <div className="avatar chat-avatar" style={{ background: result.user.role === 'admin' ? 'var(--warning)' : 'var(--bg-gradient-primary)', position: 'relative', flexShrink: 0 }}>
+                      {result.user.profile_picture ? (
+                        <img src={resolveMediaUrl(result.user.profile_picture)} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: '50%' }} />
+                      ) : (
+                        <img src={`${import.meta.env.BASE_URL}avatars/male1.png`} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: 0.5, borderRadius: '50%' }} />
+                      )}
+                      {isOnline && (
+                        <span className="online-dot" title="Online" />
+                      )}
+                    </div>
+                    <div className="chat-info" style={{ flex: 1, minWidth: 0 }}>
+                      <div className="chat-name-row" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                        <h4 style={{ margin: 0, fontSize: '0.92rem', fontWeight: 600 }}>
+                          {result.user.first_name} {result.user.last_name}
+                        </h4>
+                        <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                          {formatRelativeShortTime(result.created_at)}
+                        </span>
+                      </div>
+                      <p className="chat-preview" style={{ margin: '0.15rem 0 0 0', fontSize: '0.8rem', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {highlightSearchQuery(result.content, globalMessageSearchQuery)}
+                      </p>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="inbox-header font-display">
+              <h2>
+                Messages
+                <span 
+                  title={onlineUsers?.has(String(currentUser?.id)) ? "Socket Connected" : "Socket Disconnected"}
+                  style={{
+                    display: 'inline-block',
+                    width: '8px',
+                    height: '8px',
+                    borderRadius: '50%',
+                    background: onlineUsers?.has(String(currentUser?.id)) ? '#10b981' : '#ef4444',
+                    marginLeft: '8px',
+                    marginBottom: '2px'
+                  }}
+                />
+              </h2>
+              <button className="new-msg-btn" onClick={() => setComposerMode('new')} title="New Message">
+                <Pencil size={18} strokeWidth={3} />
+              </button>
+            </div>
 
-              return (
-            <div
-              key={chat.other_user_id}
-              className={`chat-item ${isActiveChat ? 'active' : ''} ${isUnreadChat ? 'unread' : ''} ${isMutedChat ? 'muted' : ''}`}
-              onClick={() => selectChatWithTransition(chat)}
-            >
-              <div className="avatar chat-avatar" style={{ background: chat.role === 'admin' ? 'var(--warning)' : 'var(--bg-gradient-primary)', position: 'relative' }}>
-                {chat.profile_picture ? (
-                  <img src={resolveMediaUrl(chat.profile_picture)} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                ) : (
-                  <img src={`${import.meta.env.BASE_URL}avatars/male1.png`} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: 0.5 }} />
-                )}
-                {onlineUsers?.has(String(chat.other_user_id)) && (
-                  <span className="online-dot" title="Online" />
-                )}
-              </div>
-              <div className="chat-info">
-                <div className="chat-name-row">
-                  <h4>{chat.first_name} {chat.last_name}</h4>
-                  <div className="chat-status-stack">
-                    {isMutedChat && <BellOff size={14} className="muted-chat-indicator" aria-label="Muted chat" />}
-                    {isUnreadChat && isReactionPreview && (
-                      <span className="reaction-unread-dot" aria-label="New reaction" />
+            <div className="search-bar inbox-search" style={{ position: 'relative' }}>
+              <SearchIcon size={16} className="text-muted" style={{ marginRight: '0.5rem', flexShrink: 0 }} />
+              <input
+                type="text"
+                placeholder="Search by name, username, ID, email, or phone..."
+                value={sidebarQuery}
+                onChange={(event) => setSidebarQuery(event.target.value)}
+                style={{ paddingRight: sidebarQuery ? '30px' : undefined }}
+              />
+              {sidebarQuery && (
+                <button
+                  type="button"
+                  onClick={() => setSidebarQuery('')}
+                  className="clear-search-btn"
+                  style={{ position: 'absolute', right: '1rem', top: '50%', transform: 'translateY(-50%)' }}
+                >
+                  <X size={14} />
+                </button>
+              )}
+            </div>
+
+            <div className="chat-list custom-scrollbar">
+              {sidebarQuery.trim() && (
+                <button
+                  type="button"
+                  className="search-messages-trigger"
+                  onClick={() => {
+                    setGlobalMessageSearchQuery(sidebarQuery);
+                    setIsGlobalMessageSearchActive(true);
+                  }}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.6rem',
+                    padding: '0.75rem 1.25rem',
+                    cursor: 'pointer',
+                    width: '100%',
+                    textAlign: 'left',
+                    background: 'rgba(255, 255, 255, 0.03)',
+                    border: 'none',
+                    borderBottom: '1px solid var(--glass-border)',
+                    color: 'var(--text-primary)',
+                    fontSize: '0.85rem',
+                    transition: 'background 0.2s',
+                  }}
+                >
+                  <SearchIcon size={15} style={{ color: '#3b82f6', flexShrink: 0 }} />
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    Search messages for <strong>"{sidebarQuery}"</strong>
+                  </span>
+                </button>
+              )}
+
+              {filteredConversations.map((chat) => (
+                (() => {
+                  const isActiveChat = normalizeUserId(activeChat?.other_user_id) === normalizeUserId(chat.other_user_id);
+                  const isUnreadChat = chat.unread_count > 0 && !isActiveChat;
+                  const isReactionPreview = chat.last_message_is_reaction || chat.last_message_type === 'reaction';
+                  const isMutedChat = mutedChats.has(normalizeUserId(chat.other_user_id));
+
+                  return (
+                <div
+                  key={chat.other_user_id}
+                  className={`chat-item ${isActiveChat ? 'active' : ''} ${isUnreadChat ? 'unread' : ''} ${isMutedChat ? 'muted' : ''}`}
+                  onClick={() => selectChatWithTransition(chat)}
+                >
+                  <div className="avatar chat-avatar" style={{ background: chat.role === 'admin' ? 'var(--warning)' : 'var(--bg-gradient-primary)', position: 'relative' }}>
+                    {chat.profile_picture ? (
+                      <img src={resolveMediaUrl(chat.profile_picture)} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                    ) : (
+                      <img src={`${import.meta.env.BASE_URL}avatars/male1.png`} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: 0.5 }} />
                     )}
-                    {isUnreadChat && !isReactionPreview && (
-                      <>
-                      <span className="new-indicator">New</span>
-                      <span className="unread-badge">{chat.unread_count}</span>
-                      </>
+                    {onlineUsers?.has(String(chat.other_user_id)) && (
+                      <span className="online-dot" title="Online" />
                     )}
                   </div>
-                </div>
-                <p className="chat-preview">
-                  {(() => {
-                    const lm = chat.last_message || '';
-                    const metaTime = chat.last_message_at ? ` · ${formatRelativeShortTime(chat.last_message_at)}` : '';
-                    // If it looks like a reaction JSON, show a friendly label
-                    if (lm.startsWith('{') && lm.includes('"type":"reaction"')) {
-                      const reactionPreview = formatReactionPreview(lm, chat.last_message_sender_id, chat);
-                      if (reactionPreview) return `${reactionPreview}${metaTime}`;
-                    }
-                    if (lm.startsWith('{') && lm.includes('"type":"quick_emoji"')) {
-                      const quickEmojiPreview = formatQuickEmojiNotice(lm, chat.last_message_sender_id);
-                      if (quickEmojiPreview) return `${quickEmojiPreview}${metaTime}`;
-                    }
-                    if (isReactionPreview) return `${lm}${metaTime}`;
+                  <div className="chat-info">
+                    <div className="chat-name-row">
+                      <h4>{chat.first_name} {chat.last_name}</h4>
+                      <div className="chat-status-stack">
+                        {isMutedChat && <BellOff size={14} className="muted-chat-indicator" aria-label="Muted chat" />}
+                        {isUnreadChat && isReactionPreview && (
+                          <span className="reaction-unread-dot" aria-label="New reaction" />
+                        )}
+                        {isUnreadChat && !isReactionPreview && (
+                          <>
+                          <span className="new-indicator">New</span>
+                          <span className="unread-badge">{chat.unread_count}</span>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                    <p className="chat-preview">
+                      {(() => {
+                        const draftText = (drafts || {})[chat.other_user_id];
+                        if (typeof draftText === 'string' && draftText.trim().length > 0) {
+                          const metaTime = chat.last_message_at ? ` · ${formatRelativeShortTime(chat.last_message_at)}` : '';
+                          return (
+                            <>
+                              <span style={{ color: '#0084ff', fontWeight: 500 }}>Draft:</span> {draftText.length > 40 ? draftText.substring(0, 40) + '...' : draftText}{metaTime}
+                            </>
+                          );
+                        }
 
-                    // If it looks like a call_log JSON, show a friendly label
-                    if (lm.startsWith('{') && lm.includes('call_type')) {
-                      try {
-                        const d = JSON.parse(lm);
-                        const icon = d.call_type === 'video' ? 'Γëí╞Æ├┤Γòú' : 'Γëí╞Æ├┤Γéº';
-                        const st = d.status === 'answered' ? 'Answered'
-                          : d.status === 'declined' ? 'Declined' : 'Missed';
-                        return `${icon} ${d.call_type === 'video' ? 'Video' : 'Audio'} call Γö¼Γòû ${st}`;
-                      } catch { /* fall through */ }
-                    }
-                    return lm;
-                  })()}
-                </p>
-              </div>
+                        const lm = chat.last_message || '';
+                        const metaTime = chat.last_message_at ? ` · ${formatRelativeShortTime(chat.last_message_at)}` : '';
+                        // If it looks like a reaction JSON, show a friendly label
+                        if (lm.startsWith('{') && lm.includes('"type":"reaction"')) {
+                          const reactionPreview = formatReactionPreview(lm, chat.last_message_sender_id, chat);
+                          if (reactionPreview) return `${reactionPreview}${metaTime}`;
+                        }
+                        if (lm.startsWith('{') && lm.includes('"type":"quick_emoji"')) {
+                          const quickEmojiPreview = formatQuickEmojiNotice(lm, chat.last_message_sender_id);
+                          if (quickEmojiPreview) return `${quickEmojiPreview}${metaTime}`;
+                        }
+                        if (isReactionPreview) return `${lm}${metaTime}`;
+
+                        // If it looks like a call_log JSON, show a friendly label
+                        if (lm.startsWith('{') && lm.includes('call_type')) {
+                          try {
+                            const d = JSON.parse(lm);
+                            const icon = d.call_type === 'video' ? 'Γëí╞Æ├┤Γòú' : 'Γëí╞Æ├┤Γéº';
+                            const st = d.status === 'answered' ? 'Answered'
+                              : d.status === 'declined' ? 'Declined' : 'Missed';
+                            return `${icon} ${d.call_type === 'video' ? 'Video' : 'Audio'} call Γö¼Γòû ${st}`;
+                          } catch { /* fall through */ }
+                        }
+                        return lm;
+                      })()}
+                    </p>
+                  </div>
+                </div>
+                  );
+                })()
+              ))}
+
+              {sidebarQuery.trim() && sidebarDirectoryResults.map((user) => (
+                <button
+                  key={`directory-${user.id}`}
+                  type="button"
+                  className="chat-item chat-item-directory"
+                  onClick={() => { setSlideDirection('enter'); startConversation(user); setTimeout(() => setSlideDirection(null), 300); }}
+                >
+                  <div className="avatar chat-avatar" style={{ background: user.role === 'admin' ? 'var(--warning)' : 'var(--bg-gradient-primary)' }}>
+                    {user.profile_picture ? (
+                      <img src={resolveMediaUrl(user.profile_picture)} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                    ) : (
+                      <img src={`${import.meta.env.BASE_URL}avatars/male1.png`} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: 0.5 }} />
+                    )}
+                  </div>
+                  <div className="chat-info">
+                    <div className="chat-name-row">
+                      <h4>{user.first_name} {user.last_name}</h4>
+                    </div>
+                    <p className="chat-preview" style={{ color: 'var(--text-muted)' }}>
+                      {getRoleDisplayText(user.role, user.batch_number)}
+                    </p>
+                  </div>
+                </button>
+              ))}
+
+              {sidebarQuery.trim() && searchingSidebarUsers && (
+                <div className="empty-results">Searching users...</div>
+              )}
+
+              {sidebarQuery.trim() && !searchingSidebarUsers && filteredConversations.length === 0 && sidebarDirectoryResults.length === 0 && (
+                <div className="empty-results">No users found for that search.</div>
+              )}
             </div>
-              );
-            })()
-          ))}
-
-          {sidebarQuery.trim() && sidebarDirectoryResults.map((user) => (
-            <button
-              key={`directory-${user.id}`}
-              type="button"
-              className="chat-item chat-item-directory"
-              onClick={() => { setSlideDirection('enter'); startConversation(user); setTimeout(() => setSlideDirection(null), 300); }}
-            >
-              <div className="avatar chat-avatar" style={{ background: user.role === 'admin' ? 'var(--warning)' : 'var(--bg-gradient-primary)' }}>
-                {user.profile_picture ? (
-                  <img src={resolveMediaUrl(user.profile_picture)} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                ) : (
-                  <img src={`${import.meta.env.BASE_URL}avatars/male1.png`} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: 0.5 }} />
-                )}
-              </div>
-              <div className="chat-info">
-                <div className="chat-name-row">
-                  <h4>{user.first_name} {user.last_name}</h4>
-                  <span className="directory-badge">Directory</span>
-                </div>
-                <p className="chat-preview">
-                  {[user.username && `@${user.username}`, user.email, user.student_id, user.mobile_number].filter(Boolean).join(' ╬ô├ç├│ ')}
-                </p>
-              </div>
-            </button>
-          ))}
-
-          {sidebarQuery.trim() && searchingSidebarUsers && (
-            <div className="empty-results">Searching users...</div>
-          )}
-
-          {sidebarQuery.trim() && !searchingSidebarUsers && filteredConversations.length === 0 && sidebarDirectoryResults.length === 0 && (
-            <div className="empty-results">No users found for that search.</div>
-          )}
-        </div>
+          </>
+        )}
       </div>
 
       <div
@@ -3660,41 +3991,7 @@ export default function Inbox() {
               </div>
             </div>
 
-            {chatSearchOpen && (
-              <div className="chat-search-panel">
-                <Search size={16} className="chat-search-panel-icon" />
-                <input
-                  ref={chatSearchInputRef}
-                  value={chatSearchQuery}
-                  onChange={(event) => setChatSearchQuery(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter') {
-                      event.preventDefault();
-                      moveChatSearch(event.shiftKey ? -1 : 1);
-                    }
-                    if (event.key === 'Escape') {
-                      setChatSearchOpen(false);
-                    }
-                  }}
-                  placeholder={`Search in ${activeChat.first_name || 'this chat'}`}
-                  aria-label="Search this conversation"
-                />
-                <span className="chat-search-count">
-                  {chatSearchQuery.trim()
-                    ? (chatSearchResults.length ? `${chatSearchIndex + 1}/${chatSearchResults.length}` : '0 results')
-                    : 'Search messages'}
-                </span>
-                <button type="button" className="chat-search-nav-btn" onClick={() => moveChatSearch(-1)} disabled={!chatSearchResults.length} title="Previous match">
-                  ╬ô├Ñ├ª
-                </button>
-                <button type="button" className="chat-search-nav-btn" onClick={() => moveChatSearch(1)} disabled={!chatSearchResults.length} title="Next match">
-                  ╬ô├Ñ├┤
-                </button>
-                <button type="button" className="chat-search-close-btn" onClick={() => setChatSearchOpen(false)} title="Close search">
-                  <X size={16} />
-                </button>
-              </div>
-            )}
+
 
             {latestPinnedMessage && (
               <button type="button" className="pinned-message-bar" onClick={() => setPinnedMessagesOpen(true)}>
@@ -4386,6 +4683,94 @@ export default function Inbox() {
 
       <aside className={`chat-details-panel glass-panel ${(!activeChat || !showChatInfoPanel) ? 'collapsed' : ''}`} style={(!activeChat || !showChatInfoPanel) ? { flexShrink: 0, overflow: 'hidden' } : { width: 300, flexShrink: 0 }}>
         {activeChat && (
+          chatSearchOpen ? (
+            <div className="chat-details-search-view">
+              <div className="chat-details-search-header">
+                <button
+                  className="chat-search-back-btn"
+                  onClick={() => setChatSearchOpen(false)}
+                  title="Back to Chat Info"
+                >
+                  <ArrowLeft size={20} />
+                </button>
+                <h3 style={{ margin: 0, fontSize: '1.1rem' }}>Search</h3>
+                <div style={{ width: 32 }}></div>
+              </div>
+              <div className="chat-details-search-input-wrapper">
+                <Search size={15} className="chat-details-search-icon" />
+                <input
+                  ref={chatSearchInputRef}
+                  value={chatSearchQuery}
+                  onChange={(event) => setChatSearchQuery(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault();
+                      moveChatSearch(event.shiftKey ? -1 : 1);
+                    }
+                    if (event.key === 'Escape') {
+                      setChatSearchOpen(false);
+                    }
+                  }}
+                  placeholder="Search in conversation"
+                />
+                {chatSearchQuery && (
+                  <div className="chat-details-search-actions">
+                    <span className="chat-search-count-small">
+                      {chatSearchResults.length ? `${chatSearchResults.length} results` : '0 results'}
+                    </span>
+                    <button type="button" onClick={() => { setChatSearchQuery(''); setChatSearchIndex(0); chatSearchInputRef.current?.focus(); }} className="clear-search-btn">
+                      <X size={14} />
+                    </button>
+                  </div>
+                )}
+              </div>
+              
+              <div className="chat-details-search-results custom-scrollbar">
+                {chatSearchQuery.trim() && chatSearchResults.length > 0 && chatSearchResults.map((messageId, idx) => {
+                  const msg = messages.find(m => m.id === messageId);
+                  if (!msg) return null;
+                  const isMine = normalizeUserId(msg.sender_id) === normalizeUserId(currentUser.id);
+                  const sender = isMine ? currentUser : activeChat;
+                  
+                  const content = msg.content || '';
+                  const query = chatSearchQuery.trim();
+                  const parts = content.split(new RegExp('(' + query + ')', 'gi'));
+                  
+                  return (
+                    <div 
+                      key={`search-res-${messageId}`} 
+                      className={`search-result-item ${chatSearchIndex === idx ? 'active' : ''}`}
+                      onClick={() => {
+                        setChatSearchIndex(idx);
+                        scrollToChatSearchResult(messageId);
+                      }}
+                    >
+                      <div className="search-result-avatar">
+                        {sender.profile_picture ? (
+                          <img src={resolveMediaUrl(sender.profile_picture)} alt="" />
+                        ) : (
+                          <span>{sender.first_name?.[0] || 'U'}</span>
+                        )}
+                      </div>
+                      <div className="search-result-info">
+                        <div className="search-result-name">{sender.first_name} {sender.last_name}</div>
+                        <div className="search-result-snippet">
+                          {parts.map((part, i) => 
+                            part.toLowerCase() === query.toLowerCase() 
+                              ? <strong key={i}>{part}</strong> 
+                              : part
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+                {chatSearchQuery.trim() && chatSearchResults.length === 0 && (
+                  <div className="empty-results">No messages found for "{chatSearchQuery}"</div>
+                )}
+              </div>
+            </div>
+          ) : (
           <>
             <div className="mobile-chat-details-header">
               <button
@@ -4578,6 +4963,7 @@ export default function Inbox() {
             </div>
           </div>
         </>
+          )
       )}
     </aside>
 
@@ -4784,12 +5170,10 @@ export default function Inbox() {
                     <div className="user-result-main">
                       <div className="user-result-title">
                         <strong>{user.first_name} {user.last_name}</strong>
-                        <span className="user-role-badge">{user.role}</span>
                       </div>
-                      <div className="user-meta-row"><AtSign size={13} /> {user.username}</div>
-                      <div className="user-meta-row"><Hash size={13} /> User ID: {user.id}</div>
-                      {user.student_id && <div className="user-meta-row"><IdCard size={13} /> Student ID: {user.student_id}</div>}
-                      {user.mobile_number && <div className="user-meta-row"><Phone size={13} /> {user.mobile_number}</div>}
+                      <div className="user-meta-row" style={{ color: 'var(--text-muted)' }}>
+                        {getRoleDisplayText(user.role, user.batch_number)}
+                      </div>
                     </div>
                   </button>
                 ))
@@ -5608,6 +5992,21 @@ export default function Inbox() {
           border-left: 3px solid rgba(59,130,246,0.7);
           background: rgba(59,130,246,0.06);
         }
+        .chat-item-search-result {
+          border-left: 3px solid rgba(16, 185, 129, 0.7);
+          background: rgba(16, 185, 129, 0.04);
+        }
+        .global-search-highlight {
+          color: #3b82f6 !important;
+          font-weight: 700;
+        }
+        .search-messages-trigger {
+          border-left: 3px solid var(--accent-primary);
+          background: rgba(255, 255, 255, 0.03);
+        }
+        .search-messages-trigger:hover {
+          background: rgba(255, 255, 255, 0.08);
+        }
         .chat-avatar {
           width: 44px;
           height: 44px;
@@ -6318,59 +6717,157 @@ export default function Inbox() {
           position: relative;
           z-index: 1;
         }
-        .chat-search-panel {
-          flex-shrink: 0;
+        .chat-details-search-view {
+          display: flex;
+          flex-direction: column;
+          height: 100%;
+        }
+        .chat-details-search-header {
           display: flex;
           align-items: center;
-          gap: 0.65rem;
-          padding: 0.75rem 1.5rem;
+          justify-content: space-between;
+          padding: 1rem 1rem 0.2rem;
+        }
+        .chat-details-search-input-wrapper {
+          padding: 1rem;
           border-bottom: 1px solid var(--glass-border);
-          background: rgba(6,9,16,0.88);
           position: relative;
-          z-index: 1;
+          display: flex;
+          align-items: center;
         }
-        .chat-search-panel-icon {
+        .chat-details-search-icon {
+          position: absolute;
+          left: 1.8rem;
           color: var(--text-secondary);
-          flex-shrink: 0;
+          pointer-events: none;
         }
-        .chat-search-panel input {
+        .chat-details-search-input-wrapper input {
           flex: 1;
-          min-width: 0;
-          border: 1px solid rgba(255,255,255,0.09);
-          border-radius: 999px;
-          background: rgba(255,255,255,0.06);
+          width: 100%;
+          background: rgba(255, 255, 255, 0.05);
+          border: 1px solid rgba(255, 255, 255, 0.1);
+          border-radius: 20px;
+          padding: 0.6rem 5.5rem 0.6rem 2.2rem;
           color: var(--text-primary);
+          font-size: 0.9rem;
           outline: none;
-          padding: 0.65rem 0.9rem;
-          font-size: 0.92rem;
         }
-        .chat-search-panel input:focus {
-          border-color: rgba(59,130,246,0.48);
-          box-shadow: 0 0 0 3px rgba(59,130,246,0.12);
+        .chat-details-search-input-wrapper input:focus {
+          border-color: rgba(255, 255, 255, 0.2);
+          background: rgba(255, 255, 255, 0.08);
         }
-        .chat-search-count {
+        .chat-details-search-actions {
+          position: absolute;
+          right: 1.5rem;
+          display: flex;
+          align-items: center;
+          gap: 0.5rem;
+        }
+        .chat-search-count-small {
+          font-size: 0.8rem;
           color: var(--text-secondary);
-          font-size: 0.78rem;
-          min-width: 74px;
-          text-align: right;
-          white-space: nowrap;
         }
-        .chat-search-nav-btn,
-        .chat-search-close-btn {
-          width: 32px;
-          height: 32px;
+        .clear-search-btn {
+          background: rgba(255, 255, 255, 0.15);
+          border: none;
           border-radius: 50%;
-          border: 1px solid rgba(255,255,255,0.1);
-          background: rgba(255,255,255,0.06);
+          width: 22px;
+          height: 22px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          color: var(--text-primary);
+          cursor: pointer;
+        }
+        [data-mode="light"] .clear-search-btn {
+          background: rgba(0, 0, 0, 0.08);
+          color: #050505;
+        }
+        .clear-search-btn:hover {
+          background: rgba(255, 255, 255, 0.25);
+        }
+        [data-mode="light"] .clear-search-btn:hover {
+          background: rgba(0, 0, 0, 0.15);
+        }
+        .chat-search-back-btn {
+          width: 36px;
+          height: 36px;
+          border-radius: 50%;
+          border: none;
+          background: rgba(255, 255, 255, 0.1);
           color: var(--text-primary);
           display: flex;
           align-items: center;
           justify-content: center;
           cursor: pointer;
+          transition: all 0.2s;
         }
-        .chat-search-nav-btn:disabled {
-          opacity: 0.35;
-          cursor: not-allowed;
+        [data-mode="light"] .chat-search-back-btn {
+          background: rgba(0, 0, 0, 0.05);
+          color: #050505;
+        }
+        .chat-search-back-btn:hover {
+          background: rgba(255, 255, 255, 0.15);
+        }
+        [data-mode="light"] .chat-search-back-btn:hover {
+          background: rgba(0, 0, 0, 0.1);
+        }
+        .chat-details-search-results {
+          flex: 1;
+          overflow-y: auto;
+          padding: 0.5rem 0;
+        }
+        .search-result-item {
+          display: flex;
+          gap: 0.8rem;
+          padding: 0.8rem 1rem;
+          cursor: pointer;
+          transition: background 0.2s;
+        }
+        .search-result-item:hover {
+          background: rgba(255, 255, 255, 0.05);
+        }
+        .search-result-item.active {
+          background: rgba(59, 130, 246, 0.15);
+        }
+        .search-result-avatar {
+          width: 36px;
+          height: 36px;
+          border-radius: 50%;
+          overflow: hidden;
+          background: var(--bg-gradient-primary);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          color: white;
+          font-weight: 500;
+          flex-shrink: 0;
+        }
+        .search-result-avatar img {
+          width: 100%;
+          height: 100%;
+          object-fit: cover;
+        }
+        .search-result-info {
+          flex: 1;
+          min-width: 0;
+        }
+        .search-result-name {
+          font-weight: 500;
+          font-size: 0.9rem;
+          margin-bottom: 0.2rem;
+          color: var(--text-primary);
+        }
+        .search-result-snippet {
+          font-size: 0.85rem;
+          color: var(--text-secondary);
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        .search-result-snippet strong {
+          color: var(--text-primary);
+          font-weight: 600;
         }
         .pinned-message-bar {
           flex-shrink: 0;
@@ -6388,9 +6885,7 @@ export default function Inbox() {
           position: relative;
           z-index: 1;
         }
-        .pinned-message-bar:hover {
-          background: rgba(255,255,255,0.055);
-        }
+
         .pinned-message-bar-text {
           flex: 1;
           min-width: 0;
@@ -8056,10 +8551,28 @@ export default function Inbox() {
           flex-direction: column;
           border-radius: 24px;
           overflow: hidden;
-          background: var(--bg-secondary);
+          background: linear-gradient(145deg, rgba(14, 28, 50, 0.75), rgba(5, 14, 28, 0.85));
+          backdrop-filter: blur(16px);
+          -webkit-backdrop-filter: blur(16px);
           border: 1px solid var(--glass-border);
           box-shadow: 0 25px 50px -12px rgba(0,0,0,0.5);
           animation: modalScaleIn 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+          position: relative;
+        }
+        .compose-modal::before {
+          content: '';
+          position: absolute;
+          inset: 0;
+          background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 512 512' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='1.2' numOctaves='4' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+          background-size: 256px 256px;
+          background-repeat: repeat;
+          opacity: 0.06;
+          pointer-events: none;
+          z-index: 0;
+        }
+        .compose-modal > * {
+          position: relative;
+          z-index: 1;
         }
         .compose-header {
           display: flex;

@@ -403,6 +403,10 @@ export default function StudentManager() {
   const openPhase2Modal = (student, courseId) => {
     setPhase2Error('');
     const enrollment = student.enrollments.find(e => e.id === courseId);
+    if (!enrollment?.step1_completed || !enrollment?.step2_completed || !enrollment?.step3_completed) {
+      setConfirmConfig({ title: 'Action Restricted', message: 'Cannot update "Phase 2: Completed Course". All previous phases must be completed first.', confirmText: 'OK', isAlert: true, onConfirm: () => {} });
+      return;
+    }
     setPhase2Student({ ...student, enrollment });
     setPhase2CourseId(courseId);
     setPhase2FormData({

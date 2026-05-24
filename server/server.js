@@ -85,7 +85,7 @@ app.use(helmet({
 // Image Proxy to bypass CSP for external thumbnails
 // Allowed CDN domain suffixes — broad enough for major platforms
 const PROXY_ALLOWED_SUFFIXES = [
-  'ytimg.com', 'yt3.googleapis.com',           // YouTube
+  'ytimg.com', 'yt3.googleapis.com', 'youtube.com', // YouTube
   'vimeocdn.com', 'vimeo.com',                 // Vimeo
   'fbcdn.net', 'fbsbx.com',                    // Facebook
   'cdninstagram.com',                          // Instagram
@@ -118,7 +118,10 @@ app.get(['/api/proxy-image', '/bfi-classroom/api/proxy-image'], async (req, res)
       return res.status(403).json({ error: 'Only HTTPS URLs are allowed' });
     }
 
-    if (!isProxyDomainAllowed(parsedUrl.hostname)) {
+    // Allow proxying of any public HTTPS images to make pasted links editable,
+    // but block local or private addresses to prevent Server-Side Request Forgery (SSRF)
+    const privateIpPattern = /^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)/i;
+    if (privateIpPattern.test(parsedUrl.hostname)) {
       return res.status(403).json({ error: 'Domain not allowed' });
     }
 
