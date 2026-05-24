@@ -117,6 +117,8 @@ const QUICK_REACTIONS = [
   '\u{1F44F}',
 ];
 
+const DEFAULT_CHAT_QUICK_EMOJI = '\u{1F44D}';
+
 const REACTION_EMOJIS = [
   { emoji: '\u2764\uFE0F', name: 'Red heart', category: 'Your reactions', keywords: ['love', 'heart'] },
   { emoji: '\u{1F606}', name: 'Grinning squinting face', category: 'Your reactions', keywords: ['laugh', 'happy'] },
@@ -493,7 +495,19 @@ export default function Inbox() {
   const [showChatInfoPanel, setShowChatInfoPanel] = useState(false);
   const [gifPickerOpen, setGifPickerOpen] = useState(false);
   const [chatInfoAccordion, setChatInfoAccordion] = useState(false);
+  const [chatOptionsAccordion, setChatOptionsAccordion] = useState(false);
   const [mediaAccordion, setMediaAccordion] = useState(false);
+  const [chatEmojiPickerOpen, setChatEmojiPickerOpen] = useState(false);
+  const [chatEmojiSearchQuery, setChatEmojiSearchQuery] = useState('');
+  const [chatEmojiCategory, setChatEmojiCategory] = useState('Smileys & People');
+  const [chatQuickEmojis, setChatQuickEmojis] = useState(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem('inbox_chat_quick_emojis') || '{}');
+      return stored && typeof stored === 'object' ? stored : {};
+    } catch {
+      return {};
+    }
+  });
   const [pinnedMessagesOpen, setPinnedMessagesOpen] = useState(false);
   const [pinnedMessageMenuId, setPinnedMessageMenuId] = useState(null);
   const [highlightedPinnedMessageId, setHighlightedPinnedMessageId] = useState(null);
@@ -1329,7 +1343,7 @@ export default function Inbox() {
     return Promise.all(rawMessages.map(async (msg) => {
       try {
         // call_log and reaction content is server-AES-encrypted JSON, not E2E ╬ô├ç├╢ skip decryption
-        if (msg.message_type === 'call_log' || msg.message_type === 'reaction') {
+        if (msg.message_type === 'call_log' || msg.message_type === 'reaction' || msg.message_type === 'quick_emoji') {
           return msg;
         }
 
@@ -1393,6 +1407,21 @@ export default function Inbox() {
       : `${activeChatRef.current?.first_name || 'They'} deleted a message`;
   };
 
+  const formatQuickEmojiNotice = (messageOrContent, senderId = null) => {
+    try {
+      const content = typeof messageOrContent === 'object' ? messageOrContent?.content : messageOrContent;
+      const parsed = typeof content === 'string' ? JSON.parse(content) : content;
+      if (parsed?.type !== 'quick_emoji') return null;
+      const sourceSenderId = typeof messageOrContent === 'object' ? messageOrContent?.sender_id : senderId;
+      const actor = normalizeUserId(sourceSenderId) === normalizeUserId(currentUser?.id)
+        ? 'You'
+        : (activeChatRef.current?.first_name || 'They');
+      return `${actor} set the quick reaction to ${parsed.emoji || DEFAULT_CHAT_QUICK_EMOJI}.`;
+    } catch {
+      return null;
+    }
+  };
+
   useEffect(() => {
     fetchConversations();
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1401,6 +1430,8 @@ export default function Inbox() {
   useEffect(() => {
     // Only update the activeChatRef here, keep previousChatIdRef for the scroll effect to compare
     activeChatRef.current = activeChat;
+    setChatEmojiPickerOpen(false);
+    setChatEmojiSearchQuery('');
   }, [activeChat]);
 
   useEffect(() => {
@@ -2300,6 +2331,73 @@ export default function Inbox() {
     }
   };
 
+  const handleSendQuickEmoji = async (event) => {
+    event.preventDefault();
+    if (!activeChat) return;
+    try {
+      await sendJsonMessage(activeChatQuickEmoji);
+    } catch (error) {
+      console.error(error);
+      showModernAlert(error.message, 'Send Error');
+    }
+  };
+
+  const addLocalQuickEmojiNotice = (emoji) => {
+    if (!activeChat) return;
+
+    const optimisticId = `quick-emoji-${Date.now()}`;
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: optimisticId,
+        client_id: optimisticId,
+        sender_id: currentUser.id,
+        receiver_id: activeChat.other_user_id,
+        content: JSON.stringify({ type: 'quick_emoji', emoji }),
+        created_at: new Date().toISOString(),
+        message_type: 'quick_emoji',
+        is_pending: true,
+      },
+    ]);
+    forceScrollToLatest('smooth');
+  };
+
+  const sendQuickEmojiNotice = async (emoji) => {
+    if (!activeChat) return;
+
+    try {
+      const response = await apiFetch('/api/inbox/quick-emoji', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${localStorage.getItem('token')}`,
+        },
+        body: JSON.stringify({
+          receiver_id: activeChat.other_user_id,
+          emoji,
+        }),
+      });
+
+      const data = await readJson(response);
+      if (!response.ok) {
+        if (response.status === 404) {
+          addLocalQuickEmojiNotice(emoji);
+          return;
+        }
+        throw new Error(data.error || 'Failed to update chat emoji.');
+      }
+
+      if (data.sent_message) {
+        const processed = (await processIncomingMessages([data.sent_message]))[0];
+        setMessages((prev) => prev.some((item) => item.id === processed.id) ? prev : [...prev, processed]);
+        forceScrollToLatest('smooth');
+      }
+    } catch (error) {
+      console.error(error);
+      showModernAlert(error.message, 'Emoji Update Error');
+    }
+  };
+
   const sendGifMessage = async (gifUrl) => {
     const optimisticId = `optimistic-${Date.now()}`;
     const tempMsg = {
@@ -3009,6 +3107,31 @@ export default function Inbox() {
 
 
   const activeChatId = activeChat ? normalizeUserId(activeChat.other_user_id) : null;
+  const activeChatQuickEmoji = activeChatId != null
+    ? (chatQuickEmojis[String(activeChatId)] || DEFAULT_CHAT_QUICK_EMOJI)
+    : DEFAULT_CHAT_QUICK_EMOJI;
+  useEffect(() => {
+    if (activeChatId == null) return;
+
+    const latestQuickEmojiNotice = [...messages].reverse().find((message) => message.message_type === 'quick_emoji');
+    if (!latestQuickEmojiNotice?.content) return;
+
+    try {
+      const parsed = JSON.parse(latestQuickEmojiNotice.content);
+      if (parsed?.type !== 'quick_emoji' || !parsed.emoji) return;
+
+      const key = String(activeChatId);
+      if (chatQuickEmojis[key] === parsed.emoji) return;
+
+      setChatQuickEmojis((previous) => {
+        const next = { ...previous, [key]: parsed.emoji };
+        localStorage.setItem('inbox_chat_quick_emojis', JSON.stringify(next));
+        return next;
+      });
+    } catch {
+      // Ignore malformed historical notices.
+    }
+  }, [activeChatId, messages, chatQuickEmojis]);
   const activeChatMuted = activeChatId != null && mutedChats.has(activeChatId);
   const pinnedMessages = useMemo(() => (
     messages
@@ -3016,6 +3139,40 @@ export default function Inbox() {
       .sort((a, b) => getMessageSortTime(a.created_at) - getMessageSortTime(b.created_at))
   ), [messages]);
   const latestPinnedMessage = pinnedMessages[pinnedMessages.length - 1] || null;
+  const filteredChatEmojiGroups = useMemo(() => {
+    const query = chatEmojiSearchQuery.trim().toLowerCase();
+    const searchMatches = (item) => !query || [
+      item.name,
+      item.category,
+      ...(item.keywords || []),
+    ].join(' ').toLowerCase().includes(query);
+
+    return [...new Set(REACTION_EMOJIS.map((item) => item.category))]
+      .filter((category) => query || category === chatEmojiCategory)
+      .map((category) => ({
+        title: category,
+        items: REACTION_EMOJIS
+          .filter((item) => item.category === category)
+          .filter(searchMatches),
+      }))
+      .filter((group) => group.items.length);
+  }, [chatEmojiSearchQuery, chatEmojiCategory]);
+
+  const setActiveChatQuickEmoji = (emoji) => {
+    if (activeChatId == null) return;
+    const previousEmoji = activeChatQuickEmoji;
+    setChatQuickEmojis((previous) => {
+      const next = { ...previous, [String(activeChatId)]: emoji };
+      localStorage.setItem('inbox_chat_quick_emojis', JSON.stringify(next));
+      return next;
+    });
+    setChatEmojiPickerOpen(false);
+    setChatEmojiSearchQuery('');
+    if (previousEmoji !== emoji) {
+      sendQuickEmojiNotice(emoji);
+    }
+  };
+
   const mediaFilesLinks = useMemo(() => {
     const urlPattern = /https?:\/\/[^\s<>"']+/gi;
     const cleanUrl = (value) => value.replace(/[),.;!?]+$/g, '');
@@ -3353,6 +3510,10 @@ export default function Inbox() {
                       const reactionPreview = formatReactionPreview(lm, chat.last_message_sender_id, chat);
                       if (reactionPreview) return `${reactionPreview}${metaTime}`;
                     }
+                    if (lm.startsWith('{') && lm.includes('"type":"quick_emoji"')) {
+                      const quickEmojiPreview = formatQuickEmojiNotice(lm, chat.last_message_sender_id);
+                      if (quickEmojiPreview) return `${quickEmojiPreview}${metaTime}`;
+                    }
                     if (isReactionPreview) return `${lm}${metaTime}`;
 
                     // If it looks like a call_log JSON, show a friendly label
@@ -3561,6 +3722,14 @@ export default function Inbox() {
 
                 if (message.message_type === 'reaction') {
                   return null;
+                }
+
+                if (message.message_type === 'quick_emoji') {
+                  return (
+                    <div id={`msg-${message.id}`} key={message.client_id || message.id} className="quick-emoji-notice">
+                      {formatQuickEmojiNotice(message)}
+                    </div>
+                  );
                 }
 
                 // ╬ô├╢├ç╬ô├╢├ç Messenger-style Call Log Bubble ╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç╬ô├╢├ç
@@ -4193,8 +4362,8 @@ export default function Inbox() {
                         <SendHorizontal size={24} fill="currentColor" />
                       </button>
                     ) : (
-                      <button type="button" className="fb-icon-btn heart" onClick={handleSendHeart}>
-                        <Heart size={24} fill="#ef4444" color="#ef4444" />
+                      <button type="button" className="fb-icon-btn heart" onClick={handleSendQuickEmoji} aria-label={`Send ${activeChatQuickEmoji}`}>
+                        <span className="quick-chat-emoji">{activeChatQuickEmoji}</span>
                       </button>
                     )}
                   </div>
@@ -4286,6 +4455,21 @@ export default function Inbox() {
                   <button type="button" className="chat-details-row" onClick={() => setPinnedMessagesOpen(true)}>
                     <Pin size={16} />
                     View pinned messages
+                  </button>
+                </div>
+              )}
+            </div>
+
+            <div className="chat-accordion">
+              <button type="button" className="chat-accordion-header" onClick={() => setChatOptionsAccordion(!chatOptionsAccordion)}>
+                <span>Chat options</span>
+                {chatOptionsAccordion ? <ChevronUp size={16} className="text-muted" /> : <ChevronDown size={16} className="text-muted" />}
+              </button>
+              {chatOptionsAccordion && (
+                <div className="chat-accordion-content">
+                  <button type="button" className="chat-details-row" onClick={() => setChatEmojiPickerOpen(true)}>
+                    <span className="chat-details-row-emoji">{activeChatQuickEmoji}</span>
+                    Change emoji
                   </button>
                 </div>
               )}
@@ -4396,6 +4580,84 @@ export default function Inbox() {
         </>
       )}
     </aside>
+
+      {chatEmojiPickerOpen && activeChat && createPortal((
+        <div className="chat-emoji-modal-overlay" onClick={() => setChatEmojiPickerOpen(false)}>
+          <div className="chat-emoji-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="chat-emoji-modal-header">
+              <h3>Emoji</h3>
+              <button type="button" className="chat-emoji-close" onClick={() => setChatEmojiPickerOpen(false)} aria-label="Close emoji picker">
+                <X size={22} />
+              </button>
+            </div>
+            <div className="chat-emoji-current-row">
+              <div>
+                <span>Current emoji</span>
+                <strong>{activeChatQuickEmoji}</strong>
+              </div>
+              <button type="button" onClick={() => setActiveChatQuickEmoji(DEFAULT_CHAT_QUICK_EMOJI)}>
+                <X size={16} />
+                Remove
+              </button>
+            </div>
+            <label className="chat-emoji-search">
+              <Search size={17} />
+              <input
+                type="text"
+                value={chatEmojiSearchQuery}
+                onChange={(event) => setChatEmojiSearchQuery(event.target.value)}
+                placeholder="Search emoji"
+                autoFocus
+              />
+            </label>
+            <div className="chat-emoji-groups custom-scrollbar">
+              {filteredChatEmojiGroups.length > 0 ? (
+                filteredChatEmojiGroups.map((group) => (
+                  <section key={`chat-emoji-${group.title}`} className="chat-emoji-group">
+                    <h4>{group.title}</h4>
+                    <div className="chat-emoji-grid">
+                      {group.items.map((item) => (
+                        <button
+                          key={`chat-emoji-${group.title}-${item.emoji}`}
+                          type="button"
+                          className={`chat-emoji-option ${activeChatQuickEmoji === item.emoji ? 'selected' : ''}`}
+                          onClick={() => setActiveChatQuickEmoji(item.emoji)}
+                          aria-label={item.name}
+                        >
+                          {item.emoji}
+                        </button>
+                      ))}
+                    </div>
+                  </section>
+                ))
+              ) : (
+                <div className="chat-emoji-empty">No emojis found</div>
+              )}
+            </div>
+            <div className="chat-emoji-category-tabs">
+              {[
+                { label: 'Smileys & People', icon: Smile },
+                { label: 'Your reactions', icon: Heart },
+                { label: 'Gestures', icon: Sticker },
+                { label: 'Symbols', icon: Hash },
+              ].map(({ label, icon: Icon }) => (
+                <button
+                  key={`chat-emoji-tab-${label}`}
+                  type="button"
+                  className={`chat-emoji-category-tab ${chatEmojiCategory === label && !chatEmojiSearchQuery.trim() ? 'active' : ''}`}
+                  onClick={() => {
+                    setChatEmojiCategory(label);
+                    setChatEmojiSearchQuery('');
+                  }}
+                  aria-label={label}
+                >
+                  <Icon size={16} />
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      ), document.body)}
 
       {pinnedMessagesOpen && activeChat && createPortal((
         <div className="pinned-modal-overlay" onClick={() => { setPinnedMessagesOpen(false); setPinnedMessageMenuId(null); }}>
@@ -5789,6 +6051,230 @@ export default function Inbox() {
         .chat-details-row:hover {
           background: rgba(255,255,255,0.06);
         }
+        .chat-details-row-emoji {
+          width: 1.25rem;
+          height: 1.25rem;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 1.05rem;
+          line-height: 1;
+        }
+        .chat-emoji-modal-overlay {
+          position: fixed;
+          inset: 0;
+          z-index: 3000;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          padding: 0.75rem;
+          background: rgba(15, 23, 42, 0.42);
+          backdrop-filter: blur(5px);
+        }
+        .chat-emoji-modal {
+          width: min(420px, calc(100vw - 1.5rem));
+          max-height: min(640px, calc(100vh - 1.5rem));
+          display: flex;
+          flex-direction: column;
+          overflow: hidden;
+          border-radius: 10px;
+          border: 1px solid rgba(226, 232, 240, 0.85);
+          background: #ffffff;
+          color: #111827;
+          box-shadow: 0 22px 70px rgba(15, 23, 42, 0.25);
+        }
+        [data-mode="dark"] .chat-emoji-modal {
+          background: #111827;
+          color: #f8fafc;
+          border-color: rgba(148, 163, 184, 0.2);
+        }
+        .chat-emoji-modal-header {
+          position: relative;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          min-height: 57px;
+          border-bottom: 1px solid #e5e7eb;
+        }
+        [data-mode="dark"] .chat-emoji-modal-header {
+          border-bottom-color: rgba(148, 163, 184, 0.22);
+        }
+        .chat-emoji-modal-header h3 {
+          margin: 0;
+          font-size: 1.1rem;
+          font-weight: 800;
+        }
+        .chat-emoji-close {
+          position: absolute;
+          right: 0.75rem;
+          top: 50%;
+          width: 38px;
+          height: 38px;
+          transform: translateY(-50%);
+          border: none;
+          border-radius: 999px;
+          background: #e5e7eb;
+          color: #4b5563;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          cursor: pointer;
+          transition: background 0.18s ease, transform 0.18s ease;
+        }
+        [data-mode="dark"] .chat-emoji-close {
+          background: rgba(148, 163, 184, 0.18);
+          color: #cbd5e1;
+        }
+        .chat-emoji-close:hover {
+          background: #dbe1e8;
+          transform: translateY(-50%) scale(1.04);
+        }
+        [data-mode="dark"] .chat-emoji-close:hover {
+          background: rgba(148, 163, 184, 0.28);
+        }
+        .chat-emoji-current-row {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 1rem;
+          padding: 1rem 1.4rem 0.8rem;
+        }
+        .chat-emoji-current-row div {
+          display: flex;
+          flex-direction: column;
+          gap: 0.25rem;
+        }
+        .chat-emoji-current-row span,
+        .chat-emoji-group h4 {
+          color: #6b7280;
+          font-size: 0.76rem;
+          font-weight: 500;
+        }
+        [data-mode="dark"] .chat-emoji-current-row span,
+        [data-mode="dark"] .chat-emoji-group h4 {
+          color: #94a3b8;
+        }
+        .chat-emoji-current-row strong {
+          font-size: 1.55rem;
+          line-height: 1;
+        }
+        .chat-emoji-current-row button {
+          border: none;
+          border-radius: 8px;
+          background: #e5e7eb;
+          color: inherit;
+          display: inline-flex;
+          align-items: center;
+          gap: 0.4rem;
+          padding: 0.65rem 0.95rem;
+          font-weight: 700;
+          cursor: pointer;
+        }
+        [data-mode="dark"] .chat-emoji-current-row button {
+          background: rgba(148, 163, 184, 0.16);
+        }
+        .chat-emoji-search {
+          margin: 0 1.4rem 0.6rem;
+          display: flex;
+          align-items: center;
+          gap: 0.45rem;
+          border-radius: 999px;
+          background: #eef0f3;
+          color: #64748b;
+          padding: 0.52rem 0.85rem;
+        }
+        [data-mode="dark"] .chat-emoji-search {
+          background: rgba(148, 163, 184, 0.13);
+          color: #94a3b8;
+        }
+        .chat-emoji-search input {
+          width: 100%;
+          border: none;
+          outline: none;
+          background: transparent;
+          color: inherit;
+          font-size: 0.95rem;
+        }
+        .chat-emoji-groups {
+          flex: 1;
+          overflow-y: auto;
+          padding: 0 1rem 0.35rem 1.35rem;
+        }
+        .chat-emoji-group {
+          display: flex;
+          flex-direction: column;
+          gap: 0.35rem;
+          padding: 0.35rem 0 0.6rem;
+        }
+        .chat-emoji-group h4 {
+          margin: 0;
+        }
+        .chat-emoji-grid {
+          display: grid;
+          grid-template-columns: repeat(8, minmax(0, 1fr));
+          gap: 0.08rem 0.16rem;
+        }
+        .chat-emoji-option {
+          width: 38px;
+          height: 38px;
+          border: none;
+          border-radius: 9px;
+          background: transparent;
+          font-size: 1.62rem;
+          line-height: 1;
+          cursor: pointer;
+          transition: background 0.16s ease, box-shadow 0.16s ease;
+        }
+        .chat-emoji-option:hover,
+        .chat-emoji-option.selected {
+          background: rgba(59, 130, 246, 0.12);
+          box-shadow: 0 8px 20px rgba(59, 130, 246, 0.14);
+        }
+        .chat-emoji-empty {
+          color: #64748b;
+          font-size: 0.9rem;
+          padding: 2rem 0;
+          text-align: center;
+        }
+        .chat-emoji-category-tabs {
+          display: flex;
+          align-items: center;
+          justify-content: space-around;
+          gap: 0.3rem;
+          padding: 0.45rem 1rem 0.55rem;
+          border-top: 1px solid #d7dce3;
+          background: #ffffff;
+        }
+        [data-mode="dark"] .chat-emoji-category-tabs {
+          border-top-color: rgba(148, 163, 184, 0.22);
+          background: #111827;
+        }
+        .chat-emoji-category-tab {
+          width: 34px;
+          height: 28px;
+          border: none;
+          border-radius: 8px;
+          background: transparent;
+          color: #6b7280;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          cursor: pointer;
+          transition: color 0.16s ease, background 0.16s ease, transform 0.16s ease;
+        }
+        .chat-emoji-category-tab:hover {
+          background: rgba(59, 130, 246, 0.08);
+          transform: translateY(-1px);
+        }
+        .chat-emoji-category-tab.active {
+          color: #0084ff;
+        }
+        [data-mode="dark"] .chat-emoji-category-tab {
+          color: #94a3b8;
+        }
+        [data-mode="dark"] .chat-emoji-category-tab.active {
+          color: #60a5fa;
+        }
 
         
         [data-mode="light"] .chat-details-panel {
@@ -5959,6 +6445,21 @@ export default function Inbox() {
         }
         .message-wrapper.theirs {
           align-items: flex-start;
+        }
+        .quick-emoji-notice {
+          width: 100%;
+          display: flex;
+          justify-content: center;
+          color: rgba(148, 163, 184, 0.86);
+          font-size: 0.78rem;
+          font-weight: 600;
+          line-height: 1.4;
+          text-align: center;
+          padding: 0.25rem 1rem;
+          margin: 0.1rem 0;
+        }
+        [data-mode="light"] .quick-emoji-notice {
+          color: rgba(71, 85, 105, 0.82);
         }
         .message-wrapper.theirs.with-sender-avatar {
           flex-direction: row;
@@ -6573,6 +7074,18 @@ export default function Inbox() {
         }
         .fb-icon-btn.active {
           background: rgba(0, 132, 255, 0.15);
+        }
+        .quick-chat-emoji {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 1.55rem;
+          line-height: 1;
+          filter: drop-shadow(0 5px 10px rgba(0, 0, 0, 0.18));
+          transition: transform 0.18s ease;
+        }
+        .fb-icon-btn.heart:hover .quick-chat-emoji {
+          transform: scale(1.08);
         }
         .gif-btn span {
           background: rgba(0, 132, 255, 0.1);

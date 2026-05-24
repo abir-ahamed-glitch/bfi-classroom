@@ -1,23 +1,27 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { useAuth } from '../context/AuthContext';
 import { io } from 'socket.io-client';
-import { MessageSquare, Heart, Image as ImageIcon, Send, Film, Share2, Trash2, Pin, PinOff, Play, Video } from 'lucide-react';
+import { MessageSquare, Heart, Image as ImageIcon, Send, Film, Share2, Trash2, Pin, PinOff, Play, Video, GripVertical, X, Pencil, ChevronLeft, ChevronRight } from 'lucide-react';
 import { resolveMediaUrl } from '../utils/mediaUtils';
 import UserHoverCard from '../components/UserHoverCard';
+import { useModal } from '../components/BFIModal';
+import PhotoEditorModal from '../components/PhotoEditorModal';
 let cachedCommunityPosts = [];
 let cachedCommunityScrollY = 0;
 let cachedCommunityUserId = null;
 
 export default function Community() {
   const { currentUser } = useAuth();
+  const { showAlert, showConfirm } = useModal();
   
   // Use cached posts only if the same user is viewing
   const shouldUseCache = currentUser?.id === cachedCommunityUserId;
   const [posts, setPosts] = useState(shouldUseCache ? cachedCommunityPosts : []);
   const [loading, setLoading] = useState(shouldUseCache ? cachedCommunityPosts.length === 0 : true);
   const [content, setContent] = useState('');
-  const [mediaUrl, setMediaUrl] = useState(''); // Simulated image upload URL
-  const [mediaError, setMediaError] = useState(false);
+  // mediaImages: array of { url: string, editedUrl?: string, caption?: string }
+  const [mediaImages, setMediaImages] = useState([]);
   const [selectedProjectId, setSelectedProjectId] = useState(null);
   const [selectedProjectTitle, setSelectedProjectTitle] = useState('');
   const [showImageOptions, setShowImageOptions] = useState(false);
@@ -30,6 +34,85 @@ export default function Community() {
   const [commentContent, setCommentContent] = useState('');
   const [showImageLinkInput, setShowImageLinkInput] = useState(false);
   const [tempImageUrl, setTempImageUrl] = useState('');
+  // Photo editor modal state
+  const [photoEditorOpen, setPhotoEditorOpen] = useState(false);
+  const [photoEditorIndex, setPhotoEditorIndex] = useState(0);
+
+  // Lightbox state: null | { images: [{url,caption}], idx: number }
+  const [lightbox, setLightbox] = useState(null);
+
+  const openLightbox = useCallback((images, idx) => {
+    setLightbox({ images, idx });
+  }, []);
+  const closeLightbox = useCallback(() => setLightbox(null), []);
+  const lightboxNext = useCallback(() =>
+    setLightbox(prev => prev && ({ ...prev, idx: Math.min(prev.idx + 1, prev.images.length - 1) }))
+  , []);
+  const lightboxPrev = useCallback(() =>
+    setLightbox(prev => prev && ({ ...prev, idx: Math.max(prev.idx - 1, 0) }))
+  , []);
+
+  // Keyboard navigation for lightbox
+  useEffect(() => {
+    if (!lightbox) return;
+    const handler = (e) => {
+      if (e.key === 'ArrowRight') lightboxNext();
+      else if (e.key === 'ArrowLeft') lightboxPrev();
+      else if (e.key === 'Escape') closeLightbox();
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [lightbox, lightboxNext, lightboxPrev, closeLightbox]);
+
+  // Drag-and-drop state for image reordering
+  const dragItem = useRef(null);
+  const dragOverItem = useRef(null);
+
+  // Accept either raw URL strings or already-shaped objects
+  const addImages = useCallback((inputs) => {
+    setMediaImages(prev => {
+      const shaped = inputs.map(item =>
+        typeof item === 'string' ? { url: item, editedUrl: undefined, caption: '' } : item
+      );
+      return [...prev, ...shaped].slice(0, 10);
+    });
+  }, []);
+
+  const removeImage = useCallback((index) => {
+    setMediaImages(prev => prev.filter((_, i) => i !== index));
+  }, []);
+
+  const openPhotoEditor = useCallback((index) => {
+    setPhotoEditorIndex(index);
+    setPhotoEditorOpen(true);
+  }, []);
+
+  const handlePhotoEditorSave = useCallback((updatedImages) => {
+    setMediaImages(updatedImages);
+    setPhotoEditorOpen(false);
+  }, []);
+
+  const handleDragStart = (index) => { dragItem.current = index; };
+  const handleDragEnter = (index) => { dragOverItem.current = index; };
+  const handleDragEnd = () => {
+    if (dragItem.current === null || dragOverItem.current === null) return;
+    setMediaImages(prev => {
+      const arr = [...prev];
+      const dragged = arr.splice(dragItem.current, 1)[0];
+      arr.splice(dragOverItem.current, 0, dragged);
+      return arr;
+    });
+    dragItem.current = null;
+    dragOverItem.current = null;
+  };
+
+  // Reset image link sub-view whenever the main image dropdown is closed
+  useEffect(() => {
+    if (!showImageOptions) {
+      setShowImageLinkInput(false);
+      setTempImageUrl('');
+    }
+  }, [showImageOptions]);
 
   // YouTube Thumbnail Helper
   const getYoutubeThumbnail = (url) => {
@@ -147,7 +230,25 @@ export default function Community() {
 
   const handlePostSubmit = async (e) => {
     e.preventDefault();
-    if (!content.trim() && !mediaUrl && !selectedProjectId) return;
+    if (!content.trim() && mediaImages.length === 0 && !selectedProjectId) return;
+
+    // Build the payload: use editedUrl (canvas render) when available, keep caption
+    // Single image → plain string for backward-compat; multiple → JSON array of objects
+    let mediaUrlPayload = null;
+    if (mediaImages.length === 1) {
+      const img = mediaImages[0];
+      const finalUrl = img.editedUrl ?? img.url;
+      // If there's a caption wrap in object, otherwise keep plain string
+      mediaUrlPayload = img.caption
+        ? JSON.stringify([{ url: finalUrl, caption: img.caption }])
+        : finalUrl;
+    } else if (mediaImages.length > 1) {
+      const shaped = mediaImages.map(img => ({
+        url: img.editedUrl ?? img.url,
+        caption: img.caption ?? ''
+      }));
+      mediaUrlPayload = JSON.stringify(shaped);
+    }
 
     try {
       const res = await fetch('/api/community/posts', {
@@ -158,15 +259,14 @@ export default function Community() {
         },
         body: JSON.stringify({ 
           content, 
-          media_url: mediaUrl,
+          media_url: mediaUrlPayload,
           project_id: selectedProjectId
         })
       });
 
       if (res.ok) {
         setContent('');
-        setMediaUrl('');
-        setMediaError(false);
+        setMediaImages([]);
         setSelectedProjectId(null);
         setSelectedProjectTitle('');
         fetchPosts();
@@ -177,36 +277,33 @@ export default function Community() {
     }
   };
 
-  const handleMediaUrlChange = (url) => {
-    setMediaUrl(url);
-    setMediaError(false);
-  };
-
   const handleFileChange = (e) => {
-    const file = e.target.files[0];
-    if (file) {
+    const files = Array.from(e.target.files);
+    if (files.length === 0) return;
+    const readers = files.map(file => new Promise(resolve => {
       const reader = new FileReader();
-      reader.onloadend = () => {
-        handleMediaUrlChange(reader.result);
-        setSelectedProjectId(null);
-        setSelectedProjectTitle('');
-        setShowImageOptions(false);
-      };
+      reader.onloadend = () => resolve(reader.result);
       reader.readAsDataURL(file);
-    }
+    }));
+    Promise.all(readers).then(urls => {
+      addImages(urls);
+      setSelectedProjectId(null);
+      setSelectedProjectTitle('');
+      setShowImageOptions(false);
+    });
+    e.target.value = '';
   };
 
   const selectProject = (proj) => {
     setSelectedProjectId(proj.id);
     setSelectedProjectTitle(proj.title);
-    setMediaUrl('');
+    setMediaImages([]);
     setShowProjectOptions(false);
   };
 
   const handleImageLinkSubmit = () => {
     let url = tempImageUrl.trim();
     if (url) {
-      // Advanced Google Image link extraction
       try {
         if (url.includes('google.com/imgres')) {
           const urlObj = new URL(url);
@@ -220,8 +317,7 @@ export default function Community() {
       } catch (e) {
         console.error('URL parsing failed', e);
       }
-      
-      handleMediaUrlChange(url);
+      addImages([{ url, editedUrl: undefined, caption: '' }]);
       setSelectedProjectId(null);
       setSelectedProjectTitle('');
       setShowImageLinkInput(false);
@@ -233,7 +329,11 @@ export default function Community() {
   const handleDeletePost = async (postId) => {
     if (!postId) return;
     
-    if (!window.confirm('Are you sure you want to delete this? If it\'s a shared project, it will also be removed from the community section.')) return;
+    const confirmed = await showConfirm(
+      "Are you sure you want to delete this? If it's a shared project, it will also be removed from the community section.",
+      { title: 'Delete Post', confirmLabel: 'Delete', cancelLabel: 'Cancel' }
+    );
+    if (!confirmed) return;
 
     try {
       const res = await fetch(`/api/community/posts/${postId}`, {
@@ -249,11 +349,11 @@ export default function Community() {
         if (socket) socket.emit('new_post', { action: 'delete', postId });
       } else {
         const err = await res.json();
-        alert('Delete failed: ' + (err.error || 'Server error'));
+        await showAlert('Delete failed: ' + (err.error || 'Server error'), { title: 'Error' });
       }
     } catch (err) {
       console.error('Fetch error:', err);
-      alert('Connection error: ' + err.message);
+      await showAlert('Connection error: ' + err.message, { title: 'Connection Error' });
     }
   };
 
@@ -273,11 +373,11 @@ export default function Community() {
         if (socket) socket.emit('new_post', { action: 'pin', postId });
       } else {
         const err = await res.json();
-        alert('Pin failed: ' + (err.error || 'Server error'));
+        await showAlert('Pin failed: ' + (err.error || 'Server error'), { title: 'Error' });
       }
     } catch (err) {
       console.error('Pin failed', err);
-      alert('Connection error while pinning');
+      await showAlert('Connection error while pinning', { title: 'Connection Error' });
     }
   };
 
@@ -338,16 +438,16 @@ export default function Community() {
         await navigator.share(shareData);
       } else {
         await navigator.clipboard.writeText(`${shareData.text}\n\n${shareData.url}`);
-        alert('Post link copied to clipboard!');
+        await showAlert('Post link copied to clipboard!', { title: 'Copied!' });
       }
     } catch (err) {
       if (err.name !== 'AbortError') {
         console.error('Error sharing:', err);
         try {
           await navigator.clipboard.writeText(`${shareData.text}\n\n${shareData.url}`);
-          alert('Post link copied to clipboard!');
+          await showAlert('Post link copied to clipboard!', { title: 'Copied!' });
         } catch {
-          alert('Failed to copy link. Please manually copy the URL.');
+          await showAlert('Failed to copy link. Please manually copy the URL.', { title: 'Copy Failed' });
         }
       }
     }
@@ -373,7 +473,7 @@ export default function Community() {
       </div>
 
       {/* Post Composer */}
-      <div className="glass-panel" style={{ padding: '1.5rem', marginBottom: '2.5rem', position: 'relative', zIndex: 9999, isolation: 'isolate' }}>
+      <div className="glass-panel composer-card" style={{ padding: '1.5rem', marginBottom: '2.5rem', position: 'relative', zIndex: 9999, isolation: 'isolate' }}>
         <div style={{ display: 'flex', gap: '1rem', marginBottom: '1rem' }}>
           <div className="avatar composer-avatar" style={{ overflow: 'hidden', background: 'var(--bg-gradient-primary)' }}>
             {currentUser?.profile_picture ? (
@@ -391,54 +491,84 @@ export default function Community() {
           />
         </div>
         
-        {mediaUrl && (
-          <div style={{ position: 'relative', marginBottom: '1rem', marginLeft: '3.5rem', width: 'fit-content', maxWidth: 'calc(100% - 3.5rem)', minWidth: '300px' }}>
-            <div style={{ position: 'relative', borderRadius: '12px', overflow: 'hidden', border: '1px solid var(--glass-border)', background: 'rgba(0,0,0,0.4)', minHeight: '120px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              {mediaError ? (
-                <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
-                  <ImageIcon size={24} style={{ marginBottom: '0.5rem', opacity: 0.5 }} />
-                  <p>Invalid or blocked image link. Please use a direct link to an image file (jpg, png).</p>
-                </div>
-              ) : (
-                <img 
-                  src={mediaUrl} 
-                  alt="Attached" 
-                  style={{ maxWidth: '100%', maxHeight: '400px', display: 'block' }} 
-                  onError={() => setMediaError(true)}
-                />
-              )}
-              <button 
-                onClick={(e) => { 
-                  e.preventDefault(); 
-                  setMediaUrl('');
-                  setMediaError(false);
-                }} 
-                style={{ 
-                  position: 'absolute', 
-                  top: '12px', 
-                  right: '12px', 
-                  background: '#e11d48', 
-                  color: 'white', 
-                  border: 'none', 
-                  borderRadius: '50%', 
-                  width: '28px', 
-                  height: '28px', 
-                  cursor: 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  fontSize: '14px',
-                  fontWeight: 'bold',
-                  boxShadow: '0 4px 12px rgba(0,0,0,0.6)',
-                  zIndex: 20,
-                  transition: 'transform 0.2s'
-                }}
-                className="hover-scale"
-              >
-                ✕
-              </button>
+        {mediaImages.length > 0 && (
+          <div className="media-grid-wrapper" style={{ marginBottom: '1rem', marginLeft: '3.5rem' }}>
+            <div className={`media-grid media-grid-${Math.min(mediaImages.length, 4)}`}>
+              {mediaImages.map((imgObj, idx) => {
+                const displaySrc = imgObj.editedUrl ?? imgObj.url;
+                const hasCaption = imgObj.caption?.trim();
+                const isEdited = !!imgObj.editedUrl;
+                return (
+                  <div
+                    key={idx}
+                    className={`media-grid-item${idx === 0 && mediaImages.length >= 3 ? ' media-grid-item--hero' : ''}`}
+                    draggable
+                    onDragStart={() => handleDragStart(idx)}
+                    onDragEnter={() => handleDragEnter(idx)}
+                    onDragEnd={handleDragEnd}
+                    onDragOver={e => e.preventDefault()}
+                  >
+                    <img
+                      src={displaySrc}
+                      alt={`Image ${idx + 1}`}
+                      onError={e => { e.target.style.display = 'none'; }}
+                    />
+
+                    {/* Remove button */}
+                    <button
+                      className="media-grid-remove"
+                      onClick={e => { e.preventDefault(); removeImage(idx); }}
+                      title="Remove image"
+                    >
+                      <X size={12} />
+                    </button>
+
+                    {/* Edit button */}
+                    <button
+                      className="media-grid-edit"
+                      onClick={e => { e.preventDefault(); openPhotoEditor(idx); }}
+                      title="Edit photo"
+                    >
+                      <Pencil size={12} />
+                    </button>
+
+                    {/* Drag handle */}
+                    <div className="media-grid-drag-handle" title="Drag to reorder">
+                      <GripVertical size={14} />
+                    </div>
+
+                    {/* Edited badge */}
+                    {isEdited && (
+                      <div className="media-grid-edited-badge">Edited</div>
+                    )}
+
+                    {/* Caption badge */}
+                    {hasCaption && (
+                      <div className="media-grid-caption-badge">
+                        {imgObj.caption}
+                      </div>
+                    )}
+
+                    {/* Overflow counter */}
+                    {idx === 3 && mediaImages.length > 4 && (
+                      <div className="media-grid-overflow-badge">+{mediaImages.length - 4}</div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
+            <p className="media-grid-hint">Drag to reorder · ✕ remove · ✎ edit &amp; caption · Max 10 photos</p>
           </div>
+        )}
+
+        {/* Photo Editor Modal */}
+        {photoEditorOpen && (
+          <PhotoEditorModal
+            images={mediaImages}
+            initialIndex={photoEditorIndex}
+            onSave={handlePhotoEditorSave}
+            onClose={() => setPhotoEditorOpen(false)}
+          />
         )}
 
         {selectedProjectId && (
@@ -495,7 +625,7 @@ export default function Community() {
                       <label className="option-item">
                         <Send size={14} style={{ transform: 'rotate(-90deg)', color: 'var(--accent-primary)' }} /> 
                         <span>Upload from Device</span>
-                        <input type="file" accept="image/*" onChange={handleFileChange} style={{ display: 'none' }} />
+                        <input type="file" accept="image/*" multiple onChange={handleFileChange} style={{ display: 'none' }} />
                       </label>
                       <button className="option-item" onClick={() => setShowImageLinkInput(true)}>
                         <ImageIcon size={14} style={{ color: 'var(--accent-primary)' }} /> 
@@ -503,9 +633,9 @@ export default function Community() {
                       </button>
                     </>
                   ) : (
-                    <div style={{ padding: '1rem', display: 'flex', flexDirection: 'column', gap: '0.75rem', background: '#0d0d11' }}>
+                    <div style={{ padding: '1rem', display: 'flex', flexDirection: 'column', gap: '0.75rem', background: 'transparent' }}>
                       <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '-0.25rem', lineHeight: '1.4' }}>
-                        <strong style={{ color: 'var(--accent-primary)' }}>Tip:</strong> For Google images, right-click and select <span style={{ color: 'white' }}>"Copy Image Address"</span> for best results.
+                        <strong style={{ color: 'var(--accent-primary)' }}>Tip:</strong> For Google images, right-click and select <span style={{ color: 'var(--text-primary)', fontWeight: 'bold' }}>"Copy Image Address"</span> for best results.
                       </div>
                       <input 
                         type="url" 
@@ -515,10 +645,10 @@ export default function Community() {
                         onChange={(e) => setTempImageUrl(e.target.value)}
                         autoFocus
                         onKeyDown={(e) => e.key === 'Enter' && handleImageLinkSubmit()}
-                        style={{ fontSize: '0.85rem', padding: '0.6rem', color: '#fff', background: 'rgba(255,255,255,0.05)' }}
+                        style={{ fontSize: '0.85rem', padding: '0.6rem' }}
                       />
                       <div style={{ display: 'flex', gap: '0.5rem' }}>
-                        <button className="btn btn-primary" onClick={handleImageLinkSubmit} style={{ flex: 1, fontSize: '0.75rem', padding: '0.3rem' }}>Add Image</button>
+                        <button className="btn btn-primary" onClick={handleImageLinkSubmit} style={{ flex: 1, fontSize: '0.75rem', padding: '0.3rem' }}>Add to Post</button>
                         <button className="btn btn-glass" onClick={() => setShowImageLinkInput(false)} style={{ flex: 1, fontSize: '0.75rem', padding: '0.3rem' }}>Cancel</button>
                       </div>
                     </div>
@@ -578,7 +708,7 @@ export default function Community() {
               )}
             </div>
           </div>
-          <button className="btn btn-primary" onClick={handlePostSubmit} disabled={!content.trim() && !mediaUrl && !selectedProjectId}>
+          <button className="btn btn-primary" onClick={handlePostSubmit} disabled={!content.trim() && mediaImages.length === 0 && !selectedProjectId}>
             <Send size={16} style={{ marginLeft: '-4px' }} /> Post
           </button>
         </div>
@@ -664,23 +794,59 @@ export default function Community() {
             <div className="post-body">
               {post.content && <p className="post-text">{post.content}</p>}
               
-              {post.media_type === 'image' && post.media_url && (
-                <div className="post-media" style={{ background: 'rgba(0,0,0,0.2)', minHeight: '100px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                  {brokenPostImages[post.id] ? (
-                    <div style={{ padding: '3rem', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.9rem', width: '100%' }}>
-                      Image could not be loaded. It may have been removed or is protected.
-                    </div>
-                  ) : (
-                    <img 
-                      src={resolveMediaUrl(post.media_url)} 
-                      alt="Post media" 
-                      onError={() => {
-                        setBrokenPostImages(prev => ({ ...prev, [post.id]: true }));
-                      }}
-                    />
-                  )}
-                </div>
-              )}
+              {post.media_type === 'image' && post.media_url && (() => {
+                let rawImages = [];
+                try {
+                  const parsed = JSON.parse(post.media_url);
+                  rawImages = Array.isArray(parsed) ? parsed : [post.media_url];
+                } catch {
+                  rawImages = [post.media_url];
+                }
+                const images = rawImages.map(item =>
+                  typeof item === 'string'
+                    ? { url: item, caption: '' }
+                    : { url: item.url ?? item, caption: item.caption ?? '' }
+                );
+                return (
+                  <div className={`post-media-grid post-media-grid-${Math.min(images.length, 4)}`}>
+                    {images.slice(0, 4).map(({ url: imgUrl, caption: imgCaption }, imgIdx) => (
+                      <div
+                        key={imgIdx}
+                        className={`post-media-cell${imgIdx === 0 && images.length >= 3 ? ' post-media-cell--hero' : ''}`}
+                        onClick={() => openLightbox(images, imgIdx)}
+                        style={{ cursor: 'pointer' }}
+                      >
+                        {brokenPostImages[`${post.id}_${imgIdx}`] ? (
+                          <div className="post-media-broken">
+                            <ImageIcon size={20} opacity={0.4} />
+                          </div>
+                        ) : (
+                          <img
+                            src={resolveMediaUrl(imgUrl)}
+                            alt={imgCaption || `Post image ${imgIdx + 1}`}
+                            onError={() => setBrokenPostImages(prev => ({ ...prev, [`${post.id}_${imgIdx}`]: true }))}
+                          />
+                        )}
+                        {/* Caption overlay */}
+                        {imgCaption?.trim() && (
+                          <div className="post-media-caption">{imgCaption}</div>
+                        )}
+                        {/* Overflow badge */}
+                        {imgIdx === 3 && images.length > 4 && (
+                          <div className="post-media-overflow">+{images.length - 4}</div>
+                        )}
+                        {/* Expand hint on hover */}
+                        <div className="post-media-expand-hint">
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/>
+                          </svg>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })()}
+
 
               {post.media_type === 'project' && post.shared_project && (
                 <div className="standalone-project-view glass-panel">
@@ -829,6 +995,16 @@ export default function Community() {
         .feed-container { display: flex; flex-direction: column; gap: 1.5rem; isolation: isolate; }
         .post-card { padding: 1.5rem; transition: transform 0.2s; position: relative; z-index: 1; transform: translate3d(0, 0, 0); }
         .post-card:hover, .post-card:focus-within { z-index: 10; }
+        
+        [data-mode="dark"] .composer-card,
+        [data-mode="dark"] .post-card {
+          background-image: 
+            url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='grain'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='1.35' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23grain)' opacity='0.12'/%3E%3C/svg%3E"),
+            linear-gradient(#07172d, #07172d) !important;
+          background-color: #07172d !important;
+          backdrop-filter: none !important;
+          -webkit-backdrop-filter: none !important;
+        }
         .pinned-post { border-left: 4px solid var(--accent-primary); background: rgba(var(--accent-primary-rgb), 0.03); }
         .pinned-badge { font-size: 0.7rem; color: var(--accent-primary); display: flex; align-items: center; gap: 4px; font-weight: 600; margin-top: 2px; }
         
@@ -839,8 +1015,179 @@ export default function Community() {
         
         .post-body { margin-bottom: 1rem; }
         .post-text { font-size: 1rem; line-height: 1.5; color: var(--text-primary); white-space: pre-wrap; margin-bottom: 1rem; }
-        .post-media { border-radius: 12px; overflow: hidden; border: 1px solid var(--glass-border); margin-bottom: 1rem; }
-        .post-media img { width: 100%; height: auto; max-height: 500px; object-fit: cover; display: block; }
+
+        /* ── POST MULTI-IMAGE GRID (feed display) ── */
+        .post-media-grid {
+          border-radius: 12px;
+          overflow: hidden;
+          margin-bottom: 1rem;
+          display: grid;
+          gap: 3px;
+          background: rgba(0,0,0,0.15);
+        }
+        .post-media-grid-1 { grid-template-columns: 1fr; }
+        .post-media-grid-2 { grid-template-columns: 1fr 1fr; }
+        .post-media-grid-3 { grid-template-columns: 1fr 1fr; grid-template-rows: auto auto; }
+        .post-media-grid-4 { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
+
+        .post-media-cell {
+          position: relative;
+          overflow: hidden;
+          background: rgba(0,0,0,0.3);
+          min-height: 120px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          cursor: pointer;
+        }
+        .post-media-cell--hero {
+          grid-row: span 2;
+        }
+        .post-media-cell img {
+          width: 100%;
+          height: 100%;
+          max-height: 420px;
+          object-fit: cover;
+          display: block;
+          transition: transform 0.35s ease;
+        }
+        .post-media-cell:hover img {
+          transform: scale(1.03);
+        }
+        .post-media-cell--hero img { max-height: none; }
+        .post-media-broken {
+          display: flex; align-items: center; justify-content: center;
+          width: 100%; height: 120px;
+          color: var(--text-muted);
+        }
+        .post-media-overflow {
+          position: absolute; inset: 0;
+          background: rgba(0,0,0,0.55);
+          display: flex; align-items: center; justify-content: center;
+          color: white; font-size: 1.8rem; font-weight: 700;
+        }
+        .post-media-caption {
+          position: absolute; bottom: 0; left: 0; right: 0;
+          background: linear-gradient(transparent, rgba(0,0,0,0.75));
+          color: #fff;
+          font-size: 0.8rem; font-weight: 500; line-height: 1.3;
+          padding: 18px 10px 8px;
+          pointer-events: none;
+          white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+          border-radius: 0 0 10px 10px;
+        }
+
+
+        /* ── COMPOSER MULTI-IMAGE GRID (pre-post preview) ── */
+        .media-grid-wrapper { max-width: calc(100% - 3.5rem); }
+        .media-grid {
+          display: grid;
+          gap: 4px;
+          border-radius: 12px;
+          overflow: hidden;
+          border: 1px solid rgba(96, 165, 250, 0.15);
+        }
+        .media-grid-1 { grid-template-columns: 1fr; }
+        .media-grid-2 { grid-template-columns: 1fr 1fr; }
+        .media-grid-3 { grid-template-columns: 1fr 1fr; grid-template-rows: auto auto; }
+        .media-grid-4 { grid-template-columns: 1fr 1fr; grid-template-rows: auto auto; }
+
+        .media-grid-item {
+          position: relative;
+          overflow: hidden;
+          background: rgba(0,0,0,0.3);
+          min-height: 100px;
+          cursor: grab;
+          user-select: none;
+        }
+        .media-grid-item:active { cursor: grabbing; }
+        .media-grid-item--hero { grid-row: span 2; }
+        .media-grid-item img {
+          width: 100%; height: 100%;
+          max-height: 280px;
+          object-fit: cover;
+          display: block;
+          pointer-events: none;
+          transition: transform 0.3s ease;
+        }
+        .media-grid-item--hero img { max-height: none; }
+        .media-grid-item:hover img { transform: scale(1.04); }
+
+        .media-grid-remove {
+          position: absolute; top: 8px; right: 8px;
+          background: rgba(225, 29, 72, 0.92);
+          color: white; border: none; border-radius: 50%;
+          width: 24px; height: 24px;
+          cursor: pointer; display: flex; align-items: center; justify-content: center;
+          box-shadow: 0 2px 8px rgba(0,0,0,0.6);
+          z-index: 10;
+          transition: transform 0.15s, background 0.15s;
+          opacity: 0;
+        }
+        .media-grid-item:hover .media-grid-remove { opacity: 1; }
+        .media-grid-remove:hover { transform: scale(1.15); background: #e11d48; }
+
+        /* ── Edit button (pencil) ── */
+        .media-grid-edit {
+          position: absolute; top: 8px; right: 38px;
+          background: rgba(30, 58, 138, 0.92);
+          color: white; border: none; border-radius: 50%;
+          width: 24px; height: 24px;
+          cursor: pointer; display: flex; align-items: center; justify-content: center;
+          box-shadow: 0 2px 8px rgba(0,0,0,0.6);
+          z-index: 10;
+          transition: transform 0.15s, background 0.15s;
+          opacity: 0;
+        }
+        .media-grid-item:hover .media-grid-edit { opacity: 1; }
+        .media-grid-edit:hover { transform: scale(1.15); background: #1d4ed8; }
+
+        /* ── "Edited" badge (top-left, shows when image has been edited) ── */
+        .media-grid-edited-badge {
+          position: absolute; bottom: 8px; left: 8px;
+          background: rgba(30,58,138,0.85);
+          color: #bfdbfe;
+          font-size: 0.6rem; font-weight: 700; letter-spacing: 0.05em;
+          text-transform: uppercase;
+          padding: 2px 7px; border-radius: 20px;
+          border: 1px solid rgba(147,197,253,0.4);
+          pointer-events: none; z-index: 10;
+        }
+
+        /* ── Caption overlay bar ── */
+        .media-grid-caption-badge {
+          position: absolute; bottom: 0; left: 0; right: 0;
+          background: linear-gradient(transparent, rgba(0,0,0,0.78));
+          color: #fff;
+          font-size: 0.72rem; font-weight: 500;
+          padding: 14px 8px 7px;
+          pointer-events: none; z-index: 9;
+          white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+          border-radius: 0 0 10px 10px;
+        }
+
+        .media-grid-drag-handle {
+          position: absolute; top: 8px; left: 8px;
+          background: rgba(0,0,0,0.5);
+          color: rgba(255,255,255,0.8); border-radius: 6px;
+          width: 24px; height: 24px;
+          display: flex; align-items: center; justify-content: center;
+          opacity: 0; z-index: 10;
+          transition: opacity 0.15s;
+        }
+        .media-grid-item:hover .media-grid-drag-handle { opacity: 1; }
+
+        .media-grid-overflow-badge {
+          position: absolute; inset: 0;
+          background: rgba(0,0,0,0.55);
+          display: flex; align-items: center; justify-content: center;
+          color: white; font-size: 1.5rem; font-weight: 700;
+        }
+        .media-grid-hint {
+          font-size: 0.72rem; color: var(--text-muted);
+          margin-top: 6px; text-align: center;
+        }
+
         
         .standalone-project-view { padding: 0; overflow: hidden; border-radius: 12px; border: 1px solid var(--glass-border); background: rgba(0,0,0,0.2); }
         .proj-video-wrapper { width: 100%; aspect-ratio: 16/9; background: #000; }
@@ -879,12 +1226,20 @@ export default function Community() {
           min-width: 320px;
           display: flex;
           flex-direction: column;
-          background: #0d0d11;
-          border: 1px solid var(--glass-border);
-          box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+          background-image: 
+            url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='grain'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='1.35' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23grain)' opacity='0.12'/%3E%3C/svg%3E"),
+            linear-gradient(#07172d, #07172d);
+          border: none;
+          box-shadow: 0 0 0 1px rgba(96, 165, 250, 0.2), 0 0 16px rgba(96, 165, 250, 0.15), 0 10px 30px rgba(0, 0, 0, 0.35);
           z-index: 1000;
           border-radius: 12px;
           overflow: hidden;
+        }
+        [data-mode="light"] .bfi-community-dropdown {
+          background-image: none !important;
+          background: var(--bg-secondary) !important;
+          border: 1px solid rgba(0, 0, 0, 0.08);
+          box-shadow: 0 10px 30px rgba(0, 0, 0, 0.06);
         }
         .option-item {
           display: flex;
@@ -893,21 +1248,28 @@ export default function Community() {
           padding: 1rem 1.25rem;
           background: transparent;
           border: none;
-          color: #e5e7eb;
+          color: var(--text-primary);
           cursor: pointer;
           text-align: left;
           font-size: 0.9rem;
           transition: all 0.2s cubic-bezier(0.25, 0.8, 0.25, 1);
           width: 100%;
           font-weight: 500;
-          border-bottom: 1px solid rgba(255,255,255,0.05);
+          border-bottom: 1px solid rgba(96, 165, 250, 0.08);
+        }
+        [data-mode="light"] .option-item {
+          border-bottom: 1px solid rgba(0,0,0,0.04);
         }
         .option-item:last-child {
           border-bottom: none;
         }
         .option-item:hover {
-          background: rgba(255, 255, 255, 0.08);
-          color: white;
+          background: rgba(255, 255, 255, 0.05);
+          color: var(--text-primary);
+        }
+        [data-mode="light"] .option-item:hover {
+          background: rgba(0, 0, 0, 0.03);
+          color: var(--text-primary);
         }
         .btn-glass.active {
           background: rgba(255,255,255,0.1);
@@ -1013,15 +1375,21 @@ export default function Community() {
           padding: 0.85rem 1.25rem;
           font-size: 0.75rem;
           font-weight: 700;
-          color: white;
-          background: var(--accent-primary);
+          color: var(--text-secondary);
+          background: #041025;
           text-transform: uppercase;
-          letter-spacing: 1px;
+          letter-spacing: 1.5px;
+          border-bottom: 1px solid rgba(96, 165, 250, 0.1);
+        }
+        [data-mode="light"] .dropdown-header {
+          color: var(--text-primary);
+          background: var(--bg-tertiary);
+          border-bottom: 1px solid rgba(0, 0, 0, 0.08);
         }
         .dropdown-scroll {
           max-height: 350px;
           overflow-y: auto;
-          background: #0d0d11 !important;
+          background: transparent !important;
         }
         .project-option-item {
           display: flex;
@@ -1029,20 +1397,28 @@ export default function Community() {
           gap: 1rem;
           padding: 1rem 1.25rem;
           width: 100%;
-          background: #0d0d11 !important;
+          background: transparent !important;
           border: none;
-          border-bottom: 1px solid rgba(255,255,255,0.05);
+          border-bottom: 1px solid rgba(96, 165, 250, 0.08);
           cursor: pointer;
           text-align: left;
           transition: all 0.2s;
-          color: #e5e7eb;
+          color: var(--text-secondary);
+        }
+        [data-mode="light"] .project-option-item {
+          border-bottom: 1px solid rgba(0, 0, 0, 0.04);
         }
         .project-option-item:hover {
-          background: rgba(255,255,255,0.08);
+          background: rgba(255, 255, 255, 0.05) !important;
+          color: var(--text-primary);
+        }
+        [data-mode="light"] .project-option-item:hover {
+          background: rgba(0, 0, 0, 0.03) !important;
+          color: var(--text-primary);
         }
         .proj-name {
           font-size: 0.95rem;
-          color: white;
+          color: var(--text-primary);
           font-weight: 600;
         }
         
@@ -1053,7 +1429,221 @@ export default function Community() {
           from { opacity: 0; transform: translateY(8px); }
           to { opacity: 1; transform: translateY(0); }
         }
+
+        /* ── Post image: expand hint on hover ── */
+        .post-media-expand-hint {
+          position: absolute;
+          top: 8px; right: 8px;
+          background: rgba(0,0,0,0.6);
+          color: #fff;
+          border-radius: 6px;
+          width: 28px; height: 28px;
+          display: flex; align-items: center; justify-content: center;
+          opacity: 0;
+          transition: opacity 0.18s;
+          pointer-events: none;
+          backdrop-filter: blur(4px);
+        }
+        .post-media-cell:hover .post-media-expand-hint { opacity: 1; }
+
+        /* ══════════════════════════════════════
+           LIGHTBOX
+        ══════════════════════════════════════ */
+        .lb-backdrop {
+          position: fixed; inset: 0; z-index: 100000;
+          background: rgba(0,0,0,0.94);
+          backdrop-filter: blur(8px);
+          display: flex; flex-direction: column;
+          align-items: center; justify-content: center;
+          animation: lb-in 0.2s ease;
+        }
+        @keyframes lb-in {
+          from { opacity: 0; }
+          to   { opacity: 1; }
+        }
+
+        /* Top bar */
+        .lb-topbar {
+          position: absolute; top: 0; left: 0; right: 0;
+          display: flex; align-items: center; justify-content: space-between;
+          padding: 0.75rem 1.25rem;
+          background: linear-gradient(rgba(0,0,0,0.7), transparent);
+          z-index: 10;
+        }
+        .lb-counter {
+          font-size: 0.9rem; font-weight: 600;
+          color: rgba(255,255,255,0.85);
+          background: rgba(0,0,0,0.45);
+          padding: 0.3rem 0.75rem; border-radius: 20px;
+          letter-spacing: 0.05em;
+        }
+        .lb-close {
+          background: rgba(255,255,255,0.12);
+          border: 1px solid rgba(255,255,255,0.18);
+          color: #fff; border-radius: 50%;
+          width: 36px; height: 36px;
+          display: flex; align-items: center; justify-content: center;
+          cursor: pointer;
+          transition: background 0.18s;
+        }
+        .lb-close:hover { background: rgba(225,29,72,0.7); }
+
+        /* Main image area */
+        .lb-main {
+          position: relative;
+          width: 100%; flex: 1;
+          display: flex; align-items: center; justify-content: center;
+          overflow: hidden;
+          padding: 3.5rem 4rem;
+          box-sizing: border-box;
+        }
+        .lb-img {
+          max-width: 100%;
+          max-height: 100%;
+          object-fit: contain;
+          border-radius: 10px;
+          box-shadow: 0 24px 80px rgba(0,0,0,0.7);
+          animation: lb-img-in 0.25s ease;
+          user-select: none;
+        }
+        @keyframes lb-img-in {
+          from { opacity: 0; transform: scale(0.96); }
+          to   { opacity: 1; transform: scale(1); }
+        }
+
+        /* Nav arrows */
+        .lb-arrow {
+          position: absolute; top: 50%; transform: translateY(-50%);
+          background: rgba(255,255,255,0.12);
+          border: 1px solid rgba(255,255,255,0.18);
+          color: #fff; border-radius: 50%;
+          width: 48px; height: 48px;
+          display: flex; align-items: center; justify-content: center;
+          cursor: pointer; z-index: 10;
+          transition: background 0.18s, transform 0.18s;
+        }
+        .lb-arrow:hover {
+          background: rgba(255,255,255,0.22);
+          transform: translateY(-50%) scale(1.08);
+        }
+        .lb-arrow:disabled {
+          opacity: 0.25;
+          cursor: default;
+          transform: translateY(-50%);
+        }
+        .lb-arrow--left  { left: 12px; }
+        .lb-arrow--right { right: 12px; }
+
+        /* Caption */
+        .lb-caption {
+          position: absolute; bottom: 0; left: 0; right: 0;
+          background: linear-gradient(transparent, rgba(0,0,0,0.8));
+          color: #fff; text-align: center;
+          font-size: 0.95rem; font-weight: 500; line-height: 1.4;
+          padding: 2.5rem 2rem 1.25rem;
+          pointer-events: none;
+        }
+
+        /* Thumbnail strip */
+        .lb-thumbs {
+          flex-shrink: 0;
+          display: flex; gap: 8px;
+          justify-content: center; align-items: center;
+          padding: 0.75rem 1rem 1rem;
+          background: linear-gradient(transparent, rgba(0,0,0,0.6));
+          width: 100%; max-width: 100%;
+          overflow-x: auto;
+          box-sizing: border-box;
+        }
+        .lb-thumb {
+          width: 56px; height: 56px; flex-shrink: 0;
+          border-radius: 8px;
+          overflow: hidden;
+          cursor: pointer;
+          border: 2.5px solid transparent;
+          transition: border-color 0.18s, transform 0.18s;
+          opacity: 0.65;
+        }
+        .lb-thumb img {
+          width: 100%; height: 100%; object-fit: cover; display: block;
+        }
+        .lb-thumb.active {
+          border-color: #fff;
+          opacity: 1;
+          transform: scale(1.08);
+        }
+        .lb-thumb:hover:not(.active) { opacity: 0.9; }
       `}</style>
+
+      {/* ── Lightbox Portal ── */}
+      {lightbox && createPortal(
+        <div
+          className="lb-backdrop"
+          onClick={e => { if (e.target === e.currentTarget) closeLightbox(); }}
+        >
+          {/* Top bar */}
+          <div className="lb-topbar">
+            <div className="lb-counter">
+              {lightbox.idx + 1} / {lightbox.images.length}
+            </div>
+            <button className="lb-close" onClick={closeLightbox} aria-label="Close">
+              <X size={18} />
+            </button>
+          </div>
+
+          {/* Main image area */}
+          <div className="lb-main">
+            {/* Prev arrow */}
+            <button
+              className="lb-arrow lb-arrow--left"
+              onClick={lightboxPrev}
+              disabled={lightbox.idx === 0}
+              aria-label="Previous"
+            >
+              <ChevronLeft size={24} />
+            </button>
+
+            {/* Image */}
+            <img
+              key={lightbox.idx}
+              className="lb-img"
+              src={resolveMediaUrl(lightbox.images[lightbox.idx].url)}
+              alt={lightbox.images[lightbox.idx].caption || `Image ${lightbox.idx + 1}`}
+            />
+
+            {/* Next arrow */}
+            <button
+              className="lb-arrow lb-arrow--right"
+              onClick={lightboxNext}
+              disabled={lightbox.idx === lightbox.images.length - 1}
+              aria-label="Next"
+            >
+              <ChevronRight size={24} />
+            </button>
+
+            {/* Caption */}
+            {lightbox.images[lightbox.idx].caption?.trim() && (
+              <div className="lb-caption">{lightbox.images[lightbox.idx].caption}</div>
+            )}
+          </div>
+
+          {/* Thumbnail strip — only when > 1 image */}
+          {lightbox.images.length > 1 && (
+            <div className="lb-thumbs">
+              {lightbox.images.map((img, i) => (
+                <div
+                  key={i}
+                  className={`lb-thumb ${i === lightbox.idx ? 'active' : ''}`}
+                  onClick={e => { e.stopPropagation(); setLightbox(prev => ({ ...prev, idx: i })); }}
+                >
+                  <img src={resolveMediaUrl(img.url)} alt={`Thumbnail ${i + 1}`} />
+                </div>
+              ))}
+            </div>
+          )}
+        </div>,
+        document.body
+      )}
     </div>
   );
 }

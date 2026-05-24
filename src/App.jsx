@@ -3,6 +3,7 @@ import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from 'r
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { ThemeProvider } from './context/ThemeContext';
 import { CallProvider } from './context/CallContext';
+import { ModalProvider } from './components/BFIModal';
 import { Film, Aperture } from 'lucide-react';
 
 // Pages
@@ -169,6 +170,7 @@ function App() {
 
   return (
     <ThemeProvider>
+      <ModalProvider>
       <ErrorBoundary>
         <Router basename={routerBase}>
           <ScrollToTop />
@@ -352,6 +354,7 @@ function App() {
         </AuthProvider>
         </Router>
       </ErrorBoundary>
+      </ModalProvider>
     </ThemeProvider>
   );
 }

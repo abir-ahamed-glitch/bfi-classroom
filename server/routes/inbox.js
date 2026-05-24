@@ -1034,6 +1034,44 @@ router.get('/users', authenticateToken, (req, res) => {
 });
 
 /**
+ * POST /api/inbox/quick-emoji
+ * Saves a small system notice when a chat quick reaction emoji changes.
+ */
+router.post('/quick-emoji', authenticateToken, (req, res) => {
+  try {
+    const senderId = req.user.id;
+    const receiverId = Number(req.body.receiver_id);
+    const emoji = typeof req.body.emoji === 'string' ? req.body.emoji.trim() : '';
+
+    if (!emoji) {
+      return res.status(400).json({ error: 'Emoji is required.' });
+    }
+
+    const receiverCheck = validateReceiver(senderId, receiverId);
+    if (receiverCheck.error) {
+      return res.status(400).json({ error: receiverCheck.error });
+    }
+
+    const content = JSON.stringify({ type: 'quick_emoji', emoji });
+    const result = db.prepare(`
+      INSERT INTO messages (sender_id, receiver_id, content, message_type)
+      VALUES (?, ?, ?, 'quick_emoji')
+    `).run(senderId, receiverId, encryptMessageContent(content));
+
+    const messageId = result.lastInsertRowid;
+    const senderMessage = getMessageForViewer(messageId, senderId, receiverId);
+    const receiverMessage = getMessageForViewer(messageId, receiverId, senderId);
+
+    emitMessageEvent(req.app.get('io'), senderId, receiverId, 'inbox:message', senderMessage, receiverMessage);
+
+    res.status(201).json({ message: 'Quick emoji updated', sent_message: senderMessage });
+  } catch (err) {
+    console.error('Quick emoji update error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+/**
  * POST /api/inbox/call-log
  * Saves a call event (audio/video, missed/answered, duration) as a special
  * message visible to BOTH participants so it appears in the chat thread.

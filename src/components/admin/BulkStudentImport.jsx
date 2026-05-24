@@ -316,21 +316,11 @@ export default function BulkStudentImport({ onImportComplete }) {
       <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
         <button 
           onClick={() => setIsOpen(true)}
-          className="hover-scale"
+          className="modern-btn modern-btn--primary hover-scale"
           style={{ 
             display: 'flex', 
             alignItems: 'center', 
-            gap: '0.75rem', 
-            background: 'linear-gradient(135deg, var(--accent-primary) 0%, #2563eb 100%)', 
-            color: '#ffffff',
-            border: 'none',
-            padding: '0.65rem 1.25rem',
-            borderRadius: '12px',
-            fontWeight: '600',
-            fontSize: '0.95rem',
-            boxShadow: '0 8px 20px -6px rgba(56, 189, 248, 0.5)',
-            transition: 'all 0.3s ease',
-            cursor: 'pointer'
+            gap: '0.75rem'
           }}
         >
           <FileSpreadsheet size={20} strokeWidth={2.5} />
@@ -339,20 +329,11 @@ export default function BulkStudentImport({ onImportComplete }) {
 
         <button
           onClick={() => { setIsHistoryOpen(true); fetchHistory(); }}
-          className="hover-scale"
+          className="modern-btn modern-btn--secondary hover-scale"
           style={{
             display: 'flex', 
             alignItems: 'center', 
-            gap: '0.75rem', 
-            background: 'var(--bg-tertiary)',
-            border: '1px solid var(--glass-border)',
-            color: 'var(--text-secondary)',
-            padding: '0.65rem 1.25rem',
-            borderRadius: '12px',
-            fontWeight: '600',
-            fontSize: '0.95rem',
-            transition: 'all 0.3s ease',
-            cursor: 'pointer'
+            gap: '0.75rem'
           }}
         >
           <History size={20} strokeWidth={2.5} />
@@ -361,7 +342,7 @@ export default function BulkStudentImport({ onImportComplete }) {
       </div>
 
       {isOpen && createPortal(
-        <div className="modal-overlay" style={{ position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 9999, background: 'rgba(0, 0, 0, 0.6)', backdropFilter: 'blur(8px)' }}>
+        <div className="modern-modal-overlay" onClick={closeModal}>
           <style>
             {`
               /* Modal Visibility Improvements - Blue Theme */
@@ -404,11 +385,10 @@ export default function BulkStudentImport({ onImportComplete }) {
             `}
           </style>
 
-          <div className="modal-content glass-panel animate-slide-up bulk-import-modal" style={{ position: 'relative', maxWidth: '750px', width: '95%', maxHeight: '90vh', overflowY: 'auto', padding: '1.5rem 2rem', borderRadius: '20px' }}>
+          <div className="modern-modal-content glass-panel shadow-2xl bulk-import-modal" style={{ width: '100%', maxWidth: '750px', margin: 'auto' }} onClick={e => e.stopPropagation()}>
             
             {isProcessing && (
               <div className="animate-fade-in processing-overlay" style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', backdropFilter: 'blur(10px)', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', zIndex: 100, borderRadius: '20px', overflow: 'hidden' }}>
-                
                 {/* Projector Light Beam Effect */}
                 <div className="projector-beam" style={{ position: 'absolute', top: '50%', left: '-10%', width: '150%', height: '150px', animation: 'light-beam 3s ease-in-out infinite', pointerEvents: 'none', transformOrigin: 'left center', zIndex: 0, filter: 'blur(8px)' }}></div>
                 
@@ -426,296 +406,280 @@ export default function BulkStudentImport({ onImportComplete }) {
               </div>
             )}
 
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
-              <div>
-                <h2 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '0.75rem', fontSize: '1.35rem', color: 'var(--text-primary)' }}>
-                  <div style={{ background: 'linear-gradient(135deg, #0ea5e9, #0369a1)', padding: '0.4rem', borderRadius: '10px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#ffffff', border: '1px solid rgba(255,255,255,0.2)', boxShadow: '0 4px 15px rgba(14, 165, 233, 0.3)' }}>
-                    <Clapperboard size={20} />
-                  </div>
-                  Bulk Student Import
-                </h2>
-                <p style={{ margin: '0.25rem 0 0 0', color: 'var(--text-muted)', fontSize: '0.85rem' }}>Seamlessly onboard entire batches of filmmakers at once.</p>
-              </div>
-              <button onClick={closeModal} style={{ background: 'rgba(0,0,0,0.05)', border: 'none', borderRadius: '50%', padding: '0.4rem', cursor: 'pointer', color: 'var(--text-muted)', transition: 'all 0.2s' }} onMouseEnter={e => {e.currentTarget.style.background='rgba(239, 68, 68, 0.1)'; e.currentTarget.style.color='#ef4444';}} onMouseLeave={e => {e.currentTarget.style.background='rgba(0,0,0,0.05)'; e.currentTarget.style.color='var(--text-muted)';}}>
-                <X size={18} />
+            <div className="modern-modal-header">
+              <h3 className="font-display" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                <div style={{ background: 'linear-gradient(135deg, #0ea5e9, #0369a1)', padding: '0.4rem', borderRadius: '10px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#ffffff', border: '1px solid rgba(255,255,255,0.2)', boxShadow: '0 4px 15px rgba(14, 165, 233, 0.3)' }}>
+                  <Clapperboard size={20} />
+                </div>
+                Bulk Student Import
+              </h3>
+              <button type="button" className="icon-btn-ghost" onClick={closeModal} aria-label="Close">
+                <X size={20} />
               </button>
             </div>
 
-            {errorMsg && (
-              <div style={{
-                background: 'rgba(239, 68, 68, 0.1)',
-                borderLeft: '4px solid #ef4444',
-                color: '#ef4444',
-                padding: '0.75rem 1rem',
-                borderRadius: '8px',
-                marginBottom: '1rem',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.75rem',
-                fontSize: '0.9rem'
-              }}>
-                <AlertCircle size={18} />
-                <span>{errorMsg}</span>
-              </div>
-            )}
-
-            {!results ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem', position: 'relative' }}>
-                
-                {/* Upload Zone */}
-                <div className={file ? "" : "bulk-import-dropzone"} style={{ 
-                  padding: '2rem 1.5rem', 
-                  borderRadius: '16px', 
-                  border: file ? '2px solid var(--accent-primary)' : undefined, 
-                  textAlign: 'center',
-                  transition: 'all 0.3s ease',
-                  position: 'relative',
-                  overflow: 'hidden',
-                  boxShadow: 'inset 0 2px 10px rgba(0,0,0,0.02)'
+            <div className="modern-modal-body" style={{ maxHeight: '60vh', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+              <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: '0.85rem' }}>Seamlessly onboard entire batches of filmmakers at once.</p>
+              
+              {errorMsg && (
+                <div style={{
+                  background: 'rgba(239, 68, 68, 0.1)',
+                  borderLeft: '4px solid #ef4444',
+                  color: '#ef4444',
+                  padding: '0.75rem 1rem',
+                  borderRadius: '8px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.75rem',
+                  fontSize: '0.9rem'
                 }}>
-                  {/* Decorative film strip effect for the drop zone */}
-                  <div style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '10px', background: 'repeating-linear-gradient(90deg, transparent, transparent 10px, var(--glass-border) 10px, var(--glass-border) 20px)', opacity: 0.4 }}></div>
-                  <div style={{ position: 'absolute', bottom: 0, left: 0, width: '100%', height: '10px', background: 'repeating-linear-gradient(90deg, transparent, transparent 10px, var(--glass-border) 10px, var(--glass-border) 20px)', opacity: 0.4 }}></div>
+                  <AlertCircle size={18} />
+                  <span>{errorMsg}</span>
+                </div>
+              )}
 
-                  <input 
-                    type="file" 
-                    accept=".xlsx, .xls, .csv" 
-                    onChange={handleFileUpload} 
-                    style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', opacity: 0, cursor: 'pointer', zIndex: 10 }} 
-                    title="Click to upload"
-                  />
-                  
-                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.75rem', pointerEvents: 'none', position: 'relative', zIndex: 5 }}>
-                    <div className={file ? "" : "bulk-import-icon-bg"} style={{ width: '64px', height: '64px', borderRadius: '50%', background: file ? 'rgba(192, 39, 74, 0.1)' : undefined, display: 'flex', alignItems: 'center', justifyContent: 'center', color: file ? 'var(--accent-primary)' : 'var(--text-muted)', transition: 'all 0.3s', boxShadow: '0 8px 20px rgba(0,0,0,0.05)', border: file ? '1px solid rgba(192,39,74,0.2)' : undefined }}>
-                      {file ? <FileSpreadsheet size={32} /> : <Film size={32} />}
-                    </div>
+              {!results ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem', position: 'relative' }}>
+                  {/* Upload Zone */}
+                  <div className={file ? "" : "bulk-import-dropzone"} style={{ 
+                    padding: '2rem 1.5rem', 
+                    borderRadius: '16px', 
+                    border: file ? '2px solid var(--accent-primary)' : undefined, 
+                    textAlign: 'center',
+                    transition: 'all 0.3s ease',
+                    position: 'relative',
+                    overflow: 'hidden',
+                    boxShadow: 'inset 0 2px 10px rgba(0,0,0,0.02)'
+                  }}>
+                    {/* Decorative film strip effect for the drop zone */}
+                    <div style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '10px', background: 'repeating-linear-gradient(90deg, transparent, transparent 10px, var(--glass-border) 10px, var(--glass-border) 20px)', opacity: 0.4 }}></div>
+                    <div style={{ position: 'absolute', bottom: 0, left: 0, width: '100%', height: '10px', background: 'repeating-linear-gradient(90deg, transparent, transparent 10px, var(--glass-border) 10px, var(--glass-border) 20px)', opacity: 0.4 }}></div>
+
+                    <input 
+                      type="file" 
+                      accept=".xlsx, .xls, .csv" 
+                      onChange={handleFileUpload} 
+                      style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', opacity: 0, cursor: 'pointer', zIndex: 10 }} 
+                      title="Click to upload"
+                    />
                     
-                    {file ? (
-                      <div className="animate-slide-up" style={{ animationDuration: '0.3s' }}>
-                        <h3 style={{ margin: 0, color: 'var(--text-primary)', fontSize: '1.1rem' }}>{file.name}</h3>
-                        <div style={{ display: 'inline-block', marginTop: '0.5rem', background: 'rgba(16, 185, 129, 0.1)', color: '#10b981', padding: '0.3rem 0.75rem', borderRadius: '20px', fontWeight: '600', fontSize: '0.85rem' }}>
-                          <CheckCircle2 size={14} style={{ display: 'inline', verticalAlign: 'text-bottom', marginRight: '0.25rem' }} />
-                          {previewData.length} valid students found
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.75rem', pointerEvents: 'none', position: 'relative', zIndex: 5 }}>
+                      <div className={file ? "" : "bulk-import-icon-bg"} style={{ width: '64px', height: '64px', borderRadius: '50%', background: file ? 'rgba(192, 39, 74, 0.1)' : undefined, display: 'flex', alignItems: 'center', justifyContent: 'center', color: file ? 'var(--accent-primary)' : 'var(--text-muted)', transition: 'all 0.3s', boxShadow: '0 8px 20px rgba(0,0,0,0.05)', border: file ? '1px solid rgba(192,39,74,0.2)' : undefined }}>
+                        {file ? <FileSpreadsheet size={32} /> : <Film size={32} />}
+                      </div>
+                      
+                      {file ? (
+                        <div className="animate-slide-up" style={{ animationDuration: '0.3s' }}>
+                          <h3 style={{ margin: 0, color: 'var(--text-primary)', fontSize: '1.1rem' }}>{file.name}</h3>
+                          <div style={{ display: 'inline-block', marginTop: '0.5rem', background: 'rgba(16, 185, 129, 0.1)', color: '#10b981', padding: '0.3rem 0.75rem', borderRadius: '20px', fontWeight: '600', fontSize: '0.85rem' }}>
+                            <CheckCircle2 size={14} style={{ display: 'inline', verticalAlign: 'text-bottom', marginRight: '0.25rem' }} />
+                            {previewData.length} valid students found
+                          </div>
+                        </div>
+                      ) : (
+                        <>
+                          <h3 style={{ margin: 0, color: 'var(--text-primary)', fontSize: '1.1rem' }}>Drop your roster file here</h3>
+                          <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: '0.9rem' }}>Upload an XLSX or CSV containing student details</p>
+                          <p style={{ margin: 0, color: 'var(--text-secondary)', fontSize: '0.75rem', background: 'var(--bg-tertiary)', padding: '0.3rem 0.8rem', borderRadius: '8px', marginTop: '0.25rem', maxWidth: '350px', lineHeight: 1.4 }}>
+                            Auto-detects: Name, Email, Mobile, WhatsApp, Address, Gender, DOB, Profession, Education, Batch
+                          </p>
+                        </>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Configuration Options */}
+                  {previewData.length > 0 && (
+                    <div className="animate-slide-up" style={{ animationDelay: '0.1s', display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+                      <div>
+                        <label style={{ display: 'block', marginBottom: '0.5rem', color: 'var(--text-primary)', fontWeight: '600', fontSize: '0.95rem' }}>Assign Batch Number</label>
+                        <input 
+                          type="text" 
+                          value={batchNumber} 
+                          onChange={(e) => setBatchNumber(e.target.value)} 
+                          className="input-glass" 
+                          placeholder="e.g. 53" 
+                          style={{ width: '100%', paddingLeft: '1rem' }} 
+                        />
+                      </div>
+
+                      <div>
+                        <label style={{ display: 'block', marginBottom: '0.75rem', color: 'var(--text-primary)', fontWeight: '600', fontSize: '0.95rem' }}>Enroll in Courses</label>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+                          {availableCourses.map(course => {
+                            const isSelected = courses.includes(course.name);
+                            return (
+                              <label 
+                                key={course.name} 
+                                style={{ 
+                                  display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', 
+                                  background: isSelected ? 'var(--accent-primary)' : 'rgba(0,0,0,0.03)', 
+                                  color: isSelected ? 'white' : 'var(--text-secondary)',
+                                  padding: '0.6rem 1rem', borderRadius: '10px', 
+                                  border: '1px solid', borderColor: isSelected ? 'var(--accent-primary)' : 'var(--glass-border)', 
+                                  transition: 'all 0.2s ease',
+                                  fontWeight: '500', fontSize: '0.85rem',
+                                  boxShadow: isSelected ? '0 4px 12px rgba(14, 165, 233, 0.25)' : 'none'
+                                }}
+                              >
+                                <input 
+                                  type="checkbox" 
+                                  checked={isSelected} 
+                                  onChange={() => handleCourseChange(course.name)}
+                                  style={{ display: 'none' }}
+                                />
+                                {isSelected ? <CheckCircle2 size={16} /> : <div style={{ width: '16px', height: '16px', borderRadius: '50%', border: '2px solid currentColor', opacity: 0.5 }}></div>}
+                                {course.name}
+                              </label>
+                            );
+                          })}
                         </div>
                       </div>
-                    ) : (
-                      <>
-                        <h3 style={{ margin: 0, color: 'var(--text-primary)', fontSize: '1.1rem' }}>Drop your roster file here</h3>
-                        <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: '0.9rem' }}>Upload an XLSX or CSV containing student details</p>
-                        <p style={{ margin: 0, color: 'var(--text-secondary)', fontSize: '0.75rem', background: 'var(--bg-tertiary)', padding: '0.3rem 0.8rem', borderRadius: '8px', marginTop: '0.25rem', maxWidth: '350px', lineHeight: 1.4 }}>
-                          Auto-detects: Name, Email, Mobile, WhatsApp, Address, Gender, DOB, Profession, Education, Batch
-                        </p>
-                      </>
-                    )}
-                  </div>
-                </div>
-
-                {/* Configuration Options */}
-                {previewData.length > 0 && (
-                  <div className="animate-slide-up" style={{ animationDelay: '0.1s', display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
-                    
-                    <div>
-                      <label style={{ display: 'block', marginBottom: '0.5rem', color: 'var(--text-primary)', fontWeight: '600', fontSize: '0.95rem' }}>Assign Batch Number</label>
-                      <input 
-                        type="text" 
-                        value={batchNumber} 
-                        onChange={(e) => setBatchNumber(e.target.value)} 
-                        className="input-glass" 
-                        placeholder="e.g. 53" 
-                        style={{ width: '100%', padding: '0.85rem 1.25rem', fontSize: '0.95rem', borderRadius: '12px', border: '1px solid var(--glass-border)', background: 'rgba(0,0,0,0.02)' }} 
-                      />
                     </div>
-
-                    <div>
-                      <label style={{ display: 'block', marginBottom: '0.75rem', color: 'var(--text-primary)', fontWeight: '600', fontSize: '0.95rem' }}>Enroll in Courses</label>
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
-                        {availableCourses.map(course => {
-                          const isSelected = courses.includes(course.name);
-                          return (
-                            <label 
-                              key={course.name} 
-                              style={{ 
-                                display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', 
-                                background: isSelected ? 'var(--accent-primary)' : 'rgba(0,0,0,0.03)', 
-                                color: isSelected ? 'white' : 'var(--text-secondary)',
-                                padding: '0.6rem 1rem', borderRadius: '10px', 
-                                border: '1px solid', borderColor: isSelected ? 'var(--accent-primary)' : 'var(--glass-border)', 
-                                transition: 'all 0.2s ease',
-                                fontWeight: '500', fontSize: '0.85rem',
-                                boxShadow: isSelected ? '0 4px 12px rgba(14, 165, 233, 0.25)' : 'none'
-                              }}
-                            >
-                              <input 
-                                type="checkbox" 
-                                checked={isSelected} 
-                                onChange={() => handleCourseChange(course.name)}
-                                style={{ display: 'none' }}
-                              />
-                              {isSelected ? <CheckCircle2 size={16} /> : <div style={{ width: '16px', height: '16px', borderRadius: '50%', border: '2px solid currentColor', opacity: 0.5 }}></div>}
-                              {course.name}
-                            </label>
-                          );
-                        })}
-                      </div>
-                    </div>
-
-                    {/* Action Bar */}
-                    <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '1rem', marginTop: '0.5rem', paddingTop: '1.25rem', borderTop: '1px solid var(--glass-border)' }}>
-                      <button 
-                        onClick={closeModal} 
-                        style={{ padding: '0.75rem 1.5rem', background: 'transparent', color: 'var(--text-muted)', border: 'none', cursor: 'pointer', fontWeight: '600', borderRadius: '12px', transition: 'all 0.2s' }}
-                        onMouseEnter={e => e.currentTarget.style.color = 'var(--text-primary)'}
-                        onMouseLeave={e => e.currentTarget.style.color = 'var(--text-muted)'}
-                      >
-                        Cancel
-                      </button>
-                      <button 
-                        onClick={handleImport} 
-                        disabled={isProcessing}
-                        style={{ 
-                          padding: '0.75rem 2rem', 
-                          background: isProcessing ? 'var(--bg-tertiary)' : 'linear-gradient(135deg, var(--accent-primary), #3b82f6)', 
-                          color: isProcessing ? 'var(--text-muted)' : 'white', 
-                          border: 'none', cursor: isProcessing ? 'not-allowed' : 'pointer', 
-                          fontWeight: '600', borderRadius: '12px', fontSize: '1rem',
-                          boxShadow: isProcessing ? 'none' : '0 4px 12px rgba(14, 165, 233, 0.3)',
-                          transition: 'all 0.2s',
-                          display: 'flex', alignItems: 'center', gap: '0.5rem'
-                        }}
-                      >
-                        {isProcessing ? (
-                          <>Processing...</>
-                        ) : (
-                          <>Import {previewData.length} Students</>
-                        )}
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            ) : (
-              <div className="animate-slide-up" style={{ textAlign: 'center', padding: '3rem 2rem' }}>
-                <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '80px', height: '80px', borderRadius: '50%', background: results.some(r => r.status === 'error') ? 'rgba(245, 158, 11, 0.1)' : 'rgba(16, 185, 129, 0.1)', color: results.some(r => r.status === 'error') ? '#f59e0b' : '#10b981', marginBottom: '1.5rem' }}>
-                  <CheckCircle2 size={40} />
-                </div>
-                <h3 style={{ fontSize: '1.75rem', marginBottom: '0.5rem', color: 'var(--text-primary)' }}>
-                  {results.some(r => r.status === 'error') ? 'Import Completed with Some Errors' : 'Roster Successfully Imported!'}
-                </h3>
-                
-                {(batchNumber || (results.length > 0 && results[0].year)) && (
-                  <div style={{ display: 'inline-flex', gap: '1.5rem', background: 'var(--bg-tertiary)', padding: '0.5rem 1.25rem', borderRadius: '100px', fontSize: '0.9rem', color: 'var(--text-secondary)', marginBottom: '1.5rem', border: '1px solid var(--glass-border)' }}>
-                    {batchNumber && <div><span style={{ fontWeight: '600', color: 'var(--text-primary)' }}>Batch:</span> {batchNumber}</div>}
-                    {results.length > 0 && results[0].year && <div><span style={{ fontWeight: '600', color: 'var(--text-primary)' }}>Year:</span> {results[0].year}</div>}
-                  </div>
-                )}
-
-                <p style={{ color: 'var(--text-secondary)', marginBottom: '1.5rem', fontSize: '1rem', maxWidth: '500px', margin: '0 auto 1.5rem auto', lineHeight: 1.5 }}>
-                  Processed <strong style={{ color: 'var(--text-primary)' }}>{results.length}</strong> records. 
-                  <span style={{ color: '#10b981', marginLeft: '0.5rem' }}>{results.filter(r => r.status === 'success').length} successful</span>
-                  {results.some(r => r.status === 'error') && (
-                    <span style={{ color: '#ef4444', marginLeft: '0.5rem' }}>{results.filter(r => r.status === 'error').length} failed</span>
                   )}
-                </p>
-
-                {results.some(r => r.status === 'error') && (
-                  <div style={{ textAlign: 'left', background: 'rgba(239, 68, 68, 0.05)', border: '1px solid rgba(239, 68, 68, 0.2)', padding: '1rem', borderRadius: '8px', marginBottom: '2rem', maxHeight: '150px', overflowY: 'auto' }}>
-                    <h4 style={{ margin: '0 0 0.5rem 0', color: '#ef4444', fontSize: '0.95rem' }}>Failed Imports:</h4>
-                    <ul style={{ margin: 0, paddingLeft: '1.5rem', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
-                      {results.filter(r => r.status === 'error').map((errRow, idx) => (
-                        <li key={idx} style={{ marginBottom: '0.25rem' }}>
-                          <strong>{errRow.name || errRow.email || 'Unknown User'}</strong>: {errRow.error}
-                        </li>
-                      ))}
-                    </ul>
+                </div>
+              ) : (
+                <div className="animate-slide-up" style={{ textAlign: 'center', padding: '1.5rem 1rem' }}>
+                  <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '80px', height: '80px', borderRadius: '50%', background: results.some(r => r.status === 'error') ? 'rgba(245, 158, 11, 0.1)' : 'rgba(16, 185, 129, 0.1)', color: results.some(r => r.status === 'error') ? '#f59e0b' : '#10b981', marginBottom: '1.5rem' }}>
+                    <CheckCircle2 size={40} />
                   </div>
-                )}
-                
-                <div style={{ display: 'flex', justifyContent: 'center', gap: '1rem' }}>
-                  <button onClick={closeModal} style={{ padding: '0.75rem 2rem', background: 'transparent', color: 'var(--text-muted)', border: '1px solid var(--glass-border)', cursor: 'pointer', fontWeight: '600', borderRadius: '12px', transition: 'all 0.2s' }} onMouseEnter={e => {e.currentTarget.style.color = 'var(--text-primary)'; e.currentTarget.style.borderColor = 'rgba(255,255,255,0.2)';}} onMouseLeave={e => {e.currentTarget.style.color = 'var(--text-muted)'; e.currentTarget.style.borderColor = 'var(--glass-border)';}}>
+                  <h3 style={{ fontSize: '1.75rem', marginBottom: '0.5rem', color: 'var(--text-primary)' }}>
+                    {results.some(r => r.status === 'error') ? 'Import Completed with Some Errors' : 'Roster Successfully Imported!'}
+                  </h3>
+                  
+                  {(batchNumber || (results.length > 0 && results[0].year)) && (
+                    <div style={{ display: 'inline-flex', gap: '1.5rem', background: 'var(--bg-tertiary)', padding: '0.5rem 1.25rem', borderRadius: '100px', fontSize: '0.9rem', color: 'var(--text-secondary)', marginBottom: '1.5rem', border: '1px solid var(--glass-border)' }}>
+                      {batchNumber && <div><span style={{ fontWeight: '600', color: 'var(--text-primary)' }}>Batch:</span> {batchNumber}</div>}
+                      {results.length > 0 && results[0].year && <div><span style={{ fontWeight: '600', color: 'var(--text-primary)' }}>Year:</span> {results[0].year}</div>}
+                    </div>
+                  )}
+
+                  <p style={{ color: 'var(--text-secondary)', marginBottom: '1.5rem', fontSize: '1rem', maxWidth: '500px', margin: '0 auto 1.5rem auto', lineHeight: 1.5 }}>
+                    Processed <strong style={{ color: 'var(--text-primary)' }}>{results.length}</strong> records. 
+                    <span style={{ color: '#10b981', marginLeft: '0.5rem' }}>{results.filter(r => r.status === 'success').length} successful</span>
+                    {results.some(r => r.status === 'error') && (
+                      <span style={{ color: '#ef4444', marginLeft: '0.5rem' }}>{results.filter(r => r.status === 'error').length} failed</span>
+                    )}
+                  </p>
+
+                  {results.some(r => r.status === 'error') && (
+                    <div style={{ textAlign: 'left', background: 'rgba(239, 68, 68, 0.05)', border: '1px solid rgba(239, 68, 68, 0.2)', padding: '1rem', borderRadius: '8px', marginBottom: '2rem', maxHeight: '150px', overflowY: 'auto' }}>
+                      <h4 style={{ margin: '0 0 0.5rem 0', color: '#ef4444', fontSize: '0.95rem' }}>Failed Imports:</h4>
+                      <ul style={{ margin: 0, paddingLeft: '1.5rem', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
+                        {results.filter(r => r.status === 'error').map((errRow, idx) => (
+                          <li key={idx} style={{ marginBottom: '0.25rem' }}>
+                            <strong>{errRow.name || errRow.email || 'Unknown User'}</strong>: {errRow.error}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div className="modern-modal-footer" style={{ display: 'flex', gap: '1rem' }}>
+              {!results ? (
+                <>
+                  <button type="button" onClick={closeModal} className="modern-btn modern-btn--secondary" style={{ flex: 1 }}>
+                    Cancel
+                  </button>
+                  {previewData.length > 0 && (
+                    <button 
+                      type="button"
+                      onClick={handleImport} 
+                      disabled={isProcessing}
+                      className="modern-btn modern-btn--primary"
+                      style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem' }}
+                    >
+                      {isProcessing ? 'Processing...' : `Import ${previewData.length} Students`}
+                    </button>
+                  )}
+                </>
+              ) : (
+                <>
+                  <button type="button" onClick={closeModal} className="modern-btn modern-btn--secondary" style={{ flex: 1 }}>
                     Close
                   </button>
                   <button 
+                    type="button"
                     onClick={handleDownloadResults} 
-                    style={{ 
-                      padding: '0.75rem 2rem', 
-                      background: 'linear-gradient(135deg, #10b981, #059669)', 
-                      color: 'white', 
-                      border: 'none', cursor: 'pointer', 
-                      fontWeight: '600', borderRadius: '12px', fontSize: '1rem',
-                      boxShadow: '0 4px 12px rgba(16, 185, 129, 0.3)',
-                      transition: 'all 0.2s',
-                      display: 'flex', alignItems: 'center', gap: '0.5rem'
-                    }}
+                    className="modern-btn modern-btn--primary"
+                    style={{ flex: 2, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem' }}
                   >
                     <FileSpreadsheet size={18} />
                     Download Generated Credentials
                   </button>
-                </div>
-              </div>
-            )}
+                </>
+              )}
+            </div>
           </div>
         </div>
       , document.body)}
 
       {isHistoryOpen && createPortal(
-        <div className="modal-overlay" style={{ position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 9999, background: 'rgba(0, 0, 0, 0.6)', backdropFilter: 'blur(8px)' }}>
-          <div className="modal-content glass-panel animate-slide-up" style={{ maxWidth: '600px', width: '95%', maxHeight: '90vh', overflowY: 'auto', padding: '2.5rem', border: '1px solid var(--glass-border)', borderRadius: '20px', background: 'var(--bg-secondary)', boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)' }}>
-            
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2rem' }}>
-              <div>
-                <h2 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '0.75rem', fontSize: '1.5rem', color: 'var(--text-primary)' }}>
-                  <div style={{ background: 'var(--bg-tertiary)', padding: '0.5rem', borderRadius: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)' }}>
-                    <History size={24} />
-                  </div>
-                  Import History
-                </h2>
-                <p style={{ margin: '0.5rem 0 0 0', color: 'var(--text-muted)', fontSize: '0.9rem' }}>Download credentials from past imports.</p>
-              </div>
-              <button onClick={() => setIsHistoryOpen(false)} style={{ background: 'rgba(0,0,0,0.05)', border: 'none', borderRadius: '50%', padding: '0.5rem', cursor: 'pointer', color: 'var(--text-muted)', transition: 'all 0.2s' }} onMouseEnter={e => {e.currentTarget.style.background='rgba(239, 68, 68, 0.1)'; e.currentTarget.style.color='#ef4444';}} onMouseLeave={e => {e.currentTarget.style.background='rgba(0,0,0,0.05)'; e.currentTarget.style.color='var(--text-muted)';}}>
+        <div className="modern-modal-overlay" onClick={() => setIsHistoryOpen(false)}>
+          <div className="modern-modal-content glass-panel shadow-2xl" style={{ width: '100%', maxWidth: '600px', margin: 'auto' }} onClick={e => e.stopPropagation()}>
+            <div className="modern-modal-header">
+              <h3 className="font-display" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                <div style={{ background: 'var(--bg-tertiary)', padding: '0.5rem', borderRadius: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)' }}>
+                  <History size={24} />
+                </div>
+                Import History
+              </h3>
+              <button type="button" className="icon-btn-ghost" onClick={() => setIsHistoryOpen(false)} aria-label="Close">
                 <X size={20} />
               </button>
             </div>
 
-            {loadingHistory ? (
-              <div style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-muted)' }}>Loading history...</div>
-            ) : historyList.length === 0 ? (
-              <div style={{ textAlign: 'center', padding: '3rem 2rem', background: 'var(--bg-tertiary)', borderRadius: '16px', color: 'var(--text-muted)' }}>
-                No import history found.
-              </div>
-            ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-                {historyList.map(item => (
-                  <div key={item.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '1rem 1.25rem', background: 'var(--bg-primary)', border: '1px solid var(--glass-border)', borderRadius: '12px' }}>
-                    <div>
-                      <div style={{ fontWeight: '600', color: 'var(--text-primary)', marginBottom: '0.25rem' }}>{getOrdinalSuffix(item.batch_number)} Batch</div>
-                      <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>{new Date(item.created_at).toLocaleString()}</div>
+            <div className="modern-modal-body" style={{ maxHeight: '60vh', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+              <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: '0.9rem', marginBottom: '0.5rem' }}>Download credentials from past imports.</p>
+
+              {loadingHistory ? (
+                <div style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-muted)' }}>Loading history...</div>
+              ) : historyList.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '3rem 2rem', background: 'var(--bg-tertiary)', borderRadius: '16px', color: 'var(--text-muted)' }}>
+                  No import history found.
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                  {historyList.map(item => (
+                    <div key={item.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '1rem 1.25rem', background: 'rgba(255,255,255,0.02)', border: '1px solid var(--glass-border)', borderRadius: '12px' }}>
+                      <div>
+                        <div style={{ fontWeight: '600', color: 'var(--text-primary)', marginBottom: '0.25rem' }}>{getOrdinalSuffix(item.batch_number)} Batch</div>
+                        <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>{new Date(item.created_at).toLocaleString()}</div>
+                      </div>
+                      <button 
+                        onClick={() => handleDownloadOldResults(item.id, item.batch_number)}
+                        style={{ 
+                          background: 'rgba(14, 165, 233, 0.1)', 
+                          color: 'var(--accent-primary)', 
+                          border: 'none', 
+                          padding: '0.5rem 1rem', 
+                          borderRadius: '8px', 
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '0.5rem',
+                          fontWeight: '600',
+                          fontSize: '0.9rem',
+                          transition: 'all 0.2s'
+                        }}
+                        onMouseEnter={e => e.currentTarget.style.background = 'rgba(14, 165, 233, 0.2)'}
+                        onMouseLeave={e => e.currentTarget.style.background = 'rgba(14, 165, 233, 0.1)'}
+                      >
+                        <Download size={16} />
+                        Download
+                      </button>
                     </div>
-                    <button 
-                      onClick={() => handleDownloadOldResults(item.id, item.batch_number)}
-                      style={{ 
-                        background: 'rgba(14, 165, 233, 0.1)', 
-                        color: 'var(--accent-primary)', 
-                        border: 'none', 
-                        padding: '0.5rem 1rem', 
-                        borderRadius: '8px', 
-                        cursor: 'pointer',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '0.5rem',
-                        fontWeight: '600',
-                        fontSize: '0.9rem',
-                        transition: 'all 0.2s'
-                      }}
-                      onMouseEnter={e => e.currentTarget.style.background = 'rgba(14, 165, 233, 0.2)'}
-                      onMouseLeave={e => e.currentTarget.style.background = 'rgba(14, 165, 233, 0.1)'}
-                    >
-                      <Download size={16} />
-                      Download
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="modern-modal-footer" style={{ display: 'flex', gap: '1rem' }}>
+              <button type="button" onClick={() => setIsHistoryOpen(false)} className="modern-btn modern-btn--secondary" style={{ flex: 1 }}>Close</button>
+            </div>
           </div>
         </div>
       , document.body)}

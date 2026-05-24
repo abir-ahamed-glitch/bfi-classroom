@@ -1,12 +1,14 @@
 import { useState, useEffect } from 'react';
 import { ScrollText, Download, CheckCircle, Clock } from 'lucide-react';
 import { downloadCertificatePdf } from '../utils/certificates';
+import { useModal } from '../components/BFIModal';
 
 export default function Certificates() {
   const [certificates, setCertificates] = useState([]);
   const [loading, setLoading] = useState(true);
   const [downloadingId, setDownloadingId] = useState(null);
   const [error, setError] = useState('');
+  const { showAlert } = useModal();
 
   useEffect(() => {
     fetchCertificates();
@@ -38,7 +40,7 @@ export default function Certificates() {
       await downloadCertificatePdf(cert, cert.template || {});
     } catch (err) {
       console.error('Certificate download failed', err);
-      alert('Unable to generate the certificate right now. Please try again.');
+      await showAlert('Unable to generate the certificate right now. Please try again.', { title: 'Download Failed' });
     } finally {
       setDownloadingId(null);
     }

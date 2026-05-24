@@ -1,11 +1,13 @@
 import { useState, useEffect } from 'react';
 import { BookOpen, FileText, Download, PlayCircle, Folder } from 'lucide-react';
+import { useModal } from '../components/BFIModal';
 
 export default function CourseMaterials() {
   const [materials, setMaterials] = useState([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('All');
   const backendOrigin = import.meta.env.VITE_API_BASE_URL || '';
+  const { showAlert } = useModal();
 
   useEffect(() => {
     fetchMaterials();
@@ -51,9 +53,9 @@ export default function CourseMaterials() {
     ? materials
     : materials.filter((material) => material.type.toLowerCase() === activeTab.toLowerCase());
 
-  const openMaterial = (material) => {
+  const openMaterial = async (material) => {
     if (!material.fileUrl) {
-      alert('This material is not available right now.');
+      await showAlert('This material is not available right now.', { title: 'Unavailable' });
       return;
     }
 

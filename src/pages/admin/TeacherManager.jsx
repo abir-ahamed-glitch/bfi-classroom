@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { UserPlus, Search, Copy, CheckCircle2, User, UserCheck, Edit, X } from 'lucide-react';
 
 export default function TeacherManager() {
@@ -344,18 +345,19 @@ export default function TeacherManager() {
       </div>
 
       {/* Edit Modal Overlay */}
-      {editingTeacher && (
-        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.8)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem' }}>
-          <div className="glass-panel" style={{ background: 'var(--bg-secondary)', padding: '2rem', width: '100%', maxWidth: '500px', position: 'relative', maxHeight: '90vh', overflowY: 'auto' }}>
-            <button onClick={() => setEditingTeacher(null)} style={{ position: 'absolute', top: '1rem', right: '1rem', background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}>
-               <X size={20} />
-            </button>
+      {editingTeacher && createPortal(
+        <div className="modern-modal-overlay" onClick={() => setEditingTeacher(null)}>
+          <form onSubmit={saveEdit} className="modern-modal-content glass-panel shadow-2xl" style={{ width: '100%', maxWidth: '500px', margin: 'auto' }} onClick={e => e.stopPropagation()}>
+            <div className="modern-modal-header">
+              <h3 className="font-display" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <Edit className="text-accent" /> Edit Teacher Details
+              </h3>
+              <button type="button" className="icon-btn-ghost" onClick={() => setEditingTeacher(null)} aria-label="Close">
+                <X size={20} />
+              </button>
+            </div>
             
-            <h2 style={{ marginBottom: '1.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <Edit className="text-accent" /> Edit Teacher Details
-            </h2>
-            
-            <form onSubmit={saveEdit} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+            <div className="modern-modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '1rem', maxHeight: '60vh', overflowY: 'auto' }}>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
                 <div>
                   <label style={{ display: 'block', marginBottom: '0.4rem', color: 'var(--text-secondary)' }}>First Name</label>
@@ -403,16 +405,17 @@ export default function TeacherManager() {
               </div>
 
               {editError && <div className="error-alert" style={{ marginTop: '0.5rem' }}>{editError}</div>}
+            </div>
 
-              <div style={{ display: 'flex', gap: '1rem', marginTop: '1rem' }}>
-                <button type="button" onClick={() => setIsEditing(false)} className="btn btn-glass" style={{ flex: 1 }}>Cancel</button>
-                <button type="submit" className="btn btn-primary" disabled={isEditing} style={{ flex: 1 }}>
-                  {isEditing ? 'Saving...' : 'Save Changes'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
+            <div className="modern-modal-footer" style={{ display: 'flex', gap: '1rem' }}>
+              <button type="button" onClick={() => setEditingTeacher(null)} className="modern-btn modern-btn--secondary" style={{ flex: 1 }}>Cancel</button>
+              <button type="submit" className="modern-btn modern-btn--primary" disabled={isEditing} style={{ flex: 1 }}>
+                {isEditing ? 'Saving...' : 'Save Changes'}
+              </button>
+            </div>
+          </form>
+        </div>,
+        document.body
       )}
     </div>
   );

@@ -3,13 +3,16 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "homepage": "https://abir-ahamed-glitch.github.io/bfi-classroom",
   "scripts": {
     "dev": "vite",
     "start": "node server/server.js",
     "server": "node server/server.js",
     "build": "vite build && node -e \"require('fs').copyFileSync('dist/index.html', 'dist/404.html')\"",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "predeploy": "npm run build",
+    "deploy": "gh-pages -d dist"
   },
   "dependencies": {
     "@emoji-mart/data": "^1.2.1",

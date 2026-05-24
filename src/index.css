@@ -141,6 +141,13 @@ body.modal-open, html.modal-open {
   stroke: #e2e8f0;
 }
 
+/* Phase 1 merged card — responsive divider */
+@media (max-width: 640px) {
+  .phase1-divider-v { display: none !important; }
+  .phase1-divider-h { display: block !important; }
+}
+
+
 /* Dropdown option styling for dark theme */
 select option {
   background: #1a1a2e;
@@ -538,6 +545,8 @@ body::before {
   border-radius: 14px;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
   transform: translate3d(0, 0, 0);
+  backface-visibility: hidden;
+  will-change: transform;
 }
 
 /* Apply the requested glowing outline globally to all major glass panels */
@@ -608,6 +617,9 @@ h1.text-gradient,
   cursor: pointer;
   border: none;
   gap: 0.5rem;
+  transform: translate3d(0, 0, 0);
+  backface-visibility: hidden;
+  will-change: transform, background-color;
 }
 
 .btn-primary {
@@ -618,7 +630,6 @@ h1.text-gradient,
 
 .btn-primary:hover {
   background-color: var(--accent-primary-hover);
-  transform: translateY(-1px);
   box-shadow: 0 6px 20px rgba(37, 99, 235, 0.4);
 }
 

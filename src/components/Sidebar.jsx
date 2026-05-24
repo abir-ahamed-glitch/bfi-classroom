@@ -5,6 +5,7 @@ import { io } from 'socket.io-client';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
 import { resolveMediaUrl } from '../utils/mediaUtils';
+import { soundManager } from '../utils/AudioSynthesizer';
 import { 
   Home, 
   Inbox, 
@@ -113,6 +114,17 @@ export default function Sidebar() {
       }
 
       setUnreadInboxCount((prev) => prev + 1);
+      if (!location.pathname.startsWith('/inbox')) {
+        try {
+          const mutedChats = JSON.parse(localStorage.getItem('inbox_muted_chats') || '[]');
+          const isMuted = mutedChats.map(Number).includes(Number(message.sender_id));
+          if (!isMuted) {
+            soundManager.playMessageReceived();
+          }
+        } catch {
+          soundManager.playMessageReceived();
+        }
+      }
     });
 
     socket.on('inbox:read', () => {
@@ -152,7 +164,7 @@ export default function Sidebar() {
     return () => {
       socket.disconnect();
     };
-  }, [currentUser?.id, currentUser?.role, socketUrl]);
+  }, [currentUser?.id, currentUser?.role, socketUrl, location.pathname]);
 
   useEffect(() => {
     if (location.pathname === '/notices') {

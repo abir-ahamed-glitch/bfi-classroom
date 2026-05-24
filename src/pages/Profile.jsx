@@ -3,6 +3,7 @@ import { NavLink } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { resolveMediaUrl } from '../utils/mediaUtils';
 import { getOrdinalSuffix } from '../utils/formatUtils';
+import { useModal } from '../components/BFIModal';
 import { 
   User, Mail, Phone, MapPin, Calendar, CheckSquare, 
   Lock, AlertCircle, Save, CheckCircle2, Link2, Plus, X, ChevronDown,
@@ -46,6 +47,7 @@ const validateSocialLink = (platform, url) => {
 };
 export default function Profile() {
   const { updateUser } = useAuth();
+  const { showAlert } = useModal();
   const [profile, setProfile] = useState(null);
   const [socialLinks, setSocialLinks] = useState([]);
   const [experiences, setExperiences] = useState([]);
@@ -410,7 +412,7 @@ export default function Profile() {
       }
     } catch (err) {
       console.error('Save failed', err);
-      alert('Failed to save and upload image. Please try again.');
+      showAlert('Failed to save and upload image. Please try again.', { title: 'Upload Failed' });
     }
   };
 
@@ -1203,10 +1205,10 @@ export default function Profile() {
                 <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '0.5rem' }}>
                   <button
                     type="button"
-                    onClick={() => {
+                    onClick={async () => {
                       const invalidLink = socialLinks.find(link => !validateSocialLink(link.platform, link.url));
                       if (invalidLink) {
-                        alert(`The link "${invalidLink.url}" does not match the selected platform (${invalidLink.platform}). Please select the correct platform or choose 'Other'.`);
+                        await showAlert(`The link "${invalidLink.url}" does not match the selected platform (${invalidLink.platform}). Please select the correct platform or choose 'Other'.`, { title: 'Invalid Link' });
                         return;
                       }
                       setOpenDropdown(null);

@@ -1,12 +1,13 @@
 import { useState, useEffect } from 'react';
-
 import { Plus, Briefcase, Calendar, MapPin, Trash2, X, Edit2, Globe, Award, BookOpen, Film, Pencil } from 'lucide-react';
+import { useModal } from '../components/BFIModal';
 
 export default function Experience() {
   const [experiences, setExperiences] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingId, setEditingId] = useState(null);
+  const { showAlert, showConfirm } = useModal();
   
   const initialForm = {
     title: '',
@@ -76,12 +77,13 @@ export default function Experience() {
       }
     } catch (err) {
       console.error(err);
-      alert(editingId ? 'Failed to update experience' : 'Failed to add experience');
+      await showAlert(editingId ? 'Failed to update experience' : 'Failed to add experience', { title: 'Error' });
     }
   };
 
   const deleteExperience = async (id) => {
-    if(!window.confirm('Are you sure you want to delete this experience?')) return;
+    const confirmed = await showConfirm('Are you sure you want to delete this experience?', { title: 'Delete Experience', confirmLabel: 'Delete' });
+    if (!confirmed) return;
     try {
       await fetch(`/api/experience/${id}`, {
         method: 'DELETE',

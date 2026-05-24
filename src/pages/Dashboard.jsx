@@ -9,10 +9,12 @@ import { io } from 'socket.io-client';
 import jsPDF from 'jspdf';
 import { useNavigate, Link } from 'react-router-dom';
 import { resolveMediaUrl } from '../utils/mediaUtils';
+import { useModal } from '../components/BFIModal';
 
 export default function Dashboard() {
   const { currentUser } = useAuth();
   const navigate = useNavigate();
+  const { showAlert } = useModal();
   const [data, setData] = useState({ pinnedProjects: [], recommendedProjects: [], stats: {}, announcements: [] });
   const [loading, setLoading] = useState(true);
   const [cvDownloading, setCvDownloading] = useState(false);
@@ -167,11 +169,11 @@ export default function Dashboard() {
 
         doc.save(`${currentUser?.firstName}_${currentUser?.lastName}_Filmography.pdf`);
       } else {
-        alert(`${format.toUpperCase()} generation coming soon.`);
+        await showAlert(`${format.toUpperCase()} generation coming soon.`, { title: 'Coming Soon' });
       }
     } catch (err) {
       console.error(err);
-      alert('Error generating CV.');
+      await showAlert('Error generating CV.', { title: 'Error' });
     } finally {
       setCvDownloading(false);
     }

@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Upload, Plus, Pencil, Trash2, X, FileText, PlayCircle,
   BookOpen, Search, ChevronDown, CheckCircle,
@@ -352,24 +353,24 @@ export default function CourseMaterialsManager() {
       </div>
 
       {/* ── Upload / Edit Modal ─────────────────────────────────────────────── */}
-      {modalOpen && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', backdropFilter: 'blur(8px)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem' }}
-          onClick={e => { if (e.target === e.currentTarget) closeModal(); }}>
-          <div className="glass-panel" style={{ width: '100%', maxWidth: '620px', maxHeight: '90vh', overflowY: 'auto', padding: '2.5rem', borderRadius: '20px', position: 'relative', animation: 'fadeIn 0.25s ease' }}>
+      {modalOpen && typeof document !== 'undefined' && createPortal(
+        <div className="modern-modal-overlay" onClick={closeModal}>
+          <form onSubmit={handleSubmit} className="modern-modal-content glass-panel shadow-2xl" style={{ width: '100%', maxWidth: '620px', margin: 'auto' }} onClick={e => e.stopPropagation()}>
+            <div className="modern-modal-header">
+              <div>
+                <h3 className="font-display" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  {editTarget ? '✏️ Edit Material' : '📤 Upload Material'}
+                </h3>
+                <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', marginTop: '0.2rem', marginBottom: 0 }}>
+                  {editTarget ? 'Modify the material details or replace the file.' : 'Add a new course material for students.'}
+                </p>
+              </div>
+              <button type="button" className="icon-btn-ghost" onClick={closeModal} aria-label="Close">
+                <X size={20} />
+              </button>
+            </div>
 
-            <button onClick={closeModal} style={{ position: 'absolute', top: '1.25rem', right: '1.25rem', background: 'rgba(128,128,128,0.1)', border: '1px solid var(--glass-border)', color: 'var(--text-primary)', width: '34px', height: '34px', borderRadius: '50%', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <X size={17} />
-            </button>
-
-            <h2 className="font-display" style={{ fontSize: '1.6rem', marginBottom: '0.4rem' }}>
-              {editTarget ? '✏️ Edit Material' : '📤 Upload Material'}
-            </h2>
-            <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', marginBottom: '2rem' }}>
-              {editTarget ? 'Modify the material details or replace the file.' : 'Add a new course material for students.'}
-            </p>
-
-            <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
-
+            <div className="modern-modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem', maxHeight: '60vh', overflowY: 'auto' }}>
               {/* Title */}
               <div>
                 <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '0.4rem', fontWeight: 500 }}>Title *</label>
@@ -466,37 +467,39 @@ export default function CourseMaterialsManager() {
                   </div>
                 )}
               </div>
+            </div>
 
-              {/* Actions */}
-              <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'flex-end', marginTop: '0.5rem' }}>
-                <button type="button" className="btn btn-glass" onClick={closeModal} disabled={submitting}>Cancel</button>
-                <button type="submit" className="btn btn-primary" disabled={submitting} style={{ minWidth: '140px' }}>
-                  {submitting ? 'Saving...' : editTarget ? 'Save Changes' : <><Upload size={16} /> Upload Material</>}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
+            <div className="modern-modal-footer" style={{ display: 'flex', gap: '0.75rem', justifyContent: 'flex-end' }}>
+              <button type="button" className="modern-btn modern-btn--secondary" onClick={closeModal} disabled={submitting}>Cancel</button>
+              <button type="submit" className="modern-btn modern-btn--primary" disabled={submitting} style={{ minWidth: '140px' }}>
+                {submitting ? 'Saving...' : editTarget ? 'Save Changes' : <><Upload size={16} /> Upload Material</>}
+              </button>
+            </div>
+          </form>
+        </div>,
+        document.body
       )}
 
       {/* ── Delete Confirm Dialog ─────────────────────────────────────────── */}
-      {deleteConfirm && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', backdropFilter: 'blur(8px)', zIndex: 1001, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem' }}>
-          <div className="glass-panel" style={{ padding: '2rem', maxWidth: '420px', width: '100%', borderRadius: '16px', textAlign: 'center', animation: 'fadeIn 0.2s ease' }}>
-            <Trash2 size={40} style={{ color: 'var(--danger)', margin: '0 auto 1rem' }} />
-            <h3 style={{ fontSize: '1.2rem', marginBottom: '0.5rem' }}>Delete Material?</h3>
-            <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', marginBottom: '1.5rem' }}>
-              "<strong>{deleteConfirm.title}</strong>" will be permanently removed. This cannot be undone.
-            </p>
-            <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'center' }}>
-              <button className="btn btn-glass" onClick={() => setDeleteConfirm(null)}>Cancel</button>
-              <button onClick={() => handleDelete(deleteConfirm.id)}
-                style={{ background: 'var(--danger)', color: 'white', border: 'none', padding: '0.75rem 1.5rem', borderRadius: '8px', cursor: 'pointer', fontWeight: 600 }}>
+      {deleteConfirm && typeof document !== 'undefined' && createPortal(
+        <div className="modern-modal-overlay" onClick={() => setDeleteConfirm(null)}>
+          <div className="modern-modal-content glass-panel shadow-2xl" style={{ padding: '2rem', maxWidth: '420px', width: '100%', margin: 'auto', textAlign: 'center' }} onClick={e => e.stopPropagation()}>
+            <div className="modern-modal-body" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+              <Trash2 size={40} style={{ color: 'var(--danger)', marginBottom: '1rem' }} />
+              <h3 className="font-display" style={{ fontSize: '1.4rem', marginBottom: '0.5rem' }}>Delete Material?</h3>
+              <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', marginBottom: '1.5rem' }}>
+                "<strong>{deleteConfirm.title}</strong>" will be permanently removed. This cannot be undone.
+              </p>
+            </div>
+            <div className="modern-modal-footer" style={{ display: 'flex', gap: '0.75rem', justifyContent: 'center' }}>
+              <button type="button" className="modern-btn modern-btn--secondary" onClick={() => setDeleteConfirm(null)} style={{ flex: 1 }}>Cancel</button>
+              <button type="button" className="modern-btn modern-btn--danger" onClick={() => handleDelete(deleteConfirm.id)} style={{ flex: 1 }}>
                 Delete
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
 
     </div>

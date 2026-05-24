@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { UserPlus, Search, Copy, CheckCircle2, User, UserCheck, CheckSquare, Square, Edit, X, FileSpreadsheet, Trash2, GraduationCap } from 'lucide-react';
+import { UserPlus, Search, Copy, CheckCircle2, User, UserCheck, CheckSquare, Square, Edit, X, FileSpreadsheet, Trash2, GraduationCap, Clapperboard } from 'lucide-react';
 import BulkStudentImport from '../../components/admin/BulkStudentImport';
 import { getOrdinalSuffix } from '../../utils/formatUtils';
 
@@ -33,6 +33,16 @@ export default function StudentManager() {
   });
   const [isAcademicSaving, setIsAcademicSaving] = useState(false);
   const [academicError, setAcademicError] = useState('');
+
+  // Phase 2 Completion Modal State
+  const [phase2Student, setPhase2Student] = useState(null);
+  const [phase2CourseId, setPhase2CourseId] = useState(null);
+  const [phase2FormData, setPhase2FormData] = useState({
+    phase2_shooting_attended: false,
+    phase2_editing_attended: false
+  });
+  const [isPhase2Saving, setIsPhase2Saving] = useState(false);
+  const [phase2Error, setPhase2Error] = useState('');
 
   // Confirmation Modal State
   const [confirmConfig, setConfirmConfig] = useState(null);
@@ -113,7 +123,7 @@ export default function StudentManager() {
 
   // Prevent background scrolling when modal is open
   useEffect(() => {
-    if (editingStudent || confirmConfig || academicStudent) {
+    if (editingStudent || confirmConfig || academicStudent || phase2Student) {
       document.body.classList.add('modal-open');
       document.documentElement.classList.add('modal-open');
     } else {
@@ -124,7 +134,7 @@ export default function StudentManager() {
       document.body.classList.remove('modal-open');
       document.documentElement.classList.remove('modal-open');
     };
-  }, [editingStudent, confirmConfig, academicStudent]);
+  }, [editingStudent, confirmConfig, academicStudent, phase2Student]);
 
   const toggleProgress = async (studentId, enrollmentId, stepField, currentValue, courseName) => {
     if (courseName === 'Online Filmmaking Course') {
@@ -137,13 +147,19 @@ export default function StudentManager() {
         return;
       }
 
+      // step4 for Online Filmmaking Course always opens the Phase 2 modal
+      if (stepField === 'step4_completed') {
+        if (!e?.step1_completed || !e?.step2_completed || !e?.step3_completed) {
+          setConfirmConfig({ title: 'Action Restricted', message: 'Cannot update "Phase 2: Completed Course". All previous phases must be completed first.', confirmText: 'OK', isAlert: true, onConfirm: () => {} });
+          return;
+        }
+        openPhase2Modal(student, enrollmentId);
+        return;
+      }
+
       if (willBeChecked) {
         if (stepField === 'step3_completed' && (!e?.step1_completed || !e?.step2_completed)) {
           setConfirmConfig({ title: 'Action Restricted', message: 'Cannot check "Phase 2: Enrolled". "Phase 1: Enrolled" and "Phase 1: Passed Exam" must be checked first.', confirmText: 'OK', isAlert: true, onConfirm: () => {} });
-          return;
-        }
-        if (stepField === 'step4_completed' && (!e?.step1_completed || !e?.step2_completed || !e?.step3_completed)) {
-          setConfirmConfig({ title: 'Action Restricted', message: 'Cannot check "Phase 2: Completed". All previous phases must be checked first.', confirmText: 'OK', isAlert: true, onConfirm: () => {} });
           return;
         }
       } else {
@@ -153,6 +169,30 @@ export default function StudentManager() {
         }
         if (stepField === 'step1_completed' && (e?.step2_completed || e?.step3_completed || e?.step4_completed)) {
           setConfirmConfig({ title: 'Action Restricted', message: 'Cannot uncheck "Phase 1: Enrolled" while subsequent phases are checked.', confirmText: 'OK', isAlert: true, onConfirm: () => {} });
+          return;
+        }
+      }
+    }
+
+    if (courseName === 'Film Appreciation Course') {
+      const student = students.find(s => s.id === studentId);
+      const e = student?.enrollments?.find(env => env.id === enrollmentId);
+      const willBeChecked = !currentValue;
+
+      if (stepField === 'step4_completed') {
+        if (!e?.step1_completed) {
+          setConfirmConfig({ title: 'Action Restricted', message: 'Cannot update "Completed Course" because "Admission Confirmed" is not yet completed.', confirmText: 'OK', isAlert: true, onConfirm: () => {} });
+          return;
+        }
+        openAcademicModal(student, enrollmentId);
+        return;
+      }
+
+      if (willBeChecked) {
+        // Step 1 check has no other restrictions
+      } else {
+        if (stepField === 'step1_completed' && e?.step4_completed) {
+          setConfirmConfig({ title: 'Action Restricted', message: 'Cannot uncheck "Admission Confirmed" while "Completed Course" is checked.', confirmText: 'OK', isAlert: true, onConfirm: () => {} });
           return;
         }
       }
@@ -334,18 +374,71 @@ export default function StudentManager() {
     const enrollment = student.enrollments.find(e => e.id === courseId);
     setAcademicStudent({ ...student, enrollment });
     setAcademicCourseId(courseId);
-    setAcademicFormData({
-      attendance_classes: enrollment.attendance_classes?.toString() || '0',
-      attendance_total: enrollment.attendance_total?.toString() || '22',
-      exam_written: enrollment.exam_written?.toString() || '0',
-      assignment_screenplay: enrollment.assignment_screenplay?.toString() || '0',
-      assignment_shooting_script: enrollment.assignment_shooting_script?.toString() || '0'
-    });
+    
+    if (enrollment.course_name === 'Film Appreciation Course') {
+      setAcademicFormData({
+        attendance_classes: '0',
+        attendance_total: '0',
+        exam_written: enrollment.exam_written?.toString() || '0',
+        assignment_screenplay: '0',
+        assignment_shooting_script: '0'
+      });
+    } else {
+      setAcademicFormData({
+        attendance_classes: enrollment.attendance_classes?.toString() || '0',
+        attendance_total: enrollment.attendance_total?.toString() || '22',
+        exam_written: enrollment.exam_written?.toString() || '0',
+        assignment_screenplay: enrollment.assignment_screenplay?.toString() || '0',
+        assignment_shooting_script: enrollment.assignment_shooting_script?.toString() || '0'
+      });
+    }
   };
 
   const closeAcademicModal = () => {
     setAcademicStudent(null);
     setAcademicCourseId(null);
+  };
+
+  // ---- Phase 2 Modal handlers ----
+  const openPhase2Modal = (student, courseId) => {
+    setPhase2Error('');
+    const enrollment = student.enrollments.find(e => e.id === courseId);
+    setPhase2Student({ ...student, enrollment });
+    setPhase2CourseId(courseId);
+    setPhase2FormData({
+      phase2_shooting_attended: !!(enrollment?.phase2_shooting_attended),
+      phase2_editing_attended: !!(enrollment?.phase2_editing_attended)
+    });
+  };
+
+  const closePhase2Modal = () => {
+    setPhase2Student(null);
+    setPhase2CourseId(null);
+  };
+
+  const submitPhase2 = async (e) => {
+    e.preventDefault();
+    setIsPhase2Saving(true);
+    setPhase2Error('');
+
+    try {
+      const res = await fetch(`/api/admin/students/${phase2Student.id}/phase2-attendance/${phase2CourseId}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
+        },
+        body: JSON.stringify(phase2FormData)
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to update Phase 2 attendance');
+      await fetchStudents();
+      closePhase2Modal();
+    } catch (err) {
+      setPhase2Error(err.message);
+    } finally {
+      setIsPhase2Saving(false);
+    }
   };
 
   const handleAcademicChange = (e) => {
@@ -658,18 +751,36 @@ export default function StudentManager() {
                     </td>
                     <td className="student-table-col-actions" style={{ padding: '1.25rem 1.5rem', textAlign: 'center' }}>
                       <div className="student-table-actions" style={{ display: 'flex', gap: '0.5rem', justifyContent: 'center' }}>
+                        {s.enrollments && s.enrollments.find(e => e.course_name === 'Online Filmmaking Course' || e.course_name === 'Film Appreciation Course') && (() => {
+                          const e = s.enrollments.find(enroll => enroll.course_name === 'Online Filmmaking Course' || enroll.course_name === 'Film Appreciation Course');
+                          const isAppreciation = e.course_name === 'Film Appreciation Course';
+                          return (
+                            <button 
+                              onClick={() => openAcademicModal(s, e.id)}
+                              className="btn" 
+                              style={{ padding: '0.5rem', background: 'rgba(16, 185, 129, 0.1)', color: '#10b981', border: '1px solid rgba(16, 185, 129, 0.2)', borderRadius: '8px', transition: 'all 0.2s' }} 
+                              onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(16, 185, 129, 0.2)'; e.currentTarget.style.transform = 'scale(1.05)'; }} 
+                              onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(16, 185, 129, 0.1)'; e.currentTarget.style.transform = 'scale(1)'; }} 
+                              title={isAppreciation ? 'Exam Result' : 'Academic Records'}
+                            >
+                              <GraduationCap size={16} />
+                            </button>
+                          );
+                        })()}
                         {s.enrollments && s.enrollments.find(e => e.course_name === 'Online Filmmaking Course') && (
-                          <button 
-                            onClick={() => openAcademicModal(s, s.enrollments.find(e => e.course_name === 'Online Filmmaking Course').id)}
-                            className="btn" 
-                            style={{ padding: '0.5rem', background: 'rgba(16, 185, 129, 0.1)', color: '#10b981', border: '1px solid rgba(16, 185, 129, 0.2)', borderRadius: '8px', transition: 'all 0.2s' }} 
-                            onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(16, 185, 129, 0.2)'; e.currentTarget.style.transform = 'scale(1.05)'; }} 
-                            onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(16, 185, 129, 0.1)'; e.currentTarget.style.transform = 'scale(1)'; }} 
-                            title="Academic Records"
+                          <button
+                            onClick={() => openPhase2Modal(s, s.enrollments.find(e => e.course_name === 'Online Filmmaking Course').id)}
+                            className="btn"
+                            style={{ padding: '0.5rem', background: 'rgba(139, 92, 246, 0.1)', color: '#8b5cf6', border: '1px solid rgba(139, 92, 246, 0.2)', borderRadius: '8px', transition: 'all 0.2s' }}
+                            onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(139, 92, 246, 0.2)'; e.currentTarget.style.transform = 'scale(1.05)'; }}
+                            onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(139, 92, 246, 0.1)'; e.currentTarget.style.transform = 'scale(1)'; }}
+                            title="Phase 2: Shooting & Editing Attendance"
                           >
-                            <GraduationCap size={16} />
+                            <Clapperboard size={16} />
                           </button>
                         )}
+
+
                         <button onClick={() => openEditModal(s)} className="btn" style={{ padding: '0.5rem', background: 'rgba(56, 189, 248, 0.1)', color: '#0284c7', border: '1px solid rgba(56, 189, 248, 0.2)', borderRadius: '8px', transition: 'all 0.2s' }} onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(56, 189, 248, 0.2)'; e.currentTarget.style.transform = 'scale(1.05)'; }} onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(56, 189, 248, 0.1)'; e.currentTarget.style.transform = 'scale(1)'; }} title="Edit Student">
                           <Edit size={16} />
                         </button>
@@ -700,17 +811,18 @@ export default function StudentManager() {
 
       {/* Edit Modal Overlay */}
       {editingStudent && createPortal(
-        <div onClick={() => setEditingStudent(null)} style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.8)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem', overflowY: 'auto' }}>
-          <div onClick={(e) => e.stopPropagation()} className="glass-panel" style={{ background: 'var(--bg-secondary)', padding: '2rem', width: '100%', maxWidth: '500px', position: 'relative', margin: 'auto' }}>
-            <button onClick={() => setEditingStudent(null)} style={{ position: 'absolute', top: '1rem', right: '1rem', background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}>
-               <X size={20} />
-            </button>
+        <div className="modern-modal-overlay" onClick={() => setEditingStudent(null)}>
+          <form onSubmit={submitEdit} className="modern-modal-content glass-panel shadow-2xl" style={{ width: '100%', maxWidth: '500px', margin: 'auto' }} onClick={(e) => e.stopPropagation()}>
+            <div className="modern-modal-header">
+              <h3 className="font-display" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <Edit className="text-accent" /> Edit Student Details
+              </h3>
+              <button type="button" className="icon-btn-ghost" onClick={() => setEditingStudent(null)} aria-label="Close">
+                <X size={20} />
+              </button>
+            </div>
             
-            <h2 style={{ marginBottom: '1.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <Edit className="text-accent" /> Edit Student Details
-            </h2>
-            
-            <form onSubmit={submitEdit} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+            <div className="modern-modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '1rem', maxHeight: '60vh', overflowY: 'auto' }}>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
                 <div>
                   <label style={{ display: 'block', marginBottom: '0.4rem', color: 'var(--text-secondary)' }}>First Name</label>
@@ -784,15 +896,15 @@ export default function StudentManager() {
               </div>
 
               {editError && <div className="error-alert" style={{ marginTop: '0.5rem' }}>{editError}</div>}
+            </div>
 
-              <div style={{ display: 'flex', gap: '1rem', marginTop: '1rem' }}>
-                <button type="button" onClick={() => setEditingStudent(null)} className="btn btn-glass" style={{ flex: 1 }}>Cancel</button>
-                <button type="submit" className="btn btn-primary" disabled={isEditing} style={{ flex: 1 }}>
-                  {isEditing ? 'Saving...' : 'Save Changes'}
-                </button>
-              </div>
-            </form>
-          </div>
+            <div className="modern-modal-footer" style={{ display: 'flex', gap: '1rem' }}>
+              <button type="button" onClick={() => setEditingStudent(null)} className="modern-btn modern-btn--secondary" style={{ flex: 1 }}>Cancel</button>
+              <button type="submit" className="modern-btn modern-btn--primary" disabled={isEditing} style={{ flex: 1 }}>
+                {isEditing ? 'Saving...' : 'Save Changes'}
+              </button>
+            </div>
+          </form>
         </div>,
         document.body
       )}
@@ -829,13 +941,13 @@ export default function StudentManager() {
 
       {/* Academic Records Modal */}
       {academicStudent && typeof document !== 'undefined' && createPortal(
-        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(10px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999, padding: '1rem', animation: 'fadeIn 0.2s ease-out' }} onClick={closeAcademicModal}>
-          <div style={{ background: 'var(--glass-bg)', backdropFilter: 'blur(20px)', border: '1px solid var(--glass-border)', borderRadius: '24px', padding: '2rem', width: '100%', maxWidth: '500px', maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 25px 50px -12px rgba(0,0,0,0.5)', animation: 'slideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1)' }} onClick={e => e.stopPropagation()}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
+        <div className="modern-modal-overlay" onClick={closeAcademicModal}>
+          <form onSubmit={submitAcademic} className="modern-modal-content glass-panel shadow-2xl" style={{ width: '100%', maxWidth: '500px', margin: 'auto' }} onClick={e => e.stopPropagation()}>
+            <div className="modern-modal-header">
               <div>
-                <h2 style={{ fontSize: '1.5rem', fontWeight: '700', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <GraduationCap size={24} style={{ color: '#10b981' }} /> Academic Records
-                </h2>
+                <h3 className="font-display" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <GraduationCap size={24} style={{ color: '#10b981' }} /> {academicStudent.enrollment?.course_name === 'Film Appreciation Course' ? 'Exam Result' : 'Academic Records'}
+                </h3>
                 <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginTop: '0.2rem' }}>
                   {academicStudent.full_name} <span style={{ opacity: 0.7 }}>({academicStudent.batch_number ? `${getOrdinalSuffix(academicStudent.batch_number)} Batch` : 'No Batch'})</span>
                 </p>
@@ -843,57 +955,149 @@ export default function StudentManager() {
                   {academicStudent.enrollment?.course_name || 'Course'}
                 </p>
               </div>
-              <button onClick={closeAcademicModal} style={{ background: 'rgba(255,255,255,0.05)', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '0.5rem', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'all 0.2s' }} onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255,255,255,0.1)'; e.currentTarget.style.color = 'var(--text-primary)'; }} onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(255,255,255,0.05)'; e.currentTarget.style.color = 'var(--text-muted)'; }}><X size={20} /></button>
+              <button type="button" className="icon-btn-ghost" onClick={closeAcademicModal} aria-label="Close"><X size={20} /></button>
             </div>
 
-            <form onSubmit={submitAcademic} style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
-              <div style={{ padding: '1rem', background: 'rgba(255,255,255,0.02)', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.05)' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-                  <h3 style={{ fontSize: '1rem', color: 'var(--text-primary)', margin: 0 }}>Attendance</h3>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                    <label style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', whiteSpace: 'nowrap' }}>Total classes:</label>
-                    <input type="number" name="attendance_total" value={academicFormData.attendance_total} onChange={handleAcademicChange} min="1" className="input-glass" style={{ width: '100px', paddingLeft: '0.5rem', fontSize: '0.9rem' }} required />
-                  </div>
-                </div>
-                <div>
-                  <label style={{ display: 'block', marginBottom: '0.4rem', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Classes Attended</label>
-                  <input type="number" name="attendance_classes" value={academicFormData.attendance_classes} onChange={handleAcademicChange} min="0" max={academicFormData.attendance_total || 22} className="input-glass" style={{ paddingLeft: '1rem' }} required />
-                  <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.3rem' }}>Requires {Math.ceil((academicFormData.attendance_total || 22) * 0.8)}+ (80%) to qualify for exam.</p>
-                </div>
-              </div>
-
-              <div style={{ padding: '1rem', background: 'rgba(255,255,255,0.02)', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.05)' }}>
-                <h3 style={{ fontSize: '1rem', marginBottom: '1rem', color: 'var(--text-primary)' }}>Exam Results (Total: 100)</h3>
-                
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+            <div className="modern-modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem', maxHeight: '60vh', overflowY: 'auto' }}>
+              {academicStudent.enrollment?.course_name === 'Film Appreciation Course' ? (
+                /* Film Appreciation Course: single Exam Result out of 100, no attendance */
+                <div style={{ padding: '1rem', background: 'rgba(255,255,255,0.02)', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.05)' }}>
+                  <h3 style={{ fontSize: '1rem', marginBottom: '1rem', color: 'var(--text-primary)' }}>Exam Result (Total: 100)</h3>
                   <div>
-                    <label style={{ display: 'block', marginBottom: '0.4rem', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Written Exam (Max: 80)</label>
-                    <input type="number" name="exam_written" value={academicFormData.exam_written} onChange={handleAcademicChange} min="0" max="80" className="input-glass" style={{ paddingLeft: '1rem' }} required />
+                    <label style={{ display: 'block', marginBottom: '0.4rem', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Written Exam Score (Max: 100)</label>
+                    <input type="number" name="exam_written" value={academicFormData.exam_written} onChange={handleAcademicChange} min="0" max="100" className="input-glass" style={{ paddingLeft: '1rem' }} required />
                   </div>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-                    <div>
-                      <label style={{ display: 'block', marginBottom: '0.4rem', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Screenplay (Max: 10)</label>
-                      <input type="number" name="assignment_screenplay" value={academicFormData.assignment_screenplay} onChange={handleAcademicChange} min="0" max="10" className="input-glass" style={{ paddingLeft: '1rem' }} required />
-                    </div>
-                    <div>
-                      <label style={{ display: 'block', marginBottom: '0.4rem', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Shooting Script (Max: 10)</label>
-                      <input type="number" name="assignment_shooting_script" value={academicFormData.assignment_shooting_script} onChange={handleAcademicChange} min="0" max="10" className="input-glass" style={{ paddingLeft: '1rem' }} required />
-                    </div>
-                  </div>
+                  <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '1rem' }}>Requires 33+ marks to pass.</p>
                 </div>
-                <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '1rem' }}>Requires 33+ total marks to pass.</p>
-              </div>
+              ) : (
+                /* Online Filmmaking Course: attendance & full breakdown */
+                <>
+                  <div style={{ padding: '1rem', background: 'rgba(255,255,255,0.02)', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.05)' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+                      <h3 style={{ fontSize: '1rem', color: 'var(--text-primary)', margin: 0 }}>Attendance</h3>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        <label style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', whiteSpace: 'nowrap' }}>Total classes:</label>
+                        <input type="number" name="attendance_total" value={academicFormData.attendance_total} onChange={handleAcademicChange} min="1" className="input-glass" style={{ width: '100px', paddingLeft: '0.5rem', fontSize: '0.9rem' }} required />
+                      </div>
+                    </div>
+                    <div>
+                      <label style={{ display: 'block', marginBottom: '0.4rem', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Classes Attended</label>
+                      <input type="number" name="attendance_classes" value={academicFormData.attendance_classes} onChange={handleAcademicChange} min="0" max={academicFormData.attendance_total || 22} className="input-glass" style={{ paddingLeft: '1rem' }} required />
+                      <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.3rem' }}>Requires {Math.ceil((academicFormData.attendance_total || 22) * 0.8)}+ (80%) to qualify for exam.</p>
+                    </div>
+                  </div>
+
+                  <div style={{ padding: '1rem', background: 'rgba(255,255,255,0.02)', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.05)' }}>
+                    <h3 style={{ fontSize: '1rem', marginBottom: '1rem', color: 'var(--text-primary)' }}>Exam Results (Total: 100)</h3>
+                    
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                      <div>
+                        <label style={{ display: 'block', marginBottom: '0.4rem', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Written Exam (Max: 80)</label>
+                        <input type="number" name="exam_written" value={academicFormData.exam_written} onChange={handleAcademicChange} min="0" max="80" className="input-glass" style={{ paddingLeft: '1rem' }} required />
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+                        <div>
+                          <label style={{ display: 'block', marginBottom: '0.4rem', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Screenplay (Max: 10)</label>
+                          <input type="number" name="assignment_screenplay" value={academicFormData.assignment_screenplay} onChange={handleAcademicChange} min="0" max="10" className="input-glass" style={{ paddingLeft: '1rem' }} required />
+                        </div>
+                        <div>
+                          <label style={{ display: 'block', marginBottom: '0.4rem', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Shooting Script (Max: 10)</label>
+                          <input type="number" name="assignment_shooting_script" value={academicFormData.assignment_shooting_script} onChange={handleAcademicChange} min="0" max="10" className="input-glass" style={{ paddingLeft: '1rem' }} required />
+                        </div>
+                      </div>
+                    </div>
+                    <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '1rem' }}>Requires 33+ total marks to pass.</p>
+                  </div>
+                </>
+              )}
 
               {academicError && <div className="error-alert" style={{ marginTop: '0.5rem' }}>{academicError}</div>}
+            </div>
 
-              <div style={{ display: 'flex', gap: '1rem', marginTop: '0.5rem' }}>
-                <button type="button" onClick={closeAcademicModal} className="btn btn-glass" style={{ flex: 1 }}>Cancel</button>
-                <button type="submit" className="btn" disabled={isAcademicSaving} style={{ flex: 1, background: '#10b981', color: 'white', border: 'none', borderRadius: '8px' }}>
-                  {isAcademicSaving ? 'Saving...' : 'Save Records'}
-                </button>
+            <div className="modern-modal-footer" style={{ display: 'flex', gap: '1rem' }}>
+              <button type="button" onClick={closeAcademicModal} className="modern-btn modern-btn--secondary" style={{ flex: 1 }}>Cancel</button>
+              <button type="submit" className="modern-btn modern-btn--primary" disabled={isAcademicSaving} style={{ flex: 1, background: '#10b981', borderColor: '#10b981' }}>
+                {isAcademicSaving ? 'Saving...' : (academicStudent.enrollment?.course_name === 'Film Appreciation Course' ? 'Save Result' : 'Save Records')}
+              </button>
+            </div>
+          </form>
+        </div>,
+        document.body
+      )}
+
+      {/* Phase 2 Completion Modal */}
+      {phase2Student && typeof document !== 'undefined' && createPortal(
+        <div className="modern-modal-overlay" onClick={closePhase2Modal}>
+          <form onSubmit={submitPhase2} className="modern-modal-content glass-panel shadow-2xl" style={{ width: '100%', maxWidth: '480px', margin: 'auto' }} onClick={e => e.stopPropagation()}>
+            <div className="modern-modal-header">
+              <div>
+                <h3 className="font-display" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <GraduationCap size={24} style={{ color: '#8b5cf6' }} /> Phase 2: Completed Course
+                </h3>
+                <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginTop: '0.2rem' }}>
+                  {phase2Student.full_name} <span style={{ opacity: 0.7 }}>({phase2Student.batch_number ? `${getOrdinalSuffix(phase2Student.batch_number)} Batch` : 'No Batch'})</span>
+                </p>
+                <p style={{ color: 'var(--text-primary)', fontSize: '0.85rem', marginTop: '0.4rem', fontWeight: '500', background: 'rgba(139, 92, 246, 0.1)', border: '1px solid rgba(139, 92, 246, 0.2)', padding: '0.2rem 0.6rem', borderRadius: '6px', display: 'inline-block' }}>
+                  Online Filmmaking Course
+                </p>
               </div>
-            </form>
-          </div>
+              <button type="button" className="icon-btn-ghost" onClick={closePhase2Modal} aria-label="Close"><X size={20} /></button>
+            </div>
+
+            <div className="modern-modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+              <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', margin: 0 }}>
+                Mark the parts the student has participated in. Step 4 (Phase 2: Completed Course) will be automatically checked once <strong style={{ color: 'var(--text-primary)' }}>both</strong> Shooting and Editing are attended.
+              </p>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', padding: '1rem', background: 'rgba(255,255,255,0.02)', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.05)' }}>
+                {/* Shooting */}
+                <label style={{ display: 'flex', alignItems: 'center', gap: '1rem', cursor: 'pointer', padding: '1rem', borderRadius: '10px', border: '1px solid', borderColor: phase2FormData.phase2_shooting_attended ? '#8b5cf6' : 'rgba(255,255,255,0.1)', background: phase2FormData.phase2_shooting_attended ? 'rgba(139,92,246,0.08)' : 'transparent', transition: 'all 0.2s' }}>
+                  <input
+                    type="checkbox"
+                    checked={phase2FormData.phase2_shooting_attended}
+                    onChange={(e) => setPhase2FormData({ ...phase2FormData, phase2_shooting_attended: e.target.checked })}
+                    style={{ width: '20px', height: '20px', accentColor: '#8b5cf6', flexShrink: 0 }}
+                  />
+                  <div>
+                    <div style={{ fontWeight: '600', color: 'var(--text-primary)', fontSize: '1rem' }}>🎬 Shooting</div>
+                    <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>Student participated in the Shooting part of Phase 2</div>
+                  </div>
+                </label>
+
+                {/* Editing */}
+                <label style={{ display: 'flex', alignItems: 'center', gap: '1rem', cursor: 'pointer', padding: '1rem', borderRadius: '10px', border: '1px solid', borderColor: phase2FormData.phase2_editing_attended ? '#8b5cf6' : 'rgba(255,255,255,0.1)', background: phase2FormData.phase2_editing_attended ? 'rgba(139,92,246,0.08)' : 'transparent', transition: 'all 0.2s' }}>
+                  <input
+                    type="checkbox"
+                    checked={phase2FormData.phase2_editing_attended}
+                    onChange={(e) => setPhase2FormData({ ...phase2FormData, phase2_editing_attended: e.target.checked })}
+                    style={{ width: '20px', height: '20px', accentColor: '#8b5cf6', flexShrink: 0 }}
+                  />
+                  <div>
+                    <div style={{ fontWeight: '600', color: 'var(--text-primary)', fontSize: '1rem' }}>✂️ Editing</div>
+                    <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>Student participated in the Editing part of Phase 2</div>
+                  </div>
+                </label>
+              </div>
+
+              {/* Auto-complete status indicator */}
+              <div style={{ padding: '0.75rem 1rem', borderRadius: '8px', background: (phase2FormData.phase2_shooting_attended && phase2FormData.phase2_editing_attended) ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.06)', border: '1px solid', borderColor: (phase2FormData.phase2_shooting_attended && phase2FormData.phase2_editing_attended) ? 'rgba(16,185,129,0.3)' : 'rgba(239,68,68,0.15)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                {(phase2FormData.phase2_shooting_attended && phase2FormData.phase2_editing_attended) ? (
+                  <><CheckSquare size={16} style={{ color: '#10b981', flexShrink: 0 }} /><span style={{ fontSize: '0.85rem', color: '#10b981', fontWeight: '600' }}>Both parts attended — Phase 2: Completed Course will be marked ✓</span></>
+                ) : (
+                  <><Square size={16} style={{ color: '#ef4444', flexShrink: 0 }} /><span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Both Shooting and Editing must be attended to complete Phase 2.</span></>
+                )}
+              </div>
+
+              {phase2Error && <div className="error-alert" style={{ marginTop: '0.5rem' }}>{phase2Error}</div>}
+            </div>
+
+            <div className="modern-modal-footer" style={{ display: 'flex', gap: '1rem' }}>
+              <button type="button" onClick={closePhase2Modal} className="modern-btn modern-btn--secondary" style={{ flex: 1 }}>Cancel</button>
+              <button type="submit" className="modern-btn modern-btn--primary" disabled={isPhase2Saving} style={{ flex: 1, background: '#8b5cf6', borderColor: '#8b5cf6' }}>
+                {isPhase2Saving ? 'Saving...' : 'Save Attendance'}
+              </button>
+            </div>
+          </form>
         </div>,
         document.body
       )}
@@ -936,7 +1140,7 @@ export default function StudentManager() {
           white-space: nowrap;
         }
         .student-manager-table .student-table-col-actions {
-          width: 10%;
+          width: 13%;
         }
         .student-table-batch-pill {
           display: inline-flex;
@@ -1020,7 +1224,7 @@ export default function StudentManager() {
             width: auto;
           }
           .student-manager-table .student-table-col-actions {
-            min-width: 180px;
+            min-width: 220px;
             width: auto;
           }
           .student-table-course-card {

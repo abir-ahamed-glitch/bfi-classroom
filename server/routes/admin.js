@@ -353,6 +353,49 @@ router.get('/imports/history/:id', authenticateToken, requireRole('admin'), (req
   }
 });
 
+// Route to update a student's Phase 2 attendance (Shooting + Editing parts)
+// Only for Online Filmmaking Course. If both parts attended => step4_completed = 1
+// IMPORTANT: This must be declared BEFORE the generic PUT /students/:id route.
+router.put('/students/:id/phase2-attendance/:courseId', authenticateToken, requireRole('admin'), (req, res) => {
+  try {
+    const studentId = req.params.id;
+    const courseId = req.params.courseId;
+    const { phase2_shooting_attended, phase2_editing_attended } = req.body;
+
+    // Verify the enrollment exists and belongs to Online Filmmaking Course
+    const enrollment = db.prepare(`SELECT * FROM student_course_enrollments WHERE id = ? AND user_id = ?`).get(courseId, studentId);
+    if (!enrollment) {
+      return res.status(404).json({ error: 'Course enrollment not found.' });
+    }
+    if (enrollment.course_name !== 'Online Filmmaking Course') {
+      return res.status(400).json({ error: 'Phase 2 attendance is only supported for the Online Filmmaking Course.' });
+    }
+
+    const shooting = phase2_shooting_attended ? 1 : 0;
+    const editing = phase2_editing_attended ? 1 : 0;
+    const step4 = (shooting === 1 && editing === 1) ? 1 : 0;
+
+    db.prepare(`
+      UPDATE student_course_enrollments
+      SET phase2_shooting_attended = ?,
+          phase2_editing_attended = ?,
+          step4_completed = ?,
+          updated_at = datetime('now')
+      WHERE id = ? AND user_id = ?
+    `).run(shooting, editing, step4, courseId, studentId);
+
+    const io = req.app.get('io');
+    if (io) {
+      io.emit('progression_updated', { studentId: parseInt(studentId, 10) });
+    }
+
+    res.json({ success: true, step4_completed: step4 });
+  } catch (error) {
+    console.error('Error updating Phase 2 attendance:', error);
+    res.status(500).json({ error: 'Internal server error while updating Phase 2 attendance.' });
+  }
+});
+
 // Update a student account
 router.put('/students/:id', authenticateToken, requireRole('admin'), sanitizeInput, (req, res) => {
   try {
@@ -770,22 +813,45 @@ router.patch('/students/:id/progress', authenticateToken, requireRole('admin'), 
   }
 });
 
-// Route to update a student's academic records (Online Filmmaking Course specifically)
+// Route to update a student's academic records (Online Filmmaking Course & Film Appreciation Course)
 router.put('/students/:id/academic-records/:courseId', authenticateToken, requireRole('admin'), (req, res) => {
   try {
     const studentId = req.params.id;
     const courseId = req.params.courseId;
     const { attendance_classes, attendance_total, exam_written, assignment_screenplay, assignment_shooting_script } = req.body;
 
-    // Verify the enrollment exists and is for the Online Filmmaking Course
+    // Verify the enrollment exists
     const enrollment = db.prepare(`SELECT * FROM student_course_enrollments WHERE id = ? AND user_id = ?`).get(courseId, studentId);
     
     if (!enrollment) {
       return res.status(404).json({ error: 'Course enrollment not found.' });
     }
 
-    if (enrollment.course_name !== 'Online Filmmaking Course') {
-      return res.status(400).json({ error: 'Academic records are only supported for the Online Filmmaking Course.' });
+    if (enrollment.course_name !== 'Online Filmmaking Course' && enrollment.course_name !== 'Film Appreciation Course') {
+      return res.status(400).json({ error: 'Academic records are not supported for this course.' });
+    }
+
+    // Custom flow for Film Appreciation Course (no attendance, no assignments, score out of 100)
+    if (enrollment.course_name === 'Film Appreciation Course') {
+      const exam = parseInt(exam_written) || 0;
+      const completed = exam >= 33 ? 1 : 0;
+      
+      db.prepare(`
+        UPDATE student_course_enrollments
+        SET exam_written = ?, 
+            assignment_screenplay = 0, 
+            assignment_shooting_script = 0,
+            step4_completed = ?,
+            updated_at = datetime('now')
+        WHERE id = ? AND user_id = ?
+      `).run(exam, completed, courseId, studentId);
+
+      const io = req.app.get('io');
+      if (io) {
+        io.emit('progression_updated', { studentId: parseInt(studentId, 10) });
+      }
+
+      return res.json({ success: true });
     }
 
     const attendance = parseInt(attendance_classes) || 0;

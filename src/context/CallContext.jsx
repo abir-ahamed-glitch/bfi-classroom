@@ -3,6 +3,7 @@ import React, { createContext, useContext, useState, useEffect, useRef, useCallb
 import { io } from 'socket.io-client';
 import { useAuth } from './AuthContext';
 import { soundManager } from '../utils/AudioSynthesizer';
+import { useModal } from '../components/BFIModal';
 
 const CallContext = createContext(null);
 
@@ -16,6 +17,7 @@ const ICE_SERVERS = [
 
 export const CallProvider = ({ children }) => {
   const { currentUser } = useAuth();
+  const { showAlert } = useModal();
 
   // ── State ──────────────────────────────────────────────────────────────────
   const [callState, setCallState]     = useState('idle');      // 'idle' | 'receiving' | 'calling' | 'connected'
@@ -633,17 +635,17 @@ export const CallProvider = ({ children }) => {
   // ── Public API ────────────────────────────────────────────────────────────
   const initiateCall = useCallback(async (receiverId, receiverData, hasVideo = true) => {
     if (!socketRef.current?.connected) {
-      alert('Not connected to server. Please refresh.');
+      await showAlert('Not connected to server. Please refresh.', { title: 'Connection Error' });
       return;
     }
     if (callStateRef.current !== 'idle') {
-      alert('You are already in a call.');
+      await showAlert('You are already in a call.', { title: 'Active Call' });
       return;
     }
 
     const stream = await getMediaStream(hasVideo);
     if (!stream) {
-      alert('Microphone/Camera permission denied.');
+      await showAlert('Microphone/Camera permission denied.', { title: 'Permission Required' });
       return;
     }
 
@@ -670,7 +672,7 @@ export const CallProvider = ({ children }) => {
     const callerId = incoming.callerData.id;
     const stream = await getMediaStream(hasVideo);
     if (!stream) {
-      alert('Microphone/Camera permission denied. Cannot answer call.');
+      await showAlert('Microphone/Camera permission denied. Cannot answer call.', { title: 'Permission Required' });
       rejectCall();
       return;
     }

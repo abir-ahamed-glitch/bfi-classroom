@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { Save, CheckCircle2, Image as ImageIcon, UploadCloud, Trash2, Award, Move, ChevronDown, Type, Bold, Italic, Underline, Strikethrough, Superscript, Subscript, AlignLeft, AlignCenter, AlignRight, AlignJustify, Minus, Plus, Palette } from 'lucide-react';
+import { useModal } from '../../components/BFIModal';
 
 const COURSES = ['Online Filmmaking Course','Film Appreciation Course','Script Writing','Cinematography','Acting'];
 const API_BASE = import.meta.env.VITE_API_URL || (window.location.hostname === 'localhost' ? 'http://localhost:3001' : '');
@@ -337,6 +338,7 @@ export default function CertificateDesigner() {
   const [loading, setLoading]   = useState(false);
   const [saving, setSaving]     = useState(false);
   const [message, setMessage]   = useState({ text: '', type: '' });
+  const { showConfirm } = useModal();
 
   useEffect(() => { fetchTemplate(selectedCourse); }, [selectedCourse]);
 
@@ -412,7 +414,8 @@ export default function CertificateDesigner() {
   };
 
   const handleRemove = async () => {
-    if (!window.confirm(`Remove template for "${selectedCourse}"?`)) return;
+    const confirmed = await showConfirm(`Remove template for "${selectedCourse}"?`, { title: 'Remove Template', confirmLabel: 'Remove' });
+    if (!confirmed) return;
     setSaving(true);
     try {
       const res = await fetch(`${API_BASE}/api/certification/template`, {

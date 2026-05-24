@@ -1,14 +1,15 @@
 import { useState, useEffect } from 'react';
-
 import { Plus, Video, Image as ImageIcon, Award, Trash2, X, Play, Settings, ChevronRight, Pencil } from 'lucide-react';
 import { resolveMediaUrl } from '../utils/mediaUtils';
+import { useModal } from '../components/BFIModal';
 
 
 export default function Portfolio() {
   const [projects, setProjects] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showAddModal, setShowAddModal] = useState(false);
-  const [editingProject, setEditingProject] = useState(null); // null = add, project obj = edit
+  const [editingProject, setEditingProject] = useState(null);
+  const { showAlert, showConfirm } = useModal();
 
   // New Project State
   const initialForm = {
@@ -123,16 +124,17 @@ export default function Portfolio() {
         fetchPortfolio();
       } else {
         const errData = await res.json();
-        alert(errData.error || (isEditing ? 'Failed to update project' : 'Failed to add project'));
+        await showAlert(errData.error || (isEditing ? 'Failed to update project' : 'Failed to add project'), { title: 'Error' });
       }
     } catch (err) {
       console.error(err);
-      alert('An error occurred. Please try again.');
+      await showAlert('An error occurred. Please try again.', { title: 'Error' });
     }
   };
 
   const deleteProject = async (id) => {
-    if(!window.confirm('Are you sure you want to delete this project?')) return;
+    const confirmed = await showConfirm('Are you sure you want to delete this project?', { title: 'Delete Project', confirmLabel: 'Delete' });
+    if (!confirmed) return;
     try {
       await fetch(`/api/portfolio/${id}`, {
         method: 'DELETE',

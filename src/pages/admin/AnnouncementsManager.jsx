@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Megaphone, Trash2, Send, AlertTriangle } from 'lucide-react';
+import { useModal } from '../../components/BFIModal';
 
 
 export default function AnnouncementsManager() {
@@ -7,6 +8,7 @@ export default function AnnouncementsManager() {
   const [courseOptions, setCourseOptions] = useState([]);
   const [courseBatchesMap, setCourseBatchesMap] = useState({});
   const [loading, setLoading] = useState(false);
+  const { showAlert, showConfirm } = useModal();
   
   const [formData, setFormData] = useState({
     title: '',
@@ -97,7 +99,7 @@ export default function AnnouncementsManager() {
         fetchAnnouncements();
       } else {
         const data = await res.json();
-        alert(data.error);
+        await showAlert(data.error, { title: 'Error' });
       }
     } catch (err) {
       console.error('Create error', err);
@@ -107,7 +109,8 @@ export default function AnnouncementsManager() {
   };
 
   const handleDelete = async (id) => {
-    if (!window.confirm("Delete this announcement?")) return;
+    const confirmed = await showConfirm('Delete this announcement?', { title: 'Delete Announcement', confirmLabel: 'Delete' });
+    if (!confirmed) return;
     try {
       const res = await fetch(`/api/admin/announcements/${id}`, {
         method: 'DELETE',
