@@ -1,10 +1,10 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { ThemeProvider } from './context/ThemeContext';
 import { CallProvider } from './context/CallContext';
 import { ModalProvider } from './components/BFIModal';
-import { Film, Aperture } from 'lucide-react';
+import { Film, Aperture, Bell } from 'lucide-react';
 
 // Pages
 import Login from './pages/Login';
@@ -41,6 +41,8 @@ import Sidebar from './components/Sidebar';
 import ErrorBoundary from './components/ErrorBoundary';
 import SkeletonLoader from './components/SkeletonLoader';
 import { IncomingCallAlert, ActiveCallScreen } from './components/CallComponents';
+import NotificationPanel from './components/NotificationPanel';
+
 
 // Protected Route Wrapper
 const ProtectedRoute = ({ children, requiredRole }) => {
@@ -78,6 +80,20 @@ const Layout = ({ children }) => {
   const mainRef = React.useRef(null);
   const location = useLocation();
   const hideHeader = location.pathname.startsWith('/inbox');
+  const [isNotifOpen, setIsNotifOpen] = useState(false);
+  const [unreadNotifCount, setUnreadNotifCount] = useState(0);
+
+  useEffect(() => {
+    const handleUpdate = (e) => setUnreadNotifCount(e.detail);
+    window.addEventListener('updateUnreadNotifications', handleUpdate);
+    return () => window.removeEventListener('updateUnreadNotifications', handleUpdate);
+  }, []);
+
+  React.useEffect(() => {
+    const handleToggle = () => setIsNotifOpen(prev => !prev);
+    document.addEventListener('toggleNotifications', handleToggle);
+    return () => document.removeEventListener('toggleNotifications', handleToggle);
+  }, []);
 
   return (
     <CallProvider>
@@ -91,7 +107,7 @@ const Layout = ({ children }) => {
           <Aperture size={350} strokeWidth={1} />
         </div>
 
-        <Sidebar />
+        <Sidebar isNotifOpen={isNotifOpen} setIsNotifOpen={setIsNotifOpen} />
         <main ref={mainRef} className={`main-content ${hideHeader ? 'inbox-main-content' : ''}`} style={{ position: 'relative', zIndex: 1 }}>
           {/* Desktop Institutional Header */}
           {!hideHeader && (
@@ -123,31 +139,44 @@ const Layout = ({ children }) => {
             <div style={{
               display: 'flex',
               alignItems: 'center',
-              justifyContent: 'center',
-              gap: '16px',
+              justifyContent: 'space-between',
               padding: '14px 2rem',
               background: 'var(--bg-secondary)',
               borderBottom: '1px solid var(--glass-border)',
             }}>
-              <img src={`${import.meta.env.BASE_URL}bfi-logo.jpg`} alt="Logo" style={{ height: '28px', borderRadius: '6px' }} />
-              <div style={{
-                width: '1px',
-                height: '20px',
-                background: 'var(--glass-border)',
-              }} />
-              <div style={{
-                fontFamily: '"Li Ador Noirrit", sans-serif',
-                fontSize: '1.3rem',
-                letterSpacing: '0.06em',
-                color: 'var(--text-primary)',
-                fontWeight: 700,
-              }}>
-                Bangladesh Film Institute
+              <div style={{ width: '40px' }}></div> {/* Spacer for symmetry */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+                <img src={`${import.meta.env.BASE_URL}bfi-logo.jpg`} alt="Logo" style={{ height: '28px', borderRadius: '6px' }} />
+                <div style={{ width: '1px', height: '20px', background: 'var(--glass-border)' }} />
+                <div style={{ fontFamily: '"Li Ador Noirrit", sans-serif', fontSize: '1.3rem', letterSpacing: '0.06em', color: 'var(--text-primary)', fontWeight: 700 }}>
+                  Bangladesh Film Institute
+                </div>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center' }}>
+                <button 
+                  onClick={() => setIsNotifOpen(true)}
+                  style={{ 
+                    background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', 
+                    padding: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center', 
+                    borderRadius: '50%', transition: 'all 0.2s', position: 'relative' 
+                  }}
+                  onMouseEnter={e => e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)'}
+                  onMouseLeave={e => e.currentTarget.style.background = 'none'}
+                >
+                  <Bell size={22} />
+                  {unreadNotifCount > 0 && (
+                    <span style={{ 
+                      position: 'absolute', top: '4px', right: '4px', background: 'var(--danger)', 
+                      width: '8px', height: '8px', borderRadius: '50%' 
+                    }} />
+                  )}
+                </button>
               </div>
             </div>
           </div>
           )}
           {children}
+          <NotificationPanel isOpen={isNotifOpen} onClose={() => setIsNotifOpen(false)} />
         </main>
         <IncomingCallAlert />
         <ActiveCallScreen />

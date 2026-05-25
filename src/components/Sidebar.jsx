@@ -28,18 +28,19 @@ import {
   Briefcase,
   UsersRound,
   ScrollText,
-  Globe
+  Globe,
+  Bell
 } from 'lucide-react';
 import './Sidebar.css';
 
-export default function Sidebar() {
+export default function Sidebar({ isNotifOpen, setIsNotifOpen }) {
   const { currentUser, logout } = useAuth();
   const { currentTheme, mode, toggleMode } = useTheme();
   const location = useLocation();
   const navigate = useNavigate();
   const [isOpen, setIsOpen] = useState(false);
   const [unreadInboxCount, setUnreadInboxCount] = useState(0);
-  const [unreadNoticeCount, setUnreadNoticeCount] = useState(localStorage.getItem('unreadNotice') === 'true' ? 1 : 0);
+  const [unreadNotificationCount, setUnreadNotificationCount] = useState(0);
   const currentUserIdRef = useRef(null);
   const socketUrl = import.meta.env.VITE_SOCKET_URL || '';
   const hideBottomNav = isOpen || location.pathname.startsWith('/admin');
@@ -80,18 +81,44 @@ export default function Sidebar() {
     }
   };
 
+  const fetchUnreadNotificationCount = async () => {
+    const token = localStorage.getItem('token');
+    if (!token) return;
+    try {
+      const res = await fetch('/api/notifications/unread-count', {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setUnreadNotificationCount(data.unreadCount || 0);
+        window.dispatchEvent(new CustomEvent('updateUnreadNotifications', { detail: data.unreadCount || 0 }));
+      }
+    } catch (error) {
+      console.error('Failed to fetch unread notification count', error);
+    }
+  };
+
   useEffect(() => {
     currentUserIdRef.current = Number(currentUser?.id);
   }, [currentUser?.id]);
 
   useEffect(() => {
     if (!currentUser?.id) {
-      const timeoutId = window.setTimeout(() => setUnreadInboxCount(0), 0);
+      const timeoutId = window.setTimeout(() => {
+        setUnreadInboxCount(0);
+        setUnreadNotificationCount(0);
+      }, 0);
       return () => window.clearTimeout(timeoutId);
     }
 
-    const timeoutId = window.setTimeout(fetchUnreadInboxCount, 0);
-    const intervalId = window.setInterval(fetchUnreadInboxCount, 10000);
+    const timeoutId = window.setTimeout(() => {
+      fetchUnreadInboxCount();
+      fetchUnreadNotificationCount();
+    }, 0);
+    const intervalId = window.setInterval(() => {
+      fetchUnreadInboxCount();
+      fetchUnreadNotificationCount();
+    }, 10000);
     return () => {
       window.clearTimeout(timeoutId);
       window.clearInterval(intervalId);
@@ -139,26 +166,8 @@ export default function Sidebar() {
       fetchUnreadInboxCount();
     });
 
-    socket.on('new_announcement', async (payload) => {
-      if (currentUser?.role === 'admin') return;
-
-      if (payload?.target_batch || payload?.target_course) {
-        try {
-          const res = await fetch('/api/student/notices', {
-            headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
-          });
-          if (res.ok) {
-            const data = await res.json();
-            const isRelevant = data.announcements?.some(n => n.id === payload.id);
-            if (!isRelevant) return;
-          }
-        } catch (error) {
-          console.error('Failed to verify notice relevance:', error);
-        }
-      }
-
-      window.setTimeout(() => setUnreadNoticeCount(1), 0);
-      localStorage.setItem('unreadNotice', 'true');
+    socket.on('new_notification', () => {
+      fetchUnreadNotificationCount();
     });
 
     return () => {
@@ -166,12 +175,7 @@ export default function Sidebar() {
     };
   }, [currentUser?.id, currentUser?.role, socketUrl, location.pathname]);
 
-  useEffect(() => {
-    if (location.pathname === '/notices') {
-      window.setTimeout(() => setUnreadNoticeCount(0), 0);
-      localStorage.setItem('unreadNotice', 'false');
-    }
-  }, [location.pathname]);
+
 
   return (
     <>
@@ -254,7 +258,6 @@ export default function Sidebar() {
           </NavLink>
           <NavLink to="/notices" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
             <Megaphone size={20} /> Notice Board
-            {unreadNoticeCount > 0 && currentUser?.role !== 'admin' && <span className="nav-badge">{unreadNoticeCount}</span>}
           </NavLink>
           <NavLink to="/inbox" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
             <Inbox size={20} /> Inbox
@@ -394,13 +397,6 @@ export default function Sidebar() {
           <Home size={22} />
           <span>Home</span>
         </NavLink>
-        <NavLink to="/notices" className={({isActive}) => `bottom-nav-item ${isActive ? 'active' : ''}`} onClick={() => { closeSidebar(); haptic('tap'); }}>
-          <div className="bottom-nav-icon-wrap">
-            <Megaphone size={22} />
-            {unreadNoticeCount > 0 && currentUser?.role !== 'admin' && <span className="bottom-nav-badge">{unreadNoticeCount}</span>}
-          </div>
-          <span>Notices</span>
-        </NavLink>
         <NavLink to="/inbox" className={({isActive}) => `bottom-nav-item ${isActive ? 'active' : ''}`} onClick={() => { closeSidebar(); haptic('tap'); }}>
           <div className="bottom-nav-icon-wrap">
             <Inbox size={22} />
@@ -412,6 +408,20 @@ export default function Sidebar() {
           <User size={22} />
           <span>Profile</span>
         </NavLink>
+        <button type="button" className={`bottom-nav-item ${isNotifOpen ? 'active' : ''}`} onClick={() => { 
+          if (setIsNotifOpen) {
+            setIsNotifOpen(!isNotifOpen);
+          } else {
+            document.dispatchEvent(new CustomEvent('toggleNotifications'));
+          }
+          haptic('tap'); 
+        }}>
+          <div className="bottom-nav-icon-wrap">
+            <Bell size={22} />
+            {unreadNotificationCount > 0 && <span className="bottom-nav-badge">{unreadNotificationCount > 99 ? '99+' : unreadNotificationCount}</span>}
+          </div>
+          <span>Notifications</span>
+        </button>
         <button type="button" className={`bottom-nav-item ${isOpen ? 'active' : ''}`} onClick={() => { toggleSidebar(); haptic('tap'); }}>
           <Menu size={22} />
           <span>Menu</span>

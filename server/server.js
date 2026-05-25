@@ -29,6 +29,7 @@ import bfiaaRoutes from './routes/bfiaa.js';
 import certificationRoutes from './routes/certification.js';
 import experienceRoutes from './routes/experience.js';
 import registryRoutes from './routes/registry.js';
+import notificationsRoutes from './routes/notifications.js';
 import { getJwtRefreshSecret, getJwtSecret } from './config/security.js';
 
 const app = express();
@@ -369,6 +370,7 @@ app.use('/api/bfiaa', bfiaaRoutes);
 app.use('/api/certification', certificationRoutes);
 app.use('/api/experience', experienceRoutes);
 app.use('/api/registry', registryRoutes);
+app.use('/api/notifications', notificationsRoutes);
 
 app.use('/api', (req, res) => {
   res.status(404).json({ error: `API route not found: ${req.method} ${req.originalUrl}` });

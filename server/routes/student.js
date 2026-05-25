@@ -214,7 +214,7 @@ router.get('/dashboard', authenticateToken, (req, res) => {
     }
 
     const announcements = db.prepare(`
-      SELECT a.id, a.title, a.content, a.priority, a.target_course, a.target_batch, a.created_at, u.first_name as admin_name
+      SELECT a.id, a.title, a.content, a.priority, a.target_course, a.target_batch, a.image_url, a.created_at, u.first_name as admin_name
       FROM announcements a
       JOIN users u ON a.admin_id = u.id
       WHERE (
@@ -266,7 +266,7 @@ router.get('/notices', authenticateToken, (req, res) => {
     if (req.user.role === 'admin') {
       // Admins see all announcements
       announcements = db.prepare(`
-        SELECT a.id, a.title, a.content, a.priority, a.target_course, a.target_batch, a.created_at, u.first_name as admin_name
+        SELECT a.id, a.title, a.content, a.priority, a.target_course, a.target_batch, a.image_url, a.created_at, u.first_name as admin_name
         FROM announcements a
         JOIN users u ON a.admin_id = u.id
         ORDER BY a.created_at DESC
@@ -284,7 +284,7 @@ router.get('/notices', authenticateToken, (req, res) => {
       }
 
       announcements = db.prepare(`
-        SELECT a.id, a.title, a.content, a.priority, a.target_course, a.target_batch, a.created_at, u.first_name as admin_name
+        SELECT a.id, a.title, a.content, a.priority, a.target_course, a.target_batch, a.image_url, a.created_at, u.first_name as admin_name
         FROM announcements a
         JOIN users u ON a.admin_id = u.id
         WHERE (

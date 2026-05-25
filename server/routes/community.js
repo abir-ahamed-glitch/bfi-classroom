@@ -152,6 +152,47 @@ router.post('/posts', authenticateToken, sanitizeInput, (req, res) => {
     if (project_id) {
       db.prepare('UPDATE projects SET show_on_community = 1 WHERE id = ?').run(project_id);
     }
+      
+    // Notify all other users about the new community post
+    const usersToNotify = db.prepare('SELECT id FROM users WHERE id != ?').all(req.user.id);
+    if (usersToNotify.length > 0) {
+      const poster = db.prepare('SELECT first_name, last_name FROM users WHERE id = ?').get(req.user.id);
+      const posterName = poster ? `${poster.first_name} ${poster.last_name}` : 'A user';
+      
+      let snippet = (content || '').trim().substring(0, 50);
+      if (content && content.length > 50) snippet += '...';
+      if (!snippet) snippet = project_id ? 'Shared a project' : 'Shared a media post';
+      
+      let imageUrl = null;
+      if (project_id) {
+        const proj = db.prepare('SELECT thumbnail_url, poster_url FROM projects WHERE id = ?').get(project_id);
+        if (proj) imageUrl = proj.thumbnail_url || proj.poster_url;
+      } else if (media_url) {
+        try {
+          const parsed = JSON.parse(media_url);
+          if (Array.isArray(parsed) && parsed.length > 0) imageUrl = parsed[0].url;
+        } catch {
+          imageUrl = media_url;
+        }
+      }
+      
+      const notifTitle = `New post by ${posterName}`;
+      const notifLink = `/community#post-${result.lastInsertRowid}`;
+      
+      const insertNotification = db.prepare('INSERT INTO notifications (user_id, type, title, message, link, image_url) VALUES (?, ?, ?, ?, ?, ?)');
+      const insertMany = db.transaction((users) => {
+        for (const user of users) {
+          insertNotification.run(user.id, 'community', notifTitle, snippet, notifLink, imageUrl);
+        }
+      });
+      insertMany(usersToNotify);
+      
+      const io = req.app.get('io');
+      if (io) {
+        io.emit('new_notification');
+        io.emit('new_post');
+      }
+    }
     
     res.status(201).json({ message: 'Post created successfully', id: result.lastInsertRowid });
   } catch (error) {
@@ -172,6 +213,9 @@ router.post('/posts/:id/pin', authenticateToken, (req, res) => {
 
     db.prepare('UPDATE community_posts SET is_pinned = ?, pinned_at = ? WHERE id = ?')
       .run(pin ? 1 : 0, pin ? new Date().toISOString() : null, postId);
+
+    const io = req.app.get('io');
+    if (io) io.emit('new_post');
 
     res.json({ message: pin ? 'Post pinned' : 'Post unpinned' });
   } catch (error) {
@@ -195,6 +239,8 @@ router.post('/posts/:id/like', authenticateToken, (req, res) => {
       db.prepare('INSERT INTO post_likes (post_id, user_id) VALUES (?, ?)').run(postId, userId);
       res.json({ liked: true });
     }
+    const io = req.app.get('io');
+    if (io) io.emit('new_post');
   } catch (error) {
     console.error('Like error:', error);
     res.status(500).json({ error: 'Internal server error' });
@@ -214,6 +260,9 @@ router.post('/posts/:id/comments', authenticateToken, sanitizeInput, (req, res) 
     const result = db.prepare('INSERT INTO post_comments (post_id, user_id, content) VALUES (?, ?, ?)')
       .run(postId, req.user.id, content.trim());
       
+    const io = req.app.get('io');
+    if (io) io.emit('new_post');
+
     res.status(201).json({ message: 'Comment added', id: result.lastInsertRowid });
   } catch (error) {
     console.error('Comment error:', error);
@@ -237,6 +286,9 @@ router.put('/posts/:id/comments/:commentId', authenticateToken, sanitizeInput, (
     if (result.changes === 0) {
       return res.status(403).json({ error: 'Unauthorized to edit this comment or comment not found.' });
     }
+
+    const io = req.app.get('io');
+    if (io) io.emit('new_post');
 
     res.json({ message: 'Comment updated successfully.' });
   } catch (error) {
@@ -268,6 +320,10 @@ router.delete('/posts/:id/comments/:commentId', authenticateToken, (req, res) =>
     }
 
     db.prepare('DELETE FROM post_comments WHERE id = ?').run(commentId);
+    
+    const io = req.app.get('io');
+    if (io) io.emit('new_post');
+
     res.json({ message: 'Comment deleted successfully.' });
   } catch (error) {
     console.error('Delete comment error:', error);
@@ -333,6 +389,10 @@ router.delete('/posts/:id', authenticateToken, (req, res) => {
 
     transaction();
     console.log(`Successfully deleted post ${postId} and updated associated project visibility`);
+    
+    const io = req.app.get('io');
+    if (io) io.emit('new_post');
+
     res.json({ message: 'Post deleted successfully.' });
   } catch (error) {
     console.error('Delete post error:', error);

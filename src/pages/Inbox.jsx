@@ -540,6 +540,30 @@ export default function Inbox() {
   
   const [decryptedAttachmentUrls, setDecryptedAttachmentUrls] = useState({});
   const [imageViewer, setImageViewer] = useState(null);
+  const [activeMediaTab, setActiveMediaTab] = useState('media');
+
+  const handleDownload = async (imageUrl) => {
+    try {
+      const response = await fetch(imageUrl);
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      const filename = imageUrl.split('/').pop().split('?')[0] || 'chat_attachment.png';
+      link.setAttribute('download', filename);
+      document.body.appendChild(link);
+      link.click();
+      link.parentNode.removeChild(link);
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('Failed to download image', err);
+      window.open(imageUrl, '_blank');
+    }
+  };
+
+  useEffect(() => {
+    setActiveMediaTab('media');
+  }, [activeChat?.other_user_id]);
   const [showChatInfoPanel, setShowChatInfoPanel] = useState(true);
   const [gifPickerOpen, setGifPickerOpen] = useState(false);
   const [chatInfoAccordion, setChatInfoAccordion] = useState(false);
@@ -3358,7 +3382,11 @@ export default function Inbox() {
         });
       });
 
-    return { media, files, links };
+    return {
+      media: [...media].reverse(),
+      files: [...files].reverse(),
+      links: [...links].reverse()
+    };
   }, [decryptedAttachmentUrls, messages]);
 
   const chatSearchResults = useMemo(() => {
@@ -4868,95 +4896,128 @@ export default function Inbox() {
               {mediaAccordion && (
                 <div className="chat-accordion-content">
                   <div className="media-links-panel">
-                    {mediaFilesLinks.media.length > 0 && (
-                      <section className="media-links-section">
-                        <h4>Media</h4>
-                        <div className="media-gallery">
-                          {mediaFilesLinks.media.map((item) => (
-                            <button
-                              key={`media-${item.id}`}
-                              type="button"
-                              className="media-gallery-item"
-                              onClick={() => {
-                                if (item.type.startsWith('video/')) {
-                                  window.open(item.url, '_blank', 'noopener,noreferrer');
-                                  return;
-                                }
-                                setImageViewer({ src: item.url, alt: item.name, caption: item.name });
-                              }}
-                              title={item.name}
-                            >
-                              {item.type.startsWith('video/') ? (
-                                <>
-                                  <video src={`${item.url}#t=0.5`} muted playsInline preload="metadata" />
-                                  <span className="media-tile-icon"><Video size={16} /></span>
-                                </>
-                              ) : (
-                                <img src={item.url} alt={item.name} />
-                              )}
-                            </button>
-                          ))}
-                        </div>
-                      </section>
-                    )}
+                    {/* Premium tab navigation */}
+                    <div className="media-tabs-nav">
+                      <button 
+                        type="button" 
+                        className={`media-tab-btn ${activeMediaTab === 'media' ? 'active' : ''}`}
+                        onClick={() => setActiveMediaTab('media')}
+                      >
+                        Media
+                      </button>
+                      <button 
+                        type="button" 
+                        className={`media-tab-btn ${activeMediaTab === 'files' ? 'active' : ''}`}
+                        onClick={() => setActiveMediaTab('files')}
+                      >
+                        Files
+                      </button>
+                      <button 
+                        type="button" 
+                        className={`media-tab-btn ${activeMediaTab === 'links' ? 'active' : ''}`}
+                        onClick={() => setActiveMediaTab('links')}
+                      >
+                        Links
+                      </button>
+                    </div>
 
-                    {mediaFilesLinks.files.length > 0 && (
-                      <section className="media-links-section">
-                        <h4>Files</h4>
-                        <div className="media-link-list">
-                          {mediaFilesLinks.files.map((item) => (
-                            <div key={`file-${item.id}`} className="media-link-row">
-                              <button
-                                type="button"
-                                className="media-link-main"
-                                onClick={() => window.open(item.url, '_blank', 'noopener,noreferrer')}
-                                title={item.name}
-                              >
-                                <span className="media-link-icon">
-                                  {item.type.startsWith('audio/') ? <Mic size={16} /> : <FileText size={16} />}
-                                </span>
-                                <span className="media-link-copy">
-                                  <span>{item.type.startsWith('audio/') ? 'Voice message' : item.name}</span>
-                                  <small>{formatLocalTime(item.createdAt)}</small>
-                                </span>
-                              </button>
-                              <a className="media-link-download" href={item.url} download={item.name} title="Download">
-                                <Download size={15} />
-                              </a>
+                    {/* Tab contents */}
+                    <div className="media-tabs-content">
+                      {activeMediaTab === 'media' && (
+                        <div className="media-tab-pane">
+                          {mediaFilesLinks.media.length > 0 ? (
+                            <div className="media-gallery">
+                              {mediaFilesLinks.media.map((item) => (
+                                <button
+                                  key={`media-${item.id}`}
+                                  type="button"
+                                  className="media-gallery-item"
+                                  onClick={() => {
+                                    if (item.type.startsWith('video/')) {
+                                      window.open(item.url, '_blank', 'noopener,noreferrer');
+                                      return;
+                                    }
+                                    setImageViewer({ src: item.url, alt: item.name, caption: item.name });
+                                  }}
+                                  title={item.name}
+                                >
+                                  {item.type.startsWith('video/') ? (
+                                    <>
+                                      <video src={`${item.url}#t=0.5`} muted playsInline preload="metadata" />
+                                      <span className="media-tile-icon"><Video size={16} /></span>
+                                    </>
+                                  ) : (
+                                    <img src={item.url} alt={item.name} />
+                                  )}
+                                </button>
+                              ))}
                             </div>
-                          ))}
+                          ) : (
+                            <div className="empty-results media-links-empty">No media shared yet.</div>
+                          )}
                         </div>
-                      </section>
-                    )}
+                      )}
 
-                    {mediaFilesLinks.links.length > 0 && (
-                      <section className="media-links-section">
-                        <h4>Links</h4>
-                        <div className="media-link-list">
-                          {mediaFilesLinks.links.map((item) => (
-                            <div key={`link-${item.id}`} className="media-link-row">
-                              <a
-                                className="media-link-main"
-                                href={item.url}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                title={item.url}
-                              >
-                                <span className="media-link-icon"><LinkIcon size={16} /></span>
-                                <span className="media-link-copy">
-                                  <span>{item.host}</span>
-                                  <small>{item.url}</small>
-                                </span>
-                              </a>
+                      {activeMediaTab === 'files' && (
+                        <div className="media-tab-pane">
+                          {mediaFilesLinks.files.length > 0 ? (
+                            <div className="media-link-list">
+                              {mediaFilesLinks.files.map((item) => (
+                                <div key={`file-${item.id}`} className="media-link-row">
+                                  <button
+                                    type="button"
+                                    className="media-link-main"
+                                    onClick={() => window.open(item.url, '_blank', 'noopener,noreferrer')}
+                                    title={item.name}
+                                  >
+                                    <span className="media-link-icon">
+                                      {item.type.startsWith('audio/') ? <Mic size={16} /> : <FileText size={16} />}
+                                    </span>
+                                    <span className="media-link-copy">
+                                      <span>{item.type.startsWith('audio/') ? 'Voice message' : item.name}</span>
+                                      <small>{formatLocalTime(item.createdAt)}</small>
+                                    </span>
+                                  </button>
+                                  <a className="media-link-download" href={item.url} download={item.name} title="Download">
+                                    <Download size={15} />
+                                  </a>
+                                </div>
+                              ))}
                             </div>
-                          ))}
+                          ) : (
+                            <div className="empty-results media-links-empty">No files shared yet.</div>
+                          )}
                         </div>
-                      </section>
-                    )}
+                      )}
 
-                    {!mediaFilesLinks.media.length && !mediaFilesLinks.files.length && !mediaFilesLinks.links.length && (
-                      <div className="empty-results media-links-empty">No media, files or links yet.</div>
-                    )}
+                      {activeMediaTab === 'links' && (
+                        <div className="media-tab-pane">
+                          {mediaFilesLinks.links.length > 0 ? (
+                            <div className="media-link-list">
+                              {mediaFilesLinks.links.map((item) => (
+                                <div key={`link-${item.id}`} className="media-link-row">
+                                  <a
+                                    className="media-link-main"
+                                    href={item.url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    title={item.url}
+                                  >
+                                    <span className="media-link-icon"><LinkIcon size={16} /></span>
+                                    <span className="media-link-copy">
+                                      <span>{item.host}</span>
+                                      <small>{item.url}</small>
+                                    </span>
+                                  </a>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <div className="empty-results media-links-empty">No links shared yet.</div>
+                          )}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
               )}
@@ -5218,6 +5279,9 @@ export default function Inbox() {
       {imageViewer && typeof document !== 'undefined' && createPortal(
         <div className="image-viewer-overlay" onClick={() => setImageViewer(null)}>
           <div className="image-viewer-shell" onClick={(event) => event.stopPropagation()}>
+            <button type="button" className="icon-btn image-viewer-download" onClick={() => handleDownload(imageViewer.src)} title="Download image" aria-label="Download image">
+              <Download size={18} />
+            </button>
             <button type="button" className="icon-btn image-viewer-close" onClick={() => setImageViewer(null)} aria-label="Close image viewer">
               <X size={18} />
             </button>
@@ -5229,6 +5293,56 @@ export default function Inbox() {
       )}
 
       <style>{`
+        /* --- Media Tabs --- */
+        .media-tabs-nav {
+          display: flex;
+          background: rgba(0, 0, 0, 0.25);
+          border: 1px solid rgba(255, 255, 255, 0.08);
+          border-radius: 12px;
+          padding: 3px;
+          gap: 2px;
+          margin-bottom: 0.75rem;
+        }
+        .media-tab-btn {
+          flex: 1;
+          background: transparent;
+          border: none;
+          color: rgba(255, 255, 255, 0.6);
+          font-size: 0.8rem;
+          font-weight: 600;
+          padding: 6px 8px;
+          border-radius: 9px;
+          cursor: pointer;
+          transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+          text-align: center;
+        }
+        .media-tab-btn:hover {
+          color: #fff;
+          background: rgba(255, 255, 255, 0.05);
+        }
+        .media-tab-btn.active {
+          color: #fff;
+          background: rgba(255, 255, 255, 0.12);
+          box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+        }
+        
+        [data-mode="light"] .media-tabs-nav {
+          background: rgba(0, 0, 0, 0.05);
+          border-color: rgba(0, 0, 0, 0.06);
+        }
+        [data-mode="light"] .media-tab-btn {
+          color: rgba(0, 0, 0, 0.55);
+        }
+        [data-mode="light"] .media-tab-btn:hover {
+          color: #000;
+          background: rgba(0, 0, 0, 0.04);
+        }
+        [data-mode="light"] .media-tab-btn.active {
+          color: #000;
+          background: rgba(0, 0, 0, 0.08);
+          box-shadow: 0 2px 6px rgba(0, 0, 0, 0.05);
+        }
+
         /* --- Modern Modal --- */
         .modern-modal-overlay {
           position: fixed; top: 0; left: 0; right: 0; bottom: 0;
@@ -8489,10 +8603,10 @@ export default function Inbox() {
           border: 1px solid rgba(255,255,255,0.08);
           box-shadow: 0 28px 70px rgba(0,0,0,0.45);
         }
-        .image-viewer-close {
+        .image-viewer-close,
+        .image-viewer-download {
           position: absolute;
           top: 0.75rem;
-          right: 0.75rem;
           z-index: 2;
           width: 40px;
           height: 40px;
@@ -8504,6 +8618,21 @@ export default function Inbox() {
           align-items: center;
           justify-content: center;
           box-shadow: 0 14px 30px rgba(0,0,0,0.42);
+          cursor: pointer;
+          transition: all 0.2s ease;
+        }
+        .image-viewer-close {
+          right: 0.75rem;
+        }
+        .image-viewer-download {
+          right: 3.75rem;
+        }
+        .image-viewer-close:hover {
+          background: rgba(225, 29, 72, 0.7) !important;
+          border-color: rgba(225, 29, 72, 0.8) !important;
+        }
+        .image-viewer-download:hover {
+          background: rgba(255, 255, 255, 0.15) !important;
         }
         .image-viewer-photo {
           width: 100%;
@@ -8533,11 +8662,17 @@ export default function Inbox() {
             padding: 0.9rem;
             border-radius: 18px;
           }
-          .image-viewer-close {
+          .image-viewer-close,
+          .image-viewer-download {
             top: 0.55rem;
-            right: 0.55rem;
             width: 42px;
             height: 42px;
+          }
+          .image-viewer-close {
+            right: 0.55rem;
+          }
+          .image-viewer-download {
+            right: 3.55rem;
           }
           .image-viewer-photo {
             width: 100%;

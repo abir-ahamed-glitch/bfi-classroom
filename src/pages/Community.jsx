@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef, useCallback, memo } from 'react';
 import { createPortal } from 'react-dom';
+import { useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { io } from 'socket.io-client';
-import { MessageSquare, Heart, Image as ImageIcon, Send, Film, Share2, Trash2, Pin, PinOff, Play, Video, GripVertical, X, Pencil, ChevronLeft, ChevronRight, Smile, MoreVertical } from 'lucide-react';
+import { MessageSquare, Heart, Image as ImageIcon, Send, Film, Share2, Trash2, Pin, PinOff, Play, Video, GripVertical, X, Pencil, ChevronLeft, ChevronRight, Smile, MoreVertical, Download } from 'lucide-react';
 import data from '@emoji-mart/data';
 import { Picker } from 'emoji-mart';
 import { resolveMediaUrl } from '../utils/mediaUtils';
@@ -99,6 +100,25 @@ export default function Community() {
     setLightbox({ images, idx });
   }, []);
   const closeLightbox = useCallback(() => setLightbox(null), []);
+
+  const handleDownload = async (imageUrl) => {
+    try {
+      const response = await fetch(imageUrl);
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      const filename = imageUrl.split('/').pop().split('?')[0] || 'community_attachment.png';
+      link.setAttribute('download', filename);
+      document.body.appendChild(link);
+      link.click();
+      link.parentNode.removeChild(link);
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('Failed to download image', err);
+      window.open(imageUrl, '_blank');
+    }
+  };
   const lightboxNext = useCallback(() =>
     setLightbox(prev => prev && ({ ...prev, idx: Math.min(prev.idx + 1, prev.images.length - 1) }))
   , []);
@@ -204,7 +224,11 @@ export default function Community() {
     fetchPosts();
 
     // Setup Socket.io for real-time feed
-    const newSocket = io(socketUrl, { withCredentials: true });
+    const token = localStorage.getItem('token');
+    const newSocket = io(socketUrl, { 
+      withCredentials: true,
+      auth: { token }
+    });
     setSocket(newSocket);
 
     newSocket.on('new_post', () => {
@@ -336,6 +360,42 @@ export default function Community() {
       setLoading(false);
     }
   };
+
+  const location = useLocation();
+
+  const forceHighlight = useCallback((postId) => {
+    const el = document.getElementById(`post-${postId}`);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      el.classList.remove('highlight-animation');
+      // Trigger a reflow to restart CSS animation
+      void el.offsetWidth;
+      el.classList.add('highlight-animation');
+      setTimeout(() => el.classList.remove('highlight-animation'), 3000);
+    }
+  }, []);
+
+  // Listen to forced highlight event (e.g. from clicking notifications)
+  useEffect(() => {
+    const handleTriggerHighlight = (e) => {
+      if (e.detail) {
+        setTimeout(() => forceHighlight(e.detail), 150);
+      }
+    };
+    window.addEventListener('triggerPostHighlight', handleTriggerHighlight);
+    return () => window.removeEventListener('triggerPostHighlight', handleTriggerHighlight);
+  }, [forceHighlight]);
+
+  // Scroll to targeted post from URL hash on load
+  useEffect(() => {
+    if (!loading && posts.length > 0 && location.hash) {
+      const id = location.hash.substring(1); // e.g. post-123
+      if (id.startsWith('post-')) {
+        const postId = id.split('post-')[1];
+        setTimeout(() => forceHighlight(postId), 300);
+      }
+    }
+  }, [loading, posts.length, location.hash, forceHighlight]);
 
   const handlePostSubmit = async (e) => {
     e.preventDefault();
@@ -877,7 +937,7 @@ export default function Community() {
         {posts.map(post => {
           const hasActivePicker = commentEmojiPickerPostId === post.id || (editingCommentId && post.comments?.some(c => c.id === editingCommentId));
           return (
-            <div key={post.id} className={`post-card glass-panel ${post.is_pinned ? 'pinned-post' : ''} ${hasActivePicker ? 'active-picker' : ''}`}>
+            <div id={`post-${post.id}`} key={post.id} className={`post-card glass-panel ${post.is_pinned ? 'pinned-post' : ''} ${hasActivePicker ? 'active-picker' : ''}`}>
             
             {/* Post Header */}
             <div className="post-header">
@@ -1040,7 +1100,11 @@ export default function Community() {
                       )}
                     </div>
                   ) : getProjectPoster(post.shared_project) ? (
-                    <div className="proj-poster-wrapper">
+                    <div 
+                      className="proj-poster-wrapper"
+                      onClick={() => openLightbox([{ url: getProjectPoster(post.shared_project), caption: post.shared_project.title }], 0)}
+                      style={{ cursor: 'pointer' }}
+                    >
                       <img
                         src={getProjectPoster(post.shared_project)}
                         alt={post.shared_project.title}
@@ -2042,6 +2106,16 @@ export default function Community() {
           transition: background 0.18s;
         }
         .lb-close:hover { background: rgba(225,29,72,0.7); }
+        .lb-download {
+          background: rgba(255,255,255,0.12);
+          border: 1px solid rgba(255,255,255,0.18);
+          color: #fff; border-radius: 50%;
+          width: 36px; height: 36px;
+          display: flex; align-items: center; justify-content: center;
+          cursor: pointer;
+          transition: background 0.18s;
+        }
+        .lb-download:hover { background: rgba(255,255,255,0.22); }
 
         /* Main image area */
         .lb-main {
@@ -2140,13 +2214,23 @@ export default function Community() {
           <div 
             className="lb-topbar"
             onClick={e => { if (e.target === e.currentTarget) closeLightbox(); }}
+            style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}
           >
             <div className="lb-counter">
               {lightbox.idx + 1} / {lightbox.images.length}
             </div>
-            <button className="lb-close" onClick={closeLightbox} aria-label="Close">
-              <X size={18} />
-            </button>
+            <div style={{ display: 'flex', gap: '0.5rem' }}>
+              <button 
+                className="lb-download" 
+                onClick={() => handleDownload(resolveMediaUrl(lightbox.images[lightbox.idx].url))} 
+                title="Download Image"
+              >
+                <Download size={18} />
+              </button>
+              <button className="lb-close" onClick={closeLightbox} aria-label="Close">
+                <X size={18} />
+              </button>
+            </div>
           </div>
 
           {/* Main image area */}

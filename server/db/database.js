@@ -341,6 +341,7 @@ export function initializeDatabase() {
       message TEXT,
       is_read INTEGER DEFAULT 0,
       link TEXT,
+      image_url TEXT,
       created_at TEXT DEFAULT (datetime('now')),
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
@@ -354,6 +355,7 @@ export function initializeDatabase() {
       priority TEXT DEFAULT 'normal' CHECK(priority IN ('low', 'normal', 'high')),
       target_course TEXT,
       target_batch TEXT,
+      image_url TEXT,
       created_at TEXT DEFAULT (datetime('now')),
       FOREIGN KEY (admin_id) REFERENCES users(id) ON DELETE CASCADE
     );
@@ -450,6 +452,14 @@ export function initializeDatabase() {
     }
   }
 
+  // Migrations for notifications
+  try {
+    db.prepare('ALTER TABLE notifications ADD COLUMN image_url TEXT').run();
+    console.log('✅ Migrated notifications table');
+  } catch (err) {
+    // Ignore error if column already exists
+  }
+
   // Migrations for community_posts
   try {
     db.prepare("ALTER TABLE community_posts ADD COLUMN is_pinned INTEGER DEFAULT 0").run();
@@ -479,7 +489,8 @@ export function initializeDatabase() {
 
   const announcementMigrations = [
     "ALTER TABLE announcements ADD COLUMN target_course TEXT",
-    "ALTER TABLE announcements ADD COLUMN target_batch TEXT"
+    "ALTER TABLE announcements ADD COLUMN target_batch TEXT",
+    "ALTER TABLE announcements ADD COLUMN image_url TEXT"
   ];
   for (const migration of announcementMigrations) {
     try {

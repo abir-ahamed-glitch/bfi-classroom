@@ -1,7 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { useSearchParams } from 'react-router-dom';
 import { io } from 'socket.io-client';
-import { Megaphone, AlertTriangle, Clock, Calendar, ChevronDown, ChevronUp, Layers, GraduationCap } from 'lucide-react';
+import { Megaphone, AlertTriangle, Clock, Calendar, ChevronDown, ChevronUp, Layers, GraduationCap, X, Download } from 'lucide-react';
+import { resolveMediaUrl } from '../utils/mediaUtils';
 
 export default function NoticeBoard() {
   const [notices, setNotices] = useState([]);
@@ -9,7 +11,35 @@ export default function NoticeBoard() {
   const [expandedIds, setExpandedIds] = useState(new Set());
   const [searchParams] = useSearchParams();
   const socketRef = useRef(null);
+  const [lightbox, setLightbox] = useState(null);
 
+  useEffect(() => {
+    if (!lightbox) return;
+    const handler = (e) => {
+      if (e.key === 'Escape') setLightbox(null);
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [lightbox]);
+
+  const handleDownload = async (imageUrl) => {
+    try {
+      const response = await fetch(imageUrl);
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      const filename = imageUrl.split('/').pop().split('?')[0] || 'notice_attachment.png';
+      link.setAttribute('download', filename);
+      document.body.appendChild(link);
+      link.click();
+      link.parentNode.removeChild(link);
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('Failed to download image', err);
+      window.open(imageUrl, '_blank');
+    }
+  };
   useEffect(() => {
     fetchNotices();
 
@@ -250,6 +280,27 @@ export default function NoticeBoard() {
                   maskImage: (!isExpanded && isLong) ? 'linear-gradient(to bottom, black 40%, transparent 100%)' : 'none',
                 }}>
                   {notice.content}
+                  
+                  {notice.image_url && (
+                    <div 
+                      onClick={() => setLightbox(resolveMediaUrl(notice.image_url))}
+                      style={{ 
+                        marginTop: '1.5rem', 
+                        borderRadius: '8px', 
+                        overflow: 'hidden', 
+                        maxWidth: '100%', 
+                        maxHeight: '450px', 
+                        border: '1px solid var(--glass-border)', 
+                        background: 'rgba(0,0,0,0.1)',
+                        cursor: 'zoom-in',
+                        transition: 'opacity 0.2s'
+                      }}
+                      onMouseEnter={e => e.currentTarget.style.opacity = 0.9}
+                      onMouseLeave={e => e.currentTarget.style.opacity = 1}
+                    >
+                      <img src={resolveMediaUrl(notice.image_url)} alt="Notice attachment" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+                    </div>
+                  )}
                 </div>
                 
                 {isLong && (
@@ -310,6 +361,99 @@ export default function NoticeBoard() {
         )}
       </div>
 
+      {/* ── Lightbox Portal ── */}
+      {lightbox && createPortal(
+        <div
+          className="lb-backdrop"
+          onClick={e => { if (e.target === e.currentTarget) setLightbox(null); }}
+        >
+          {/* Top bar */}
+          <div 
+            className="lb-topbar"
+            onClick={e => { if (e.target === e.currentTarget) setLightbox(null); }}
+            style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', padding: '1rem', width: '100%', boxSizing: 'border-box' }}
+          >
+            <button 
+              className="lb-close" 
+              onClick={() => handleDownload(lightbox)} 
+              title="Download Image"
+              style={{
+                background: 'rgba(255,255,255,0.12)',
+                border: '1px solid rgba(255,255,255,0.18)',
+                color: '#fff', 
+                borderRadius: '50%',
+                width: '36px', 
+                height: '36px',
+                display: 'flex', 
+                alignItems: 'center', 
+                justifyContent: 'center',
+                cursor: 'pointer',
+                transition: 'background 0.18s'
+              }}
+              onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.22)'}
+              onMouseLeave={e => e.currentTarget.style.background = 'rgba(255,255,255,0.12)'}
+            >
+              <Download size={18} />
+            </button>
+            <button 
+              className="lb-close" 
+              onClick={() => setLightbox(null)} 
+              title="Close"
+              style={{
+                background: 'rgba(255,255,255,0.12)',
+                border: '1px solid rgba(255,255,255,0.18)',
+                color: '#fff', 
+                borderRadius: '50%',
+                width: '36px', 
+                height: '36px',
+                display: 'flex', 
+                alignItems: 'center', 
+                justifyContent: 'center',
+                cursor: 'pointer',
+                transition: 'background 0.18s'
+              }}
+              onMouseEnter={e => e.currentTarget.style.background = 'rgba(225,29,72,0.7)'}
+              onMouseLeave={e => e.currentTarget.style.background = 'rgba(255,255,255,0.12)'}
+            >
+              <X size={18} />
+            </button>
+          </div>
+
+          {/* Main image area */}
+          <div 
+            className="lb-main"
+            onClick={e => { if (e.target === e.currentTarget) setLightbox(null); }}
+            style={{
+              position: 'relative',
+              width: '100%', 
+              flex: 1,
+              display: 'flex', 
+              alignItems: 'center', 
+              justifyContent: 'center',
+              overflow: 'hidden',
+              padding: '3.5rem 4rem',
+              boxSizing: 'border-box'
+            }}
+          >
+            <img
+              className="lb-img"
+              src={lightbox}
+              alt="Full view notice attachment"
+              style={{
+                maxWidth: '90%',
+                maxHeight: '85vh',
+                objectFit: 'contain',
+                borderRadius: '10px',
+                boxShadow: '0 24px 80px rgba(0,0,0,0.7)',
+                animation: 'lb-img-in 0.25s ease',
+                userSelect: 'none'
+              }}
+            />
+          </div>
+        </div>,
+        document.body
+      )}
+
       <style>{`
         .notice-highlight {
           animation: noticeHighlightPulse 2s ease-out;
@@ -318,6 +462,22 @@ export default function NoticeBoard() {
           0% { box-shadow: 0 0 0 0 rgba(96, 165, 250, 0.5); }
           30% { box-shadow: 0 0 0 8px rgba(96, 165, 250, 0.25); }
           100% { box-shadow: none; }
+        }
+        .lb-backdrop {
+          position: fixed; inset: 0; z-index: 100000;
+          background: rgba(0,0,0,0.94);
+          backdrop-filter: blur(8px);
+          display: flex; flex-direction: column;
+          align-items: center; justify-content: center;
+          animation: lb-in 0.2s ease;
+        }
+        @keyframes lb-in {
+          from { opacity: 0; }
+          to   { opacity: 1; }
+        }
+        @keyframes lb-img-in {
+          from { opacity: 0; transform: scale(0.96); }
+          to   { opacity: 1; transform: scale(1); }
         }
       `}</style>
     </div>
