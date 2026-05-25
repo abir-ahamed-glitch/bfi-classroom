@@ -393,18 +393,18 @@ export default function Sidebar({ isNotifOpen, setIsNotifOpen }) {
 
       {/* ── Mobile Bottom Navigation Bar ─────────────────────────── */}
       <nav className={`mobile-bottom-nav ${hideBottomNav ? 'bottom-nav-hidden' : ''}`} aria-label="Quick navigation">
-        <NavLink to="/" end className={({isActive}) => `bottom-nav-item ${isActive ? 'active' : ''}`} onClick={() => { closeSidebar(); haptic('tap'); }}>
+        <NavLink to="/" end className={({isActive}) => `bottom-nav-item ${isActive && !isNotifOpen ? 'active' : ''}`} onClick={() => { closeSidebar(); if (setIsNotifOpen) setIsNotifOpen(false); haptic('tap'); }}>
           <Home size={22} />
           <span>Home</span>
         </NavLink>
-        <NavLink to="/inbox" className={({isActive}) => `bottom-nav-item ${isActive ? 'active' : ''}`} onClick={() => { closeSidebar(); haptic('tap'); }}>
+        <NavLink to="/inbox" className={({isActive}) => `bottom-nav-item ${isActive && !isNotifOpen ? 'active' : ''}`} onClick={() => { closeSidebar(); if (setIsNotifOpen) setIsNotifOpen(false); haptic('tap'); }}>
           <div className="bottom-nav-icon-wrap">
             <Inbox size={22} />
             {hasUnreadInbox && <span className="bottom-nav-badge">{unreadBadgeLabel}</span>}
           </div>
           <span>Inbox</span>
         </NavLink>
-        <NavLink to="/profile" className={({isActive}) => `bottom-nav-item ${isActive ? 'active' : ''}`} onClick={() => { closeSidebar(); haptic('tap'); }}>
+        <NavLink to="/profile" className={({isActive}) => `bottom-nav-item ${isActive && !isNotifOpen ? 'active' : ''}`} onClick={() => { closeSidebar(); if (setIsNotifOpen) setIsNotifOpen(false); haptic('tap'); }}>
           <User size={22} />
           <span>Profile</span>
         </NavLink>
