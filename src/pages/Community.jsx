@@ -2126,7 +2126,7 @@ export default function Community() {
                                                  {mentionBadge ? (
                                                    <>
                                                      <span style={{ 
-                                                       color: 'var(--text-secondary)', 
+                                                       color: 'var(--accent-primary)', 
                                                        fontWeight: 'bold', 
                                                        marginRight: '0.3rem',
                                                        cursor: 'pointer'
