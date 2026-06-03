@@ -1453,12 +1453,10 @@ export default function Community() {
                           {(thisReplies.length > 0 || showReplyInput) && (
                             <div style={{
                               position: 'absolute',
-                              left: '15px',
-                              width: '2px',
+                              left: 'calc(1rem - 1px)',
                               top: '32px',
                               bottom: '-16px',
-                              background: 'color-mix(in srgb, var(--text-muted) 20%, transparent)',
-                              borderRadius: '1px'
+                              borderLeft: '2px solid color-mix(in srgb, var(--text-muted) 20%, transparent)'
                             }} />
                           )}
                           <UserHoverCard userId={comment.user_id}>
@@ -1847,8 +1845,8 @@ export default function Community() {
                                   {/* L-shaped connector line */}
                                   <div style={{
                                     position: 'absolute',
-                                    left: '-33px',
-                                    width: '21px',
+                                    left: 'calc(-2rem - 1px)',
+                                    width: 'calc(1.25rem + 1px)',
                                     top: '-16px',
                                     bottom: '50%',
                                     borderLeft: '2px solid color-mix(in srgb, var(--text-muted) 20%, transparent)',
@@ -1869,8 +1867,8 @@ export default function Community() {
                                   {/* Rounded L-connector */}
                                   <div style={{
                                     position: 'absolute',
-                                    left: '-33px',
-                                    width: '33px',
+                                    left: 'calc(-2rem - 1px)',
+                                    width: 'calc(2rem + 1px)',
                                     top: '-12px',
                                     height: '24px',
                                     borderLeft: '2px solid color-mix(in srgb, var(--text-muted) 20%, transparent)',
@@ -1881,12 +1879,10 @@ export default function Community() {
                                   {!isLast && (
                                     <div style={{
                                       position: 'absolute',
-                                      left: '-33px',
-                                      width: '2px',
+                                      left: 'calc(-2rem - 1px)',
                                       top: '10px',
                                       bottom: '-12px',
-                                      background: 'color-mix(in srgb, var(--text-muted) 20%, transparent)',
-                                      borderRadius: '1px'
+                                      borderLeft: '2px solid color-mix(in srgb, var(--text-muted) 20%, transparent)'
                                     }} />
                                   )}
                                 <UserHoverCard userId={reply.user_id}>
@@ -2322,8 +2318,8 @@ export default function Community() {
                               {/* L-shaped connector line for reply input */}
                               <div style={{
                                 position: 'absolute',
-                                left: '-33px',
-                                width: '33px',
+                                left: 'calc(-2rem - 1px)',
+                                width: 'calc(2rem + 1px)',
                                 top: replyImages[comment.id] ? '-76px' : '-16px',
                                 bottom: '50%',
                                 borderLeft: '2px solid color-mix(in srgb, var(--text-muted) 20%, transparent)',
