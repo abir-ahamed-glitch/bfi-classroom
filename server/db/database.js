@@ -279,8 +279,10 @@ export function initializeDatabase() {
       user_id INTEGER NOT NULL,
       content TEXT NOT NULL,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      parent_id INTEGER,
       FOREIGN KEY (post_id) REFERENCES community_posts(id) ON DELETE CASCADE,
-      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (parent_id) REFERENCES post_comments(id) ON DELETE CASCADE
     );
 
     -- Comment reports
@@ -293,6 +295,18 @@ export function initializeDatabase() {
       UNIQUE(comment_id, reporter_id),
       FOREIGN KEY (comment_id) REFERENCES post_comments(id) ON DELETE CASCADE,
       FOREIGN KEY (reporter_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    -- Comment likes
+    CREATE TABLE IF NOT EXISTS comment_likes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      comment_id INTEGER NOT NULL,
+      user_id INTEGER NOT NULL,
+      reaction_type TEXT DEFAULT 'like',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(comment_id, user_id),
+      FOREIGN KEY (comment_id) REFERENCES post_comments(id) ON DELETE CASCADE,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
 
     -- Post likes
@@ -382,6 +396,16 @@ export function initializeDatabase() {
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
 
+    -- Profile field privacy settings
+    CREATE TABLE IF NOT EXISTS profile_field_privacy (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      field_name TEXT NOT NULL,
+      visibility TEXT NOT NULL DEFAULT 'public' CHECK(visibility IN ('public', 'batchmates', 'only_me')),
+      UNIQUE(user_id, field_name),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
     -- Student Experiences (Film/Cultural)
     CREATE TABLE IF NOT EXISTS student_experiences (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -429,6 +453,7 @@ export function initializeDatabase() {
     CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
     CREATE INDEX IF NOT EXISTS idx_password_reset_user_id ON password_reset_tokens(user_id);
     CREATE INDEX IF NOT EXISTS idx_password_reset_expires ON password_reset_tokens(expires_at);
+    CREATE INDEX IF NOT EXISTS idx_profile_field_privacy_user ON profile_field_privacy(user_id);
   `);
 
   // Seed default admin if not exists
@@ -516,7 +541,8 @@ export function initializeDatabase() {
     "ALTER TABLE student_course_enrollments ADD COLUMN exam_written INTEGER DEFAULT 0",
     "ALTER TABLE student_course_enrollments ADD COLUMN assignment_screenplay INTEGER DEFAULT 0",
     "ALTER TABLE student_course_enrollments ADD COLUMN assignment_shooting_script INTEGER DEFAULT 0",
-    "ALTER TABLE student_course_enrollments ADD COLUMN attendance_total INTEGER DEFAULT 22"
+    "ALTER TABLE student_course_enrollments ADD COLUMN attendance_total INTEGER DEFAULT 22",
+    "ALTER TABLE student_course_enrollments ADD COLUMN fee_details TEXT"
   ];
   for (const migration of enrollmentMigrations) {
     try {
@@ -526,6 +552,29 @@ export function initializeDatabase() {
     }
   }
 
+  // Community posts audience migration
+  try {
+    db.prepare("ALTER TABLE community_posts ADD COLUMN audience TEXT DEFAULT 'public' CHECK(audience IN ('public', 'batchmates', 'only_me'))").run();
+    console.log('✅ Migrated community_posts: added audience column');
+  } catch {
+    // Column probably already exists
+  }
+
+  // Comment parent_id migration
+  try {
+    db.prepare("ALTER TABLE post_comments ADD COLUMN parent_id INTEGER").run();
+    console.log('✅ Migrated post_comments: added parent_id column');
+  } catch (error) {
+    // Column probably already exists
+  }
+
+  // Comment reaction_type migration
+  try {
+    db.prepare("ALTER TABLE comment_likes ADD COLUMN reaction_type TEXT DEFAULT 'like'").run();
+    console.log('✅ Migrated comment_likes: added reaction_type column');
+  } catch (error) {
+    // Column probably already exists
+  }
 
   const plainMessages = db.prepare(`
     SELECT id, content

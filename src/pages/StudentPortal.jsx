@@ -1,8 +1,86 @@
 import React, { useState, useEffect } from 'react';
 import { NavLink } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { Award, Film, BookOpen, Download, CheckCircle, CalendarCheck, FileText, AlertCircle, Clapperboard, Scissors, BarChart2 } from 'lucide-react';
+import { Award, Film, BookOpen, Download, CheckCircle, CalendarCheck, FileText, AlertCircle, Clapperboard, Scissors, BarChart2, Lock } from 'lucide-react';
 import { io } from 'socket.io-client';
+
+const getStatusBadgeStyle = (status) => {
+  switch (status) {
+    case 'Paid Full':
+      return { background: 'rgba(16, 185, 129, 0.12)', color: '#34d399', border: '1px solid rgba(16, 185, 129, 0.25)' };
+    case 'Waived':
+      return { background: 'rgba(56, 189, 248, 0.12)', color: '#38bdf8', border: '1px solid rgba(56, 189, 248, 0.25)' };
+    case 'Partial':
+      return { background: 'rgba(245, 158, 11, 0.12)', color: '#fbbf24', border: '1px solid rgba(245, 158, 11, 0.25)' };
+    case 'Pending':
+      return { background: 'rgba(107, 114, 128, 0.15)', color: '#9ca3af', border: '1px solid rgba(107, 114, 128, 0.25)' };
+    case 'Due':
+      return { background: 'rgba(239, 68, 68, 0.12)', color: '#f87171', border: '1px solid rgba(239, 68, 68, 0.25)' };
+    default:
+      return { background: 'rgba(255, 255, 255, 0.05)', color: 'var(--text-muted)', border: '1px solid rgba(255, 255, 255, 0.08)' };
+  }
+};
+
+const getStatusLabel = (status) => {
+  switch (status) {
+    case 'Paid Full': return 'Paid Full';
+    case 'Waived': return 'Waived / Free';
+    case 'Partial': return 'Partial Payment';
+    case 'Pending': return 'Pending';
+    case 'Due': return 'Due / Unpaid';
+    default: return status || 'Not Specified';
+  }
+};
+
+const hasPendingDueOrPartialPayment = (course) => {
+  if (!course || !course.fee_details) return false;
+  
+  let feeDetails = {};
+  try {
+    feeDetails = typeof course.fee_details === 'string' 
+      ? JSON.parse(course.fee_details) 
+      : course.fee_details;
+  } catch (e) {
+    console.error('Error parsing course fee details:', e);
+    return false;
+  }
+
+  if (!feeDetails) return false;
+  
+  const isUnpaid = (phase) => {
+    if (!phase) return false;
+    
+    // If installments exist, they are the source of truth
+    if (phase.installments && phase.installments.length > 0) {
+      return phase.installments.some(inst => inst.status === 'Pending' || inst.status === 'Due');
+    }
+
+    // Status checks (when no installments)
+    const status = phase.status;
+    if (status === 'Paid Full' || status === 'Waived') {
+      return false;
+    }
+    if (status === 'Partial' || status === 'Pending' || status === 'Due') {
+      return true;
+    }
+    
+    // Fallback numerical check
+    const fullFee = parseFloat((phase.full_fee || '').toString().replace(/[^\d.]/g, '')) || 0;
+    if (fullFee === 0) return false;
+    
+    const amountPaid = parseFloat((phase.amount_paid || '').toString().replace(/[^\d.]/g, '')) || 0;
+    const discount = parseFloat((phase.discount || '').toString().replace(/[^\d.]/g, '')) || 0;
+    const remainingDue = Math.max(0, fullFee - discount - amountPaid);
+    
+    return remainingDue > 0;
+  };
+
+  if (course.course_type === 'filmmaking') {
+    return isUnpaid(feeDetails.phase1) || isUnpaid(feeDetails.phase2);
+  } else {
+    return isUnpaid(feeDetails);
+  }
+};
 
 export default function StudentPortal() {
   const { currentUser } = useAuth();
@@ -107,9 +185,15 @@ export default function StudentPortal() {
                 </h4>
                 <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
                   {course.step4_completed === 1 ? (
-                    <NavLink to="/certificates" className="btn btn-primary" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem', padding: '0.5rem 1rem' }}>
-                      <Download size={14} /> Download Certificate
-                    </NavLink>
+                    hasPendingDueOrPartialPayment(course) ? (
+                      <button disabled className="btn" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.82rem', padding: '0.5rem 1rem', opacity: 0.8, cursor: 'not-allowed', background: 'rgba(239, 68, 68, 0.1)', color: '#f87171', border: '1px solid rgba(239, 68, 68, 0.25)' }} title="Certificate locked due to pending, partial, or due fees.">
+                        <Lock size={14} /> Certificate Locked
+                      </button>
+                    ) : (
+                      <NavLink to="/certificates" className="btn btn-primary" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem', padding: '0.5rem 1rem' }}>
+                        <Download size={14} /> Download Certificate
+                      </NavLink>
+                    )
                   ) : (
                     <button disabled className="btn" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem', padding: '0.5rem 1rem', opacity: 0.6, cursor: 'not-allowed', background: 'var(--bg-tertiary)', color: 'var(--text-muted)', border: '1px solid var(--glass-border)' }}>
                       <Download size={14} /> Download Certificate
@@ -163,6 +247,207 @@ export default function StudentPortal() {
                   </>
                 )}
               </div>
+
+              {/* Per-Course Fee and Payment Details Section */}
+              {(() => {
+                let feeDetails = {};
+                if (course.fee_details) {
+                  try {
+                    feeDetails = typeof course.fee_details === 'string' 
+                      ? JSON.parse(course.fee_details) 
+                      : course.fee_details;
+                  } catch (e) {
+                    console.error('Error parsing course fee details:', e);
+                  }
+                }
+
+                const isFilmmaking = course.course_type === 'filmmaking';
+
+                const renderFeeRow = (title, data) => {
+                  if (!data || (!data.full_fee && !data.amount_paid && !data.status && !data.discount)) {
+                    return null;
+                  }
+
+                  const badgeStyle = getStatusBadgeStyle(data.status);
+                  const fullFeeNum = parseFloat((data.full_fee || '').replace(/[^\d.]/g, '')) || 0;
+                  const amountPaidNum = parseFloat((data.amount_paid || '').replace(/[^\d.]/g, '')) || 0;
+                  const discountNum = parseFloat((data.discount || '').replace(/[^\d.]/g, '')) || 0;
+                  const remainingDue = Math.max(0, fullFeeNum - discountNum - amountPaidNum);
+
+                  const isFullySatisfied = fullFeeNum > 0 && amountPaidNum + discountNum >= fullFeeNum;
+                  const allInstallmentsPaid = remainingDue > 0 && 
+                    (data.installments || []).length > 0 && 
+                    (data.installments || []).every(inst => inst.status === 'Paid');
+                  const isFullyCompleted = isFullySatisfied || allInstallmentsPaid;
+
+                  let completionMessage = '';
+                  if (title) {
+                    if (title.toLowerCase().includes('phase 1')) {
+                      completionMessage = '1st Phase fee completed';
+                    } else if (title.toLowerCase().includes('phase 2')) {
+                      completionMessage = '2nd Phase fee completed';
+                    } else {
+                      completionMessage = `${title} fee completed`;
+                    }
+                  } else {
+                    completionMessage = `${course.course_name} fee completed`;
+                  }
+
+                  return (
+                    <div style={{ 
+                      padding: '1rem', 
+                      background: 'rgba(255,255,255,0.015)', 
+                      borderRadius: '10px', 
+                      border: '1px solid var(--glass-border)',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '0.65rem'
+                    }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem', borderBottom: '1px solid rgba(255,255,255,0.04)', paddingBottom: '0.5rem' }}>
+                        <span style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                          {title || 'Fee Details'}
+                        </span>
+                        <span style={{ 
+                          fontSize: '0.72rem', 
+                          fontWeight: '600', 
+                          padding: '0.2rem 0.5rem', 
+                          borderRadius: '6px',
+                          ...badgeStyle
+                        }}>
+                          {getStatusLabel(data.status)}
+                        </span>
+                      </div>
+
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem', fontSize: '0.85rem' }}>
+                        <div>
+                          <span style={{ color: 'var(--text-muted)', display: 'block', fontSize: '0.75rem' }}>Course Fee:</span>
+                          <span style={{ fontWeight: '600', color: 'var(--text-primary)' }}>
+                            {fullFeeNum > 0 ? `${fullFeeNum.toLocaleString()} BDT` : '—'}
+                          </span>
+                        </div>
+                        <div>
+                          <span style={{ color: 'var(--text-muted)', display: 'block', fontSize: '0.75rem' }}>Amount Paid:</span>
+                          <span style={{ fontWeight: '600', color: '#34d399' }}>
+                            {amountPaidNum > 0 ? `${amountPaidNum.toLocaleString()} BDT` : '0 BDT'}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem', fontSize: '0.85rem' }}>
+                        {discountNum > 0 && (
+                          <div>
+                            <span style={{ color: 'var(--text-muted)', display: 'block', fontSize: '0.75rem' }}>Discount:</span>
+                            <span style={{ fontWeight: '600', color: '#10b981' }}>
+                              -{discountNum.toLocaleString()} BDT
+                            </span>
+                          </div>
+                        )}
+                        {remainingDue > 0 && (
+                          <div>
+                            <span style={{ color: '#fbbf24', display: 'block', fontSize: '0.75rem' }}>Remaining Due:</span>
+                            <span style={{ fontWeight: '700', color: '#fbbf24' }}>
+                              {remainingDue.toLocaleString()} BDT
+                            </span>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Render Installment Schedule */}
+                      {remainingDue > 0 && data.installments && data.installments.length > 0 && (
+                        <div style={{ 
+                          marginTop: '0.4rem', 
+                          padding: '0.5rem 0.75rem', 
+                          background: 'rgba(245, 158, 11, 0.01)', 
+                          borderRadius: '6px', 
+                          border: '1px dashed rgba(245, 158, 11, 0.2)' 
+                        }}>
+                          <p style={{ fontSize: '0.75rem', fontWeight: '700', color: '#fbbf24', marginBottom: '0.4rem', textTransform: 'uppercase', letterSpacing: '0.05em', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                            <span>📅</span> Installment Schedule
+                          </p>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
+                            {data.installments.map((inst, instIdx) => {
+                              const instStatusStyle = inst.status === 'Paid'
+                                ? { background: 'rgba(16, 185, 129, 0.12)', color: '#34d399' }
+                                : { background: 'rgba(245, 158, 11, 0.12)', color: '#fbbf24' };
+                              return (
+                                <div key={instIdx} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.78rem' }}>
+                                  <span style={{ color: 'var(--text-secondary)' }}>
+                                    Installment {instIdx + 1}: <strong>{inst.amount ? `${parseFloat(inst.amount).toLocaleString()} BDT` : '—'}</strong>
+                                  </span>
+                                  <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                                    {inst.dueDate && <span style={{ color: 'var(--text-muted)', fontSize: '0.72rem' }}>Due: {inst.dueDate}</span>}
+                                    <span style={{ fontSize: '0.68rem', fontWeight: '600', padding: '0.05rem 0.35rem', borderRadius: '4px', ...instStatusStyle }}>
+                                      {inst.status || 'Pending'}
+                                    </span>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Fully Completed Banner */}
+                      {isFullyCompleted && (
+                        <div style={{
+                          marginTop: '0.75rem',
+                          padding: '0.6rem 0.75rem',
+                          background: 'rgba(16, 185, 129, 0.06)',
+                          border: '1px solid rgba(16, 185, 129, 0.2)',
+                          borderRadius: '8px',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '0.5rem',
+                          color: '#34d399',
+                          fontSize: '0.78rem',
+                          fontWeight: '600'
+                        }}>
+                          <span style={{ 
+                            display: 'inline-block', 
+                            width: '6px', 
+                            height: '6px', 
+                            borderRadius: '50%', 
+                            background: '#34d399', 
+                            boxShadow: '0 0 8px #34d399' 
+                          }}></span>
+                          {completionMessage}
+                        </div>
+                      )}
+                    </div>
+                  );
+                };
+
+                const hasFeeInfo = isFilmmaking 
+                  ? (feeDetails.phase1?.full_fee || feeDetails.phase1?.amount_paid || feeDetails.phase1?.status || feeDetails.phase1?.discount || feeDetails.phase2?.full_fee || feeDetails.phase2?.amount_paid || feeDetails.phase2?.status || feeDetails.phase2?.discount)
+                  : (feeDetails.full_fee || feeDetails.amount_paid || feeDetails.status || feeDetails.discount);
+
+                if (!hasFeeInfo) return null;
+
+                return (
+                  <div style={{ 
+                    marginTop: '1.25rem', 
+                    paddingTop: '1.25rem', 
+                    borderTop: '1px dashed var(--glass-border)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '0.75rem'
+                  }}>
+                    <h5 style={{ margin: 0, fontSize: '0.85rem', fontWeight: '700', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                      <span>💰</span> Course Fee & Payment Details
+                    </h5>
+                    <div style={{ display: 'grid', gridTemplateColumns: isFilmmaking ? 'repeat(auto-fit, minmax(220px, 1fr))' : '1fr', gap: '0.75rem' }}>
+                      {isFilmmaking ? (
+                        <>
+                          {renderFeeRow('Phase 1', feeDetails.phase1)}
+                          {renderFeeRow('Phase 2', feeDetails.phase2)}
+                        </>
+                      ) : (
+                        renderFeeRow(null, feeDetails)
+                      )}
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
           ))}
           {(!profile?.enrollments || profile.enrollments.length === 0) && (

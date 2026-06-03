@@ -56,7 +56,13 @@ router.get('/profile', authenticateToken, (req, res) => {
     const socialLinks = db.prepare('SELECT id, platform, url FROM social_links WHERE user_id = ?').all(req.user.id);
     const experiences = db.prepare('SELECT * FROM student_experiences WHERE user_id = ? ORDER BY start_date DESC').all(req.user.id);
 
-    res.json({ ...baseUser, ...profileData, enrollments, socialLinks, experiences });
+    const privacyRows = db.prepare('SELECT field_name, visibility FROM profile_field_privacy WHERE user_id = ?').all(req.user.id);
+    const privacySettings = {};
+    for (const row of privacyRows) {
+      privacySettings[row.field_name] = row.visibility;
+    }
+
+    res.json({ ...baseUser, ...profileData, enrollments, socialLinks, experiences, privacySettings });
   } catch (error) {
     console.error('Profile fetch error:', error);
     res.status(500).json({ error: 'Internal server error' });
@@ -93,7 +99,83 @@ router.get('/profile/:userId', authenticateToken, sensitiveEndpointLimiter, (req
       awards: p.awards ? JSON.parse(p.awards) : []
     }));
 
-    res.json({ ...baseUser, ...profileData, enrollments, socialLinks, experiences, portfolio });
+    // Fetch privacy settings for the target user
+    const privacyRows = db.prepare('SELECT field_name, visibility FROM profile_field_privacy WHERE user_id = ?').all(targetUserId);
+    const privacyMap = {};
+    for (const row of privacyRows) {
+      privacyMap[row.field_name] = row.visibility;
+    }
+
+    // Admin sees everything
+    const isAdmin = req.user.role === 'admin';
+    if (isAdmin) {
+      return res.json({ ...baseUser, ...profileData, enrollments, socialLinks, experiences, portfolio });
+    }
+
+    // Check if viewer is a batchmate
+    let isBatchmate = false;
+    if (baseUser.role === 'student') {
+      const targetProfile = db.prepare('SELECT batch_number FROM student_profiles WHERE user_id = ?').get(targetUserId);
+      const viewerProfile = db.prepare('SELECT batch_number FROM student_profiles WHERE user_id = ?').get(req.user.id);
+      if (targetProfile && viewerProfile && targetProfile.batch_number && viewerProfile.batch_number) {
+        // Check if they share any course enrollment
+        const sharedCourse = db.prepare(`
+          SELECT 1 FROM student_course_enrollments e1
+          JOIN student_course_enrollments e2 ON e1.course_name = e2.course_name
+          WHERE e1.user_id = ? AND e2.user_id = ? LIMIT 1
+        `).get(targetUserId, req.user.id);
+        if (sharedCourse && targetProfile.batch_number === viewerProfile.batch_number) {
+          isBatchmate = true;
+        }
+      }
+    }
+
+    // Filter fields based on privacy
+    const result = { ...baseUser, ...profileData, enrollments };
+    const fieldsThatCanBePrivate = [
+      'gender', 'birthday', 'present_address', 'permanent_address',
+      'educational_qualification', 'profession', 'email', 'mobile_number',
+      'whatsapp_number', 'bio'
+    ];
+
+    const fieldVisibility = {};
+    for (const field of fieldsThatCanBePrivate) {
+      const vis = privacyMap[field] || 'public';
+      fieldVisibility[field] = vis;
+      if (vis === 'only_me') {
+        result[field] = null;
+      } else if (vis === 'batchmates' && !isBatchmate) {
+        result[field] = null;
+      }
+    }
+
+    // Handle group-level privacy: social_links, experiences, portfolio
+    const socialVis = privacyMap['social_links'] || 'public';
+    fieldVisibility['social_links'] = socialVis;
+    if (socialVis === 'only_me' || (socialVis === 'batchmates' && !isBatchmate)) {
+      result.socialLinks = [];
+    } else {
+      result.socialLinks = socialLinks;
+    }
+
+    const expVis = privacyMap['experiences'] || 'public';
+    fieldVisibility['experiences'] = expVis;
+    if (expVis === 'only_me' || (expVis === 'batchmates' && !isBatchmate)) {
+      result.experiences = [];
+    } else {
+      result.experiences = experiences;
+    }
+
+    const portfolioVis = privacyMap['portfolio'] || 'public';
+    fieldVisibility['portfolio'] = portfolioVis;
+    if (portfolioVis === 'only_me' || (portfolioVis === 'batchmates' && !isBatchmate)) {
+      result.portfolio = [];
+    } else {
+      result.portfolio = portfolio;
+    }
+
+    result.fieldVisibility = fieldVisibility;
+    res.json(result);
   } catch (error) {
     console.error('Profile fetch error:', error);
     res.status(500).json({ error: 'Internal server error' });
@@ -370,6 +452,49 @@ router.get('/directory', authenticateToken, (req, res) => {
     res.json({ students });
   } catch (error) {
     console.error('Directory fetch error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get privacy settings for current user
+router.get('/privacy', authenticateToken, (req, res) => {
+  try {
+    const rows = db.prepare('SELECT field_name, visibility FROM profile_field_privacy WHERE user_id = ?').all(req.user.id);
+    const privacy = {};
+    for (const row of rows) {
+      privacy[row.field_name] = row.visibility;
+    }
+    res.json({ privacy });
+  } catch (error) {
+    console.error('Privacy fetch error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Update a single privacy setting
+router.put('/privacy', authenticateToken, (req, res) => {
+  try {
+    const { field_name, visibility } = req.body;
+    const validFields = [
+      'gender', 'birthday', 'present_address', 'permanent_address',
+      'educational_qualification', 'profession', 'email', 'mobile_number',
+      'whatsapp_number', 'bio', 'social_links', 'experiences', 'portfolio'
+    ];
+    const validVisibility = ['public', 'batchmates', 'only_me'];
+    
+    if (!validFields.includes(field_name) || !validVisibility.includes(visibility)) {
+      return res.status(400).json({ error: 'Invalid field or visibility value' });
+    }
+
+    db.prepare(`
+      INSERT INTO profile_field_privacy (user_id, field_name, visibility)
+      VALUES (?, ?, ?)
+      ON CONFLICT(user_id, field_name) DO UPDATE SET visibility = excluded.visibility
+    `).run(req.user.id, field_name, visibility);
+
+    res.json({ message: 'Privacy setting updated' });
+  } catch (error) {
+    console.error('Privacy update error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

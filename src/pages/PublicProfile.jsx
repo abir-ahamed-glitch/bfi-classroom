@@ -127,7 +127,17 @@ export default function PublicProfile() {
       <div className="page-container container" style={{ padding: '2rem' }}>
         <div className="glass-panel" style={{ padding: '2rem', textAlign: 'center' }}>
           <h3 className="text-accent">{error || 'Profile not found'}</h3>
-          <button className="btn btn-secondary" onClick={() => navigate(-1)} style={{ marginTop: '1rem' }}>
+          <button 
+            className="btn btn-glass" 
+            onClick={() => {
+              if (window.history.state && window.history.state.idx > 0) {
+                navigate(-1);
+              } else {
+                navigate('/');
+              }
+            }} 
+            style={{ marginTop: '1rem', display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}
+          >
             <ArrowLeft size={16} /> Go Back
           </button>
         </div>
@@ -166,9 +176,15 @@ export default function PublicProfile() {
     <div className="page-container container" style={{ paddingBottom: '4rem', maxWidth: '800px', margin: '0 auto' }}>
       
       <button 
-        className="btn" 
-        onClick={() => navigate(-1)} 
-        style={{ marginBottom: '1.5rem', display: 'inline-flex', alignItems: 'center', gap: '0.5rem', background: 'rgba(255,255,255,0.05)' }}
+        className="btn btn-glass" 
+        onClick={() => {
+          if (window.history.state && window.history.state.idx > 0) {
+            navigate(-1);
+          } else {
+            navigate('/');
+          }
+        }} 
+        style={{ marginBottom: '1.5rem', display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}
       >
         <ArrowLeft size={16} /> Back
       </button>
@@ -229,13 +245,13 @@ export default function PublicProfile() {
                 <div><span style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-muted)' }}>Profession</span>{profession}</div>
               </div>
             )}
-            {isFullAccess && gender && (
+            {gender && (
               <div style={{ display: 'flex', gap: '0.8rem', color: 'var(--text-secondary)' }}>
                 <Info size={16} style={{ marginTop: '2px', color: 'var(--text-muted)' }} />
                 <div><span style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-muted)' }}>Gender</span>{gender}</div>
               </div>
             )}
-            {isFullAccess && birthday && (
+            {birthday && (
               <div style={{ display: 'flex', gap: '0.8rem', color: 'var(--text-secondary)' }}>
                 <Calendar size={16} style={{ marginTop: '2px', color: 'var(--text-muted)' }} />
                 <div><span style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-muted)' }}>Birthday</span>{new Date(birthday).toLocaleDateString()}</div>
@@ -245,7 +261,7 @@ export default function PublicProfile() {
         </section>
 
         {/* Contact Info */}
-        {(email || mobile_number || whatsapp_number || isFullAccess) && (
+        {(email || mobile_number || whatsapp_number || present_address || permanent_address) && (
           <section className="glass-panel" style={{ padding: '1.5rem' }}>
             <h3 className="font-display" style={{ marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '1.2rem' }}>
               <Phone size={18} className="text-accent" /> Contact & Location
@@ -269,13 +285,13 @@ export default function PublicProfile() {
                   <div><span style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-muted)' }}>WhatsApp</span>{whatsapp_number}</div>
                 </div>
               )}
-              {isFullAccess && present_address && (
+              {present_address && (
                 <div style={{ display: 'flex', gap: '0.8rem', color: 'var(--text-secondary)' }}>
                   <MapPin size={16} style={{ marginTop: '2px', color: 'var(--text-muted)' }} />
                   <div><span style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-muted)' }}>Present Address</span>{present_address}</div>
                 </div>
               )}
-              {isFullAccess && permanent_address && (
+              {permanent_address && (
                 <div style={{ display: 'flex', gap: '0.8rem', color: 'var(--text-secondary)' }}>
                   <MapPin size={16} style={{ marginTop: '2px', color: 'var(--text-muted)' }} />
                   <div><span style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-muted)' }}>Permanent Address</span>{permanent_address}</div>

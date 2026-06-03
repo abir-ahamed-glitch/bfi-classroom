@@ -401,8 +401,21 @@ router.put('/students/:id', authenticateToken, requireRole('admin'), sanitizeInp
   try {
     const { id } = req.params;
     const { 
-      firstName, lastName, email, mobileNumber, username, batchNumber, phase1_fee, phase2_fee, courses, snNo, year
+      firstName, lastName, email, mobileNumber, username, batchNumber, phase1_fee, phase2_fee, courses, snNo, year, course_fees
     } = req.body;
+
+    // Validate Phase 2 fee details restriction: Cannot set Phase 2 details if Phase 1 exam is not passed
+    if (course_fees?.['Online Filmmaking Course']?.phase2) {
+      const existingEnrollment = db.prepare('SELECT step2_completed FROM student_course_enrollments WHERE user_id = ? AND course_name = ?').get(id, 'Online Filmmaking Course');
+      const step2Completed = existingEnrollment ? existingEnrollment.step2_completed : 0;
+      if (step2Completed !== 1) {
+        const p2 = course_fees['Online Filmmaking Course'].phase2;
+        const hasP2Data = p2.full_fee || p2.amount_paid || p2.status || p2.discount || (p2.installments && p2.installments.length > 0);
+        if (hasP2Data) {
+          return res.status(400).json({ error: 'Cannot set Phase 2 fee details because the student has not passed the Phase 1 exam.' });
+        }
+      }
+    }
 
     const transaction = db.transaction(() => {
       // 1. Update users
@@ -451,9 +464,45 @@ router.put('/students/:id', authenticateToken, requireRole('admin'), sanitizeInp
           addStmt.run(id, course, type);
         }
       }
+
+      // 4. Update fee details for all currently enrolled courses
+      const updateFeeStmt = db.prepare('UPDATE student_course_enrollments SET fee_details = ? WHERE user_id = ? AND course_name = ?');
+      const forceStep1Stmt = db.prepare('UPDATE student_course_enrollments SET step1_completed = 1 WHERE user_id = ? AND course_name = ?');
+      const forceStep3Stmt = db.prepare('UPDATE student_course_enrollments SET step3_completed = 1 WHERE user_id = ? AND course_name = ?');
+      for (const course of newCourses) {
+        const feeInfo = course_fees?.[course] ? JSON.stringify(course_fees[course]) : null;
+        updateFeeStmt.run(feeInfo, id, course);
+
+        if (course === 'Online Filmmaking Course' && course_fees?.[course]) {
+          const cfee = course_fees[course];
+          
+          // Phase 1 payment check
+          const phase1 = cfee.phase1 || {};
+          const amountPaidNum = parseFloat((phase1.amount_paid || '').replace(/[^\d.]/g, '')) || 0;
+          const hasPaidInst = (phase1.installments || []).some(inst => inst.status === 'Paid' && parseFloat((inst.amount || '').replace(/[^\d.]/g, '')) > 0);
+          if (amountPaidNum > 0 || hasPaidInst) {
+            forceStep1Stmt.run(id, course);
+          }
+
+          // Phase 2 payment check
+          const phase2 = cfee.phase2 || {};
+          const phase2PaidNum = parseFloat((phase2.amount_paid || '').replace(/[^\d.]/g, '')) || 0;
+          const phase2HasPaidInst = (phase2.installments || []).some(inst => inst.status === 'Paid' && parseFloat((inst.amount || '').replace(/[^\d.]/g, '')) > 0);
+          if (phase2PaidNum > 0 || phase2HasPaidInst) {
+            forceStep3Stmt.run(id, course);
+          }
+        }
+      }
     });
 
     transaction();
+
+    // Emit live update event to notify the student's portal to refresh
+    const io = req.app.get('io');
+    if (io) {
+      io.emit('progression_updated', { studentId: parseInt(id, 10) });
+    }
+
     res.json({ message: 'Student updated successfully' });
 
   } catch (error) {
@@ -615,65 +664,7 @@ router.get('/teachers', authenticateToken, requireRole('admin'), (req, res) => {
   }
 });
 
-// Route to edit a student's basic profile details
-router.put('/students/:id', authenticateToken, requireRole('admin'), sanitizeInput, (req, res) => {
-  try {
-    const studentIdNum = parseInt(req.params.id, 10);
-    const { firstName, lastName, email, mobileNumber, batchNumber, username, phase1_fee, phase2_fee, courses } = req.body;
-
-    if (!firstName || !lastName || !email || !username) {
-      return res.status(400).json({ error: 'Required fields missing.' });
-    }
-
-    // 1. Conflict checks (case-insensitive for email, username)
-    const existing = db.prepare('SELECT id, email, username FROM users WHERE (lower(email) = lower(?) OR lower(username) = lower(?)) AND id != ?').get(email, username, studentIdNum);
-    if (existing) {
-      if (existing.email.toLowerCase() === email.toLowerCase()) return res.status(400).json({ error: 'Email already taken.' });
-      return res.status(400).json({ error: 'Username already taken.' });
-    }
-
-    // Use a transaction for consistency
-    const updateTransaction = db.transaction(() => {
-      // 2. Update users
-      db.prepare(`
-        UPDATE users SET first_name = ?, last_name = ?, email = ?, username = ?, mobile_number = ?, updated_at = datetime('now')
-        WHERE id = ?
-      `).run(firstName, lastName, email, username, mobileNumber || '', studentIdNum);
-
-      // 3. Update or Insert profile
-      const fullName = `${firstName} ${lastName}`;
-      const profileResult = db.prepare(`
-        UPDATE student_profiles SET full_name = ?, batch_number = ?, phase1_fee = ?, phase2_fee = ?, updated_at = datetime('now')
-        WHERE user_id = ?
-      `).run(fullName, batchNumber || '', phase1_fee || '', phase2_fee || '', studentIdNum);
-      
-      if (profileResult.changes === 0) {
-        db.prepare(`
-          INSERT INTO student_profiles (user_id, full_name, batch_number, phase1_fee, phase2_fee)
-          VALUES (?, ?, ?, ?, ?)
-        `).run(studentIdNum, fullName, batchNumber || '', phase1_fee || '', phase2_fee || '');
-      }
-
-      // 4. Sync courses (Clear and Re-add is more reliable for simple sync)
-      db.prepare('DELETE FROM student_course_enrollments WHERE user_id = ?').run(studentIdNum);
-      
-      if (Array.isArray(courses) && courses.length > 0) {
-        const insertCourse = db.prepare('INSERT INTO student_course_enrollments (user_id, course_name, course_type) VALUES (?, ?, ?)');
-        for (const name of courses) {
-          const type = name === 'Online Filmmaking Course' ? 'filmmaking' : 'workshop';
-          insertCourse.run(studentIdNum, name, type);
-        }
-      }
-    });
-
-    updateTransaction();
-    res.json({ message: 'Success' });
-
-  } catch (error) {
-    console.error('Error updating student:', error);
-    res.status(500).json({ error: 'Internal server error while updating student account.' });
-  }
-});
+// Note: The student update logic is handled by the PUT /students/:id route defined above.
 
 // Route to delete a student account
 router.delete('/students/:id', authenticateToken, requireRole('admin'), (req, res) => {
@@ -773,6 +764,47 @@ router.patch('/students/:id/progress', authenticateToken, requireRole('admin'), 
     const studentId = req.params.id; // user_id
 
     if (!course_id) return res.status(400).json({ error: 'Course ID (enrollment id) is required.' });
+
+    // Validate phase payment restrictions for Online Filmmaking Course
+    const enrollment = db.prepare('SELECT course_name, fee_details FROM student_course_enrollments WHERE id = ? AND user_id = ?').get(course_id, studentId);
+    if (!enrollment) {
+      return res.status(404).json({ error: 'Enrollment not found.' });
+    }
+
+    if (enrollment.course_name === 'Online Filmmaking Course') {
+      let feeDetails = {};
+      if (enrollment.fee_details) {
+        try {
+          feeDetails = typeof enrollment.fee_details === 'string' ? JSON.parse(enrollment.fee_details) : enrollment.fee_details;
+        } catch (err) {
+          console.error(err);
+        }
+      }
+
+      const phase1 = feeDetails?.phase1 || {};
+      const fullFeeNum = parseFloat((phase1.full_fee || '').replace(/[^\d.]/g, '')) || 0;
+      const amountPaidNum = parseFloat((phase1.amount_paid || '').replace(/[^\d.]/g, '')) || 0;
+      const discountNum = parseFloat((phase1.discount || '').replace(/[^\d.]/g, '')) || 0;
+      const remainingDue = Math.max(0, fullFeeNum - discountNum - amountPaidNum);
+      
+      const phase1PaidAny = amountPaidNum > 0 || (phase1.installments || []).some(inst => inst.status === 'Paid' && parseFloat((inst.amount || '').replace(/[^\d.]/g, '')) > 0);
+      const phase1FullyPaid = (fullFeeNum > 0 && amountPaidNum + discountNum >= fullFeeNum) ||
+        (fullFeeNum > 0 && remainingDue > 0 && (phase1.installments || []).length > 0 && (phase1.installments || []).every(inst => inst.status === 'Paid'));
+
+      const phase2 = feeDetails?.phase2 || {};
+      const phase2PaidAny = (parseFloat((phase2.amount_paid || '').replace(/[^\d.]/g, '')) || 0) > 0 ||
+        (phase2.installments || []).some(inst => inst.status === 'Paid' && parseFloat((inst.amount || '').replace(/[^\d.]/g, '')) > 0);
+
+      if (step1_completed === 0 && phase1PaidAny) {
+        return res.status(400).json({ error: 'Cannot uncheck "Phase 1: Admitted" because a payment has already been made for this phase.' });
+      }
+      if (step3_completed === 1 && !phase1FullyPaid) {
+        return res.status(400).json({ error: 'Cannot check "Phase 2: Admitted" because Phase 1 is not fully paid.' });
+      }
+      if (step3_completed === 0 && phase2PaidAny) {
+        return res.status(400).json({ error: 'Cannot uncheck "Phase 2: Admitted" because a payment has already been made for this phase.' });
+      }
+    }
 
     // Build dynamic update to only change provided fields
     let updates = [];

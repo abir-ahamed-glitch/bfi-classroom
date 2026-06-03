@@ -284,12 +284,7 @@ export default function Sidebar({ isNotifOpen, setIsNotifOpen }) {
           <NavLink to="/profile" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
             <User size={20} /> {currentUser?.role === 'admin' ? 'Admin Profile' : currentUser?.role === 'instructor' ? 'Teacher Profile' : 'Student Profile'}
           </NavLink>
-          <NavLink to="/portfolio" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
-            <Library size={20} /> {currentUser?.role === 'admin' ? 'Admin Portfolio' : currentUser?.role === 'instructor' ? 'Teacher Portfolio' : 'Student Portfolio'}
-          </NavLink>
-          <NavLink to="/experience" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
-            <Briefcase size={20} /> Experience
-          </NavLink>
+
           {currentUser?.role === 'student' && (
             <NavLink to="/certificates" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
               <ScrollText size={20} /> Certificates

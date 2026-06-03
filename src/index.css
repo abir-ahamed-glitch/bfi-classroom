@@ -159,7 +159,8 @@ select option {
   color: #09090b;
 }
 
-[data-mode="light"] .input-glass:focus {
+[data-mode="light"] .input-glass:focus,
+[data-mode="light"] .input-glass:focus-within {
   background: #ffffff !important;
   border-color: var(--accent-primary) !important;
 }
@@ -658,7 +659,8 @@ h1.text-gradient,
   font-family: var(--font-sans);
 }
 
-.input-glass:focus {
+.input-glass:focus,
+.input-glass:focus-within {
   outline: none;
   border-color: var(--accent-primary);
   box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);

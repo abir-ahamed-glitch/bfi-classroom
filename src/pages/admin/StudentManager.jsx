@@ -1,8 +1,512 @@
 import { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { UserPlus, Search, Copy, CheckCircle2, User, UserCheck, CheckSquare, Square, Edit, X, FileSpreadsheet, Trash2, GraduationCap, Clapperboard } from 'lucide-react';
+import { UserPlus, Search, Copy, CheckCircle2, User, UserCheck, CheckSquare, Square, Edit, X, FileSpreadsheet, Trash2, GraduationCap, Clapperboard, Lock } from 'lucide-react';
 import BulkStudentImport from '../../components/admin/BulkStudentImport';
 import { getOrdinalSuffix } from '../../utils/formatUtils';
+
+// Helper function to dynamically sync installments and payment status based on fees
+const syncInstallmentsAndStatus = (target) => {
+  if (!target) return;
+  const fullFeeNum = parseFloat((target.full_fee || '').replace(/[^\d.]/g, '')) || 0;
+  const amountPaidNum = parseFloat((target.amount_paid || '').replace(/[^\d.]/g, '')) || 0;
+  const discountNum = parseFloat((target.discount || '').replace(/[^\d.]/g, '')) || 0;
+  const remainingDue = Math.max(0, fullFeeNum - discountNum - amountPaidNum);
+
+  // 1. Auto-detect payment status
+  if (fullFeeNum > 0) {
+    if (amountPaidNum + discountNum >= fullFeeNum) {
+      target.status = 'Paid Full';
+    } else {
+      if (target.status === 'Paid Full') {
+        if (amountPaidNum > 0 || discountNum > 0) {
+          target.status = 'Partial';
+        } else {
+          target.status = 'Due';
+        }
+      } else if (!target.status) {
+        if (amountPaidNum > 0 || discountNum > 0) {
+          target.status = 'Partial';
+        } else {
+          target.status = 'Due';
+        }
+      }
+    }
+  }
+
+  // 2. Auto-adjust installments
+  if (remainingDue <= 0) {
+    target.installments = [];
+  } else {
+    const currentInst = target.installments || [];
+    if (currentInst.length === 0) {
+      target.installments = [{ amount: String(remainingDue), dueDate: '', status: 'Pending' }];
+    } else {
+      const updatedInst = [];
+      let runningSum = 0;
+      for (let i = 0; i < currentInst.length; i++) {
+        const inst = currentInst[i];
+        const amountVal = parseFloat((inst.amount || '').replace(/[^\d.]/g, '')) || 0;
+        
+        if (runningSum >= remainingDue) {
+          break;
+        }
+        
+        if (runningSum + amountVal >= remainingDue) {
+          const leftover = remainingDue - runningSum;
+          updatedInst.push({
+            ...inst,
+            amount: String(leftover)
+          });
+          runningSum = remainingDue;
+          break;
+        } else {
+          updatedInst.push({
+            ...inst,
+            amount: String(amountVal)
+          });
+          runningSum += amountVal;
+        }
+      }
+      
+      if (runningSum < remainingDue) {
+        const leftover = remainingDue - runningSum;
+        updatedInst.push({
+          amount: String(leftover),
+          dueDate: '',
+          status: 'Pending'
+        });
+      }
+      target.installments = updatedInst;
+    }
+  }
+};
+
+const hasPendingDueOrPartialPayment = (course) => {
+  if (!course || !course.fee_details) return false;
+  
+  let feeDetails = {};
+  try {
+    feeDetails = typeof course.fee_details === 'string' 
+      ? JSON.parse(course.fee_details) 
+      : course.fee_details;
+  } catch (e) {
+    console.error('Error parsing course fee details:', e);
+    return false;
+  }
+
+  if (!feeDetails) return false;
+  
+  const isUnpaid = (phase) => {
+    if (!phase) return false;
+    
+    // If installments exist, they are the source of truth
+    if (phase.installments && phase.installments.length > 0) {
+      return phase.installments.some(inst => inst.status === 'Pending' || inst.status === 'Due');
+    }
+
+    // Status checks (when no installments)
+    const status = phase.status;
+    if (status === 'Paid Full' || status === 'Waived') {
+      return false;
+    }
+    if (status === 'Partial' || status === 'Pending' || status === 'Due') {
+      return true;
+    }
+    
+    // Fallback numerical check
+    const fullFee = parseFloat((phase.full_fee || '').toString().replace(/[^\d.]/g, '')) || 0;
+    if (fullFee === 0) return false;
+    
+    const amountPaid = parseFloat((phase.amount_paid || '').toString().replace(/[^\d.]/g, '')) || 0;
+    const discount = parseFloat((phase.discount || '').toString().replace(/[^\d.]/g, '')) || 0;
+    const remainingDue = Math.max(0, fullFee - discount - amountPaid);
+    
+    return remainingDue > 0;
+  };
+
+  if (course.course_type === 'filmmaking') {
+    return isUnpaid(feeDetails.phase1) || isUnpaid(feeDetails.phase2);
+  } else {
+    return isUnpaid(feeDetails);
+  }
+};
+
+// Helper subcomponent for rendering fee fields and installment details
+function FeeRow({ 
+  courseName, 
+  label, 
+  phaseKey, 
+  feeData, 
+  onChange, 
+  onDiscountBlur, 
+  onRemoveInstallment, 
+  onInstallmentChange,
+  disabled = false
+}) {
+  const key = phaseKey ? `${phaseKey}.` : '';
+  const courseFees = feeData?.[courseName] || {};
+  const data = phaseKey ? (courseFees[phaseKey] || {}) : courseFees;
+
+  const fullFeeNum = parseFloat((data.full_fee || '').replace(/[^\d.]/g, '')) || 0;
+  const amountPaidNum = parseFloat((data.amount_paid || '').replace(/[^\d.]/g, '')) || 0;
+  const discountNum = parseFloat((data.discount || '').replace(/[^\d.]/g, '')) || 0;
+  const remainingDue = Math.max(0, fullFeeNum - discountNum - amountPaidNum);
+  
+  const hasError = amountPaidNum > fullFeeNum;
+  const hasSumError = (amountPaidNum + discountNum) > fullFeeNum;
+
+  const isFullySatisfied = fullFeeNum > 0 && amountPaidNum + discountNum >= fullFeeNum;
+  const allInstallmentsPaid = remainingDue > 0 && 
+    (data.installments || []).length > 0 && 
+    (data.installments || []).every(inst => inst.status === 'Paid');
+  const isFullyCompleted = isFullySatisfied || allInstallmentsPaid;
+
+  let completionMessage = '';
+  if (label) {
+    if (label.toLowerCase().includes('phase 1')) {
+      completionMessage = '1st Phase fee completed';
+    } else if (label.toLowerCase().includes('phase 2')) {
+      completionMessage = '2nd Phase fee completed';
+    } else {
+      completionMessage = `${label} fee completed`;
+    }
+  } else {
+    completionMessage = `${courseName} fee completed`;
+  }
+
+  return (
+    <div style={{ padding: '0.75rem', background: 'rgba(255,255,255,0.02)', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.05)', opacity: disabled ? 0.85 : 1 }}>
+      {disabled && (
+        <div style={{
+          fontSize: '0.75rem',
+          color: '#fbbf24',
+          background: 'rgba(245, 158, 11, 0.05)',
+          border: '1px solid rgba(245, 158, 11, 0.2)',
+          padding: '0.4rem 0.6rem',
+          borderRadius: '6px',
+          marginBottom: '0.6rem',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '0.4rem',
+          fontWeight: '500'
+        }}>
+          <span>⚠️</span> Locked until "Phase 1: Passed Exam" is checked
+        </div>
+      )}
+      {(label || (fullFeeNum > 0 && amountPaidNum + discountNum >= fullFeeNum)) && (
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.6rem' }}>
+          {label ? (
+            <p style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-muted)', margin: 0, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+              {disabled && <span>🔒</span>} {label}
+            </p>
+          ) : <div />}
+          {fullFeeNum > 0 && amountPaidNum + discountNum >= fullFeeNum && (
+            <span style={{ 
+              fontSize: '0.72rem', 
+              fontWeight: '600', 
+              color: '#34d399', 
+              background: 'rgba(52, 211, 153, 0.1)', 
+              padding: '0.15rem 0.45rem', 
+              borderRadius: '4px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.3rem',
+              border: '1px solid rgba(52, 211, 153, 0.2)'
+            }}>
+              <span style={{ display: 'inline-block', width: '6px', height: '6px', borderRadius: '50%', background: '#34d399' }}></span>
+              Paid
+            </span>
+          )}
+        </div>
+      )}
+      
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem', marginBottom: '0.5rem' }}>
+        <div>
+          <label style={{ display: 'block', marginBottom: '0.25rem', color: 'var(--text-secondary)', fontSize: '0.78rem' }}>Course Fee</label>
+          <input
+            type="text"
+            value={data.full_fee || ''}
+            disabled={disabled}
+            onChange={e => onChange(courseName, `${key}full_fee`, e.target.value)}
+            className="input-glass"
+            placeholder="e.g. 15,000"
+            style={{ 
+              paddingLeft: '0.65rem', 
+              fontSize: '0.83rem',
+              opacity: disabled ? 0.5 : 1,
+              cursor: disabled ? 'not-allowed' : 'text'
+            }}
+          />
+        </div>
+        <div>
+          <label style={{ display: 'block', marginBottom: '0.25rem', color: 'var(--text-secondary)', fontSize: '0.78rem' }}>Amount Paid</label>
+          <input
+            type="text"
+            value={data.amount_paid || ''}
+            disabled={disabled}
+            onChange={e => onChange(courseName, `${key}amount_paid`, e.target.value)}
+            className="input-glass"
+            placeholder="e.g. 10,000"
+            style={{ 
+              paddingLeft: '0.65rem', 
+              fontSize: '0.83rem',
+              borderColor: (hasError || hasSumError) ? '#ef4444' : 'rgba(255,255,255,0.1)',
+              opacity: disabled ? 0.5 : 1,
+              cursor: disabled ? 'not-allowed' : 'text'
+            }}
+          />
+        </div>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem', marginBottom: '0.5rem' }}>
+        <div>
+          <label style={{ display: 'block', marginBottom: '0.25rem', color: '#10b981', fontSize: '0.78rem', fontWeight: 600 }}>🏷️ Discount</label>
+          <input
+            type="text"
+            value={data.discount || ''}
+            disabled={disabled}
+            onChange={e => onChange(courseName, `${key}discount`, e.target.value)}
+            onBlur={e => onDiscountBlur(courseName, phaseKey, e.target.value)}
+            className="input-glass"
+            placeholder="e.g. 2,000 or 10%"
+            style={{ 
+              paddingLeft: '0.65rem', 
+              fontSize: '0.83rem',
+              opacity: disabled ? 0.5 : 1,
+              cursor: disabled ? 'not-allowed' : 'text'
+            }}
+          />
+        </div>
+        <div>
+          <label style={{ display: 'block', marginBottom: '0.25rem', color: 'var(--text-secondary)', fontSize: '0.78rem' }}>Payment Status</label>
+          <select
+            value={data.status || ''}
+            disabled={disabled}
+            onChange={e => onChange(courseName, `${key}status`, e.target.value)}
+            className="input-glass"
+            style={{ 
+              paddingTop: '0.2rem', 
+              paddingBottom: '0.2rem', 
+              paddingLeft: '0.65rem', 
+              paddingRight: '1.75rem', 
+              fontSize: '0.83rem', 
+              height: '38px',
+              backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='rgba(255,255,255,0.6)'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'%3E%3C/path%3E%3C/svg%3E")`,
+              backgroundPosition: 'right 0.5rem center',
+              backgroundSize: '1rem',
+              backgroundRepeat: 'no-repeat',
+              appearance: 'none',
+              cursor: disabled ? 'not-allowed' : 'pointer',
+              opacity: disabled ? 0.5 : 1,
+              color: data.status ? (
+                data.status === 'Paid Full' ? '#34d399' :
+                data.status === 'Partial' ? '#fbbf24' :
+                data.status === 'Pending' ? '#60a5fa' :
+                data.status === 'Waived' ? '#c084fc' : '#f87171'
+              ) : 'var(--text-secondary)',
+              borderColor: data.status ? (
+                data.status === 'Paid Full' ? 'rgba(52, 211, 153, 0.3)' :
+                data.status === 'Partial' ? 'rgba(251, 191, 36, 0.3)' :
+                data.status === 'Pending' ? 'rgba(96, 165, 250, 0.3)' :
+                data.status === 'Waived' ? 'rgba(192, 132, 252, 0.3)' : 'rgba(248, 113, 113, 0.3)'
+              ) : 'rgba(255,255,255,0.1)',
+              fontWeight: data.status ? '600' : 'normal'
+            }}
+          >
+            <option value="" style={{ color: 'var(--text-secondary)', background: 'var(--bg-secondary, #030b19)' }}>— Select —</option>
+            <option value="Paid Full" style={{ color: '#34d399', background: 'var(--bg-secondary, #030b19)' }}>✅ Paid Full</option>
+            <option value="Partial" style={{ color: '#fbbf24', background: 'var(--bg-secondary, #030b19)' }}>⚠️ Partial Payment</option>
+            <option value="Pending" style={{ color: '#60a5fa', background: 'var(--bg-secondary, #030b19)' }}>🕐 Pending</option>
+            <option value="Waived" style={{ color: '#c084fc', background: 'var(--bg-secondary, #030b19)' }}>🎁 Waived / Free</option>
+            <option value="Due" style={{ color: '#f87171', background: 'var(--bg-secondary, #030b19)' }}>❌ Due / Unpaid</option>
+          </select>
+        </div>
+      </div>
+
+      {(hasError || hasSumError) && (
+        <p style={{ color: '#ef4444', fontSize: '0.75rem', margin: '0.25rem 0 0.5rem 0' }}>
+          {hasError 
+            ? '⚠️ Amount paid cannot exceed the course fee.' 
+            : '⚠️ Amount paid + discount cannot exceed the course fee.'}
+        </p>
+      )}
+
+      {/* Installment Section: only shows if remainingDue > 0 */}
+      {remainingDue > 0 && (
+        <div style={{ 
+          marginTop: '0.75rem', 
+          padding: '0.75rem', 
+          background: 'rgba(245, 158, 11, 0.02)', 
+          borderRadius: '8px', 
+          border: '1px dashed rgba(245, 158, 11, 0.3)' 
+        }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.6rem' }}>
+            <span style={{ fontSize: '0.78rem', color: '#fbbf24', fontWeight: 600 }}>
+              📅 Installment Details (Due: {remainingDue.toLocaleString()} BDT)
+            </span>
+          </div>
+          
+          {(data.installments || []).length === 0 ? (
+            <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontStyle: 'italic', margin: 0 }}>
+              No installment details specified.
+            </p>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
+              {(data.installments || []).map((inst, instIdx) => {
+                const instStatusColor = inst.status === 'Paid' ? '#34d399' : '#fbbf24';
+                return (
+                  <div 
+                    key={instIdx} 
+                    style={{ 
+                      display: 'flex', 
+                      flexDirection: 'column',
+                      gap: '0.5rem', 
+                      padding: '0.6rem', 
+                      background: 'rgba(255, 255, 255, 0.02)', 
+                      borderRadius: '8px', 
+                      border: '1px solid rgba(255, 255, 255, 0.06)' 
+                    }}
+                  >
+                    {/* Top Row: Installment # Label, Amount input, and Remove Button */}
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem' }}>
+                      <span style={{ fontSize: '0.72rem', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase' }}>
+                        Installment #{instIdx + 1}
+                      </span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flex: 1, justifyContent: 'flex-end' }}>
+                        <div style={{ position: 'relative', width: '130px' }}>
+                          <span style={{ position: 'absolute', left: '0.5rem', top: '50%', transform: 'translateY(-50%)', fontSize: '0.7rem', color: 'var(--text-muted)' }}>BDT</span>
+                          <input
+                            type="text"
+                            value={inst.amount || ''}
+                            disabled={disabled}
+                            onChange={e => onInstallmentChange(courseName, phaseKey, instIdx, 'amount', e.target.value)}
+                            placeholder="Amount"
+                            className="input-glass"
+                            style={{ 
+                              fontSize: '0.78rem', 
+                              paddingLeft: '2.2rem', 
+                              paddingRight: '0.5rem', 
+                              height: '28px', 
+                              paddingTop: 0, 
+                              paddingBottom: 0, 
+                              textAlign: 'right',
+                              opacity: disabled ? 0.5 : 1,
+                              cursor: disabled ? 'not-allowed' : 'text'
+                            }}
+                          />
+                        </div>
+                        <button 
+                          type="button" 
+                          disabled={disabled}
+                          onClick={() => onRemoveInstallment(courseName, phaseKey, instIdx)} 
+                          style={{ 
+                            background: disabled ? 'rgba(255,255,255,0.05)' : 'rgba(239, 68, 68, 0.1)', 
+                            border: 'none', 
+                            color: disabled ? 'var(--text-muted)' : '#f87171', 
+                            cursor: disabled ? 'not-allowed' : 'pointer', 
+                            display: 'flex', 
+                            alignItems: 'center', 
+                            justifyContent: 'center', 
+                            borderRadius: '4px',
+                            width: '24px',
+                            height: '24px',
+                            padding: 0,
+                            opacity: disabled ? 0.5 : 1
+                          }}
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Bottom Row: Due Date and Status Dropdown */}
+                    <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: '0.5rem' }}>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                        <label style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>Due Date</label>
+                        <input
+                          type="date"
+                          value={inst.dueDate || ''}
+                          disabled={disabled}
+                          onChange={e => onInstallmentChange(courseName, phaseKey, instIdx, 'dueDate', e.target.value)}
+                          className="input-glass"
+                          min={instIdx > 0 ? (data.installments[instIdx - 1].dueDate || '') : ''}
+                          style={{ 
+                            fontSize: '0.78rem', 
+                            padding: '0.25rem 0.5rem', 
+                            height: '28px',
+                            opacity: disabled ? 0.5 : 1,
+                            cursor: disabled ? 'not-allowed' : 'text'
+                          }}
+                        />
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                        <label style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>Status</label>
+                        <select
+                          value={inst.status || 'Pending'}
+                          disabled={disabled}
+                          onChange={e => onInstallmentChange(courseName, phaseKey, instIdx, 'status', e.target.value)}
+                          className="input-glass"
+                          style={{ 
+                            fontSize: '0.78rem', 
+                            paddingTop: '0.1rem',
+                            paddingBottom: '0.1rem',
+                            paddingLeft: '0.5rem', 
+                            paddingRight: '1.5rem', 
+                            height: '28px', 
+                            appearance: 'none',
+                            backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='rgba(255,255,255,0.6)'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'%3E%3C/path%3E%3C/svg%3E")`,
+                            backgroundPosition: 'right 0.35rem center',
+                            backgroundSize: '0.8rem',
+                            backgroundRepeat: 'no-repeat',
+                            color: instStatusColor,
+                            borderColor: disabled ? 'rgba(255,255,255,0.1)' : `${instStatusColor}4D`,
+                            fontWeight: '600',
+                            cursor: disabled ? 'not-allowed' : 'pointer',
+                            opacity: disabled ? 0.5 : 1
+                          }}
+                        >
+                          <option value="Pending" style={{ color: '#fbbf24', background: 'var(--bg-secondary, #030b19)' }}>Pending</option>
+                          <option value="Paid" style={{ color: '#34d399', background: 'var(--bg-secondary, #030b19)' }}>Paid</option>
+                        </select>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Fully Completed Banner */}
+      {isFullyCompleted && (
+        <div style={{
+          marginTop: '0.75rem',
+          padding: '0.6rem 0.75rem',
+          background: 'rgba(16, 185, 129, 0.06)',
+          border: '1px solid rgba(16, 185, 129, 0.2)',
+          borderRadius: '8px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '0.5rem',
+          color: '#34d399',
+          fontSize: '0.78rem',
+          fontWeight: '600'
+        }}>
+          <span style={{ 
+            display: 'inline-block', 
+            width: '6px', 
+            height: '6px', 
+            borderRadius: '50%', 
+            background: '#34d399', 
+            boxShadow: '0 0 8px #34d399' 
+          }}></span>
+          {completionMessage}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function StudentManager() {
   const [students, setStudents] = useState([]);
@@ -15,7 +519,10 @@ export default function StudentManager() {
   // Edit Modal State
   const [editingStudent, setEditingStudent] = useState(null);
   const [editFormData, setEditFormData] = useState({
-    firstName: '', lastName: '', email: '', username: '', batchNumber: '', mobileNumber: '', phase1_fee: '', phase2_fee: '',
+    firstName: '', lastName: '', email: '', username: '', batchNumber: '', mobileNumber: '',
+    phase1_fee: '', phase2_fee: '',
+    course_fees: {},   // { [courseName]: { amount: '', status: '' } }
+    discount: '',      // discount note / amount
     courses: []
   });
   const [isEditing, setIsEditing] = useState(false);
@@ -142,6 +649,28 @@ export default function StudentManager() {
       const e = student?.enrollments?.find(env => env.id === enrollmentId);
       const willBeChecked = !currentValue;
 
+      let feeDetails = {};
+      if (e?.fee_details) {
+        try {
+          feeDetails = typeof e.fee_details === 'string' ? JSON.parse(e.fee_details) : e.fee_details;
+        } catch (err) {
+          console.error(err);
+        }
+      }
+      const phase1 = feeDetails?.phase1 || {};
+      const fullFeeNum = parseFloat((phase1.full_fee || '').replace(/[^\d.]/g, '')) || 0;
+      const amountPaidNum = parseFloat((phase1.amount_paid || '').replace(/[^\d.]/g, '')) || 0;
+      const discountNum = parseFloat((phase1.discount || '').replace(/[^\d.]/g, '')) || 0;
+      const remainingDue = Math.max(0, fullFeeNum - discountNum - amountPaidNum);
+      
+      const phase1PaidAny = amountPaidNum > 0 || (phase1.installments || []).some(inst => inst.status === 'Paid' && parseFloat((inst.amount || '').replace(/[^\d.]/g, '')) > 0);
+      const phase1FullyPaid = (fullFeeNum > 0 && amountPaidNum + discountNum >= fullFeeNum) ||
+        (fullFeeNum > 0 && remainingDue > 0 && (phase1.installments || []).length > 0 && (phase1.installments || []).every(inst => inst.status === 'Paid'));
+
+      const phase2 = feeDetails?.phase2 || {};
+      const phase2PaidAny = (parseFloat((phase2.amount_paid || '').replace(/[^\d.]/g, '')) || 0) > 0 ||
+        (phase2.installments || []).some(inst => inst.status === 'Paid' && parseFloat((inst.amount || '').replace(/[^\d.]/g, '')) > 0);
+
       if (stepField === 'step2_completed') {
         openAcademicModal(student, enrollmentId);
         return;
@@ -159,16 +688,28 @@ export default function StudentManager() {
 
       if (willBeChecked) {
         if (stepField === 'step3_completed' && (!e?.step1_completed || !e?.step2_completed)) {
-          setConfirmConfig({ title: 'Action Restricted', message: 'Cannot check "Phase 2: Enrolled". "Phase 1: Enrolled" and "Phase 1: Passed Exam" must be checked first.', confirmText: 'OK', isAlert: true, onConfirm: () => {} });
+          setConfirmConfig({ title: 'Action Restricted', message: 'Cannot check "Phase 2: Admitted". "Phase 1: Admitted" and "Phase 1: Passed Exam" must be checked first.', confirmText: 'OK', isAlert: true, onConfirm: () => {} });
+          return;
+        }
+        if (stepField === 'step3_completed' && !phase1FullyPaid) {
+          setConfirmConfig({ title: 'Action Restricted', message: 'Cannot check "Phase 2: Admitted" because Phase 1 is not fully paid.', confirmText: 'OK', isAlert: true, onConfirm: () => {} });
           return;
         }
       } else {
         if (stepField === 'step3_completed' && e?.step4_completed) {
-          setConfirmConfig({ title: 'Action Restricted', message: 'Cannot uncheck "Phase 2: Enrolled" while "Phase 2: Completed" is checked.', confirmText: 'OK', isAlert: true, onConfirm: () => {} });
+          setConfirmConfig({ title: 'Action Restricted', message: 'Cannot uncheck "Phase 2: Admitted" while "Phase 2: Completed" is checked.', confirmText: 'OK', isAlert: true, onConfirm: () => {} });
+          return;
+        }
+        if (stepField === 'step3_completed' && phase2PaidAny) {
+          setConfirmConfig({ title: 'Action Restricted', message: 'Cannot uncheck "Phase 2: Admitted" because a payment has already been made for this phase.', confirmText: 'OK', isAlert: true, onConfirm: () => {} });
           return;
         }
         if (stepField === 'step1_completed' && (e?.step2_completed || e?.step3_completed || e?.step4_completed)) {
-          setConfirmConfig({ title: 'Action Restricted', message: 'Cannot uncheck "Phase 1: Enrolled" while subsequent phases are checked.', confirmText: 'OK', isAlert: true, onConfirm: () => {} });
+          setConfirmConfig({ title: 'Action Restricted', message: 'Cannot uncheck "Phase 1: Admitted" while subsequent phases are checked.', confirmText: 'OK', isAlert: true, onConfirm: () => {} });
+          return;
+        }
+        if (stepField === 'step1_completed' && phase1PaidAny) {
+          setConfirmConfig({ title: 'Action Restricted', message: 'Cannot uncheck "Phase 1: Admitted" because a payment has already been made for this phase.', confirmText: 'OK', isAlert: true, onConfirm: () => {} });
           return;
         }
       }
@@ -334,6 +875,51 @@ export default function StudentManager() {
       }
     }
 
+    // Build course_fees with per-course structure:
+    // Online Filmmaking Course → { phase1: {full_fee, amount_paid, status, discount, installments}, phase2: ... }
+    // All other courses        → { full_fee, amount_paid, status, discount, installments }
+    const builtFees = {};
+    (student.enrollments || []).forEach(enr => {
+      const cn = enr.course_name;
+      let enrFeeDetails = {};
+      if (enr.fee_details) {
+        try {
+          enrFeeDetails = typeof enr.fee_details === 'string' ? JSON.parse(enr.fee_details) : enr.fee_details;
+        } catch (e) {
+          console.error('Failed to parse fee_details', e);
+        }
+      }
+      if (cn === 'Online Filmmaking Course') {
+        builtFees[cn] = {
+          phase1: {
+            full_fee:    enrFeeDetails?.phase1?.full_fee    ?? '',
+            amount_paid: enrFeeDetails?.phase1?.amount_paid ?? '',
+            status:      enrFeeDetails?.phase1?.status      ?? '',
+            discount:    enrFeeDetails?.phase1?.discount    ?? '',
+            installments: enrFeeDetails?.phase1?.installments || []
+          },
+          phase2: {
+            full_fee:    enrFeeDetails?.phase2?.full_fee    ?? '',
+            amount_paid: enrFeeDetails?.phase2?.amount_paid ?? '',
+            status:      enrFeeDetails?.phase2?.status      ?? '',
+            discount:    enrFeeDetails?.phase2?.discount    ?? '',
+            installments: enrFeeDetails?.phase2?.installments || []
+          }
+        };
+        syncInstallmentsAndStatus(builtFees[cn].phase1);
+        syncInstallmentsAndStatus(builtFees[cn].phase2);
+      } else {
+        builtFees[cn] = {
+          full_fee:    enrFeeDetails?.full_fee    ?? '',
+          amount_paid: enrFeeDetails?.amount_paid ?? '',
+          status:      enrFeeDetails?.status      ?? '',
+          discount:    enrFeeDetails?.discount    ?? '',
+          installments: enrFeeDetails?.installments || []
+        };
+        syncInstallmentsAndStatus(builtFees[cn]);
+      }
+    });
+
     setEditFormData({
       firstName: student.first_name || names[0] || '',
       lastName: student.last_name || names.slice(1).join(' ') || '',
@@ -345,6 +931,8 @@ export default function StudentManager() {
       year: extractedYear,
       phase1_fee: student.phase1_fee || '',
       phase2_fee: student.phase2_fee || '',
+      course_fees: builtFees,
+      discount: student.discount || '',
       courses: student.enrollments ? student.enrollments.map(e => e.course_name) : []
     });
   };
@@ -360,11 +948,96 @@ export default function StudentManager() {
 
   const handleEditCourseChange = (courseName) => {
     const currentCourses = editFormData.courses || [];
-    if (currentCourses.includes(courseName)) {
-      setEditFormData({ ...editFormData, courses: currentCourses.filter(c => c !== courseName) });
-    } else {
-      setEditFormData({ ...editFormData, courses: [...currentCourses, courseName] });
+    const isRemoving = currentCourses.includes(courseName);
+    const newCourses = isRemoving
+      ? currentCourses.filter(c => c !== courseName)
+      : [...currentCourses, courseName];
+
+    const newFees = { ...editFormData.course_fees };
+    if (!isRemoving && !newFees[courseName]) {
+      if (courseName === 'Online Filmmaking Course') {
+        newFees[courseName] = {
+          phase1: { full_fee: '', amount_paid: '', status: '', discount: '', installments: [] },
+          phase2: { full_fee: '', amount_paid: '', status: '', discount: '', installments: [] }
+        };
+        syncInstallmentsAndStatus(newFees[courseName].phase1);
+        syncInstallmentsAndStatus(newFees[courseName].phase2);
+      } else {
+        newFees[courseName] = { full_fee: '', amount_paid: '', status: '', discount: '', installments: [] };
+        syncInstallmentsAndStatus(newFees[courseName]);
+      }
+    } else if (isRemoving) {
+      delete newFees[courseName];
     }
+
+    setEditFormData({ ...editFormData, courses: newCourses, course_fees: newFees });
+  };
+
+  const handleCourseFeeChange = (courseName, field, value) => {
+    setEditFormData(prev => {
+      const fees = { ...prev.course_fees };
+      if (field.includes('.')) {
+        const [phase, key] = field.split('.');
+        fees[courseName] = {
+          ...fees[courseName],
+          [phase]: { ...fees[courseName]?.[phase], [key]: value }
+        };
+        syncInstallmentsAndStatus(fees[courseName][phase]);
+      } else {
+        fees[courseName] = { ...fees[courseName], [field]: value };
+        syncInstallmentsAndStatus(fees[courseName]);
+      }
+      return { ...prev, course_fees: fees };
+    });
+  };
+
+  const handleDiscountBlur = (courseName, phaseKey, discountValue) => {
+    if (!discountValue) return;
+    const match = discountValue.trim().match(/^(\d+(?:\.\d+)?)\s*%/);
+    if (match) {
+      const percent = parseFloat(match[1]);
+      const feeData = editFormData.course_fees?.[courseName] || {};
+      const feeStr = phaseKey ? feeData[phaseKey]?.full_fee : feeData.full_fee;
+      const feeNum = parseFloat((feeStr || '').replace(/[^\d.]/g, ''));
+      if (!isNaN(feeNum)) {
+        const calculated = Math.round((feeNum * percent) / 100);
+        const field = phaseKey ? `${phaseKey}.discount` : 'discount';
+        handleCourseFeeChange(courseName, field, String(calculated));
+      }
+    }
+  };
+
+  const handleRemoveInstallment = (courseName, phaseKey, index) => {
+    setEditFormData(prev => {
+      const fees = { ...prev.course_fees };
+      const target = phaseKey ? fees[courseName]?.[phaseKey] : fees[courseName];
+      if (target) {
+        const currentInst = target.installments || [];
+        const updatedInst = currentInst.filter((_, idx) => idx !== index);
+        target.installments = updatedInst;
+        syncInstallmentsAndStatus(target);
+      }
+      return { ...prev, course_fees: fees };
+    });
+  };
+
+  const handleInstallmentChange = (courseName, phaseKey, index, key, value) => {
+    setEditFormData(prev => {
+      const fees = { ...prev.course_fees };
+      const target = phaseKey ? fees[courseName]?.[phaseKey] : fees[courseName];
+      if (target) {
+        const currentInst = target.installments || [];
+        const updatedInst = currentInst.map((inst, idx) => {
+          if (idx === index) {
+            return { ...inst, [key]: value };
+          }
+          return inst;
+        });
+        target.installments = updatedInst;
+        syncInstallmentsAndStatus(target);
+      }
+      return { ...prev, course_fees: fees };
+    });
   };
 
   const handleEditChange = (e) => setEditFormData({ ...editFormData, [e.target.name]: e.target.value });
@@ -474,10 +1147,60 @@ export default function StudentManager() {
     }
   };
 
+  const validateFees = () => {
+    for (const courseName of editFormData.courses || []) {
+      const isOFC = courseName === 'Online Filmmaking Course';
+      const feeData = editFormData.course_fees?.[courseName] || {};
+      
+      const checkRow = (data, label) => {
+        const fullFee = parseFloat((data.full_fee || '').replace(/[^\d.]/g, '')) || 0;
+        const amountPaid = parseFloat((data.amount_paid || '').replace(/[^\d.]/g, '')) || 0;
+        const discount = parseFloat((data.discount || '').replace(/[^\d.]/g, '')) || 0;
+        
+        if (amountPaid > fullFee) {
+          return `${label}: Amount Paid (${amountPaid.toLocaleString()} BDT) cannot exceed the Course Fee (${fullFee.toLocaleString()} BDT).`;
+        }
+        if (amountPaid + discount > fullFee) {
+          return `${label}: Amount Paid + Discount cannot exceed the Course Fee.`;
+        }
+
+        // Validate that installments are chronological
+        const installments = data.installments || [];
+        for (let i = 1; i < installments.length; i++) {
+          const prevDate = installments[i - 1].dueDate;
+          const currDate = installments[i].dueDate;
+          if (prevDate && currDate && currDate < prevDate) {
+            return `${label}: Installment #${i + 1} due date (${currDate}) cannot be earlier than Installment #${i} due date (${prevDate}).`;
+          }
+        }
+
+        return null;
+      };
+
+      if (isOFC) {
+        const err1 = checkRow(feeData.phase1 || {}, `${courseName} (Phase 1)`);
+        if (err1) return err1;
+        const err2 = checkRow(feeData.phase2 || {}, `${courseName} (Phase 2)`);
+        if (err2) return err2;
+      } else {
+        const err = checkRow(feeData, courseName);
+        if (err) return err;
+      }
+    }
+    return null;
+  };
+
   const submitEdit = async (e) => {
     e.preventDefault();
-    setIsEditing(true);
     setEditError('');
+
+    const valError = validateFees();
+    if (valError) {
+      setEditError(valError);
+      return;
+    }
+
+    setIsEditing(true);
 
     try {
       const res = await fetch(`/api/admin/students/${editingStudent.id}`, {
@@ -745,6 +1468,9 @@ export default function StudentManager() {
                                   </button>
                                 </>
                               )}
+                              {e.step4_completed === 1 && hasPendingDueOrPartialPayment(e) && (
+                                <Lock size={14} style={{ color: '#f87171', display: 'inline-block' }} title="Certificate Locked (Pending/Due/Partial Payment)" />
+                              )}
                             </div>
                           </div>
                         ))}
@@ -871,25 +1597,16 @@ export default function StudentManager() {
                 </div>
               </div>
 
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-                <div>
-                  <label style={{ display: 'block', marginBottom: '0.4rem', color: 'var(--text-secondary)' }}>Phase 1 Fee Status</label>
-                  <input type="text" name="phase1_fee" value={editFormData.phase1_fee} onChange={handleEditChange} className="input-glass" placeholder="e.g. 5000 BDT Paid" style={{ paddingLeft: '1rem' }} />
-                </div>
-                <div>
-                  <label style={{ display: 'block', marginBottom: '0.4rem', color: 'var(--text-secondary)' }}>Phase 2 Fee Status</label>
-                  <input type="text" name="phase2_fee" value={editFormData.phase2_fee} onChange={handleEditChange} className="input-glass" placeholder="e.g. Paid Full" style={{ paddingLeft: '1rem' }} />
-                </div>
-              </div>
 
-              <div style={{ padding: '1rem', background: 'rgba(255,255,255,0.02)', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.05)', marginTop: '0.5rem' }}>
+              {/* Enrolled Courses */}
+              <div style={{ padding: '1rem', background: 'rgba(255,255,255,0.02)', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.05)', marginTop: '0.25rem' }}>
                 <h3 style={{ fontSize: '1rem', marginBottom: '1rem', color: 'var(--text-secondary)' }}>Enrolled Courses</h3>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.8rem' }}>
                   {availableCourses.map(course => (
                     <label key={course.name} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', background: (editFormData.courses || []).includes(course.name) ? 'rgba(56, 189, 248, 0.1)' : 'transparent', padding: '0.4rem 0.8rem', borderRadius: '8px', border: '1px solid', borderColor: (editFormData.courses || []).includes(course.name) ? 'var(--accent-primary)' : 'rgba(255,255,255,0.1)', transition: 'all 0.2s' }}>
-                      <input 
-                        type="checkbox" 
-                        checked={(editFormData.courses || []).includes(course.name)} 
+                      <input
+                        type="checkbox"
+                        checked={(editFormData.courses || []).includes(course.name)}
                         onChange={() => handleEditCourseChange(course.name)}
                         style={{ width: '15px', height: '15px' }}
                       />
@@ -898,6 +1615,67 @@ export default function StudentManager() {
                   ))}
                 </div>
               </div>
+
+              {/* ── Dynamic Course Fee Section ─────────────────────────── */}
+              {(editFormData.courses || []).length > 0 && (
+                <div style={{ padding: '1rem', background: 'rgba(201,168,76,0.04)', borderRadius: '12px', border: '1px solid rgba(201,168,76,0.18)', marginTop: '0.25rem' }}>
+                  <h3 style={{ fontSize: '0.95rem', marginBottom: '0.9rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <span>💰</span> Course Fee Details
+                  </h3>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+                    {(editFormData.courses || []).map(courseName => {
+                      const isOFC = courseName === 'Online Filmmaking Course';
+                      return (
+                        <div key={courseName} style={{ padding: '0.8rem', background: 'rgba(255,255,255,0.025)', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.06)' }}>
+                          <p style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--accent-primary)', marginBottom: '0.7rem', letterSpacing: '0.01em' }}>{courseName}</p>
+                          {isOFC ? (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
+                              <FeeRow 
+                                courseName={courseName}
+                                label="Phase 1" 
+                                phaseKey="phase1" 
+                                feeData={editFormData.course_fees}
+                                onChange={handleCourseFeeChange}
+                                onDiscountBlur={handleDiscountBlur}
+                                onRemoveInstallment={handleRemoveInstallment}
+                                onInstallmentChange={handleInstallmentChange}
+                              />
+                              {(() => {
+                                const ofcEnr = editingStudent?.enrollments?.find(e => e.course_name === 'Online Filmmaking Course');
+                                const isPhase1Passed = ofcEnr ? ofcEnr.step2_completed === 1 : false;
+                                return (
+                                  <FeeRow 
+                                    courseName={courseName}
+                                    label="Phase 2" 
+                                    phaseKey="phase2" 
+                                    feeData={editFormData.course_fees}
+                                    onChange={handleCourseFeeChange}
+                                    onDiscountBlur={handleDiscountBlur}
+                                    onRemoveInstallment={handleRemoveInstallment}
+                                    onInstallmentChange={handleInstallmentChange}
+                                    disabled={!isPhase1Passed}
+                                  />
+                                );
+                              })()}
+                            </div>
+                          ) : (
+                            <FeeRow 
+                              courseName={courseName}
+                              label={null} 
+                              phaseKey={null} 
+                              feeData={editFormData.course_fees}
+                              onChange={handleCourseFeeChange}
+                              onDiscountBlur={handleDiscountBlur}
+                              onRemoveInstallment={handleRemoveInstallment}
+                              onInstallmentChange={handleInstallmentChange}
+                            />
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
 
               {editError && <div className="error-alert" style={{ marginTop: '0.5rem' }}>{editError}</div>}
             </div>
@@ -971,7 +1749,48 @@ export default function StudentManager() {
                     <label style={{ display: 'block', marginBottom: '0.4rem', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Written Exam Score (Max: 100)</label>
                     <input type="number" name="exam_written" value={academicFormData.exam_written} onChange={handleAcademicChange} min="0" max="100" className="input-glass" style={{ paddingLeft: '1rem' }} required />
                   </div>
-                  <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '1rem' }}>Requires 33+ marks to pass.</p>
+                  {(() => {
+                    const totalGained = parseInt(academicFormData.exam_written) || 0;
+                    const isPassed = totalGained >= 33;
+                    return (
+                      <p style={{ 
+                        fontSize: '0.75rem', 
+                        color: 'var(--text-muted)', 
+                        marginTop: '1.25rem',
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        flexWrap: 'wrap',
+                        gap: '0.5rem'
+                      }}>
+                        <span>Requires 33+ marks to pass.</span>
+                        <span style={{ 
+                          fontSize: '0.85rem', 
+                          fontWeight: '700', 
+                          color: isPassed ? '#34d399' : '#f87171',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '0.3rem'
+                        }}>
+                          <span>Total Gained:</span>
+                          <strong style={{ fontSize: '0.98rem' }}>{totalGained}</strong>
+                          <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 'normal' }}>/ 100</span>
+                          <span style={{ 
+                            fontSize: '0.68rem', 
+                            fontWeight: '600', 
+                            padding: '0.05rem 0.35rem', 
+                            borderRadius: '4px',
+                            marginLeft: '0.25rem',
+                            background: isPassed ? 'rgba(52, 211, 153, 0.12)' : 'rgba(239, 68, 68, 0.12)',
+                            color: isPassed ? '#34d399' : '#f87171',
+                            border: isPassed ? '1px solid rgba(52, 211, 153, 0.2)' : '1px solid rgba(239, 68, 68, 0.2)'
+                          }}>
+                            {isPassed ? 'Passed' : 'Failed'}
+                          </span>
+                        </span>
+                      </p>
+                    );
+                  })()}
                 </div>
               ) : (
                 /* Online Filmmaking Course: attendance & full breakdown */
@@ -1010,7 +1829,50 @@ export default function StudentManager() {
                         </div>
                       </div>
                     </div>
-                    <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '1rem' }}>Requires 33+ total marks to pass.</p>
+                    {(() => {
+                      const totalGained = (parseInt(academicFormData.exam_written) || 0) + 
+                                          (parseInt(academicFormData.assignment_screenplay) || 0) + 
+                                          (parseInt(academicFormData.assignment_shooting_script) || 0);
+                      const isPassed = totalGained >= 33;
+                      return (
+                        <p style={{ 
+                          fontSize: '0.75rem', 
+                          color: 'var(--text-muted)', 
+                          marginTop: '1.25rem',
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
+                          flexWrap: 'wrap',
+                          gap: '0.5rem'
+                        }}>
+                          <span>Requires 33+ total marks to pass.</span>
+                          <span style={{ 
+                            fontSize: '0.85rem', 
+                            fontWeight: '700', 
+                            color: isPassed ? '#34d399' : '#f87171',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '0.3rem'
+                          }}>
+                            <span>Total Gained:</span>
+                            <strong style={{ fontSize: '0.98rem' }}>{totalGained}</strong>
+                            <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 'normal' }}>/ 100</span>
+                            <span style={{ 
+                              fontSize: '0.68rem', 
+                              fontWeight: '600', 
+                              padding: '0.05rem 0.35rem', 
+                              borderRadius: '4px',
+                              marginLeft: '0.25rem',
+                              background: isPassed ? 'rgba(52, 211, 153, 0.12)' : 'rgba(239, 68, 68, 0.12)',
+                              color: isPassed ? '#34d399' : '#f87171',
+                              border: isPassed ? '1px solid rgba(52, 211, 153, 0.2)' : '1px solid rgba(239, 68, 68, 0.2)'
+                            }}>
+                              {isPassed ? 'Passed' : 'Failed'}
+                            </span>
+                          </span>
+                        </p>
+                      );
+                    })()}
                   </div>
                 </>
               )}

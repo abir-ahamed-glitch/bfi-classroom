@@ -8,7 +8,7 @@ import {
   User, Mail, Phone, MapPin, Calendar, CheckSquare, 
   Lock, AlertCircle, Save, CheckCircle2, Link2, Plus, X, ChevronDown,
   Award, BookOpen, Film, Download, CheckCircle, Briefcase, Camera, Image as ImageIcon, Move,
-  Pencil, ExternalLink
+  Pencil, ExternalLink, Video, Play, Trash2, Globe
 } from 'lucide-react';
 import {
   FaBehance, FaDiscord, FaDribbble, FaFacebookF, FaGithub, FaGlobe,
@@ -17,6 +17,7 @@ import {
   FaYoutube
 } from 'react-icons/fa6';
 import { FaLink } from 'react-icons/fa';
+import PrivacySelector from '../components/PrivacySelector';
 
 const validateSocialLink = (platform, url) => {
   if (!url || !url.trim()) return true;
@@ -47,7 +48,7 @@ const validateSocialLink = (platform, url) => {
 };
 export default function Profile() {
   const { updateUser } = useAuth();
-  const { showAlert } = useModal();
+  const { showAlert, showConfirm } = useModal();
   const [profile, setProfile] = useState(null);
   const [socialLinks, setSocialLinks] = useState([]);
   const [experiences, setExperiences] = useState([]);
@@ -68,6 +69,47 @@ export default function Profile() {
     bio: '',
     profile_picture: ''
   });
+
+  const [privacySettings, setPrivacySettings] = useState({});
+
+  const handlePrivacyChange = (fieldName, value) => {
+    setPrivacySettings(prev => ({
+      ...prev,
+      [fieldName]: value
+    }));
+  };
+
+  // ── Portfolio state ───────────────────────────────────────────────
+  const [projects, setProjects] = useState([]);
+  const [showPortfolioModal, setShowPortfolioModal] = useState(false);
+  const [editingProject, setEditingProject] = useState(null);
+  const [playingProjectId, setPlayingProjectId] = useState(null);
+  const [brokenThumbs, setBrokenThumbs] = useState({});
+  const portfolioInitialForm = {
+    title: '', duration: '', genre: '', synopsis: '', media_link: '',
+    media_source: 'youtube', poster_url: '', privacy_setting: 'public',
+    show_on_dashboard: true, show_on_community: true,
+  };
+  const [portfolioForm, setPortfolioForm] = useState(portfolioInitialForm);
+  const [credits, setCredits] = useState([]);
+  const [awards, setAwards] = useState([]);
+  const [creditRole, setCreditRole] = useState('Director');
+  const [creditName, setCreditName] = useState('');
+  const [awardData, setAwardData] = useState({ awardName: '', festivalName: '', awardYear: '' });
+  const portfolioRoleOptions = [
+    'Director', 'Producer', 'Actor', 'Actress', 'Cinematographer',
+    'Script Writer', 'Screenplay Writer', 'Story', 'Researcher',
+    'Editor', 'Sound Designer', 'Art Director', 'Graphics', 'Animation', 'Crew'
+  ];
+
+  // ── Experience state ─────────────────────────────────────────────
+  const [showExpModal, setShowExpModal] = useState(false);
+  const [editingExpId, setEditingExpId] = useState(null);
+  const expInitialForm = {
+    title: '', organization: '', experience_type: 'Film',
+    start_date: '', end_date: '', description: ''
+  };
+  const [expForm, setExpForm] = useState(expInitialForm);
 
   const availableSocialPlatforms = [
     'Facebook', 'YouTube', 'Vimeo', 'LinkedIn', 'Instagram', 'TikTok',
@@ -214,11 +256,163 @@ export default function Profile() {
         const fetchedSocialLinks = data.socialLinks || [];
         setSocialLinks(fetchedSocialLinks);
         setExperiences(data.experiences || []);
+        setPrivacySettings(data.privacySettings || {});
       }
     } catch (err) {
       console.error(err);
     } finally {
       setLoading(false);
+    }
+  };
+
+  // ── Portfolio helpers & CRUD ──────────────────────────────────────
+  const fetchPortfolio = async () => {
+    try {
+      const res = await fetch('/api/portfolio', {
+        headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
+      });
+      if (res.ok) setProjects(await res.json());
+    } catch (err) { console.error(err); }
+  };
+
+  useEffect(() => { fetchPortfolio(); }, []);
+
+  const addCredit = () => {
+    if (creditName.trim()) {
+      setCredits([...credits, { role: creditRole, name: creditName.trim() }]);
+      setCreditName('');
+    }
+  };
+  const removeCredit = (idx) => setCredits(credits.filter((_, i) => i !== idx));
+  const addAward = () => {
+    if (awardData.awardName.trim()) {
+      setAwards([...awards, { ...awardData }]);
+      setAwardData({ awardName: '', festivalName: '', awardYear: '' });
+    }
+  };
+  const removeAward = (idx) => setAwards(awards.filter((_, i) => i !== idx));
+
+  const openPortfolioEdit = (proj) => {
+    setEditingProject(proj);
+    setPortfolioForm({
+      title: proj.title || '', duration: proj.duration || '',
+      genre: proj.genre || '', synopsis: proj.synopsis || '',
+      media_link: proj.media_link || '', media_source: proj.media_source || 'youtube',
+      poster_url: proj.poster_url || '', privacy_setting: proj.privacy_setting || 'public',
+      show_on_dashboard: proj.show_on_dashboard === 1,
+      show_on_community: proj.show_on_community === 1,
+    });
+    setCredits(proj.credits ? proj.credits.map(c => ({ role: c.role, name: c.name })) : []);
+    setAwards(proj.awards ? proj.awards.map(a => ({ awardName: a.award_name, festivalName: a.festival_name, awardYear: a.award_year })) : []);
+    setShowPortfolioModal(true);
+  };
+  const closePortfolioModal = () => {
+    setShowPortfolioModal(false); setEditingProject(null);
+    setPortfolioForm(portfolioInitialForm); setCredits([]); setAwards([]);
+  };
+  const handlePortfolioSubmit = async (e) => {
+    e.preventDefault();
+    try {
+      const payload = { ...portfolioForm, credits, awards };
+      const isEditing = !!editingProject;
+      const res = await fetch(isEditing ? `/api/portfolio/${editingProject.id}` : '/api/portfolio', {
+        method: isEditing ? 'PUT' : 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` },
+        body: JSON.stringify(payload)
+      });
+      if (res.ok) { closePortfolioModal(); fetchPortfolio(); }
+      else { const err = await res.json(); await showAlert(err.error || 'Failed to save project', { title: 'Error' }); }
+    } catch (err) { console.error(err); await showAlert('An error occurred.', { title: 'Error' }); }
+  };
+  const deleteProject = async (id) => {
+    const confirmed = await showConfirm('Are you sure you want to delete this project?', { title: 'Delete Project', confirmLabel: 'Delete' });
+    if (!confirmed) return;
+    try {
+      await fetch(`/api/portfolio/${id}`, { method: 'DELETE', headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` } });
+      fetchPortfolio();
+    } catch (err) { console.error(err); }
+  };
+
+  const getEmbedUrl = (url, source) => {
+    if (!url) return '';
+    try {
+      if (source === 'youtube' || !source) {
+        const match = url.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|watch\?.+&v=))([^&?]+)/);
+        return match ? `https://www.youtube.com/embed/${match[1]}?autoplay=1&controls=1&origin=${window.location.origin}` : url;
+      }
+      if (source === 'vimeo') {
+        const match = url.match(/vimeo\.com\/(?:[a-z]*\/)*([0-9]{6,11})[?]?.*/);
+        return match ? `https://player.vimeo.com/video/${match[1]}?autoplay=1` : url;
+      }
+      if (source === 'facebook') return `https://www.facebook.com/plugins/video.php?href=${encodeURIComponent(url)}&show_text=0&width=560&autoplay=true`;
+    } catch { /* ignore */ }
+    return url;
+  };
+  const getYoutubeThumbnail = (url) => {
+    if (!url) return null;
+    const match = url.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|watch\?.+&v=))([^&?]+)/);
+    if (!match) return null;
+    const id = match[1];
+    const rawUrl = `https://img.youtube.com/vi/${id}/hqdefault.jpg`;
+    const API_BASE = import.meta.env.VITE_API_URL || '';
+    return `${API_BASE}/api/proxy-image?url=${encodeURIComponent(rawUrl)}`;
+  };
+  const getProjectPoster = (proj) => {
+    if (brokenThumbs[proj.id]) return null;
+    if (proj.thumbnail_url) return resolveMediaUrl(proj.thumbnail_url);
+    if (proj.poster_url) return resolveMediaUrl(proj.poster_url);
+    return getYoutubeThumbnail(proj.media_link) || null;
+  };
+
+  // ── Experience helpers & CRUD ─────────────────────────────────────
+  const fetchExperiences = async () => {
+    try {
+      const res = await fetch('/api/experience', {
+        headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
+      });
+      if (res.ok) setExperiences(await res.json());
+    } catch (err) { console.error(err); }
+  };
+
+  const openExpEdit = (exp) => {
+    setEditingExpId(exp.id);
+    setExpForm({
+      title: exp.title || '', organization: exp.organization || '',
+      experience_type: exp.experience_type || 'Film',
+      start_date: exp.start_date || '', end_date: exp.end_date || '',
+      description: exp.description || ''
+    });
+    setShowExpModal(true);
+  };
+  const closeExpModal = () => { setShowExpModal(false); setEditingExpId(null); setExpForm(expInitialForm); };
+  const handleExpSubmit = async (e) => {
+    e.preventDefault();
+    try {
+      const url = editingExpId ? `/api/experience/${editingExpId}` : '/api/experience';
+      const method = editingExpId ? 'PUT' : 'POST';
+      const res = await fetch(url, {
+        method,
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` },
+        body: JSON.stringify(expForm)
+      });
+      if (res.ok) { closeExpModal(); fetchExperiences(); }
+    } catch (err) { console.error(err); await showAlert(editingExpId ? 'Failed to update experience' : 'Failed to add experience', { title: 'Error' }); }
+  };
+  const deleteExperience = async (id) => {
+    const confirmed = await showConfirm('Are you sure you want to delete this experience?', { title: 'Delete Experience', confirmLabel: 'Delete' });
+    if (!confirmed) return;
+    try {
+      await fetch(`/api/experience/${id}`, { method: 'DELETE', headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` } });
+      fetchExperiences();
+    } catch (err) { console.error(err); }
+  };
+  const getExperienceIcon = (type) => {
+    switch(type) {
+      case 'Film': return <Film size={20} />;
+      case 'Cultural': return <Globe size={20} />;
+      case 'Workshop': return <BookOpen size={20} />;
+      case 'Award': return <Award size={20} />;
+      default: return <Briefcase size={20} />;
     }
   };
 
@@ -694,7 +888,15 @@ export default function Profile() {
           <h3 className="font-display" style={{ marginBottom: '1.5rem' }}>Personal Details</h3>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '1.5rem' }}>
             <div className="input-group">
-              <label>Gender</label>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                <label style={{ margin: 0, display: 'inline-block' }}>Gender</label>
+                <PrivacySelector
+                  fieldName="gender"
+                  currentValue={privacySettings.gender}
+                  onChange={handlePrivacyChange}
+                  compact
+                />
+              </div>
               <select name="gender" value={formData.gender} onChange={handleChange} className="input-glass" style={{ appearance: 'none' }}>
                 <option value="">Select Gender</option>
                 <option value="Male">Male</option>
@@ -704,23 +906,63 @@ export default function Profile() {
               </select>
             </div>
             <div className="input-group">
-              <label>Birthday</label>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                <label style={{ margin: 0, display: 'inline-block' }}>Birthday</label>
+                <PrivacySelector
+                  fieldName="birthday"
+                  currentValue={privacySettings.birthday}
+                  onChange={handlePrivacyChange}
+                  compact
+                />
+              </div>
               <input type="date" name="birthday" value={formData.birthday} onChange={handleChange} className="input-glass" />
             </div>
             <div className="input-group">
-              <label>Present Address</label>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                <label style={{ margin: 0, display: 'inline-block' }}>Present Address</label>
+                <PrivacySelector
+                  fieldName="present_address"
+                  currentValue={privacySettings.present_address}
+                  onChange={handlePrivacyChange}
+                  compact
+                />
+              </div>
               <input type="text" name="present_address" value={formData.present_address} onChange={handleChange} className="input-glass" placeholder="Current living address" />
             </div>
             <div className="input-group">
-              <label>Permanent Address</label>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                <label style={{ margin: 0, display: 'inline-block' }}>Permanent Address</label>
+                <PrivacySelector
+                  fieldName="permanent_address"
+                  currentValue={privacySettings.permanent_address}
+                  onChange={handlePrivacyChange}
+                  compact
+                />
+              </div>
               <input type="text" name="permanent_address" value={formData.permanent_address} onChange={handleChange} className="input-glass" placeholder="Permanent home address" />
             </div>
             <div className="input-group">
-              <label>Educational Qualification</label>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                <label style={{ margin: 0, display: 'inline-block' }}>Educational Qualification</label>
+                <PrivacySelector
+                  fieldName="educational_qualification"
+                  currentValue={privacySettings.educational_qualification}
+                  onChange={handlePrivacyChange}
+                  compact
+                />
+              </div>
               <input type="text" name="educational_qualification" value={formData.educational_qualification} onChange={handleChange} className="input-glass" placeholder="Highest degree or current study" />
             </div>
             <div className="input-group">
-              <label>Profession</label>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                <label style={{ margin: 0, display: 'inline-block' }}>Profession</label>
+                <PrivacySelector
+                  fieldName="profession"
+                  currentValue={privacySettings.profession}
+                  onChange={handlePrivacyChange}
+                  compact
+                />
+              </div>
               <input type="text" name="profession" value={formData.profession} onChange={handleChange} className="input-glass" placeholder="Current job title or role" />
             </div>
             {profile?.role === 'instructor' && (
@@ -737,14 +979,30 @@ export default function Profile() {
           <h3 className="font-display" style={{ marginBottom: '1.5rem' }}>Contact Information</h3>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '1.5rem' }}>
             <div className="input-group">
-              <label>Mobile Number</label>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                <label style={{ margin: 0, display: 'inline-block' }}>Mobile Number</label>
+                <PrivacySelector
+                  fieldName="mobile_number"
+                  currentValue={privacySettings.mobile_number}
+                  onChange={handlePrivacyChange}
+                  compact
+                />
+              </div>
               <div className="input-wrapper">
                 <Phone size={18} className="input-icon" />
                 <input type="tel" name="mobile_number" value={formData.mobile_number} onChange={handleChange} className="input-glass" placeholder="+880..." />
               </div>
             </div>
             <div className="input-group">
-              <label>WhatsApp Number</label>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                <label style={{ margin: 0, display: 'inline-block' }}>WhatsApp Number</label>
+                <PrivacySelector
+                  fieldName="whatsapp_number"
+                  currentValue={privacySettings.whatsapp_number}
+                  onChange={handlePrivacyChange}
+                  compact
+                />
+              </div>
               <div className="input-wrapper">
                 <Phone size={18} className="input-icon" />
                 <input type="tel" name="whatsapp_number" value={formData.whatsapp_number} onChange={handleChange} className="input-glass" placeholder="+880..." />
@@ -756,7 +1014,13 @@ export default function Profile() {
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
                 <Link2 size={18} style={{ color: 'var(--accent-secondary)' }} />
-                <label style={{ fontSize: '1rem', fontWeight: 600 }}>Social Links</label>
+                <label style={{ fontSize: '1rem', fontWeight: 600, margin: 0 }}>Social Links</label>
+                <PrivacySelector
+                  fieldName="social_links"
+                  currentValue={privacySettings.social_links}
+                  onChange={handlePrivacyChange}
+                  compact
+                />
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
                 <button type="button" onClick={addSocialLink} className="btn btn-glass" style={{ padding: '0.45rem 1rem', fontSize: '0.8rem', borderRadius: '20px', gap: '0.4rem' }}>
@@ -1265,7 +1529,14 @@ export default function Profile() {
 
         {/* Bio */}
         <section className="glass-panel" style={{ padding: '2rem', marginBottom: '2rem' }}>
-          <h3 className="font-display" style={{ marginBottom: '1.5rem' }}>About Me (Bio)</h3>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
+            <h3 className="font-display" style={{ margin: 0 }}>About Me (Bio)</h3>
+            <PrivacySelector
+              fieldName="bio"
+              currentValue={privacySettings.bio}
+              onChange={handlePrivacyChange}
+            />
+          </div>
           <textarea 
             name="bio" 
             value={formData.bio} 
@@ -1276,15 +1547,328 @@ export default function Profile() {
           />
         </section>
 
-        {/* Experience Section (Read-only view in profile) */}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '2rem', marginBottom: '3rem' }}>
+          <button type="submit" className="btn btn-primary" disabled={saving}>
+            <Save size={18} /> {saving ? 'Saving Changes...' : 'Save Profile Changes'}
+          </button>
+        </div>
+      </form>
+
+        {/* ── Portfolio Section ─────────────────────────────────────── */}
+        <section className="glass-panel" style={{ padding: '2rem', marginBottom: '2rem' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
+            <h3 className="font-display" style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <Video size={20} className="text-secondary" /> Portfolio
+              <PrivacySelector
+                fieldName="portfolio"
+                currentValue={privacySettings.portfolio}
+                onChange={handlePrivacyChange}
+                compact
+              />
+            </h3>
+            <button onClick={() => { setEditingProject(null); setPortfolioForm(portfolioInitialForm); setCredits([]); setAwards([]); setShowPortfolioModal(true); }} className="btn btn-glass" style={{ fontSize: '0.8rem', padding: '0.4rem 0.8rem' }}>
+              <Plus size={14} /> Add Project
+            </button>
+          </div>
+
+          {projects.length === 0 ? (
+            <div style={{ padding: '2.5rem', textAlign: 'center', color: 'var(--text-muted)', background: 'rgba(255,255,255,0.015)', borderRadius: '12px', border: '1px dashed rgba(255,255,255,0.08)' }}>
+              <Video size={48} style={{ margin: '0 auto 1rem auto', opacity: 0.3 }} />
+              <p style={{ margin: 0, fontSize: '0.9rem' }}>No projects yet. Click <strong>Add Project</strong> to start building your portfolio.</p>
+            </div>
+          ) : (
+            <div className="profile-portfolio-grid">
+              {projects.map(proj => (
+                <div key={proj.id} className="profile-portfolio-card glass-panel">
+                  <div className="pf-card-media">
+                    {proj.awards?.length > 0 && <div className="pf-achievement-badge"><Award size={14} /></div>}
+                    {proj.media_link ? (
+                      <div className="pf-video-wrapper">
+                        {playingProjectId === proj.id ? (
+                          <iframe src={getEmbedUrl(proj.media_link, proj.media_source)} frameBorder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerPolicy="strict-origin-when-cross-origin" allowFullScreen />
+                        ) : (
+                          <div className="pf-thumb" onClick={() => setPlayingProjectId(proj.id)}>
+                            {getProjectPoster(proj) ? (
+                              <img src={getProjectPoster(proj)} alt={proj.title} onError={() => setBrokenThumbs(prev => ({...prev, [proj.id]: true}))} />
+                            ) : (
+                              <div className="pf-thumb-blank"><Video size={36} opacity={0.3} /></div>
+                            )}
+                            <div className="pf-play-overlay"><Play size={36} fill="white" /></div>
+                          </div>
+                        )}
+                      </div>
+                    ) : getProjectPoster(proj) ? (
+                      <div className="pf-poster"><img src={getProjectPoster(proj)} alt={proj.title} onError={() => setBrokenThumbs(prev => ({...prev, [proj.id]: true}))} /></div>
+                    ) : (
+                      <div className="pf-thumb-blank"><Video size={36} opacity={0.3} /></div>
+                    )}
+                    <div className="pf-overlay">
+                      <div className="pf-overlay-actions">
+                        <button className="pf-icon-btn" onClick={() => openPortfolioEdit(proj)} style={{ color: '#60a5fa' }}><Pencil size={16} /></button>
+                        <button className="pf-icon-btn" onClick={() => deleteProject(proj.id)} style={{ color: 'var(--danger)' }}><Trash2 size={16} /></button>
+                      </div>
+                    </div>
+                  </div>
+                  <div style={{ padding: '1rem' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.4rem' }}>
+                      <h4 className="font-display" style={{ margin: 0, fontSize: '1rem' }}>{proj.title}</h4>
+                      {proj.duration && <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', background: 'rgba(255,255,255,0.05)', padding: '0.15rem 0.4rem', borderRadius: '4px' }}>{proj.duration}</span>}
+                    </div>
+                    {proj.synopsis && <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', margin: '0 0 0.5rem', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{proj.synopsis}</p>}
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.3rem' }}>
+                      {proj.credits?.slice(0, 2).map((c, i) => (
+                        <span key={i} style={{ fontSize: '0.75rem', padding: '0.1rem 0.5rem', background: 'rgba(255,255,255,0.05)', borderRadius: '10px', color: 'var(--text-secondary)' }}><strong>{c.role}:</strong> {c.name}</span>
+                      ))}
+                      {proj.credits?.length > 2 && <span style={{ fontSize: '0.75rem', padding: '0.1rem 0.5rem', background: 'rgba(255,255,255,0.05)', borderRadius: '10px', color: 'var(--text-muted)' }}>+{proj.credits.length - 2} more</span>}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
+        {/* ── Portfolio Modal ──────────────────────────────────────── */}
+        {showPortfolioModal && (
+          <div className="modal-overlay" onClick={closePortfolioModal}>
+            <div className="modal-content glass-panel" onClick={e => e.stopPropagation()}>
+              <div className="modal-header">
+                <h2 className="font-display">{editingProject ? 'Edit Portfolio Project' : 'Add Portfolio Project'}</h2>
+                <button onClick={closePortfolioModal} className="close-btn"><X size={24} /></button>
+              </div>
+              <div className="modal-body custom-scrollbar">
+                <form id="portfolioForm" onSubmit={handlePortfolioSubmit}>
+                  <section className="form-section">
+                    <h4 className="section-title">Basic Information</h4>
+                    <div className="grid-2">
+                      <div className="input-group">
+                        <label>Project Title *</label>
+                        <input type="text" value={portfolioForm.title} onChange={e => setPortfolioForm({...portfolioForm, title: e.target.value})} className="input-glass" required />
+                      </div>
+                      <div className="grid-2">
+                        <div className="input-group">
+                          <label>Duration / Length</label>
+                          <input type="text" value={portfolioForm.duration} onChange={e => setPortfolioForm({...portfolioForm, duration: e.target.value})} className="input-glass" placeholder="e.g. 15 min" />
+                        </div>
+                        <div className="input-group">
+                          <label>Genre</label>
+                          <input type="text" value={portfolioForm.genre} onChange={e => setPortfolioForm({...portfolioForm, genre: e.target.value})} className="input-glass" placeholder="Documentary, Drama..." />
+                        </div>
+                      </div>
+                    </div>
+                    <div className="input-group">
+                      <label>Short Synopsis</label>
+                      <textarea value={portfolioForm.synopsis} onChange={e => setPortfolioForm({...portfolioForm, synopsis: e.target.value})} className="input-glass" rows={3}></textarea>
+                    </div>
+                  </section>
+                  <section className="form-section">
+                    <h4 className="section-title">Media & Links</h4>
+                    <div className="grid-2">
+                      <div className="input-group">
+                        <label>Media Player Source</label>
+                        <select value={portfolioForm.media_source} onChange={e => setPortfolioForm({...portfolioForm, media_source: e.target.value})} className="input-glass" style={{ appearance: 'none' }}>
+                          <option value="youtube">YouTube</option>
+                          <option value="vimeo">Vimeo</option>
+                          <option value="facebook">Facebook Video</option>
+                          <option value="other">Other Link</option>
+                        </select>
+                      </div>
+                      <div className="input-group">
+                        <label>Video URL / Link *</label>
+                        <input type="url" value={portfolioForm.media_link} onChange={e => setPortfolioForm({...portfolioForm, media_link: e.target.value})} className="input-glass" placeholder="https://youtube.com/..." required />
+                      </div>
+                    </div>
+                    <div className="input-group">
+                      <label>Poster Image URL (Optional Thumbnail)</label>
+                      <input type="url" value={portfolioForm.poster_url} onChange={e => setPortfolioForm({...portfolioForm, poster_url: e.target.value})} className="input-glass" placeholder="Leave empty to auto-fetch from video if possible" />
+                    </div>
+                  </section>
+                  <section className="form-section">
+                    <h4 className="section-title">Cast & Crew Credits</h4>
+                    <div style={{ display: 'flex', gap: '1rem', marginBottom: '1rem' }}>
+                      <select value={creditRole} onChange={e => setCreditRole(e.target.value)} className="input-glass" style={{ flex: 1, appearance: 'none' }}>
+                        {portfolioRoleOptions.map(r => <option key={r} value={r}>{r}</option>)}
+                      </select>
+                      <input type="text" value={creditName} onChange={e => setCreditName(e.target.value)} className="input-glass" placeholder="Name" style={{ flex: 2 }} />
+                      <button type="button" onClick={addCredit} className="btn btn-glass">Add</button>
+                    </div>
+                    <div className="tag-cloud">
+                      {credits.map((c, i) => (
+                        <div key={i} className="credit-tag"><strong>{c.role}:</strong> {c.name}<X size={14} className="remove-icon" onClick={() => removeCredit(i)} /></div>
+                      ))}
+                      {credits.length === 0 && <span className="text-muted text-sm">No credits added yet.</span>}
+                    </div>
+                  </section>
+                  <section className="form-section">
+                    <h4 className="section-title"><Award size={16} style={{ display: 'inline', verticalAlign: 'middle' }}/> Awards (Optional)</h4>
+                    <div className="grid-3" style={{ marginBottom: '1rem', alignItems: 'end' }}>
+                      <div className="input-group">
+                        <label>Award Name/Category</label>
+                        <input type="text" value={awardData.awardName} onChange={e => setAwardData({...awardData, awardName: e.target.value})} className="input-glass" placeholder="Best Director" />
+                      </div>
+                      <div className="input-group">
+                        <label>Festival Name</label>
+                        <input type="text" value={awardData.festivalName} onChange={e => setAwardData({...awardData, festivalName: e.target.value})} className="input-glass" placeholder="Dhaka Int. Film Fest" />
+                      </div>
+                      <div className="input-group" style={{ display: 'flex', gap: '0.5rem' }}>
+                        <div style={{ flex: 1 }}>
+                          <label>Year</label>
+                          <input type="text" value={awardData.awardYear} onChange={e => setAwardData({...awardData, awardYear: e.target.value})} className="input-glass" placeholder="2024" />
+                        </div>
+                        <button type="button" onClick={addAward} className="btn btn-glass" style={{ alignSelf: 'flex-end', height: '42px' }}>Add</button>
+                      </div>
+                    </div>
+                    <div className="tag-cloud">
+                      {awards.map((a, i) => (
+                        <div key={i} className="award-tag"><Award size={14} /> {a.awardName} ({a.awardYear})<X size={14} className="remove-icon" onClick={() => removeAward(i)} /></div>
+                      ))}
+                    </div>
+                  </section>
+                  <section className="form-section">
+                    <h4 className="section-title">Visibility & Distribution</h4>
+                    <div className="grid-2 toggle-grid">
+                      <label className="toggle-label">
+                        <span>Show on my Dashboard</span>
+                        <input type="checkbox" checked={portfolioForm.show_on_dashboard} onChange={e => setPortfolioForm({...portfolioForm, show_on_dashboard: e.target.checked})} />
+                      </label>
+                      <label className="toggle-label">
+                        <span>Publish to Institute Community</span>
+                        <input type="checkbox" checked={portfolioForm.show_on_community} onChange={e => setPortfolioForm({...portfolioForm, show_on_community: e.target.checked})} />
+                      </label>
+                    </div>
+                    <div className="input-group" style={{ marginTop: '1.5rem' }}>
+                      <label>External Privacy Access</label>
+                      <select value={portfolioForm.privacy_setting} onChange={e => setPortfolioForm({...portfolioForm, privacy_setting: e.target.value})} className="input-glass" style={{ appearance: 'none', width: '250px' }}>
+                        <option value="public">Public (Anyone can view)</option>
+                        <option value="unlisted">Unlisted (Link only)</option>
+                        <option value="private">Private (Only me & Admins)</option>
+                      </select>
+                    </div>
+                  </section>
+                </form>
+              </div>
+              <div className="modal-footer">
+                <button onClick={closePortfolioModal} className="btn btn-glass">Cancel</button>
+                <button form="portfolioForm" type="submit" className="btn btn-primary">{editingProject ? 'Save Changes' : 'Publish Project'}</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── Experience Section ────────────────────────────────────── */}
+        <section className="glass-panel" style={{ padding: '2rem', marginBottom: '2rem' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
+            <h3 className="font-display" style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <Briefcase size={20} className="text-secondary" /> Experience
+            </h3>
+            <button onClick={() => { setEditingExpId(null); setExpForm(expInitialForm); setShowExpModal(true); }} className="btn btn-glass" style={{ fontSize: '0.8rem', padding: '0.4rem 0.8rem' }}>
+              <Plus size={14} /> Add Experience
+            </button>
+          </div>
+
+          {experiences.length === 0 ? (
+            <div style={{ padding: '2.5rem', textAlign: 'center', color: 'var(--text-muted)', background: 'rgba(255,255,255,0.015)', borderRadius: '12px', border: '1px dashed rgba(255,255,255,0.08)' }}>
+              <Briefcase size={48} style={{ margin: '0 auto 1rem auto', opacity: 0.3 }} />
+              <p style={{ margin: 0, fontSize: '0.9rem' }}>No experiences added yet. Click <strong>Add Experience</strong> to get started.</p>
+            </div>
+          ) : (
+            <div className="exp-inline-timeline">
+              {experiences.map((exp, idx) => (
+                <div key={idx} className="exp-inline-card">
+                  <div className="exp-inline-icon">{getExperienceIcon(exp.experience_type)}</div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.3rem' }}>
+                      <div>
+                        <h4 style={{ margin: 0, fontSize: '1rem' }}>{exp.title}</h4>
+                        <p style={{ margin: '0.1rem 0 0', color: 'var(--accent-primary)', fontSize: '0.85rem', fontWeight: 500 }}>{exp.organization}</p>
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexShrink: 0 }}>
+                        <span style={{ fontSize: '0.72rem', padding: '0.15rem 0.5rem', background: 'rgba(255,255,255,0.05)', border: '1px solid var(--glass-border)', borderRadius: '20px', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{exp.experience_type}</span>
+                        <button onClick={() => openExpEdit(exp)} style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '0.3rem', borderRadius: '6px', display: 'flex', alignItems: 'center', transition: 'all 0.2s' }} onMouseEnter={e => { e.currentTarget.style.color = 'var(--accent-primary)'; e.currentTarget.style.background = 'rgba(99,102,241,0.1)'; }} onMouseLeave={e => { e.currentTarget.style.color = 'var(--text-muted)'; e.currentTarget.style.background = 'none'; }}><Pencil size={14} /></button>
+                        <button onClick={() => deleteExperience(exp.id)} style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '0.3rem', borderRadius: '6px', display: 'flex', alignItems: 'center', transition: 'all 0.2s' }} onMouseEnter={e => { e.currentTarget.style.color = 'var(--danger)'; e.currentTarget.style.background = 'rgba(239,68,68,0.1)'; }} onMouseLeave={e => { e.currentTarget.style.color = 'var(--text-muted)'; e.currentTarget.style.background = 'none'; }}><Trash2 size={14} /></button>
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.82rem', color: 'var(--text-muted)', marginBottom: exp.description ? '0.5rem' : 0 }}>
+                      <Calendar size={12} /> {exp.start_date || 'N/A'} — {exp.end_date || 'Present'}
+                    </div>
+                    {exp.description && <p style={{ margin: 0, fontSize: '0.85rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>{exp.description}</p>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
+        {/* ── Experience Modal ─────────────────────────────────────── */}
+        {showExpModal && (
+          <div className="modal-overlay" onClick={closeExpModal}>
+            <div className="modal-content glass-panel" style={{ maxWidth: '600px' }} onClick={e => e.stopPropagation()}>
+              <div className="modal-header">
+                <h2 className="font-display">{editingExpId ? 'Edit Experience' : 'Add Experience'}</h2>
+                <button onClick={closeExpModal} className="close-btn"><X size={24} /></button>
+              </div>
+              <div className="modal-body">
+                <form id="expForm" onSubmit={handleExpSubmit}>
+                  <div className="input-group">
+                    <label>Title / Role *</label>
+                    <input type="text" value={expForm.title} onChange={e => setExpForm({...expForm, title: e.target.value})} className="input-glass" placeholder="e.g. Lead Director, Production Assistant" required />
+                  </div>
+                  <div className="input-group">
+                    <label>Organization / Project Name</label>
+                    <input type="text" value={expForm.organization} onChange={e => setExpForm({...expForm, organization: e.target.value})} className="input-glass" placeholder="e.g. BFI Film Workshop, Netflix Production" />
+                  </div>
+                  <div className="grid-2">
+                    <div className="input-group">
+                      <label>Experience Type</label>
+                      <select value={expForm.experience_type} onChange={e => setExpForm({...expForm, experience_type: e.target.value})} className="input-glass" style={{ appearance: 'none' }}>
+                        <option value="Film">Film Production</option>
+                        <option value="Cultural">Cultural Activity</option>
+                        <option value="Workshop">Workshop / Course</option>
+                        <option value="Award">Achievement / Award</option>
+                        <option value="Education">Education</option>
+                        <option value="Other">Other</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div className="grid-2">
+                    <div className="input-group">
+                      <label>Start Date</label>
+                      <input type="text" value={expForm.start_date} onChange={e => setExpForm({...expForm, start_date: e.target.value})} className="input-glass" placeholder="e.g. Jan 2023" />
+                    </div>
+                    <div className="input-group">
+                      <label>End Date</label>
+                      <input type="text" value={expForm.end_date} onChange={e => setExpForm({...expForm, end_date: e.target.value})} className="input-glass" placeholder="e.g. Dec 2023 or Present" />
+                    </div>
+                  </div>
+                  <div className="input-group">
+                    <label>Description / Key Contributions</label>
+                    <textarea value={expForm.description} onChange={e => setExpForm({...expForm, description: e.target.value})} className="input-glass" rows={4} placeholder="Describe your role and what you achieved..."></textarea>
+                  </div>
+                </form>
+              </div>
+              <div className="modal-footer">
+                <button onClick={closeExpModal} className="btn btn-glass">Cancel</button>
+                <button form="expForm" type="submit" className="btn btn-primary">{editingExpId ? 'Update Experience' : 'Save Experience'}</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── Work & Cultural Experience (read-only summary) ─────────── */}
         <section className="glass-panel" style={{ padding: '2rem', marginBottom: '2rem' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
             <h3 className="font-display" style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
               <Briefcase size={20} className="text-secondary" /> Work & Cultural Experience
+              <PrivacySelector
+                fieldName="experiences"
+                currentValue={privacySettings.experiences}
+                onChange={handlePrivacyChange}
+                compact
+              />
             </h3>
-            <NavLink to="/experience" className="btn btn-glass" style={{ fontSize: '0.8rem', padding: '0.4rem 0.8rem' }}>
+            <button type="button" onClick={() => { setEditingExpId(null); setExpForm(expInitialForm); setShowExpModal(true); }} className="btn btn-glass" style={{ fontSize: '0.8rem', padding: '0.4rem 0.8rem' }}>
               Edit Experiences
-            </NavLink>
+            </button>
           </div>
           
           <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
@@ -1303,13 +1887,6 @@ export default function Profile() {
             )}
           </div>
         </section>
-
-        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '2rem' }}>
-          <button type="submit" className="btn btn-primary" disabled={saving}>
-            <Save size={18} /> {saving ? 'Saving Changes...' : 'Save Profile Changes'}
-          </button>
-        </div>
-      </form>
     </div>
 
     {showCropModal && (
@@ -1401,6 +1978,183 @@ export default function Profile() {
         to { opacity: 1; transform: scale(1) translateY(0); }
       }
       .hover-scale:hover { transform: scale(1.1); }
+
+      /* ── Inline Portfolio Grid ─────────────────────────── */
+      .profile-portfolio-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+        gap: 1.25rem;
+      }
+      .profile-portfolio-card {
+        border-radius: 14px;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+        border: 1px solid var(--glass-border);
+        transition: transform 0.3s ease, box-shadow 0.3s ease;
+      }
+      .profile-portfolio-card:hover { transform: translateY(-4px); box-shadow: 0 12px 30px rgba(0,0,0,0.4); }
+      .pf-card-media { position: relative; aspect-ratio: 16/9; background: #000; overflow: hidden; }
+      .pf-achievement-badge { position: absolute; top: 0.6rem; left: 0.6rem; background: linear-gradient(135deg, var(--warning) 0%, #d97706 100%); color: white; width: 26px; height: 26px; border-radius: 50%; display: flex; align-items: center; justify-content: center; z-index: 10; }
+      .pf-video-wrapper, .pf-video-wrapper iframe { width: 100%; height: 100%; border: none; }
+      .pf-thumb { position: relative; width: 100%; height: 100%; cursor: pointer; overflow: hidden; background: #000; display: flex; align-items: center; justify-content: center; }
+      .pf-thumb img { width: 100%; height: 100%; object-fit: cover; transition: transform 0.4s ease; }
+      .pf-thumb:hover img { transform: scale(1.05); }
+      .pf-thumb-blank { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; background: var(--bg-surface-2); color: var(--text-muted); }
+      .pf-poster img { width: 100%; height: 100%; object-fit: cover; }
+      .pf-play-overlay { position: absolute; inset: 0; background: rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center; transition: background 0.3s ease; }
+      .pf-thumb:hover .pf-play-overlay { background: rgba(0,0,0,0.5); }
+      .pf-play-overlay svg { color: white; filter: drop-shadow(0 0 12px rgba(239,68,68,0.6)); transition: transform 0.3s ease; }
+      .pf-thumb:hover .pf-play-overlay svg { transform: scale(1.15); }
+      .pf-overlay { position: absolute; inset: 0; background: linear-gradient(to top, rgba(0,0,0,0.85) 0%, transparent 50%); opacity: 0; transition: opacity 0.3s ease; display: flex; align-items: flex-end; justify-content: flex-end; padding: 0.75rem; z-index: 5; pointer-events: none; }
+      .profile-portfolio-card:hover .pf-overlay { opacity: 1; }
+      .pf-overlay-actions { pointer-events: auto; display: flex; gap: 0.4rem; }
+      .pf-icon-btn { width: 32px; height: 32px; border-radius: 50%; background: rgba(255,255,255,0.12); backdrop-filter: blur(4px); border: 1px solid rgba(255,255,255,0.2); color: white; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: background 0.2s; }
+      .pf-icon-btn:hover { background: rgba(255,255,255,0.25); }
+
+      /* ── Inline Experience Timeline ────────────────────── */
+      .exp-inline-timeline { display: flex; flex-direction: column; gap: 1rem; }
+      .exp-inline-card {
+        display: flex; gap: 1rem; padding: 1rem;
+        background: rgba(255,255,255,0.02); border-radius: 12px;
+        border: 1px solid var(--glass-border);
+        transition: all 0.25s ease;
+      }
+      .exp-inline-card:hover { background: rgba(255,255,255,0.04); border-color: var(--accent-primary); }
+      .exp-inline-icon {
+        width: 42px; height: 42px; flex-shrink: 0;
+        background: var(--accent-primary); border-radius: 10px;
+        display: flex; align-items: center; justify-content: center;
+        color: white; box-shadow: 0 6px 16px rgba(0,0,0,0.3);
+      }
+
+      /* ── Shared modal styles ─────────────────────────────────── */
+
+      /* Dark mode: navy glass backdrop identical to the app panels */
+      .modal-overlay {
+        position: fixed; top: 0; left: 0; width: 100%; height: 100vh;
+        background: rgba(1, 4, 13, 0.85);
+        backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+        display: flex; align-items: center; justify-content: center;
+        z-index: 1000; padding: 2rem;
+      }
+      .modal-content {
+        width: 100%; max-width: 800px; max-height: 90vh;
+        display: flex; flex-direction: column;
+        background: linear-gradient(160deg, rgba(9, 20, 38, 0.98) 0%, rgba(3, 11, 25, 0.99) 100%);
+        border-radius: 20px;
+        border: 1px solid rgba(96, 165, 250, 0.18);
+        box-shadow:
+          0 0 0 1px rgba(96, 165, 250, 0.15),
+          0 0 24px rgba(96, 165, 250, 0.10),
+          0 24px 64px rgba(0, 0, 0, 0.7);
+        animation: profileModalIn 0.22s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+      }
+      @keyframes profileModalIn {
+        from { opacity: 0; transform: scale(0.97) translateY(12px); }
+        to   { opacity: 1; transform: scale(1)    translateY(0);     }
+      }
+      .modal-header {
+        padding: 1.5rem 2rem;
+        border-bottom: 1px solid rgba(96, 165, 250, 0.12);
+        display: flex; justify-content: space-between; align-items: center;
+        background: rgba(96, 165, 250, 0.04);
+        border-top-left-radius: 20px; border-top-right-radius: 20px;
+      }
+      .modal-header h2 { color: var(--text-primary); font-size: 1.3rem; }
+      .close-btn {
+        background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1);
+        color: var(--text-secondary); cursor: pointer;
+        width: 34px; height: 34px; border-radius: 50%;
+        display: flex; align-items: center; justify-content: center;
+        transition: all 0.2s;
+      }
+      .close-btn:hover { background: rgba(239,68,68,0.15); border-color: rgba(239,68,68,0.3); color: #f87171; }
+      .modal-body {
+        padding: 2rem; overflow-y: auto; flex: 1;
+        color: var(--text-primary);
+      }
+      .modal-footer {
+        padding: 1.25rem 2rem;
+        border-top: 1px solid rgba(96, 165, 250, 0.12);
+        display: flex; justify-content: flex-end; gap: 1rem;
+        background: rgba(96, 165, 250, 0.04);
+        border-bottom-left-radius: 20px; border-bottom-right-radius: 20px;
+      }
+      .form-section { margin-bottom: 2.5rem; }
+      .section-title {
+        font-size: 1rem; font-weight: 600;
+        color: var(--text-secondary);
+        margin-bottom: 1rem;
+        padding-bottom: 0.6rem;
+        border-bottom: 1px solid rgba(96, 165, 250, 0.12);
+        letter-spacing: 0.02em;
+      }
+      .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+      .grid-3 { display: grid; grid-template-columns: 2fr 2fr 1fr; gap: 1rem; }
+      .text-sm { font-size: 0.85rem; }
+      .tag-cloud { display: flex; flex-wrap: wrap; gap: 0.5rem; min-height: 32px; }
+      .credit-tag, .award-tag {
+        display: flex; align-items: center; gap: 0.5rem;
+        padding: 0.35rem 0.75rem;
+        background: rgba(96, 165, 250, 0.08);
+        border: 1px solid rgba(96, 165, 250, 0.2);
+        border-radius: 20px; font-size: 0.83rem;
+        color: var(--text-primary);
+      }
+      .award-tag { background: rgba(245,158,11,0.1); border-color: rgba(245,158,11,0.3); color: #fcd34d; }
+      .remove-icon { cursor: pointer; opacity: 0.55; transition: opacity 0.2s; margin-left: 2px; }
+      .remove-icon:hover { opacity: 1; color: var(--danger); }
+      .toggle-grid {
+        background: rgba(96, 165, 250, 0.04);
+        padding: 1rem; border-radius: 10px;
+        border: 1px solid rgba(96, 165, 250, 0.12);
+      }
+      .toggle-label { display: flex; justify-content: space-between; align-items: center; cursor: pointer; }
+
+      /* ── Light mode modal overrides ───────────────────────────── */
+      [data-mode="light"] .modal-overlay {
+        background: rgba(15, 23, 42, 0.5) !important;
+        backdrop-filter: blur(8px) !important;
+      }
+      [data-mode="light"] .modal-content {
+        background: #ffffff !important;
+        border: 1px solid rgba(14, 165, 233, 0.15) !important;
+        box-shadow: 0 8px 40px rgba(0,0,0,0.18), 0 2px 8px rgba(0,0,0,0.06) !important;
+      }
+      [data-mode="light"] .modal-header {
+        background: #f8fafc !important;
+        border-bottom-color: rgba(0,0,0,0.07) !important;
+      }
+      [data-mode="light"] .modal-header h2 { color: #0f172a !important; }
+      [data-mode="light"] .close-btn {
+        background: rgba(0,0,0,0.05) !important;
+        border-color: rgba(0,0,0,0.1) !important;
+        color: #64748b !important;
+      }
+      [data-mode="light"] .close-btn:hover {
+        background: rgba(239,68,68,0.08) !important;
+        color: #dc2626 !important;
+      }
+      [data-mode="light"] .modal-body { color: #0f172a !important; }
+      [data-mode="light"] .modal-footer {
+        background: #f8fafc !important;
+        border-top-color: rgba(0,0,0,0.07) !important;
+      }
+      [data-mode="light"] .section-title {
+        color: #334155 !important;
+        border-bottom-color: rgba(0,0,0,0.07) !important;
+      }
+      [data-mode="light"] .credit-tag {
+        background: rgba(14,165,233,0.06) !important;
+        border-color: rgba(14,165,233,0.2) !important;
+        color: #0f172a !important;
+      }
+      [data-mode="light"] .toggle-grid {
+        background: #f8fafc !important;
+        border-color: rgba(0,0,0,0.07) !important;
+      }
+      [data-mode="light"] .toggle-label { color: #0f172a !important; }
     `}</style>
     </>
   );

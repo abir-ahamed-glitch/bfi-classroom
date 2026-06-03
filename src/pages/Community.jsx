@@ -3,7 +3,8 @@ import { createPortal } from 'react-dom';
 import { useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { io } from 'socket.io-client';
-import { MessageSquare, Heart, Image as ImageIcon, Send, Film, Share2, Trash2, Pin, PinOff, Play, Video, GripVertical, X, Pencil, ChevronLeft, ChevronRight, Smile, MoreVertical, Download } from 'lucide-react';
+import { MessageSquare, Heart, Image as ImageIcon, Send, Film, Share2, Trash2, Pin, PinOff, Play, Video, GripVertical, X, Pencil, ChevronLeft, ChevronRight, Smile, MoreVertical, Download, Globe, GraduationCap, EyeOff, ChevronDown } from 'lucide-react';
+import { AudienceSelector } from '../components/PrivacySelector';
 import data from '@emoji-mart/data';
 import { Picker } from 'emoji-mart';
 import { resolveMediaUrl } from '../utils/mediaUtils';
@@ -62,9 +63,23 @@ const parseCommentContent = (content) => {
   return { text: content, image: '' };
 };
 
+const REACTION_OPTIONS = [
+  { type: 'like', emoji: '👍', label: 'Like', color: 'var(--accent-primary)' },
+  { type: 'love', emoji: '❤️', label: 'Love', color: '#ff3054' },
+  { type: 'care', emoji: '🥰', label: 'Care', color: '#f5c33b' },
+  { type: 'haha', emoji: '😆', label: 'Haha', color: '#f5c33b' },
+  { type: 'wow', emoji: '😮', label: 'Wow', color: '#f5c33b' },
+  { type: 'sad', emoji: '😢', label: 'Sad', color: '#f5c33b' },
+  { type: 'angry', emoji: '😡', label: 'Angry', color: '#e74c3c' }
+];
+
 export default function Community() {
   const { currentUser } = useAuth();
   const { showAlert, showConfirm } = useModal();
+  const [postAudience, setPostAudience] = useState('public');
+  const [editingPostId, setEditingPostId] = useState(null);
+  const [editingPostText, setEditingPostText] = useState('');
+  const [editingPostAudience, setEditingPostAudience] = useState('public');
   
   // Use cached posts only if the same user is viewing
   const shouldUseCache = currentUser?.id === cachedCommunityUserId;
@@ -81,8 +96,18 @@ export default function Community() {
   const [brokenThumbs, setBrokenThumbs] = useState({});
   const [brokenPostImages, setBrokenPostImages] = useState({});
   const [activeCommentPostId, setActiveCommentPostId] = useState(null);
-  const [commentContent, setCommentContent] = useState('');
-  const [commentImage, setCommentImage] = useState(null);
+  const [commentContents, setCommentContents] = useState({}); // postId -> string
+  const [commentImages, setCommentImages] = useState({}); // postId -> image base64/url
+  const [replyContents, setReplyContents] = useState({}); // commentId -> string
+  const [replyImages, setReplyImages] = useState({}); // commentId -> image base64
+  const [replyEmojiPickerCommentId, setReplyEmojiPickerCommentId] = useState(null);
+  const [activeReplyMentions, setActiveReplyMentions] = useState({}); // commentId -> string (user name)
+  const [activeReplyInputCommentId, setActiveReplyInputCommentId] = useState(null);
+  const [activeReactionCommentId, setActiveReactionCommentId] = useState(null);
+  const hoverTimerRef = useRef(null);
+  const closeTimerRef = useRef(null);
+  const longPressTimerRef = useRef(null);
+  const isLongPressRef = useRef(false);
   const [commentEmojiPickerPostId, setCommentEmojiPickerPostId] = useState(null);
   const [activeCommentMenuId, setActiveCommentMenuId] = useState(null);
   const [editingCommentId, setEditingCommentId] = useState(null);
@@ -326,7 +351,7 @@ export default function Community() {
     }
   }, [addImages]);
 
-  const handleCommentPaste = useCallback((e) => {
+  const handleCommentPaste = useCallback((e, postId) => {
     const items = e.clipboardData?.items;
     if (!items) return;
     
@@ -342,7 +367,29 @@ export default function Community() {
       e.preventDefault();
       const reader = new FileReader();
       reader.onloadend = () => {
-        setCommentImage(reader.result);
+        setCommentImages(prev => ({ ...prev, [postId]: reader.result }));
+      };
+      reader.readAsDataURL(file);
+    }
+  }, []);
+
+  const handleReplyPaste = useCallback((e, commentId) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    
+    let file = null;
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].type.indexOf('image') !== -1) {
+        file = items[i].getAsFile();
+        break;
+      }
+    }
+    
+    if (file) {
+      e.preventDefault();
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setReplyImages(prev => ({ ...prev, [commentId]: reader.result }));
       };
       reader.readAsDataURL(file);
     }
@@ -429,7 +476,8 @@ export default function Community() {
         body: JSON.stringify({ 
           content, 
           media_url: mediaUrlPayload,
-          project_id: selectedProjectId
+          project_id: selectedProjectId,
+          audience: postAudience
         })
       });
 
@@ -438,6 +486,7 @@ export default function Community() {
         setMediaImages([]);
         setSelectedProjectId(null);
         setSelectedProjectTitle('');
+        setPostAudience('public');
         fetchPosts();
         if(socket) socket.emit('new_post', { user: currentUser.username });
       }
@@ -500,6 +549,47 @@ export default function Community() {
     }
   };
 
+  const handleEditPostStart = (post) => {
+    setEditingPostId(post.id);
+    setEditingPostText(post.content || '');
+    setEditingPostAudience(post.audience || 'public');
+  };
+
+  const handleEditPostCancel = () => {
+    setEditingPostId(null);
+    setEditingPostText('');
+    setEditingPostAudience('public');
+  };
+
+  const handleEditPostSave = async (postId) => {
+    try {
+      const res = await fetch(`/api/community/posts/${postId}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
+        },
+        body: JSON.stringify({ 
+          content: editingPostText,
+          audience: editingPostAudience
+        })
+      });
+
+      if (res.ok) {
+        setEditingPostId(null);
+        setEditingPostText('');
+        fetchPosts();
+        if (socket) socket.emit('new_post');
+      } else {
+        const err = await res.json();
+        showAlert(err.error || 'Failed to update post', { title: 'Error' });
+      }
+    } catch (err) {
+      console.error(err);
+      showAlert('Failed to update post', { title: 'Error' });
+    }
+  };
+
   const handlePinPost = async (postId, isCurrentlyPinned) => {
     try {
       const res = await fetch(`/api/community/posts/${postId}/pin`, {
@@ -548,15 +638,17 @@ export default function Community() {
   };
 
   const handleCommentSubmit = async (postId) => {
-    if (!commentContent.trim() && !commentImage) return;
+    const postContentText = commentContents[postId] || '';
+    const postCommentImage = commentImages[postId] || null;
+    if (!postContentText.trim() && !postCommentImage) return;
 
     let finalContent = '';
-    if (commentImage && commentContent.trim()) {
-      finalContent = JSON.stringify({ text: commentContent.trim(), image: commentImage });
-    } else if (commentImage) {
-      finalContent = commentImage;
+    if (postCommentImage && postContentText.trim()) {
+      finalContent = JSON.stringify({ text: postContentText.trim(), image: postCommentImage });
+    } else if (postCommentImage) {
+      finalContent = postCommentImage;
     } else {
-      finalContent = commentContent.trim();
+      finalContent = postContentText.trim();
     }
 
     try {
@@ -570,13 +662,136 @@ export default function Community() {
       });
       
       if (res.ok) {
-        setCommentContent('');
-        setCommentImage(null);
+        setCommentContents(prev => ({ ...prev, [postId]: '' }));
+        setCommentImages(prev => ({ ...prev, [postId]: null }));
         fetchPosts();
       }
     } catch (err) {
       console.error(err);
     }
+  };
+
+  const toggleCommentLike = async (postId, commentId, reactionType = 'like') => {
+    try {
+      const res = await fetch(`/api/community/posts/${postId}/comments/${commentId}/like`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
+        },
+        body: JSON.stringify({ reaction_type: reactionType })
+      });
+      if (res.ok) {
+        fetchPosts();
+      }
+    } catch (err) {
+      console.error('Error toggling comment like:', err);
+    }
+  };
+
+  const handleReplySubmit = async (postId, parentCommentId) => {
+    const replyText = replyContents[parentCommentId] || '';
+    const mention = activeReplyMentions[parentCommentId];
+    
+    let combinedText = replyText.trim();
+    if (mention) {
+      combinedText = `${mention} ${combinedText}`.trim();
+    }
+    
+    const replyImage = replyImages[parentCommentId] || null;
+    if (!combinedText && !replyImage) return;
+
+    let finalContent = '';
+    if (replyImage && combinedText) {
+      finalContent = JSON.stringify({ text: combinedText, image: replyImage });
+    } else if (replyImage) {
+      finalContent = replyImage;
+    } else {
+      finalContent = combinedText;
+    }
+
+    try {
+      const res = await fetch(`/api/community/posts/${postId}/comments`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
+        },
+        body: JSON.stringify({ content: finalContent, parent_id: parentCommentId })
+      });
+      
+      if (res.ok) {
+        setReplyContents(prev => ({ ...prev, [parentCommentId]: '' }));
+        setReplyImages(prev => ({ ...prev, [parentCommentId]: null }));
+        setActiveReplyMentions(prev => ({ ...prev, [parentCommentId]: null }));
+        setReplyEmojiPickerCommentId(null);
+        fetchPosts();
+      }
+    } catch (err) {
+      console.error('Error submitting reply:', err);
+    }
+  };
+
+  const handleLikeButtonMouseEnter = (commentId) => {
+    if (window.matchMedia('(hover: hover)').matches) {
+      clearTimeout(hoverTimerRef.current);
+      clearTimeout(closeTimerRef.current);
+      hoverTimerRef.current = setTimeout(() => {
+        setActiveReactionCommentId(commentId);
+      }, 400);
+    }
+  };
+
+  const handleLikeButtonMouseLeave = (commentId) => {
+    if (window.matchMedia('(hover: hover)').matches) {
+      clearTimeout(hoverTimerRef.current);
+      clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = setTimeout(() => {
+        setActiveReactionCommentId(current => current === commentId ? null : current);
+      }, 600);
+    }
+  };
+
+  const handlePopupMouseEnter = () => {
+    clearTimeout(closeTimerRef.current);
+  };
+
+  const handleReactionSelect = (postId, commentId, reactionType) => {
+    setActiveReactionCommentId(null);
+    clearTimeout(closeTimerRef.current);
+    toggleCommentLike(postId, commentId, reactionType);
+  };
+
+  const handleLikeButtonClick = (postId, commentId, currentReaction) => {
+    if (isLongPressRef.current) return;
+    if (currentReaction) {
+      toggleCommentLike(postId, commentId, currentReaction);
+    } else {
+      toggleCommentLike(postId, commentId, 'like');
+    }
+  };
+
+  const handleLikeButtonTouchStart = (e, postId, commentId, currentReaction) => {
+    clearTimeout(longPressTimerRef.current);
+    isLongPressRef.current = false;
+    longPressTimerRef.current = setTimeout(() => {
+      isLongPressRef.current = true;
+      setActiveReactionCommentId(commentId);
+      if (navigator.vibrate) {
+        try { navigator.vibrate(50); } catch (err) {}
+      }
+    }, 500);
+  };
+
+  const handleLikeButtonTouchEnd = (e, postId, commentId, currentReaction) => {
+    clearTimeout(longPressTimerRef.current);
+    if (!isLongPressRef.current) {
+      handleLikeButtonClick(postId, commentId, currentReaction);
+    }
+  };
+
+  const handleLikeButtonTouchMove = () => {
+    clearTimeout(longPressTimerRef.current);
   };
 
   const handleCommentDelete = async (postId, commentId) => {
@@ -926,9 +1141,12 @@ export default function Community() {
               )}
             </div>
           </div>
-          <button className="btn btn-primary" onClick={handlePostSubmit} disabled={!content.trim() && mediaImages.length === 0 && !selectedProjectId}>
-            <Send size={16} style={{ marginLeft: '-4px' }} /> Post
-          </button>
+          <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
+            <AudienceSelector value={postAudience} onChange={setPostAudience} />
+            <button className="btn btn-primary" onClick={handlePostSubmit} disabled={!content.trim() && mediaImages.length === 0 && !selectedProjectId}>
+              <Send size={16} style={{ marginLeft: '-4px' }} /> Post
+            </button>
+          </div>
         </div>
       </div>
 
@@ -995,24 +1213,80 @@ export default function Community() {
                       )}
                       
                       {(Number(post.user_id) === Number(currentUser?.id) || post.username === currentUser?.username || currentUser?.role === 'admin') && (
-                        <button 
-                          className="delete-post-btn" 
-                          onClick={() => handleDeletePost(post.id)} 
-                          title="Delete Post"
-                        >
-                          <Trash2 size={14} />
-                        </button>
+                        <>
+                          <button 
+                            className="edit-post-btn" 
+                            onClick={() => handleEditPostStart(post)}
+                            title="Edit Post"
+                            style={{
+                              background: 'transparent',
+                              border: 'none',
+                              color: 'var(--text-secondary)',
+                              cursor: 'pointer',
+                              padding: '4px',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              borderRadius: '4px',
+                              transition: 'all 0.2s',
+                              opacity: 0.7
+                            }}
+                            onMouseEnter={(e) => e.currentTarget.style.opacity = 1}
+                            onMouseLeave={(e) => e.currentTarget.style.opacity = 0.7}
+                          >
+                            <Pencil size={14} />
+                          </button>
+                          <button 
+                            className="delete-post-btn" 
+                            onClick={() => handleDeletePost(post.id)} 
+                            title="Delete Post"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </>
                       )}
                     </div>
                   </div>
-                  <span className="post-time">{formatTime(post.created_at)}</span>
+                  <span className="post-time" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                    {formatTime(post.created_at)}
+                    <span style={{ display: 'inline-flex', opacity: 0.6 }} title={`Audience: ${post.audience || 'public'}`}>
+                      {post.audience === 'only_me' && <EyeOff size={12} />}
+                      {post.audience === 'batchmates' && <GraduationCap size={12} />}
+                      {(!post.audience || post.audience === 'public') && <Globe size={12} />}
+                    </span>
+                  </span>
                 </div>
               </div>
             </div>
 
             {/* Post Content */}
             <div className="post-body">
-              {post.content && <p className="post-text">{post.content}</p>}
+              {editingPostId === post.id ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', marginTop: '0.5rem', marginBottom: '1rem' }}>
+                  <textarea
+                    className="input-glass"
+                    value={editingPostText}
+                    onChange={(e) => setEditingPostText(e.target.value)}
+                    style={{ width: '100%', minHeight: '80px', padding: '0.75rem', resize: 'vertical' }}
+                  />
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Audience:</span>
+                      <AudienceSelector value={editingPostAudience} onChange={setEditingPostAudience} />
+                    </div>
+                    <div style={{ display: 'flex', gap: '0.5rem' }}>
+                      <button className="btn btn-glass" style={{ padding: '0.35rem 0.75rem', fontSize: '0.8rem' }} onClick={handleEditPostCancel}>
+                        Cancel
+                      </button>
+                      <button className="btn btn-primary" style={{ padding: '0.35rem 0.75rem', fontSize: '0.8rem' }} onClick={() => handleEditPostSave(post.id)}>
+                        Save
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                post.content && <p className="post-text">{post.content}</p>
+              )}
               
               {post.media_type === 'image' && post.media_url && (() => {
                 let rawImages = [];
@@ -1146,7 +1420,10 @@ export default function Community() {
               </button>
               <button 
                 className="action-btn"
-                onClick={() => setActiveCommentPostId(activeCommentPostId === post.id ? null : post.id)}
+                onClick={() => {
+                  const input = document.getElementById(`comment-input-${post.id}`);
+                  if (input) input.focus();
+                }}
               >
                 <MessageSquare size={18} /> 
                 {post.comments?.length || 0} Comments
@@ -1157,253 +1434,1001 @@ export default function Community() {
             </div>
 
             {/* Comments Section */}
-            {(activeCommentPostId === post.id || post.comments?.length > 0) && (
-              <div className="comments-section">
-                {post.comments?.map(comment => (
-                  <div key={comment.id} className="comment">
-                    <UserHoverCard userId={comment.user_id}>
-                      <div className="comment-avatar" style={{ overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                        {comment.profile_picture ? (
-                          <img src={resolveMediaUrl(comment.profile_picture)} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                        ) : (
-                          <img src={`${import.meta.env.BASE_URL}avatars/male1.png`} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: 0.5 }} />
-                        )}
-                      </div>
-                    </UserHoverCard>
-                    <div className="comment-content-box" style={{ position: 'relative' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                        <UserHoverCard userId={comment.user_id}>
-                          <div className="comment-author" style={{ display: 'inline-block' }}>{comment.first_name} {comment.last_name}</div>
-                        </UserHoverCard>
+            <div className="comments-section" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                {(() => {
+                  const commentsList = post.comments || [];
+                  const parentComments = commentsList.filter(c => !c.parent_id);
+                  const replyComments = commentsList.filter(c => c.parent_id);
 
-                        {/* Comment Menu wrapper */}
-                        <div className="comment-menu-wrapper" style={{ position: 'relative' }}>
-                          <button 
-                            type="button"
-                            className="comment-menu-trigger"
-                            onClick={() => setActiveCommentMenuId(activeCommentMenuId === comment.id ? null : comment.id)}
-                            style={{ 
-                              background: 'transparent', 
-                              border: 'none', 
-                              color: 'var(--text-muted)', 
-                              cursor: 'pointer',
-                              padding: '2px 4px',
-                              borderRadius: '4px',
-                              display: 'flex',
-                              alignItems: 'center',
-                              justifyContent: 'center',
-                              transition: 'all 0.2s ease'
-                            }}
-                          >
-                            <MoreVertical size={14} />
-                          </button>
-                          
-                          {activeCommentMenuId === comment.id && (
-                            <div className="comment-dropdown animate-fade-in">
-                              {comment.user_id === currentUser?.id && (
-                                <button 
-                                  onClick={() => handleCommentEditStart(comment)}
-                                  className="comment-dropdown-item"
-                                >
-                                  Edit
-                                </button>
-                              )}
-                              
-                              {(comment.user_id === currentUser?.id || post.user_id === currentUser?.id || currentUser?.role === 'admin') && (
-                                <button 
-                                  onClick={() => handleCommentDelete(post.id, comment.id)}
-                                  className="comment-dropdown-item comment-delete"
-                                >
-                                  Delete
-                                </button>
-                              )}
-                              
-                              {comment.user_id !== currentUser?.id && (
-                                <button 
-                                  onClick={() => handleCommentReport(post.id, comment.id)}
-                                  className="comment-dropdown-item"
-                                >
-                                  Report
-                                </button>
+                  return parentComments.map(comment => {
+                    const thisReplies = replyComments.filter(r => r.parent_id === comment.id);
+                    const showReplyInput = activeReplyInputCommentId === comment.id || thisReplies.length > 0;
+
+                    return (
+                      <div key={comment.id} className="comment-thread" style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                        {/* Parent Comment */}
+                        <div className="comment" style={{ display: 'flex', gap: '0.75rem', alignItems: 'flex-start' }}>
+                          <UserHoverCard userId={comment.user_id}>
+                            <div className="comment-avatar" style={{ overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', width: '32px', height: '32px', borderRadius: '50%' }}>
+                              {comment.profile_picture ? (
+                                <img src={resolveMediaUrl(comment.profile_picture)} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                              ) : (
+                                <img src={`${import.meta.env.BASE_URL}avatars/male1.png`} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: 0.5 }} />
                               )}
                             </div>
-                          )}
-                        </div>
-                      </div>
+                          </UserHoverCard>
+                          <div className="comment-content-box" style={{ position: 'relative', flex: 1 }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                              <UserHoverCard userId={comment.user_id}>
+                                <div className="comment-author" style={{ display: 'inline-block' }}>{comment.first_name} {comment.last_name}</div>
+                              </UserHoverCard>
 
-                      {editingCommentId === comment.id ? (
-                        <div className="comment-edit-area" style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '0.4rem', position: 'relative' }}>
-                          {editingCommentImage && (
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                              <div style={{ position: 'relative', width: '60px', height: '60px', borderRadius: '6px', overflow: 'hidden', border: '1px solid var(--glass-border)', background: 'rgba(0,0,0,0.2)' }}>
-                                <img src={editingCommentImage} alt="Pasted attachment" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                              {/* Comment Menu wrapper */}
+                              <div className="comment-menu-wrapper" style={{ position: 'relative' }}>
                                 <button 
                                   type="button"
-                                  onClick={() => setEditingCommentImage(null)}
-                                  style={{ position: 'absolute', top: '2px', right: '2px', background: 'rgba(239, 68, 68, 0.9)', color: 'white', border: 'none', borderRadius: '50%', width: '16px', height: '16px', fontSize: '9px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', fontWeight: 'bold' }}
+                                  className="comment-menu-trigger"
+                                  onClick={() => setActiveCommentMenuId(activeCommentMenuId === comment.id ? null : comment.id)}
+                                  style={{ 
+                                    background: 'transparent', 
+                                    border: 'none', 
+                                    color: 'var(--text-muted)', 
+                                    cursor: 'pointer',
+                                    padding: '2px 4px',
+                                    borderRadius: '4px',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    transition: 'all 0.2s ease'
+                                  }}
                                 >
-                                  ✕
+                                  <MoreVertical size={14} />
                                 </button>
+                                
+                                {activeCommentMenuId === comment.id && (
+                                  <div className="comment-dropdown animate-fade-in">
+                                    {comment.user_id === currentUser?.id && (
+                                      <button 
+                                        onClick={() => handleCommentEditStart(comment)}
+                                        className="comment-dropdown-item"
+                                      >
+                                        Edit
+                                      </button>
+                                    )}
+                                    
+                                    {(comment.user_id === currentUser?.id || post.user_id === currentUser?.id || currentUser?.role === 'admin') && (
+                                      <button 
+                                        onClick={() => handleCommentDelete(post.id, comment.id)}
+                                        className="comment-dropdown-item comment-delete"
+                                      >
+                                        Delete
+                                      </button>
+                                    )}
+                                    
+                                    {comment.user_id !== currentUser?.id && (
+                                      <button 
+                                        onClick={() => handleCommentReport(post.id, comment.id)}
+                                        className="comment-dropdown-item"
+                                      >
+                                        Report
+                                      </button>
+                                    )}
+                                  </div>
+                                )}
                               </div>
                             </div>
-                          )}
-                          <div style={{ display: 'flex', alignItems: 'center', position: 'relative', width: '100%' }}>
-                            <input 
-                              type="text"
-                              className="input-glass"
-                              value={editingCommentText}
-                              onChange={(e) => setEditingCommentText(e.target.value)}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter') handleCommentEditSave(post.id, comment);
-                              }}
-                              autoFocus
-                              style={{ width: '100%', fontSize: '0.9rem', padding: '0.4rem 5rem 0.4rem 0.8rem' }}
-                            />
-                            <div style={{ position: 'absolute', right: '0.5rem', display: 'flex', gap: '0.4rem', alignItems: 'center', zIndex: 10 }}>
-                              {/* Edit Image Upload Button */}
-                              <label 
-                                htmlFor={`comment-edit-image-upload-${comment.id}`} 
-                                style={{ 
-                                  display: 'flex', 
-                                  alignItems: 'center', 
-                                  justifyContent: 'center', 
-                                  width: '30px', 
-                                  height: '30px', 
-                                  borderRadius: '50%', 
-                                  cursor: 'pointer', 
-                                  color: 'var(--text-muted)',
-                                  transition: 'all 0.2s ease',
-                                  background: 'transparent'
-                                }}
-                                className="comment-icon-btn"
-                                title="Add image"
-                              >
-                                <ImageIcon size={16} />
-                              </label>
 
-                              {/* Edit Emoji Picker Button */}
-                              <button
-                                type="button"
-                                onClick={() => setEditingCommentEmojiPickerId(editingCommentEmojiPickerId === comment.id ? null : comment.id)}
-                                style={{ 
-                                  display: 'flex', 
-                                  alignItems: 'center', 
-                                  justifyContent: 'center', 
-                                  width: '30px', 
-                                  height: '30px', 
-                                  borderRadius: '50%', 
-                                  cursor: 'pointer', 
-                                  color: editingCommentEmojiPickerId === comment.id ? 'var(--accent-primary)' : 'var(--text-muted)',
-                                  background: 'transparent',
-                                  border: 'none',
-                                  padding: 0,
-                                  outline: 'none'
-                                }}
-                                className="comment-icon-btn"
-                                title="Insert emoji"
-                              >
-                                <Smile size={16} />
-                              </button>
-                            </div>
-                            
-                            <input 
-                              type="file" 
-                              accept="image/*" 
-                              id={`comment-edit-image-upload-${comment.id}`}
-                              onChange={(e) => {
-                                const file = e.target.files?.[0];
-                                if (file) {
-                                  const reader = new FileReader();
-                                  reader.onloadend = () => {
-                                    setEditingCommentImage(reader.result);
-                                  };
-                                  reader.readAsDataURL(file);
-                                }
-                                e.target.value = '';
-                              }}
-                              style={{ display: 'none' }}
-                            />
+                            {editingCommentId === comment.id ? (
+                              <div className="comment-edit-area" style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '0.4rem', position: 'relative' }}>
+                                {editingCommentImage && (
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                    <div style={{ position: 'relative', width: '60px', height: '60px', borderRadius: '6px', overflow: 'hidden', border: '1px solid var(--glass-border)', background: 'rgba(0,0,0,0.2)' }}>
+                                      <img src={editingCommentImage} alt="Pasted attachment" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                                      <button 
+                                        type="button"
+                                        onClick={() => setEditingCommentImage(null)}
+                                        style={{ position: 'absolute', top: '2px', right: '2px', background: 'rgba(239, 68, 68, 0.9)', color: 'white', border: 'none', borderRadius: '50%', width: '16px', height: '16px', fontSize: '9px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', fontWeight: 'bold' }}
+                                      >
+                                        ✕
+                                      </button>
+                                    </div>
+                                  </div>
+                                )}
+                                <div style={{ display: 'flex', alignItems: 'center', position: 'relative', width: '100%' }}>
+                                  <input 
+                                    type="text"
+                                    className="input-glass"
+                                    value={editingCommentText}
+                                    onChange={(e) => setEditingCommentText(e.target.value)}
+                                    onKeyDown={(e) => {
+                                      if (e.key === 'Enter') handleCommentEditSave(post.id, comment);
+                                    }}
+                                    autoFocus
+                                    style={{ width: '100%', fontSize: '0.9rem', padding: '0.4rem 5rem 0.4rem 0.8rem' }}
+                                  />
+                                  <div style={{ position: 'absolute', right: '0.5rem', display: 'flex', gap: '0.4rem', alignItems: 'center', zIndex: 10 }}>
+                                    {/* Edit Image Upload Button */}
+                                    <label 
+                                      htmlFor={`comment-edit-image-upload-${comment.id}`} 
+                                      style={{ 
+                                        display: 'flex', 
+                                        alignItems: 'center', 
+                                        justifyContent: 'center', 
+                                        width: '30px', 
+                                        height: '30px', 
+                                        borderRadius: '50%', 
+                                        cursor: 'pointer', 
+                                        color: 'var(--text-muted)',
+                                        transition: 'all 0.2s ease',
+                                        background: 'transparent'
+                                      }}
+                                      className="comment-icon-btn"
+                                      title="Add image"
+                                    >
+                                      <ImageIcon size={16} />
+                                    </label>
 
-                            {editingCommentEmojiPickerId === comment.id && (
-                              <div 
-                                className="comment-emoji-picker-container animate-fade-in" 
-                                style={{ 
-                                  position: 'absolute', 
-                                  bottom: '100%', 
-                                  right: '0.5rem', 
-                                  marginBottom: '0.5rem', 
-                                  zIndex: 100000 
-                                }}
-                              >
-                                <NativeEmojiPicker
-                                  onEmojiSelect={(emojiData) => {
-                                    setEditingCommentText(prev => prev + emojiData.native);
-                                  }}
-                                  theme={document.documentElement.getAttribute('data-mode') === 'dark' ? 'dark' : 'light'}
-                                />
+                                    {/* Edit Emoji Picker Button */}
+                                    <button
+                                      type="button"
+                                      onClick={() => setEditingCommentEmojiPickerId(editingCommentEmojiPickerId === comment.id ? null : comment.id)}
+                                      style={{ 
+                                        display: 'flex', 
+                                        alignItems: 'center', 
+                                        justifyContent: 'center', 
+                                        width: '30px', 
+                                        height: '30px', 
+                                        borderRadius: '50%', 
+                                        cursor: 'pointer', 
+                                        color: editingCommentEmojiPickerId === comment.id ? 'var(--accent-primary)' : 'var(--text-muted)',
+                                        background: 'transparent',
+                                        border: 'none',
+                                        padding: 0,
+                                        outline: 'none'
+                                      }}
+                                      className="comment-icon-btn"
+                                      title="Insert emoji"
+                                    >
+                                      <Smile size={16} />
+                                    </button>
+                                  </div>
+                                  
+                                  <input 
+                                    type="file" 
+                                    accept="image/*" 
+                                    id={`comment-edit-image-upload-${comment.id}`}
+                                    onChange={(e) => {
+                                      const file = e.target.files?.[0];
+                                      if (file) {
+                                        const reader = new FileReader();
+                                        reader.onloadend = () => {
+                                          setEditingCommentImage(reader.result);
+                                        };
+                                        reader.readAsDataURL(file);
+                                      }
+                                      e.target.value = '';
+                                    }}
+                                    style={{ display: 'none' }}
+                                  />
+
+                                  {editingCommentEmojiPickerId === comment.id && (
+                                    <div 
+                                      className="comment-emoji-picker-container animate-fade-in" 
+                                      style={{ 
+                                        position: 'absolute', 
+                                        bottom: '100%', 
+                                        right: '0.5rem', 
+                                        marginBottom: '0.5rem', 
+                                        zIndex: 100000 
+                                      }}
+                                    >
+                                      <NativeEmojiPicker
+                                        onEmojiSelect={(emojiData) => {
+                                          setEditingCommentText(prev => prev + emojiData.native);
+                                        }}
+                                        theme={document.documentElement.getAttribute('data-mode') === 'dark' ? 'dark' : 'light'}
+                                      />
+                                    </div>
+                                  )}
+                                </div>
+
+                                <div style={{ display: 'flex', gap: '0.4rem', alignSelf: 'flex-end', zIndex: 5 }}>
+                                  <button 
+                                    className="btn btn-primary" 
+                                    onClick={() => handleCommentEditSave(post.id, comment)}
+                                    style={{ padding: '0.2rem 0.6rem', fontSize: '0.75rem', borderRadius: '4px' }}
+                                  >
+                                    Save
+                                  </button>
+                                  <button 
+                                    className="btn btn-glass" 
+                                    onClick={handleCommentEditCancel}
+                                    style={{ padding: '0.2rem 0.6rem', fontSize: '0.75rem', borderRadius: '4px' }}
+                                  >
+                                    Cancel
+                                  </button>
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="comment-text">
+                                {(() => {
+                                  const { text, image } = parseCommentContent(comment.content);
+                                  return (
+                                    <>
+                                      {text && <div style={{ marginBottom: image ? '0.4rem' : 0 }}>{text}</div>}
+                                      {image && (
+                                        <img 
+                                          src={image} 
+                                          alt="Comment image" 
+                                          onClick={() => openLightbox([{ url: image, caption: 'Comment Image' }], 0)}
+                                          style={{ 
+                                            maxWidth: '100%', 
+                                            maxHeight: '200px', 
+                                            borderRadius: '8px', 
+                                            border: '1px solid var(--glass-border)',
+                                            display: 'block',
+                                            cursor: 'pointer',
+                                            marginTop: '0.2rem'
+                                          }} 
+                                        />
+                                      )}
+                                    </>
+                                  );
+                                })()}
                               </div>
                             )}
-                          </div>
 
-                          <div style={{ display: 'flex', gap: '0.4rem', alignSelf: 'flex-end', zIndex: 5 }}>
-                            <button 
-                              className="btn btn-primary" 
-                              onClick={() => handleCommentEditSave(post.id, comment)}
-                              style={{ padding: '0.2rem 0.6rem', fontSize: '0.75rem', borderRadius: '4px' }}
-                            >
-                              Save
-                            </button>
-                            <button 
-                              className="btn btn-glass" 
-                              onClick={handleCommentEditCancel}
-                              style={{ padding: '0.2rem 0.6rem', fontSize: '0.75rem', borderRadius: '4px' }}
-                            >
-                              Cancel
-                            </button>
+                            {/* Comment Actions Row */}
+                            <div className="comment-actions" style={{ display: 'flex', gap: '1rem', alignItems: 'center', marginTop: '0.4rem', fontSize: '0.8rem' }}>
+                              <div 
+                                style={{ position: 'relative', display: 'inline-block' }}
+                                onMouseEnter={() => handleLikeButtonMouseEnter(comment.id)}
+                                onMouseLeave={() => handleLikeButtonMouseLeave(comment.id)}
+                              >
+                                {activeReactionCommentId === comment.id && (
+                                  <div 
+                                    className="reactions-popup animate-fade-in"
+                                    onMouseEnter={handlePopupMouseEnter}
+                                    onMouseLeave={() => handleLikeButtonMouseLeave(comment.id)}
+                                    style={{
+                                      position: 'absolute',
+                                      bottom: '100%',
+                                      left: '0',
+                                      borderRadius: '30px',
+                                      padding: '0.4rem 0.6rem',
+                                      display: 'flex',
+                                      gap: '0.5rem',
+                                      zIndex: 100000
+                                    }}
+                                  >
+                                    {REACTION_OPTIONS.map(opt => (
+                                      <button
+                                        key={opt.type}
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          handleReactionSelect(post.id, comment.id, opt.type);
+                                        }}
+                                        style={{
+                                          background: 'none',
+                                          border: 'none',
+                                          fontSize: '1.5rem',
+                                          cursor: 'pointer',
+                                          padding: '2px',
+                                          display: 'flex',
+                                          alignItems: 'center',
+                                          justifyContent: 'center',
+                                          transition: 'transform 0.15s ease'
+                                        }}
+                                        className="reaction-emoji-btn"
+                                        title={opt.label}
+                                      >
+                                        {opt.emoji}
+                                      </button>
+                                    ))}
+                                  </div>
+                                )}
+                                
+                                <button 
+                                  onTouchStart={(e) => handleLikeButtonTouchStart(e, post.id, comment.id, comment.user_reaction)}
+                                  onTouchEnd={(e) => handleLikeButtonTouchEnd(e, post.id, comment.id, comment.user_reaction)}
+                                  onTouchMove={handleLikeButtonTouchMove}
+                                  onClick={() => handleLikeButtonClick(post.id, comment.id, comment.user_reaction)}
+                                  style={{ 
+                                    background: 'none', 
+                                    border: 'none', 
+                                    color: comment.user_reaction ? (REACTION_OPTIONS.find(o => o.type === comment.user_reaction)?.color || 'var(--accent-primary)') : 'var(--text-secondary)', 
+                                    cursor: 'pointer', 
+                                    fontWeight: comment.user_reaction ? '600' : 'normal',
+                                    padding: 0,
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '0.25rem',
+                                    fontSize: '0.8rem',
+                                    userSelect: 'none',
+                                    WebkitUserSelect: 'none'
+                                  }}
+                                >
+                                  {comment.user_reaction ? (
+                                    <>
+                                      <span>{REACTION_OPTIONS.find(o => o.type === comment.user_reaction)?.emoji}</span>
+                                      <span>{REACTION_OPTIONS.find(o => o.type === comment.user_reaction)?.label}</span>
+                                    </>
+                                  ) : (
+                                    'Like'
+                                  )}
+                                </button>
+                              </div>
+                              <button 
+                                onClick={() => {
+                                  setActiveReplyInputCommentId(activeReplyInputCommentId === comment.id ? null : comment.id);
+                                  setReplyContents(prev => ({
+                                    ...prev,
+                                    [comment.id]: ''
+                                  }));
+                                  setActiveReplyMentions(prev => ({
+                                    ...prev,
+                                    [comment.id]: `${comment.first_name} ${comment.last_name}`
+                                  }));
+                                  setTimeout(() => {
+                                    const input = document.getElementById(`reply-input-${comment.id}`);
+                                    if (input) input.focus();
+                                  }, 50);
+                                }}
+                                style={{ 
+                                  background: 'none', 
+                                  border: 'none', 
+                                  color: 'var(--text-secondary)', 
+                                  cursor: 'pointer', 
+                                  padding: 0,
+                                  fontSize: '0.8rem'
+                                }}
+                              >
+                                Reply
+                              </button>
+                              {comment.likes_count > 0 && (
+                                <span style={{ color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '0.2rem' }}>
+                                  {(() => {
+                                    const rxList = comment.reactions || [];
+                                    const matchingOptions = rxList.map(t => REACTION_OPTIONS.find(o => o.type === t)).filter(Boolean);
+                                    return matchingOptions.slice(0, 3).map((o, idx) => (
+                                      <span key={o.type} style={{ marginRight: idx === matchingOptions.length - 1 ? '4px' : '-4px', fontSize: '0.9rem', zIndex: 3 - idx }}>
+                                        {o.emoji}
+                                      </span>
+                                    ));
+                                  })()}
+                                  {comment.likes_count}
+                                </span>
+                              )}
+                              <span className="comment-time" style={{ color: 'var(--text-muted)', marginLeft: 'auto' }}>{formatTime(comment.created_at)}</span>
+                            </div>
                           </div>
                         </div>
-                      ) : (
-                        <div className="comment-text">
-                          {(() => {
-                            const { text, image } = parseCommentContent(comment.content);
-                            return (
-                              <>
-                                {text && <div style={{ marginBottom: image ? '0.4rem' : 0 }}>{text}</div>}
-                                {image && (
-                                  <img 
-                                    src={image} 
-                                    alt="Comment image" 
-                                    onClick={() => openLightbox([{ url: image, caption: 'Comment Image' }], 0)}
-                                    style={{ 
-                                      maxWidth: '100%', 
-                                      maxHeight: '200px', 
-                                      borderRadius: '8px', 
-                                      border: '1px solid var(--glass-border)',
-                                      display: 'block',
-                                      cursor: 'pointer',
-                                      marginTop: '0.2rem'
-                                    }} 
-                                  />
+
+                        {/* Nesting Replies */}
+                        {thisReplies.length > 0 && (
+                          <div className="replies-list" style={{ marginLeft: '3rem', display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '0.25rem' }}>
+                            {thisReplies.map(reply => (
+                              <div key={reply.id} className="comment reply" style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-start' }}>
+                                <UserHoverCard userId={reply.user_id}>
+                                  <div className="comment-avatar" style={{ overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', width: '24px', height: '24px', borderRadius: '50%' }}>
+                                    {reply.profile_picture ? (
+                                      <img src={resolveMediaUrl(reply.profile_picture)} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                                    ) : (
+                                      <img src={`${import.meta.env.BASE_URL}avatars/male1.png`} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: 0.5 }} />
+                                    )}
+                                  </div>
+                                </UserHoverCard>
+                                <div className="comment-content-box" style={{ position: 'relative', flex: 1, padding: '0.4rem 0.6rem', borderRadius: '8px' }}>
+                                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                                    <UserHoverCard userId={reply.user_id}>
+                                      <div className="comment-author" style={{ display: 'inline-block', fontSize: '0.85rem' }}>{reply.first_name} {reply.last_name}</div>
+                                    </UserHoverCard>
+
+                                    {/* Reply Menu wrapper */}
+                                    <div className="comment-menu-wrapper" style={{ position: 'relative' }}>
+                                      <button 
+                                        type="button"
+                                        className="comment-menu-trigger"
+                                        onClick={() => setActiveCommentMenuId(activeCommentMenuId === reply.id ? null : reply.id)}
+                                        style={{ 
+                                          background: 'transparent', 
+                                          border: 'none', 
+                                          color: 'var(--text-muted)', 
+                                          cursor: 'pointer',
+                                          padding: '2px 4px',
+                                          borderRadius: '4px',
+                                          display: 'flex',
+                                          alignItems: 'center',
+                                          justifyContent: 'center',
+                                          transition: 'all 0.2s ease'
+                                        }}
+                                      >
+                                        <MoreVertical size={12} />
+                                      </button>
+                                      
+                                      {activeCommentMenuId === reply.id && (
+                                        <div className="comment-dropdown animate-fade-in">
+                                          {reply.user_id === currentUser?.id && (
+                                            <button 
+                                              onClick={() => handleCommentEditStart(reply)}
+                                              className="comment-dropdown-item"
+                                            >
+                                              Edit
+                                            </button>
+                                          )}
+                                          
+                                          {(reply.user_id === currentUser?.id || post.user_id === currentUser?.id || currentUser?.role === 'admin') && (
+                                            <button 
+                                              onClick={() => handleCommentDelete(post.id, reply.id)}
+                                              className="comment-dropdown-item comment-delete"
+                                            >
+                                              Delete
+                                            </button>
+                                          )}
+                                          
+                                          {reply.user_id !== currentUser?.id && (
+                                            <button 
+                                              onClick={() => handleCommentReport(post.id, reply.id)}
+                                              className="comment-dropdown-item"
+                                            >
+                                              Report
+                                            </button>
+                                          )}
+                                        </div>
+                                      )}
+                                    </div>
+                                  </div>
+
+                                  {editingCommentId === reply.id ? (
+                                    <div className="comment-edit-area" style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '0.4rem', position: 'relative' }}>
+                                      {editingCommentImage && (
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                          <div style={{ position: 'relative', width: '60px', height: '60px', borderRadius: '6px', overflow: 'hidden', border: '1px solid var(--glass-border)', background: 'rgba(0,0,0,0.2)' }}>
+                                            <img src={editingCommentImage} alt="Pasted attachment" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                                            <button 
+                                              type="button"
+                                              onClick={() => setEditingCommentImage(null)}
+                                              style={{ position: 'absolute', top: '2px', right: '2px', background: 'rgba(239, 68, 68, 0.9)', color: 'white', border: 'none', borderRadius: '50%', width: '16px', height: '16px', fontSize: '9px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', fontWeight: 'bold' }}
+                                            >
+                                              ✕
+                                            </button>
+                                          </div>
+                                        </div>
+                                      )}
+                                      <div style={{ display: 'flex', alignItems: 'center', position: 'relative', width: '100%' }}>
+                                        <input 
+                                          type="text"
+                                          className="input-glass"
+                                          value={editingCommentText}
+                                          onChange={(e) => setEditingCommentText(e.target.value)}
+                                          onKeyDown={(e) => {
+                                            if (e.key === 'Enter') handleCommentEditSave(post.id, reply);
+                                          }}
+                                          autoFocus
+                                          style={{ width: '100%', fontSize: '0.85rem', padding: '0.4rem 5rem 0.4rem 0.8rem' }}
+                                        />
+                                        <div style={{ position: 'absolute', right: '0.5rem', display: 'flex', gap: '0.4rem', alignItems: 'center', zIndex: 10 }}>
+                                          {/* Edit Image Upload Button */}
+                                          <label 
+                                            htmlFor={`comment-edit-image-upload-${reply.id}`} 
+                                            style={{ 
+                                              display: 'flex', 
+                                              alignItems: 'center', 
+                                              justifyContent: 'center', 
+                                              width: '30px', 
+                                              height: '30px', 
+                                              borderRadius: '50%', 
+                                              cursor: 'pointer', 
+                                              color: 'var(--text-muted)',
+                                              transition: 'all 0.2s ease',
+                                              background: 'transparent'
+                                            }}
+                                            className="comment-icon-btn"
+                                            title="Add image"
+                                          >
+                                            <ImageIcon size={14} />
+                                          </label>
+
+                                          {/* Edit Emoji Picker Button */}
+                                          <button
+                                            type="button"
+                                            onClick={() => setEditingCommentEmojiPickerId(editingCommentEmojiPickerId === reply.id ? null : reply.id)}
+                                            style={{ 
+                                              display: 'flex', 
+                                              alignItems: 'center', 
+                                              justifyContent: 'center', 
+                                              width: '30px', 
+                                              height: '30px', 
+                                              borderRadius: '50%', 
+                                              cursor: 'pointer', 
+                                              color: editingCommentEmojiPickerId === reply.id ? 'var(--accent-primary)' : 'var(--text-muted)',
+                                              background: 'transparent',
+                                              border: 'none',
+                                              padding: 0,
+                                              outline: 'none'
+                                            }}
+                                            className="comment-icon-btn"
+                                            title="Insert emoji"
+                                          >
+                                            <Smile size={14} />
+                                          </button>
+                                        </div>
+                                        
+                                        <input 
+                                          type="file" 
+                                          accept="image/*" 
+                                          id={`comment-edit-image-upload-${reply.id}`}
+                                          onChange={(e) => {
+                                            const file = e.target.files?.[0];
+                                            if (file) {
+                                              const reader = new FileReader();
+                                              reader.onloadend = () => {
+                                                setEditingCommentImage(reader.result);
+                                              };
+                                              reader.readAsDataURL(file);
+                                            }
+                                            e.target.value = '';
+                                          }}
+                                          style={{ display: 'none' }}
+                                        />
+
+                                        {editingCommentEmojiPickerId === reply.id && (
+                                          <div 
+                                            className="comment-emoji-picker-container animate-fade-in" 
+                                            style={{ 
+                                              position: 'absolute', 
+                                              bottom: '100%', 
+                                              right: '0.5rem', 
+                                              marginBottom: '0.5rem', 
+                                              zIndex: 100000 
+                                            }}
+                                          >
+                                            <NativeEmojiPicker
+                                              onEmojiSelect={(emojiData) => {
+                                                setEditingCommentText(prev => prev + emojiData.native);
+                                              }}
+                                              theme={document.documentElement.getAttribute('data-mode') === 'dark' ? 'dark' : 'light'}
+                                            />
+                                          </div>
+                                        )}
+                                      </div>
+
+                                      <div style={{ display: 'flex', gap: '0.4rem', alignSelf: 'flex-end', zIndex: 5 }}>
+                                        <button 
+                                          className="btn btn-primary" 
+                                          onClick={() => handleCommentEditSave(post.id, reply)}
+                                          style={{ padding: '0.2rem 0.6rem', fontSize: '0.75rem', borderRadius: '4px' }}
+                                        >
+                                          Save
+                                        </button>
+                                        <button 
+                                          className="btn btn-glass" 
+                                          onClick={handleCommentEditCancel}
+                                          style={{ padding: '0.2rem 0.6rem', fontSize: '0.75rem', borderRadius: '4px' }}
+                                        >
+                                          Cancel
+                                        </button>
+                                      </div>
+                                    </div>
+                                  ) : (
+                                    <div className="comment-text" style={{ fontSize: '0.85rem' }}>
+                                       {(() => {
+                                         const { text, image } = parseCommentContent(reply.content);
+                                         
+                                         // Find candidates in this thread
+                                         const threadCandidates = [
+                                           `${comment.first_name} ${comment.last_name}`,
+                                           ...thisReplies.map(r => `${r.first_name} ${r.last_name}`)
+                                         ];
+                                         const uniqueCandidates = [...new Set(threadCandidates)].filter(Boolean);
+                                         const sortedCandidates = uniqueCandidates.sort((a, b) => b.length - a.length);
+                                         
+                                         let mentionBadge = null;
+                                         let displayText = text;
+                                         
+                                         if (text) {
+                                           for (const candidate of sortedCandidates) {
+                                             if (text === candidate) {
+                                               mentionBadge = candidate;
+                                               displayText = "";
+                                               break;
+                                             }
+                                             const prefix = `${candidate} `;
+                                             if (text.startsWith(prefix)) {
+                                               mentionBadge = candidate;
+                                               displayText = text.slice(prefix.length);
+                                               break;
+                                             }
+                                           }
+                                         }
+
+                                         return (
+                                           <>
+                                             {text && (
+                                               <div style={{ marginBottom: image ? '0.4rem' : 0 }}>
+                                                 {mentionBadge ? (
+                                                   <>
+                                                     <span style={{ 
+                                                       color: 'var(--accent-primary)', 
+                                                       fontWeight: 'bold', 
+                                                       background: 'color-mix(in srgb, var(--accent-primary) 12%, transparent)', 
+                                                       border: '1px solid color-mix(in srgb, var(--accent-primary) 25%, transparent)',
+                                                       padding: '0.1rem 0.35rem', 
+                                                       borderRadius: '4px',
+                                                       marginRight: '0.35rem',
+                                                       fontSize: '0.8rem',
+                                                       display: 'inline-block'
+                                                     }}>
+                                                       {mentionBadge}
+                                                     </span>
+                                                     {displayText}
+                                                   </>
+                                                 ) : (
+                                                   text
+                                                 )}
+                                               </div>
+                                             )}
+                                             {image && (
+                                               <img 
+                                                 src={image} 
+                                                 alt="Reply image" 
+                                                 onClick={() => openLightbox([{ url: image, caption: 'Reply Image' }], 0)}
+                                                 style={{ 
+                                                   maxWidth: '100%', 
+                                                   maxHeight: '150px', 
+                                                   borderRadius: '6px', 
+                                                   border: '1px solid var(--glass-border)',
+                                                   display: 'block',
+                                                   cursor: 'pointer',
+                                                   marginTop: '0.2rem'
+                                                 }} 
+                                               />
+                                             )}
+                                           </>
+                                         );
+                                       })()}
+                                     </div>
+                                  )}
+
+                                  {/* Reply Actions Row */}
+                                  <div className="comment-actions" style={{ display: 'flex', gap: '1rem', alignItems: 'center', marginTop: '0.3rem', fontSize: '0.75rem' }}>
+                                    <div 
+                                      style={{ position: 'relative', display: 'inline-block' }}
+                                      onMouseEnter={() => handleLikeButtonMouseEnter(reply.id)}
+                                      onMouseLeave={() => handleLikeButtonMouseLeave(reply.id)}
+                                    >
+                                      {activeReactionCommentId === reply.id && (
+                                        <div 
+                                          className="reactions-popup animate-fade-in"
+                                          onMouseEnter={handlePopupMouseEnter}
+                                          onMouseLeave={() => handleLikeButtonMouseLeave(reply.id)}
+                                          style={{
+                                            position: 'absolute',
+                                            bottom: '100%',
+                                            left: '0',
+                                            borderRadius: '30px',
+                                            padding: '0.4rem 0.6rem',
+                                            display: 'flex',
+                                            gap: '0.5rem',
+                                            zIndex: 100000
+                                          }}
+                                        >
+                                          {REACTION_OPTIONS.map(opt => (
+                                            <button
+                                              key={opt.type}
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                handleReactionSelect(post.id, reply.id, opt.type);
+                                              }}
+                                              style={{
+                                                background: 'none',
+                                                border: 'none',
+                                                fontSize: '1.5rem',
+                                                cursor: 'pointer',
+                                                padding: '2px',
+                                                display: 'flex',
+                                                alignItems: 'center',
+                                                justifyContent: 'center',
+                                                transition: 'transform 0.15s ease'
+                                              }}
+                                              className="reaction-emoji-btn"
+                                              title={opt.label}
+                                            >
+                                              {opt.emoji}
+                                            </button>
+                                          ))}
+                                        </div>
+                                      )}
+                                      
+                                      <button 
+                                        onTouchStart={(e) => handleLikeButtonTouchStart(e, post.id, reply.id, reply.user_reaction)}
+                                        onTouchEnd={(e) => handleLikeButtonTouchEnd(e, post.id, reply.id, reply.user_reaction)}
+                                        onTouchMove={handleLikeButtonTouchMove}
+                                        onClick={() => handleLikeButtonClick(post.id, reply.id, reply.user_reaction)}
+                                        style={{ 
+                                          background: 'none', 
+                                          border: 'none', 
+                                          color: reply.user_reaction ? (REACTION_OPTIONS.find(o => o.type === reply.user_reaction)?.color || 'var(--accent-primary)') : 'var(--text-secondary)', 
+                                          cursor: 'pointer', 
+                                          fontWeight: reply.user_reaction ? '600' : 'normal',
+                                          padding: 0,
+                                          display: 'flex',
+                                          alignItems: 'center',
+                                          gap: '0.2rem',
+                                          fontSize: '0.75rem',
+                                          userSelect: 'none',
+                                          WebkitUserSelect: 'none'
+                                        }}
+                                      >
+                                        {reply.user_reaction ? (
+                                          <>
+                                            <span>{REACTION_OPTIONS.find(o => o.type === reply.user_reaction)?.emoji}</span>
+                                            <span>{REACTION_OPTIONS.find(o => o.type === reply.user_reaction)?.label}</span>
+                                          </>
+                                        ) : (
+                                          'Like'
+                                        )}
+                                      </button>
+                                    </div>
+                                    <button 
+                                      onClick={() => {
+                                        setActiveReplyInputCommentId(comment.id);
+                                        setReplyContents(prev => ({
+                                          ...prev,
+                                          [comment.id]: ''
+                                        }));
+                                        setActiveReplyMentions(prev => ({
+                                          ...prev,
+                                          [comment.id]: `${reply.first_name} ${reply.last_name}`
+                                        }));
+                                        setTimeout(() => {
+                                          const input = document.getElementById(`reply-input-${comment.id}`);
+                                          if (input) input.focus();
+                                        }, 50);
+                                      }}
+                                      style={{ 
+                                        background: 'none', 
+                                        border: 'none', 
+                                        color: 'var(--text-secondary)', 
+                                        cursor: 'pointer', 
+                                        padding: 0,
+                                        fontSize: '0.75rem'
+                                      }}
+                                    >
+                                      Reply
+                                    </button>
+                                    {reply.likes_count > 0 && (
+                                      <span style={{ color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '0.15rem' }}>
+                                        {(() => {
+                                          const rxList = reply.reactions || [];
+                                          const matchingOptions = rxList.map(t => REACTION_OPTIONS.find(o => o.type === t)).filter(Boolean);
+                                          return matchingOptions.slice(0, 3).map((o, idx) => (
+                                            <span key={o.type} style={{ marginRight: idx === matchingOptions.length - 1 ? '4px' : '-4px', fontSize: '0.85rem', zIndex: 3 - idx }}>
+                                              {o.emoji}
+                                            </span>
+                                          ));
+                                        })()}
+                                        {reply.likes_count}
+                                      </span>
+                                    )}
+                                    <span className="comment-time" style={{ color: 'var(--text-muted)', marginLeft: 'auto' }}>{formatTime(reply.created_at)}</span>
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        {/* Reply Input Box */}
+                        {showReplyInput && (
+                          <div className="reply-input-area" style={{ marginLeft: '3rem', marginTop: '0.25rem', display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                            {replyImages[comment.id] && (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                <div style={{ position: 'relative', width: '50px', height: '50px', borderRadius: '6px', overflow: 'hidden', border: '1px solid var(--glass-border)', background: 'rgba(0,0,0,0.2)' }}>
+                                  <img src={replyImages[comment.id]} alt="Reply attachment" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                                  <button 
+                                    type="button"
+                                    onClick={() => setReplyImages(prev => ({ ...prev, [comment.id]: null }))}
+                                    style={{ position: 'absolute', top: '2px', right: '2px', background: 'rgba(239, 68, 68, 0.9)', color: 'white', border: 'none', borderRadius: '50%', width: '14px', height: '14px', fontSize: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', fontWeight: 'bold' }}
+                                  >
+                                    ✕
+                                  </button>
+                                </div>
+                              </div>
+                            )}
+                            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', width: '100%', position: 'relative' }}>
+                              <div className="comment-avatar min" style={{ overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', width: '24px', height: '24px', borderRadius: '50%' }}>
+                                {currentUser?.profile_picture ? (
+                                  <img src={resolveMediaUrl(currentUser.profile_picture)} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                                ) : (
+                                  <img src={`${import.meta.env.BASE_URL}avatars/male1.png`} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: 0.5 }} />
                                 )}
-                              </>
-                            );
-                          })()}
-                        </div>
-                      )}
-                      <div className="comment-time">{formatTime(comment.created_at)}</div>
-                    </div>
-                  </div>
-                ))}
+                              </div>
+                              <div 
+                                className="input-glass"
+                                style={{ 
+                                  display: 'flex', 
+                                  alignItems: 'center', 
+                                  flex: 1, 
+                                  position: 'relative',
+                                  padding: '4px 8px',
+                                  paddingRight: '4.5rem',
+                                  minHeight: '32px',
+                                  cursor: 'text',
+                                  borderRadius: '8px'
+                                }}
+                                onClick={() => {
+                                  const input = document.getElementById(`reply-input-${comment.id}`);
+                                  if (input) input.focus();
+                                }}
+                              >
+                                {activeReplyMentions[comment.id] && (
+                                  <span 
+                                    style={{
+                                      background: 'color-mix(in srgb, var(--accent-primary) 12%, transparent)',
+                                      color: 'var(--accent-primary)',
+                                      fontWeight: '600',
+                                      padding: '2px 8px',
+                                      borderRadius: '4px',
+                                      fontSize: '0.75rem',
+                                      display: 'inline-flex',
+                                      alignItems: 'center',
+                                      gap: '0.25rem',
+                                      userSelect: 'none',
+                                      border: '1px solid color-mix(in srgb, var(--accent-primary) 25%, transparent)',
+                                      marginRight: '6px',
+                                      whiteSpace: 'nowrap'
+                                    }}
+                                  >
+                                    {activeReplyMentions[comment.id]}
+                                    <span 
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setActiveReplyMentions(prev => ({ ...prev, [comment.id]: null }));
+                                        setTimeout(() => {
+                                          const input = document.getElementById(`reply-input-${comment.id}`);
+                                          if (input) input.focus();
+                                        }, 10);
+                                      }}
+                                      style={{ cursor: 'pointer', opacity: 0.6, fontSize: '0.7rem', marginLeft: '0.15rem' }}
+                                    >
+                                      ✕
+                                    </span>
+                                  </span>
+                                )}
+                                <input 
+                                  type="text" 
+                                  id={`reply-input-${comment.id}`}
+                                  placeholder={activeReplyMentions[comment.id] ? '' : 'Write a reply...'} 
+                                  value={replyContents[comment.id] || ''}
+                                  onChange={(e) => setReplyContents(prev => ({ ...prev, [comment.id]: e.target.value }))}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Backspace' && !replyContents[comment.id] && activeReplyMentions[comment.id]) {
+                                      setActiveReplyMentions(prev => ({ ...prev, [comment.id]: null }));
+                                    } else if (e.key === 'Enter') {
+                                      handleReplySubmit(post.id, comment.id);
+                                    }
+                                  }}
+                                  onPaste={(e) => handleReplyPaste(e, comment.id)}
+                                  onClick={(e) => e.stopPropagation()}
+                                  style={{ 
+                                    flex: 1, 
+                                    background: 'transparent',
+                                    border: 'none',
+                                    outline: 'none',
+                                    color: 'inherit',
+                                    fontSize: '0.85rem', 
+                                    height: '24px',
+                                    padding: 0
+                                  }} 
+                                />
+                                <div style={{ position: 'absolute', right: '0.35rem', display: 'flex', gap: '0.2rem', alignItems: 'center', zIndex: 10 }}>
+                                  {/* Reply Image Upload Button */}
+                                  <label 
+                                    htmlFor={`reply-image-upload-${comment.id}`} 
+                                    style={{ 
+                                      display: 'flex', 
+                                      alignItems: 'center', 
+                                      justifyContent: 'center', 
+                                      width: '26px', 
+                                      height: '26px', 
+                                      borderRadius: '50%', 
+                                      cursor: 'pointer', 
+                                      color: 'var(--text-muted)',
+                                      transition: 'all 0.2s ease',
+                                      background: 'transparent'
+                                    }}
+                                    className="comment-icon-btn"
+                                    title="Add image"
+                                  >
+                                    <ImageIcon size={14} />
+                                  </label>
+
+                                  {/* Reply Emoji Picker Button */}
+                                  <button
+                                    type="button"
+                                    onClick={() => setReplyEmojiPickerCommentId(replyEmojiPickerCommentId === comment.id ? null : comment.id)}
+                                    style={{ 
+                                      display: 'flex', 
+                                      alignItems: 'center', 
+                                      justifyContent: 'center', 
+                                      width: '26px', 
+                                      height: '26px', 
+                                      borderRadius: '50%', 
+                                      cursor: 'pointer', 
+                                      color: replyEmojiPickerCommentId === comment.id ? 'var(--accent-primary)' : 'var(--text-muted)',
+                                      background: 'transparent',
+                                      border: 'none',
+                                      padding: 0,
+                                      outline: 'none'
+                                    }}
+                                    className="comment-icon-btn"
+                                    title="Insert emoji"
+                                  >
+                                    <Smile size={14} />
+                                  </button>
+                                </div>
+                                <input 
+                                  type="file" 
+                                  accept="image/*" 
+                                  id={`reply-image-upload-${comment.id}`}
+                                  onChange={(e) => {
+                                    const file = e.target.files?.[0];
+                                    if (file) {
+                                      const reader = new FileReader();
+                                      reader.onloadend = () => {
+                                        setReplyImages(prev => ({ ...prev, [comment.id]: reader.result }));
+                                      };
+                                      reader.readAsDataURL(file);
+                                    }
+                                    e.target.value = '';
+                                  }}
+                                  style={{ display: 'none' }}
+                                />
+                              </div>
+                              <button 
+                                className="btn btn-primary" 
+                                onClick={() => handleReplySubmit(post.id, comment.id)}
+                                style={{ padding: '0 0.75rem', height: '32px', fontSize: '0.8rem', borderRadius: '6px' }}
+                              >
+                                Reply
+                              </button>
+
+                              {replyEmojiPickerCommentId === comment.id && (
+                                <div 
+                                  className="comment-emoji-picker-container animate-fade-in" 
+                                  style={{ 
+                                    position: 'absolute', 
+                                    bottom: '100%', 
+                                    right: '4rem', 
+                                    marginBottom: '0.5rem', 
+                                    zIndex: 100000 
+                                  }}
+                                >
+                                  <NativeEmojiPicker
+                                    onEmojiSelect={(emojiData) => {
+                                      setReplyContents(prev => ({ ...prev, [comment.id]: (prev[comment.id] || '') + emojiData.native }));
+                                    }}
+                                    theme={document.documentElement.getAttribute('data-mode') === 'dark' ? 'dark' : 'light'}
+                                  />
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  });
+                })()}
                 
-                {activeCommentPostId === post.id && (
-                  <div className="comment-input-area" style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', alignItems: 'stretch' }}>
-                    {commentImage && (
+                <div className="comment-input-area" style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', alignItems: 'stretch' }}>
+                    {commentImages[post.id] && (
                       <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', paddingLeft: '2.5rem' }}>
                         <div style={{ position: 'relative', width: '60px', height: '60px', borderRadius: '6px', overflow: 'hidden', border: '1px solid var(--glass-border)', background: 'rgba(0,0,0,0.2)' }}>
-                          <img src={commentImage} alt="Pasted attachment" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                          <img src={commentImages[post.id]} alt="Pasted attachment" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                           <button 
                             type="button"
-                            onClick={() => setCommentImage(null)}
+                            onClick={() => setCommentImages(prev => ({ ...prev, [post.id]: null }))}
                             style={{ position: 'absolute', top: '2px', right: '2px', background: 'rgba(239, 68, 68, 0.9)', color: 'white', border: 'none', borderRadius: '50%', width: '16px', height: '16px', fontSize: '9px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', fontWeight: 'bold' }}
                           >
                             ✕
@@ -1422,14 +2447,15 @@ export default function Community() {
                       <div style={{ display: 'flex', alignItems: 'center', flex: 1, position: 'relative' }}>
                         <input 
                           type="text" 
+                          id={`comment-input-${post.id}`}
                           className="input-glass" 
                           placeholder="Write a comment..." 
-                          value={commentContent}
-                          onChange={(e) => setCommentContent(e.target.value)}
+                          value={commentContents[post.id] || ''}
+                          onChange={(e) => setCommentContents(prev => ({ ...prev, [post.id]: e.target.value }))}
                           onKeyDown={(e) => {
                             if(e.key === 'Enter') handleCommentSubmit(post.id);
                           }}
-                          onPaste={handleCommentPaste}
+                          onPaste={(e) => handleCommentPaste(e, post.id)}
                           style={{ flex: 1, paddingRight: '5rem' }} 
                         />
                         <div style={{ position: 'absolute', right: '0.5rem', display: 'flex', gap: '0.4rem', alignItems: 'center', zIndex: 10 }}>
@@ -1487,7 +2513,7 @@ export default function Community() {
                             if (file) {
                               const reader = new FileReader();
                               reader.onloadend = () => {
-                                setCommentImage(reader.result);
+                                setCommentImages(prev => ({ ...prev, [post.id]: reader.result }));
                               };
                               reader.readAsDataURL(file);
                             }
@@ -1511,7 +2537,7 @@ export default function Community() {
                         >
                           <NativeEmojiPicker
                             onEmojiSelect={(emojiData) => {
-                              setCommentContent(prev => prev + emojiData.native);
+                              setCommentContents(prev => ({ ...prev, [post.id]: (prev[post.id] || '') + emojiData.native }));
                             }}
                             theme={document.documentElement.getAttribute('data-mode') === 'dark' ? 'dark' : 'light'}
                           />
@@ -1519,9 +2545,7 @@ export default function Community() {
                       )}
                     </div>
                   </div>
-                )}
               </div>
-            )}
           </div>
           );
         })}
@@ -2202,6 +3226,29 @@ export default function Community() {
           transform: scale(1.08);
         }
         .lb-thumb:hover:not(.active) { opacity: 0.9; }
+
+        .reactions-popup {
+          background: rgba(7, 23, 45, 0.95);
+          border: 1px solid rgba(96, 165, 250, 0.25);
+          box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.4);
+          transform: translateY(-8px) translateX(-10px);
+          animation: reactionsPop 0.25s cubic-bezier(0.18, 0.89, 0.32, 1.28) forwards;
+        }
+        [data-mode="light"] .reactions-popup {
+          background: rgba(255, 255, 255, 0.98);
+          border: 1px solid rgba(148, 163, 184, 0.35);
+          box-shadow: 0 8px 32px 0 rgba(15, 23, 42, 0.15);
+        }
+        @keyframes reactionsPop {
+          from { opacity: 0; transform: translateY(-4px) scale(0.9) translateX(-10px); }
+          to { opacity: 1; transform: translateY(-8px) scale(1) translateX(-10px); }
+        }
+        .reaction-emoji-btn {
+          transition: transform 0.15s cubic-bezier(0.18, 0.89, 0.32, 1.28) !important;
+        }
+        .reaction-emoji-btn:hover {
+          transform: scale(1.35) translateY(-4px) !important;
+        }
       `}</style>
 
       {/* ── Lightbox Portal ── */}

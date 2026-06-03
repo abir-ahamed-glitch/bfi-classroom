@@ -24,8 +24,13 @@ export default function Registry() {
   const [courseBatches, setCourseBatches] = useState([]);
 
   // Shared state
-  const [selectedCourse, setSelectedCourse] = useState(null);
-  const [selectedBatch, setSelectedBatch] = useState(null);
+  const [selectedCourse, setSelectedCourse] = useState(() => {
+    return sessionStorage.getItem('registry_selected_course') || null;
+  });
+  const [selectedBatch, setSelectedBatch] = useState(() => {
+    const val = sessionStorage.getItem('registry_selected_batch');
+    return val ? JSON.parse(val) : null;
+  });
   const [batchmates, setBatchmates] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
 
@@ -33,6 +38,22 @@ export default function Registry() {
   const [masterSearchQuery, setMasterSearchQuery] = useState('');
   const [masterSearchResults, setMasterSearchResults] = useState([]);
   const [isSearching, setIsSearching] = useState(false);
+
+  useEffect(() => {
+    if (selectedCourse) {
+      sessionStorage.setItem('registry_selected_course', selectedCourse);
+    } else {
+      sessionStorage.removeItem('registry_selected_course');
+    }
+  }, [selectedCourse]);
+
+  useEffect(() => {
+    if (selectedBatch) {
+      sessionStorage.setItem('registry_selected_batch', JSON.stringify(selectedBatch));
+    } else {
+      sessionStorage.removeItem('registry_selected_batch');
+    }
+  }, [selectedBatch]);
 
   const isStudent = currentUser?.role === 'student';
 
@@ -70,6 +91,8 @@ export default function Registry() {
       if (!isStudent) {
         setSelectedCourse(null);
         setSelectedBatch(null);
+        sessionStorage.removeItem('registry_selected_course');
+        sessionStorage.removeItem('registry_selected_batch');
       }
       setSearchQuery('');
       setMasterSearchQuery('');
@@ -81,6 +104,8 @@ export default function Registry() {
         } else {
           setSelectedCourse(null);
           setSelectedBatch(null);
+          sessionStorage.removeItem('registry_selected_course');
+          sessionStorage.removeItem('registry_selected_batch');
         }
       }
     }

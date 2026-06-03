@@ -107,8 +107,64 @@ router.post('/template', authenticateToken, requireRole('admin'), (req, res) => 
   }
 });
 
+// Helper function to check if a student has any pending/due or partial payment for a specific course
+function hasPendingDueOrPartialPayment(feeDetailsStr, courseType) {
+  if (!feeDetailsStr) return false;
+  
+  let feeDetails;
+  try {
+    feeDetails = typeof feeDetailsStr === 'string' ? JSON.parse(feeDetailsStr) : feeDetailsStr;
+  } catch (e) {
+    console.error('Error parsing fee details in helper:', e);
+    return false;
+  }
+
+  if (!feeDetails) return false;
+
+  const isUnpaid = (phase) => {
+    if (!phase) return false;
+    
+    // Status checks
+    const status = phase.status;
+    if (status === 'Paid Full' || status === 'Waived') {
+      return false;
+    }
+    
+    // If there are installments, we determine status solely by installments
+    if (phase.installments && phase.installments.length > 0) {
+      return phase.installments.some(inst => inst.status === 'Pending' || inst.status === 'Due');
+    }
+    
+    if (status === 'Partial' || status === 'Pending' || status === 'Due') {
+      return true;
+    }
+    
+    // Fallback numerical check
+    const fullFee = parseFloat((phase.full_fee || '').toString().replace(/[^\d.]/g, '')) || 0;
+    if (fullFee === 0) return false; // If fee is 0, no payment due
+    
+    const amountPaid = parseFloat((phase.amount_paid || '').toString().replace(/[^\d.]/g, '')) || 0;
+    const discount = parseFloat((phase.discount || '').toString().replace(/[^\d.]/g, '')) || 0;
+    const remainingDue = Math.max(0, fullFee - discount - amountPaid);
+    
+    if (remainingDue > 0) {
+      return true;
+    }
+    
+    return false;
+  };
+
+  if (courseType === 'filmmaking') {
+    // Both Phase 1 and Phase 2 need to be checked for Online Filmmaking Course
+    return isUnpaid(feeDetails.phase1) || isUnpaid(feeDetails.phase2);
+  } else {
+    // Other course types have a flat fee structure
+    return isUnpaid(feeDetails);
+  }
+}
+
 // GET My Certificates details (Student View)
-// Returns all completed courses and their certificate data
+// Returns all completed courses and their certificate data (provided there is no pending payment)
 router.get('/my-certificates', authenticateToken, (req, res) => {
   try {
     const student = db.prepare(`
@@ -126,20 +182,29 @@ router.get('/my-certificates', authenticateToken, (req, res) => {
       WHERE user_id = ? AND step4_completed = 1
     `).all(req.user.id);
 
-    // Fetch all templates to map to completions
+    // Map completions to certificates, marking locked ones securely
     const templates = db.prepare('SELECT * FROM certificate_templates').all();
     const templateMap = templates.reduce((acc, t) => ({ ...acc, [t.course_name]: t }), {});
 
-    const certificates = completions.map(course => ({
-      courseName: course.course_name,
-      studentDetails: {
-        fullName: student.full_name,
-        studentId: student.student_id,
-        batchNumber: student.batch_number,
-        completionDate: course.updated_at
-      },
-      template: templateMap[course.course_name] || { layout_json: '{}', background_url: '' }
-    }));
+    const certificates = completions.map(course => {
+      const isLocked = hasPendingDueOrPartialPayment(course.fee_details, course.course_type);
+      if (isLocked) {
+        return {
+          courseName: course.course_name,
+          locked: true
+        };
+      }
+      return {
+        courseName: course.course_name,
+        studentDetails: {
+          fullName: student.full_name,
+          studentId: student.student_id,
+          batchNumber: student.batch_number,
+          completionDate: course.updated_at
+        },
+        template: templateMap[course.course_name] || { layout_json: '{}', background_url: '' }
+      };
+    });
 
     res.json({ certificates });
 

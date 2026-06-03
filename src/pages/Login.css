@@ -168,7 +168,7 @@
   color: var(--text-primary);
 }
 
-.input-glass {
+.input-wrapper .input-glass {
   padding-left: 2.75rem !important;
 }
 

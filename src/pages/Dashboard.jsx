@@ -3,13 +3,63 @@ import { useAuth } from '../context/AuthContext';
 import { 
   Users, Award, Download, Play, Star, ChevronRight, 
   FileText, ArrowDownToLine, Clock, Film, AlertTriangle, X, CheckCircle2,
-  Layers, Megaphone, ArrowRight, Clapperboard, Camera, Video, Ticket, MonitorPlay
+  Layers, Megaphone, ArrowRight, Clapperboard, Camera, Video, Ticket, MonitorPlay, Lock
 } from 'lucide-react';
 import { io } from 'socket.io-client';
 import jsPDF from 'jspdf';
 import { useNavigate, Link } from 'react-router-dom';
 import { resolveMediaUrl } from '../utils/mediaUtils';
 import { useModal } from '../components/BFIModal';
+
+const hasPendingDueOrPartialPayment = (course) => {
+  if (!course || !course.fee_details) return false;
+  
+  let feeDetails = {};
+  try {
+    feeDetails = typeof course.fee_details === 'string' 
+      ? JSON.parse(course.fee_details) 
+      : course.fee_details;
+  } catch (e) {
+    console.error('Error parsing course fee details:', e);
+    return false;
+  }
+
+  if (!feeDetails) return false;
+  
+  const isUnpaid = (phase) => {
+    if (!phase) return false;
+    
+    // If installments exist, they are the source of truth
+    if (phase.installments && phase.installments.length > 0) {
+      return phase.installments.some(inst => inst.status === 'Pending' || inst.status === 'Due');
+    }
+
+    // Status checks (when no installments)
+    const status = phase.status;
+    if (status === 'Paid Full' || status === 'Waived') {
+      return false;
+    }
+    if (status === 'Partial' || status === 'Pending' || status === 'Due') {
+      return true;
+    }
+    
+    // Fallback numerical check
+    const fullFee = parseFloat((phase.full_fee || '').toString().replace(/[^\d.]/g, '')) || 0;
+    if (fullFee === 0) return false;
+    
+    const amountPaid = parseFloat((phase.amount_paid || '').toString().replace(/[^\d.]/g, '')) || 0;
+    const discount = parseFloat((phase.discount || '').toString().replace(/[^\d.]/g, '')) || 0;
+    const remainingDue = Math.max(0, fullFee - discount - amountPaid);
+    
+    return remainingDue > 0;
+  };
+
+  if (course.course_type === 'filmmaking') {
+    return isUnpaid(feeDetails.phase1) || isUnpaid(feeDetails.phase2);
+  } else {
+    return isUnpaid(feeDetails);
+  }
+};
 
 export default function Dashboard() {
   const { currentUser } = useAuth();
@@ -504,18 +554,29 @@ export default function Dashboard() {
                           <FileText size={16} /> View Full Progression
                         </button>
                         
-                        <button 
-                          className={course.completed ? "btn btn-primary" : "btn"} 
-                          style={
-                            course.completed 
-                              ? { padding: '0.6rem 1.2rem', boxShadow: '0 4px 20px rgba(225, 29, 72, 0.4)' } 
-                              : { display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.6rem 1.2rem', opacity: 0.6, cursor: 'not-allowed', background: 'var(--bg-tertiary)', color: 'var(--text-muted)', border: '1px solid var(--glass-border)' }
-                          }
-                          disabled={!course.completed}
-                          onClick={() => navigate('/certificates')}
-                        >
-                          <Download size={16} /> Download Certificate
-                        </button>
+                        {course.completed && hasPendingDueOrPartialPayment(course) ? (
+                          <button 
+                            className="btn" 
+                            style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.6rem 1.2rem', opacity: 0.8, cursor: 'not-allowed', background: 'rgba(239, 68, 68, 0.1)', color: '#f87171', border: '1px solid rgba(239, 68, 68, 0.25)' }}
+                            disabled
+                            title="Certificate locked due to pending, partial, or due fees."
+                          >
+                            <Lock size={16} /> Certificate Locked
+                          </button>
+                        ) : (
+                          <button 
+                            className={course.completed ? "btn btn-primary" : "btn"} 
+                            style={
+                              course.completed 
+                                ? { padding: '0.6rem 1.2rem', boxShadow: '0 4px 20px rgba(225, 29, 72, 0.4)' } 
+                                : { display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.6rem 1.2rem', opacity: 0.6, cursor: 'not-allowed', background: 'var(--bg-tertiary)', color: 'var(--text-muted)', border: '1px solid var(--glass-border)' }
+                            }
+                            disabled={!course.completed}
+                            onClick={() => navigate('/certificates')}
+                          >
+                            <Download size={16} /> Download Certificate
+                          </button>
+                        )}
                       </div>
                     </div>
                     <div style={{ display: 'flex', gap: '4rem', flexWrap: 'wrap' }}>
