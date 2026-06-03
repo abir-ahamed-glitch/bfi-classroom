@@ -2126,17 +2126,17 @@ export default function Community() {
                                                  {mentionBadge ? (
                                                    <>
                                                      <span style={{ 
-                                                       color: 'var(--accent-primary)', 
+                                                       color: 'var(--text-primary)', 
                                                        fontWeight: 'bold', 
                                                        marginRight: '0.3rem',
                                                        cursor: 'pointer'
                                                      }}>
                                                        {mentionBadge}
                                                      </span>
-                                                     {displayText}
+                                                     <span style={{ color: 'var(--text-secondary)' }}>{displayText}</span>
                                                    </>
                                                  ) : (
-                                                   text
+                                                   <span style={{ color: 'var(--text-secondary)' }}>{text}</span>
                                                  )}
                                                </div>
                                              )}
