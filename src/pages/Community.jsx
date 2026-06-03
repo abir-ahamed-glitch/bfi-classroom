@@ -1456,7 +1456,7 @@ export default function Community() {
                               left: '15px',
                               width: '2px',
                               top: '32px',
-                              bottom: '-8px',
+                              bottom: '-16px',
                               background: 'color-mix(in srgb, var(--text-muted) 20%, transparent)',
                               borderRadius: '1px'
                             }} />
@@ -1847,9 +1847,9 @@ export default function Community() {
                                   {/* L-shaped connector line */}
                                   <div style={{
                                     position: 'absolute',
-                                    left: '-32px',
-                                    width: '20px',
-                                    top: '-8px',
+                                    left: '-33px',
+                                    width: '21px',
+                                    top: '-16px',
                                     bottom: '50%',
                                     borderLeft: '2px solid color-mix(in srgb, var(--text-muted) 20%, transparent)',
                                     borderBottom: '2px solid color-mix(in srgb, var(--text-muted) 20%, transparent)',
@@ -1869,10 +1869,10 @@ export default function Community() {
                                   {/* Vertical line segment */}
                                   <div style={{
                                     position: 'absolute',
-                                    left: '-32px',
+                                    left: '-33px',
                                     width: '2px',
                                     top: '0',
-                                    bottom: isLast ? 'auto' : '-8px',
+                                    bottom: isLast ? 'auto' : '-12px',
                                     height: isLast ? '12px' : 'auto',
                                     background: 'color-mix(in srgb, var(--text-muted) 20%, transparent)',
                                     borderRadius: '1px'
@@ -1880,8 +1880,8 @@ export default function Community() {
                                   {/* Horizontal line for this reply */}
                                   <div style={{
                                     position: 'absolute',
-                                    left: '-32px',
-                                    width: '32px',
+                                    left: '-33px',
+                                    width: '33px',
                                     top: '12px',
                                     borderBottom: '2px solid color-mix(in srgb, var(--text-muted) 20%, transparent)'
                                   }} />
@@ -2320,9 +2320,9 @@ export default function Community() {
                                   {/* Vertical line segment for Reply Input */}
                                   <div style={{
                                     position: 'absolute',
-                                    left: '-32px',
+                                    left: '-33px',
                                     width: '2px',
-                                    top: replyImages[comment.id] ? '-64px' : '-8px',
+                                    top: replyImages[comment.id] ? '-76px' : '-16px',
                                     bottom: '50%',
                                     background: 'color-mix(in srgb, var(--text-muted) 20%, transparent)',
                                     borderRadius: '1px'
@@ -2330,8 +2330,8 @@ export default function Community() {
                                   {/* Horizontal connector line for Reply Input */}
                                   <div style={{
                                     position: 'absolute',
-                                    left: '-32px',
-                                    width: '32px',
+                                    left: '-33px',
+                                    width: '33px',
                                     top: '50%',
                                     borderBottom: '2px solid color-mix(in srgb, var(--text-muted) 20%, transparent)'
                                   }} />
@@ -2340,9 +2340,9 @@ export default function Community() {
                                 /* L-shaped connector line for single reply input */
                                 <div style={{
                                   position: 'absolute',
-                                  left: '-32px',
-                                  width: '32px',
-                                  top: replyImages[comment.id] ? '-64px' : '-8px',
+                                  left: '-33px',
+                                  width: '33px',
+                                  top: replyImages[comment.id] ? '-76px' : '-16px',
                                   bottom: '50%',
                                   borderLeft: '2px solid color-mix(in srgb, var(--text-muted) 20%, transparent)',
                                   borderBottom: '2px solid color-mix(in srgb, var(--text-muted) 20%, transparent)',
