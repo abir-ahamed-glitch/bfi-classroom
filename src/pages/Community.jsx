@@ -2126,15 +2126,10 @@ export default function Community() {
                                                  {mentionBadge ? (
                                                    <>
                                                      <span style={{ 
-                                                       color: 'var(--accent-primary)', 
-                                                       fontWeight: 'bold', 
-                                                       background: 'color-mix(in srgb, var(--accent-primary) 12%, transparent)', 
-                                                       border: '1px solid color-mix(in srgb, var(--accent-primary) 25%, transparent)',
-                                                       padding: '0.1rem 0.35rem', 
-                                                       borderRadius: '4px',
-                                                       marginRight: '0.35rem',
-                                                       fontSize: '0.8rem',
-                                                       display: 'inline-block'
+                                                       color: 'var(--accent-secondary)', 
+                                                       fontWeight: 600, 
+                                                       marginRight: '0.3rem',
+                                                       cursor: 'pointer'
                                                      }}>
                                                        {mentionBadge}
                                                      </span>
