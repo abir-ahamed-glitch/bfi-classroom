@@ -1866,25 +1866,29 @@ export default function Community() {
                               const isLast = (idx === thisReplies.length - 1) && !showReplyInput;
                               return (
                                 <div key={reply.id} className="comment reply" style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-start', position: 'relative' }}>
-                                  {/* Vertical line segment */}
-                                  <div style={{
-                                    position: 'absolute',
-                                    left: '-33px',
-                                    width: '2px',
-                                    top: '0',
-                                    bottom: isLast ? 'auto' : '-12px',
-                                    height: isLast ? '12px' : 'auto',
-                                    background: 'color-mix(in srgb, var(--text-muted) 20%, transparent)',
-                                    borderRadius: '1px'
-                                  }} />
-                                  {/* Horizontal line for this reply */}
+                                  {/* Rounded L-connector */}
                                   <div style={{
                                     position: 'absolute',
                                     left: '-33px',
                                     width: '33px',
-                                    top: '12px',
-                                    borderBottom: '2px solid color-mix(in srgb, var(--text-muted) 20%, transparent)'
+                                    top: '-12px',
+                                    height: '24px',
+                                    borderLeft: '2px solid color-mix(in srgb, var(--text-muted) 20%, transparent)',
+                                    borderBottom: '2px solid color-mix(in srgb, var(--text-muted) 20%, transparent)',
+                                    borderBottomLeftRadius: '8px'
                                   }} />
+                                  {/* Vertical line segment continuing down (only if not the last item in the thread) */}
+                                  {!isLast && (
+                                    <div style={{
+                                      position: 'absolute',
+                                      left: '-33px',
+                                      width: '2px',
+                                      top: '10px',
+                                      bottom: '-12px',
+                                      background: 'color-mix(in srgb, var(--text-muted) 20%, transparent)',
+                                      borderRadius: '1px'
+                                    }} />
+                                  )}
                                 <UserHoverCard userId={reply.user_id}>
                                   <div className="comment-avatar" style={{ overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', width: '24px', height: '24px', borderRadius: '50%' }}>
                                     {reply.profile_picture ? (
@@ -2315,40 +2319,17 @@ export default function Community() {
                               </div>
                             )}
                             <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', width: '100%', position: 'relative' }}>
-                              {thisReplies.length > 0 ? (
-                                <>
-                                  {/* Vertical line segment for Reply Input */}
-                                  <div style={{
-                                    position: 'absolute',
-                                    left: '-33px',
-                                    width: '2px',
-                                    top: replyImages[comment.id] ? '-76px' : '-16px',
-                                    bottom: '50%',
-                                    background: 'color-mix(in srgb, var(--text-muted) 20%, transparent)',
-                                    borderRadius: '1px'
-                                  }} />
-                                  {/* Horizontal connector line for Reply Input */}
-                                  <div style={{
-                                    position: 'absolute',
-                                    left: '-33px',
-                                    width: '33px',
-                                    top: '50%',
-                                    borderBottom: '2px solid color-mix(in srgb, var(--text-muted) 20%, transparent)'
-                                  }} />
-                                </>
-                              ) : (
-                                /* L-shaped connector line for single reply input */
-                                <div style={{
-                                  position: 'absolute',
-                                  left: '-33px',
-                                  width: '33px',
-                                  top: replyImages[comment.id] ? '-76px' : '-16px',
-                                  bottom: '50%',
-                                  borderLeft: '2px solid color-mix(in srgb, var(--text-muted) 20%, transparent)',
-                                  borderBottom: '2px solid color-mix(in srgb, var(--text-muted) 20%, transparent)',
-                                  borderBottomLeftRadius: '8px'
-                                }} />
-                              )}
+                              {/* L-shaped connector line for reply input */}
+                              <div style={{
+                                position: 'absolute',
+                                left: '-33px',
+                                width: '33px',
+                                top: replyImages[comment.id] ? '-76px' : '-16px',
+                                bottom: '50%',
+                                borderLeft: '2px solid color-mix(in srgb, var(--text-muted) 20%, transparent)',
+                                borderBottom: '2px solid color-mix(in srgb, var(--text-muted) 20%, transparent)',
+                                borderBottomLeftRadius: '8px'
+                              }} />
                               <div className="comment-avatar min" style={{ overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', width: '24px', height: '24px', borderRadius: '50%' }}>
                                 {currentUser?.profile_picture ? (
                                   <img src={resolveMediaUrl(currentUser.profile_picture)} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
