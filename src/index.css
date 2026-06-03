@@ -21,7 +21,7 @@
   --success: #10b981;
   --warning: #f59e0b;
   --danger: #ef4444;
-  --comment-line: color-mix(in srgb, #64748b 20%, var(--bg-secondary));
+  --comment-line: color-mix(in srgb, #94a3b8 30%, var(--bg-secondary));
 
   --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
   --font-display: 'Inter', system-ui, -apple-system, sans-serif;
@@ -201,6 +201,7 @@ select option {
   --text-muted: #64748b;
   --glass-bg: rgba(255, 255, 255, 0.8);
   --glass-border: rgba(0, 0, 0, 0.08);
+  --comment-line: color-mix(in srgb, #64748b 20%, var(--bg-secondary));
 }
 
 /* Sidebar */
