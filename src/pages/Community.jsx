@@ -1449,7 +1449,18 @@ export default function Community() {
                     return (
                       <div key={comment.id} className="comment-thread" style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
                         {/* Parent Comment */}
-                        <div className="comment" style={{ display: 'flex', gap: '0.75rem', alignItems: 'flex-start' }}>
+                        <div className="comment" style={{ display: 'flex', gap: '0.75rem', alignItems: 'flex-start', position: 'relative' }}>
+                          {(thisReplies.length > 0 || showReplyInput) && (
+                            <div style={{
+                              position: 'absolute',
+                              left: '15px',
+                              width: '2px',
+                              top: '32px',
+                              bottom: '-8px',
+                              background: 'color-mix(in srgb, var(--text-muted) 20%, transparent)',
+                              borderRadius: '1px'
+                            }} />
+                          )}
                           <UserHoverCard userId={comment.user_id}>
                             <div className="comment-avatar" style={{ overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', width: '32px', height: '32px', borderRadius: '50%' }}>
                               {comment.profile_picture ? (
@@ -1810,63 +1821,70 @@ export default function Community() {
                           </div>
                         </div>
 
-                        {/* Nesting Replies */}
-                        {thisReplies.length > 0 && !isExpanded && (
-                          <div className="replies-list collapsed" style={{ marginLeft: '3rem', marginTop: '0.25rem', position: 'relative' }}>
-                            <div 
-                              onClick={() => setExpandedComments(prev => ({ ...prev, [comment.id]: true }))}
-                              style={{
-                                display: 'inline-flex',
-                                alignItems: 'center',
-                                gap: '0.5rem',
-                                color: 'var(--text-muted)',
-                                fontSize: '0.8rem',
-                                fontWeight: '600',
-                                cursor: 'pointer',
-                                padding: '0.2rem 0',
-                                position: 'relative',
-                                userSelect: 'none'
-                              }}
-                              className="view-replies-btn"
-                            >
-                              {/* L-shaped connector line */}
-                              <div style={{
-                                position: 'absolute',
-                                left: '-32px',
-                                width: '32px',
-                                height: '15px',
-                                borderLeft: '2px solid color-mix(in srgb, var(--text-muted) 20%, transparent)',
-                                borderBottom: '2px solid color-mix(in srgb, var(--text-muted) 20%, transparent)',
-                                borderBottomLeftRadius: '8px',
-                                top: '-7px'
-                              }} />
+                        {/* Nesting Replies & Input Area */}
+                        {(thisReplies.length > 0 || showReplyInput) && (
+                          <div className="comment-replies-container" style={{ marginLeft: '3rem', marginTop: '0.25rem', display: 'flex', flexDirection: 'column', gap: '0.5rem', position: 'relative' }}>
+                            
+                            {/* Collapsed State: View all replies button */}
+                            {thisReplies.length > 0 && !isExpanded && (
+                              <div className="replies-list collapsed" style={{ position: 'relative' }}>
+                                <div 
+                                  onClick={() => setExpandedComments(prev => ({ ...prev, [comment.id]: true }))}
+                                  style={{
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '0.5rem',
+                                    color: 'var(--text-muted)',
+                                    fontSize: '0.8rem',
+                                    fontWeight: '600',
+                                    cursor: 'pointer',
+                                    padding: '0.2rem 0',
+                                    position: 'relative',
+                                    userSelect: 'none'
+                                  }}
+                                  className="view-replies-btn"
+                                >
+                                  {/* L-shaped connector line */}
+                                  <div style={{
+                                    position: 'absolute',
+                                    left: '-32px',
+                                    width: '20px',
+                                    top: '-8px',
+                                    bottom: '50%',
+                                    borderLeft: '2px solid color-mix(in srgb, var(--text-muted) 20%, transparent)',
+                                    borderBottom: '2px solid color-mix(in srgb, var(--text-muted) 20%, transparent)',
+                                    borderBottomLeftRadius: '8px'
+                                  }} />
                               View all {thisReplies.length} {thisReplies.length === 1 ? 'reply' : 'replies'}
                             </div>
                           </div>
                         )}
 
                         {thisReplies.length > 0 && isExpanded && (
-                          <div className="replies-list expanded" style={{ marginLeft: '3rem', display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '0.25rem', position: 'relative' }}>
-                            {/* Vertical line connecting all replies */}
-                            <div style={{
-                              position: 'absolute',
-                              left: '-32px',
-                              top: '-0.5rem',
-                              bottom: showReplyInput ? '16px' : '12px',
-                              width: '2px',
-                              background: 'color-mix(in srgb, var(--text-muted) 20%, transparent)',
-                              borderRadius: '1px'
-                            }} />
-                            {thisReplies.map(reply => (
-                              <div key={reply.id} className="comment reply" style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-start', position: 'relative' }}>
-                                {/* Horizontal line for this reply */}
-                                <div style={{
-                                  position: 'absolute',
-                                  left: '-32px',
-                                  width: '32px',
-                                  top: '12px',
-                                  borderBottom: '2px solid color-mix(in srgb, var(--text-muted) 20%, transparent)'
-                                }} />
+                          <div className="replies-list expanded" style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', position: 'relative' }}>
+                            {thisReplies.map((reply, idx) => {
+                              const isLast = (idx === thisReplies.length - 1) && !showReplyInput;
+                              return (
+                                <div key={reply.id} className="comment reply" style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-start', position: 'relative' }}>
+                                  {/* Vertical line segment */}
+                                  <div style={{
+                                    position: 'absolute',
+                                    left: '-32px',
+                                    width: '2px',
+                                    top: '0',
+                                    bottom: isLast ? 'auto' : '-8px',
+                                    height: isLast ? '12px' : 'auto',
+                                    background: 'color-mix(in srgb, var(--text-muted) 20%, transparent)',
+                                    borderRadius: '1px'
+                                  }} />
+                                  {/* Horizontal line for this reply */}
+                                  <div style={{
+                                    position: 'absolute',
+                                    left: '-32px',
+                                    width: '32px',
+                                    top: '12px',
+                                    borderBottom: '2px solid color-mix(in srgb, var(--text-muted) 20%, transparent)'
+                                  }} />
                                 <UserHoverCard userId={reply.user_id}>
                                   <div className="comment-avatar" style={{ overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', width: '24px', height: '24px', borderRadius: '50%' }}>
                                     {reply.profile_picture ? (
@@ -2274,36 +2292,14 @@ export default function Community() {
                                   </div>
                                 </div>
                               </div>
-                            ))}
+                              );
+                            })}
                           </div>
                         )}
 
                         {/* Reply Input Box */}
                         {showReplyInput && isExpanded && (
-                          <div className="reply-input-area" style={{ marginLeft: '3rem', marginTop: '0.25rem', display: 'flex', flexDirection: 'column', gap: '0.4rem', position: 'relative' }}>
-                            {/* L-shaped connector line for single reply input */}
-                            {thisReplies.length === 0 && (
-                              <div style={{
-                                position: 'absolute',
-                                left: '-32px',
-                                width: '32px',
-                                height: '20px',
-                                borderLeft: '2px solid color-mix(in srgb, var(--text-muted) 20%, transparent)',
-                                borderBottom: '2px solid color-mix(in srgb, var(--text-muted) 20%, transparent)',
-                                borderBottomLeftRadius: '8px',
-                                top: '-8px'
-                              }} />
-                            )}
-                            {/* Horizontal connector line for input when there are replies */}
-                            {thisReplies.length > 0 && (
-                              <div style={{
-                                position: 'absolute',
-                                left: '-32px',
-                                width: '32px',
-                                top: '16px',
-                                borderBottom: '2px solid color-mix(in srgb, var(--text-muted) 20%, transparent)'
-                              }} />
-                            )}
+                          <div className="reply-input-area" style={{ marginTop: '0.25rem', display: 'flex', flexDirection: 'column', gap: '0.4rem', position: 'relative' }}>
                             {replyImages[comment.id] && (
                               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                                 <div style={{ position: 'relative', width: '50px', height: '50px', borderRadius: '6px', overflow: 'hidden', border: '1px solid var(--glass-border)', background: 'rgba(0,0,0,0.2)' }}>
@@ -2319,6 +2315,40 @@ export default function Community() {
                               </div>
                             )}
                             <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', width: '100%', position: 'relative' }}>
+                              {thisReplies.length > 0 ? (
+                                <>
+                                  {/* Vertical line segment for Reply Input */}
+                                  <div style={{
+                                    position: 'absolute',
+                                    left: '-32px',
+                                    width: '2px',
+                                    top: replyImages[comment.id] ? '-64px' : '-8px',
+                                    bottom: '50%',
+                                    background: 'color-mix(in srgb, var(--text-muted) 20%, transparent)',
+                                    borderRadius: '1px'
+                                  }} />
+                                  {/* Horizontal connector line for Reply Input */}
+                                  <div style={{
+                                    position: 'absolute',
+                                    left: '-32px',
+                                    width: '32px',
+                                    top: '50%',
+                                    borderBottom: '2px solid color-mix(in srgb, var(--text-muted) 20%, transparent)'
+                                  }} />
+                                </>
+                              ) : (
+                                /* L-shaped connector line for single reply input */
+                                <div style={{
+                                  position: 'absolute',
+                                  left: '-32px',
+                                  width: '32px',
+                                  top: replyImages[comment.id] ? '-64px' : '-8px',
+                                  bottom: '50%',
+                                  borderLeft: '2px solid color-mix(in srgb, var(--text-muted) 20%, transparent)',
+                                  borderBottom: '2px solid color-mix(in srgb, var(--text-muted) 20%, transparent)',
+                                  borderBottomLeftRadius: '8px'
+                                }} />
+                              )}
                               <div className="comment-avatar min" style={{ overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', width: '24px', height: '24px', borderRadius: '50%' }}>
                                 {currentUser?.profile_picture ? (
                                   <img src={resolveMediaUrl(currentUser.profile_picture)} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
@@ -2499,7 +2529,9 @@ export default function Community() {
                           </div>
                         )}
                       </div>
-                    );
+                    )}
+                  </div>
+                );
                   });
                 })()}
                 
