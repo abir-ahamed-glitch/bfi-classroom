@@ -21,6 +21,7 @@
   --success: #10b981;
   --warning: #f59e0b;
   --danger: #ef4444;
+  --comment-line: color-mix(in srgb, #64748b 20%, var(--bg-secondary));
 
   --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
   --font-display: 'Inter', system-ui, -apple-system, sans-serif;
