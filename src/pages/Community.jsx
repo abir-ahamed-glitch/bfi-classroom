@@ -1456,7 +1456,7 @@ export default function Community() {
                               left: 'calc(1rem - 1px)',
                               top: '32px',
                               bottom: '-16px',
-                              borderLeft: '2px solid color-mix(in srgb, var(--text-muted) 20%, transparent)'
+                              borderLeft: '2px solid color-mix(in srgb, var(--text-muted) 20%, var(--bg-secondary))'
                             }} />
                           )}
                           <UserHoverCard userId={comment.user_id}>
@@ -1849,8 +1849,8 @@ export default function Community() {
                                     width: 'calc(1.25rem + 1px)',
                                     top: '-16px',
                                     bottom: '50%',
-                                    borderLeft: '2px solid color-mix(in srgb, var(--text-muted) 20%, transparent)',
-                                    borderBottom: '2px solid color-mix(in srgb, var(--text-muted) 20%, transparent)',
+                                    borderLeft: '2px solid color-mix(in srgb, var(--text-muted) 20%, var(--bg-secondary))',
+                                    borderBottom: '2px solid color-mix(in srgb, var(--text-muted) 20%, var(--bg-secondary))',
                                     borderBottomLeftRadius: '8px'
                                   }} />
                               View all {thisReplies.length} {thisReplies.length === 1 ? 'reply' : 'replies'}
@@ -1871,7 +1871,7 @@ export default function Community() {
                                     top: '-12px',
                                     bottom: isLast ? 'auto' : '-12px',
                                     height: isLast ? '24px' : 'auto',
-                                    borderLeft: '2px solid color-mix(in srgb, var(--text-muted) 20%, transparent)',
+                                    borderLeft: '2px solid color-mix(in srgb, var(--text-muted) 20%, var(--bg-secondary))',
                                     pointerEvents: 'none'
                                   }}>
                                     {/* Curved branch */}
@@ -1881,8 +1881,8 @@ export default function Community() {
                                       width: 'calc(2rem + 1px)',
                                       top: '0',
                                       height: '24px',
-                                      borderLeft: '2px solid color-mix(in srgb, var(--text-muted) 20%, transparent)',
-                                      borderBottom: '2px solid color-mix(in srgb, var(--text-muted) 20%, transparent)',
+                                      borderLeft: '2px solid color-mix(in srgb, var(--text-muted) 20%, var(--bg-secondary))',
+                                      borderBottom: '2px solid color-mix(in srgb, var(--text-muted) 20%, var(--bg-secondary))',
                                       borderBottomLeftRadius: '8px'
                                     }} />
                                   </div>
@@ -2323,8 +2323,8 @@ export default function Community() {
                                 width: 'calc(2rem + 1px)',
                                 top: replyImages[comment.id] ? '-76px' : '-16px',
                                 bottom: '50%',
-                                borderLeft: '2px solid color-mix(in srgb, var(--text-muted) 20%, transparent)',
-                                borderBottom: '2px solid color-mix(in srgb, var(--text-muted) 20%, transparent)',
+                                borderLeft: '2px solid color-mix(in srgb, var(--text-muted) 20%, var(--bg-secondary))',
+                                borderBottom: '2px solid color-mix(in srgb, var(--text-muted) 20%, var(--bg-secondary))',
                                 borderBottomLeftRadius: '8px'
                               }} />
                               <div className="comment-avatar min" style={{ overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', width: '24px', height: '24px', borderRadius: '50%' }}>
