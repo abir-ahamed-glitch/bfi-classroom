@@ -1864,27 +1864,28 @@ export default function Community() {
                               const isLast = (idx === thisReplies.length - 1) && !showReplyInput;
                               return (
                                 <div key={reply.id} className="comment reply" style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-start', position: 'relative' }}>
-                                  {/* Rounded L-connector */}
+                                  {/* Vertical line segment container (zero joints) */}
                                   <div style={{
                                     position: 'absolute',
                                     left: 'calc(-2rem - 1px)',
-                                    width: 'calc(2rem + 1px)',
                                     top: '-12px',
-                                    height: '24px',
+                                    bottom: isLast ? 'auto' : '-12px',
+                                    height: isLast ? '24px' : 'auto',
                                     borderLeft: '2px solid color-mix(in srgb, var(--text-muted) 20%, transparent)',
-                                    borderBottom: '2px solid color-mix(in srgb, var(--text-muted) 20%, transparent)',
-                                    borderBottomLeftRadius: '8px'
-                                  }} />
-                                  {/* Vertical line segment continuing down (only if not the last item in the thread) */}
-                                  {!isLast && (
+                                    pointerEvents: 'none'
+                                  }}>
+                                    {/* Curved branch */}
                                     <div style={{
                                       position: 'absolute',
-                                      left: 'calc(-2rem - 1px)',
-                                      top: '10px',
-                                      bottom: '-12px',
-                                      borderLeft: '2px solid color-mix(in srgb, var(--text-muted) 20%, transparent)'
+                                      left: '0',
+                                      width: 'calc(2rem + 1px)',
+                                      top: '0',
+                                      height: '24px',
+                                      borderLeft: '2px solid color-mix(in srgb, var(--text-muted) 20%, transparent)',
+                                      borderBottom: '2px solid color-mix(in srgb, var(--text-muted) 20%, transparent)',
+                                      borderBottomLeftRadius: '8px'
                                     }} />
-                                  )}
+                                  </div>
                                 <UserHoverCard userId={reply.user_id}>
                                   <div className="comment-avatar" style={{ overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', width: '24px', height: '24px', borderRadius: '50%' }}>
                                     {reply.profile_picture ? (
