@@ -229,6 +229,193 @@ function sendCommentReactionNotification(postId, commentId, likerId, rxType, io)
   }
 }
 
+function sendPostReactionNotification(postId, likerId, rxType, io) {
+  try {
+    const post = db.prepare('SELECT user_id, content FROM community_posts WHERE id = ?').get(postId);
+    if (!post) return;
+    
+    // Don't notify if reacting to own post
+    if (post.user_id === likerId) return;
+
+    const liker = db.prepare('SELECT first_name, last_name FROM users WHERE id = ?').get(likerId);
+    if (!liker) return;
+    const likerName = `${liker.first_name} ${liker.last_name}`;
+
+    let snippet = (post.content || '').trim().substring(0, 40);
+    if (post.content && post.content.length > 40) snippet += '...';
+    if (!snippet) snippet = 'your post';
+
+    const rxLabel = rxType.charAt(0).toUpperCase() + rxType.slice(1);
+
+    const insertNotification = db.prepare(`
+      INSERT INTO notifications (user_id, type, title, message, link)
+      VALUES (?, ?, ?, ?, ?)
+    `);
+
+    insertNotification.run(
+      post.user_id,
+      'community',
+      'New reaction on your post',
+      `${likerName} reacted with "${rxLabel}" to ${snippet}`,
+      `/community#post-${postId}`
+    );
+
+    if (io) {
+      io.emit('new_notification');
+    }
+  } catch (err) {
+    console.error('Post reaction notification dispatch failed:', err);
+  }
+}
+
+// Get list of reactors for a post
+router.get('/posts/:id/reactors', authenticateToken, (req, res) => {
+  try {
+    const postId = req.params.id;
+    const reactors = db.prepare(`
+      SELECT pl.user_id, pl.reaction_type,
+             u.first_name, u.last_name, u.username, u.profile_picture, u.role
+      FROM post_likes pl
+      JOIN users u ON pl.user_id = u.id
+      WHERE pl.post_id = ?
+    `).all(postId);
+    res.json(reactors);
+  } catch (err) {
+    console.error('Error fetching post reactors:', err);
+    res.status(500).json({ error: 'Failed to fetch reactors' });
+  }
+});
+
+// Get list of reactors for a comment/reply
+router.get('/comments/:id/reactors', authenticateToken, (req, res) => {
+  try {
+    const commentId = req.params.id;
+    const reactors = db.prepare(`
+      SELECT cl.user_id, cl.reaction_type,
+             u.first_name, u.last_name, u.username, u.profile_picture, u.role
+      FROM comment_likes cl
+      JOIN users u ON cl.user_id = u.id
+      WHERE cl.comment_id = ?
+    `).all(commentId);
+    res.json(reactors);
+  } catch (err) {
+    console.error('Error fetching comment reactors:', err);
+    res.status(500).json({ error: 'Failed to fetch reactors' });
+  }
+});
+
+// Get a single community post by ID
+router.get('/posts/:id', authenticateToken, (req, res) => {
+  try {
+    const postId = req.params.id;
+    const post = db.prepare(`
+      SELECT p.id, p.user_id, p.content, p.image_url as media_url, p.created_at, p.is_pinned, p.audience, p.shares_count, p.scheduled_at,
+      u.first_name, u.last_name, u.username, u.profile_picture, u.role,
+      ip.subjects as instructor_subjects,
+      CASE 
+        WHEN p.shared_project_id IS NOT NULL THEN 'project' 
+        WHEN p.image_url IS NOT NULL THEN 'image' 
+        ELSE 'text' 
+      END as media_type,
+      (SELECT count(*) FROM post_likes WHERE post_id = p.id) as likes_count,
+      EXISTS(SELECT 1 FROM post_likes WHERE post_id = p.id AND user_id = :viewerId) as is_liked,
+      (SELECT reaction_type FROM post_likes WHERE post_id = p.id AND user_id = :viewerId) as user_reaction,
+      (SELECT json_group_array(DISTINCT reaction_type) FROM post_likes WHERE post_id = p.id) as post_reactions,
+      (SELECT json_group_array(
+          json_object(
+            'id', c.id, 
+            'parent_id', c.parent_id,
+            'content', c.content, 
+            'created_at', c.created_at, 
+            'user_id', c.user_id, 
+            'first_name', cu.first_name, 
+            'last_name', cu.last_name,
+            'profile_picture', cu.profile_picture,
+            'likes_count', (SELECT count(*) FROM comment_likes WHERE comment_id = c.id),
+            'is_liked', EXISTS(SELECT 1 FROM comment_likes WHERE comment_id = c.id AND user_id = :viewerId),
+            'user_reaction', (SELECT reaction_type FROM comment_likes WHERE comment_id = c.id AND user_id = :viewerId),
+            'reactions', (SELECT json_group_array(DISTINCT reaction_type) FROM comment_likes WHERE comment_id = c.id)
+          )
+        ) 
+       FROM post_comments c 
+       JOIN users cu ON c.user_id = cu.id 
+       WHERE c.post_id = p.id) as comments,
+      json_object(
+        'id', proj.id, 'title', proj.title, 'thumbnail_url', proj.thumbnail_url, 
+        'poster_url', proj.poster_url, 'media_link', proj.media_link, 'media_source', proj.media_source,
+        'genre', proj.genre, 'duration', proj.duration, 'synopsis', proj.synopsis,
+        'credits', (SELECT json_group_array(json_object('role', rc.role, 'name', rc.name)) FROM project_credits rc WHERE rc.project_id = proj.id)
+      ) as shared_project
+      FROM community_posts p
+      JOIN users u ON p.user_id = u.id
+      LEFT JOIN projects proj ON p.shared_project_id = proj.id
+      LEFT JOIN instructor_profiles ip ON p.user_id = ip.user_id
+      WHERE p.id = :postId
+        AND (p.scheduled_at IS NULL OR datetime(p.scheduled_at) <= datetime('now') OR p.user_id = :viewerId OR :viewerRole = 'admin')
+    `).get({ viewerId: req.user.id, postId, viewerRole: req.user.role });
+
+    if (!post) {
+      return res.status(404).json({ error: 'Post not found' });
+    }
+
+    // Format SQLite JSON output
+    let comments = [];
+    try { comments = JSON.parse(post.comments); } catch (e) { console.warn('Failed to parse comments', e); }
+    comments = comments.filter(c => c.id !== null).map(c => {
+      let parsedReactions = [];
+      try {
+        if (c.reactions) {
+          parsedReactions = typeof c.reactions === 'string' ? JSON.parse(c.reactions) : c.reactions;
+        }
+      } catch {
+        // ignore
+      }
+      parsedReactions = (parsedReactions || []).filter(r => r !== null);
+      return { ...c, reactions: parsedReactions };
+    });
+
+    let sharedProject = null;
+    try { 
+      sharedProject = JSON.parse(post.shared_project); 
+      if (!sharedProject.id) {
+        sharedProject = null;
+      } else {
+        try { sharedProject.credits = JSON.parse(sharedProject.credits); } catch { sharedProject.credits = []; }
+      }
+    } catch (e) {
+      console.warn('Failed to parse shared project', e);
+    }
+
+    let postReactions = [];
+    try {
+      if (post.post_reactions) {
+        postReactions = typeof post.post_reactions === 'string' ? JSON.parse(post.post_reactions) : post.post_reactions;
+      }
+    } catch {
+      // ignore
+    }
+    postReactions = (postReactions || []).filter(r => r !== null);
+
+    const formattedPost = { 
+      ...post, 
+      is_liked: !!post.is_liked, 
+      is_pinned: !!post.is_pinned, 
+      user_reaction: post.user_reaction || null, 
+      reactions: postReactions, 
+      comments, 
+      shared_project: sharedProject, 
+      shares_count: post.shares_count || 0,
+      scheduled_at: post.scheduled_at || null
+    };
+
+    res.json(formattedPost);
+  } catch (err) {
+    console.error('Error fetching single post:', err);
+    res.status(500).json({ error: 'Failed to fetch post' });
+  }
+});
+
+
 // Get unified community feed (posts + published projects)
 router.get('/posts', authenticateToken, (req, res) => {
   try {
@@ -264,7 +451,7 @@ router.get('/posts', authenticateToken, (req, res) => {
     }
 
     const posts = db.prepare(`
-      SELECT p.id, p.user_id, p.content, p.image_url as media_url, p.created_at, p.is_pinned, p.audience,
+      SELECT p.id, p.user_id, p.content, p.image_url as media_url, p.created_at, p.is_pinned, p.audience, p.shares_count, p.scheduled_at,
       u.first_name, u.last_name, u.username, u.profile_picture, u.role,
       ip.subjects as instructor_subjects,
       CASE 
@@ -274,6 +461,8 @@ router.get('/posts', authenticateToken, (req, res) => {
       END as media_type,
       (SELECT count(*) FROM post_likes WHERE post_id = p.id) as likes_count,
       EXISTS(SELECT 1 FROM post_likes WHERE post_id = p.id AND user_id = :viewerId) as is_liked,
+      (SELECT reaction_type FROM post_likes WHERE post_id = p.id AND user_id = :viewerId) as user_reaction,
+      (SELECT json_group_array(DISTINCT reaction_type) FROM post_likes WHERE post_id = p.id) as post_reactions,
       (SELECT json_group_array(
           json_object(
             'id', c.id, 
@@ -303,6 +492,7 @@ router.get('/posts', authenticateToken, (req, res) => {
       JOIN users u ON p.user_id = u.id
       LEFT JOIN projects proj ON p.shared_project_id = proj.id
       LEFT JOIN instructor_profiles ip ON p.user_id = ip.user_id
+      WHERE (p.scheduled_at IS NULL OR datetime(p.scheduled_at) <= datetime('now') OR p.user_id = :viewerId)
       ORDER BY p.is_pinned DESC, p.created_at DESC, p.id DESC
       LIMIT 100
     `).all({ viewerId: req.user.id });
@@ -337,7 +527,18 @@ router.get('/posts', authenticateToken, (req, res) => {
         console.warn('Failed to parse shared project', e);
       }
 
-      return { ...post, is_liked: !!post.is_liked, is_pinned: !!post.is_pinned, comments, shared_project: sharedProject };
+      // Parse post reactions
+      let postReactions = [];
+      try {
+        if (post.post_reactions) {
+          postReactions = typeof post.post_reactions === 'string' ? JSON.parse(post.post_reactions) : post.post_reactions;
+        }
+      } catch {
+        // ignore
+      }
+      postReactions = (postReactions || []).filter(r => r !== null);
+
+      return { ...post, is_liked: !!post.is_liked, is_pinned: !!post.is_pinned, user_reaction: post.user_reaction || null, reactions: postReactions, comments, shared_project: sharedProject, shares_count: post.shares_count || 0, scheduled_at: post.scheduled_at || null };
     });
 
     // Filter posts by audience
@@ -407,7 +608,7 @@ router.get('/projects', authenticateToken, (req, res) => {
 // Create a new post
 router.post('/posts', authenticateToken, sanitizeInput, (req, res) => {
   try {
-    const { content, media_url, project_id, audience } = req.body;
+    const { content, media_url, project_id, audience, scheduled_at } = req.body;
     
     const postAudience = audience || 'public';
     const validAudience = ['public', 'batchmates', 'only_me'];
@@ -419,31 +620,46 @@ router.post('/posts', authenticateToken, sanitizeInput, (req, res) => {
       return res.status(400).json({ error: 'Post cannot be empty.' });
     }
 
+    // Validate scheduled_at if provided
+    let scheduledAtValue = null;
+    if (scheduled_at) {
+      const scheduledDate = new Date(scheduled_at);
+      if (isNaN(scheduledDate.getTime())) {
+        return res.status(400).json({ error: 'Invalid scheduled_at date.' });
+      }
+      if (scheduledDate <= new Date()) {
+        return res.status(400).json({ error: 'Scheduled time must be in the future.' });
+      }
+      scheduledAtValue = scheduledDate.toISOString();
+    }
+
     const insertPost = db.prepare(`
-      INSERT INTO community_posts (user_id, content, image_url, shared_project_id, post_type, audience)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO community_posts (user_id, content, image_url, shared_project_id, post_type, audience, scheduled_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
     `);
 
     let postType = 'text';
     if (project_id) postType = 'project_share';
     else if (media_url) postType = 'image';
 
-    const result = insertPost.run(req.user.id, content || null, media_url || null, project_id || null, postType, postAudience);
+    const result = insertPost.run(req.user.id, content || null, media_url || null, project_id || null, postType, postAudience, scheduledAtValue);
     
     // If it's a project share, ensure the project itself is marked as show_on_community
     if (project_id) {
       db.prepare('UPDATE projects SET show_on_community = 1 WHERE id = ?').run(project_id);
     }
       
-    // Notify target users based on audience controls
-    sendCommunityPostNotification(result.lastInsertRowid, req.user.id, content, media_url, project_id, postAudience, false, req.app.get('io'));
+    // Only send notifications and socket events for immediate posts (not scheduled)
+    if (!scheduledAtValue) {
+      sendCommunityPostNotification(result.lastInsertRowid, req.user.id, content, media_url, project_id, postAudience, false, req.app.get('io'));
 
-    const io = req.app.get('io');
-    if (io) {
-      io.emit('new_post');
+      const io = req.app.get('io');
+      if (io) {
+        io.emit('new_post');
+      }
     }
     
-    res.status(201).json({ message: 'Post created successfully', id: result.lastInsertRowid });
+    res.status(201).json({ message: scheduledAtValue ? 'Post scheduled successfully' : 'Post created successfully', id: result.lastInsertRowid, scheduled_at: scheduledAtValue });
   } catch (error) {
     console.error('Create post error:', error);
     res.status(500).json({ error: 'Internal server error while creating post' });
@@ -473,23 +689,51 @@ router.post('/posts/:id/pin', authenticateToken, (req, res) => {
   }
 });
 
-// Like / Unlike a post
+// Like / Unlike a post (with emoji reactions)
 router.post('/posts/:id/like', authenticateToken, (req, res) => {
   try {
     const postId = req.params.id;
     const userId = req.user.id;
+    const { reaction_type } = req.body || {};
 
-    const existingLike = db.prepare('SELECT id FROM post_likes WHERE post_id = ? AND user_id = ?').get(postId, userId);
+    const validReactions = ['like', 'love', 'care', 'haha', 'wow', 'sad', 'angry'];
+    const rxType = (reaction_type && validReactions.includes(reaction_type)) ? reaction_type : 'like';
 
-    if (existingLike) {
-      db.prepare('DELETE FROM post_likes WHERE post_id = ? AND user_id = ?').run(postId, userId);
-      res.json({ liked: false });
+    const existing = db.prepare('SELECT id, reaction_type FROM post_likes WHERE post_id = ? AND user_id = ?').get(postId, userId);
+
+    let liked = false;
+    let currentReaction = null;
+
+    if (existing) {
+      if (existing.reaction_type === rxType) {
+        // Same reaction, remove it (unlike)
+        db.prepare('DELETE FROM post_likes WHERE post_id = ? AND user_id = ?').run(postId, userId);
+        liked = false;
+      } else {
+        // Different reaction, update it
+        db.prepare('UPDATE post_likes SET reaction_type = ? WHERE post_id = ? AND user_id = ?').run(rxType, postId, userId);
+        liked = true;
+        currentReaction = rxType;
+      }
     } else {
-      db.prepare('INSERT INTO post_likes (post_id, user_id) VALUES (?, ?)').run(postId, userId);
-      res.json({ liked: true });
+      // New reaction, insert it
+      db.prepare('INSERT INTO post_likes (post_id, user_id, reaction_type) VALUES (?, ?, ?)').run(postId, userId, rxType);
+      liked = true;
+      currentReaction = rxType;
     }
+
     const io = req.app.get('io');
     if (io) io.emit('new_post');
+
+    if (liked) {
+      sendPostReactionNotification(postId, userId, rxType, io);
+    }
+
+    res.json({ 
+      message: liked ? `Post reacted with ${rxType}` : 'Post reaction removed', 
+      liked, 
+      reaction_type: currentReaction 
+    });
   } catch (error) {
     console.error('Like error:', error);
     res.status(500).json({ error: 'Internal server error' });
@@ -785,5 +1029,60 @@ router.delete('/posts/:id', authenticateToken, (req, res) => {
     res.status(500).json({ error: 'Internal server error' });
   }
 });
+
+// Share a post (increment share count)
+router.post('/posts/:id/share', authenticateToken, (req, res) => {
+  try {
+    const postId = req.params.id;
+    const result = db.prepare('UPDATE community_posts SET shares_count = COALESCE(shares_count, 0) + 1 WHERE id = ?').run(postId);
+    
+    if (result.changes === 0) {
+      return res.status(404).json({ error: 'Post not found.' });
+    }
+
+    const io = req.app.get('io');
+    if (io) io.emit('new_post');
+
+    res.json({ success: true, message: 'Post share count incremented' });
+  } catch (error) {
+    console.error('Share post error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+export function startCommunityScheduler(io) {
+  // Check every 10 seconds for scheduled posts that are due to be published
+  setInterval(() => {
+    try {
+      const pendingPosts = db.prepare(`
+        SELECT id, user_id, content, image_url as media_url, shared_project_id as project_id, audience
+        FROM community_posts
+        WHERE scheduled_at IS NOT NULL
+          AND datetime(scheduled_at) <= datetime('now')
+          AND scheduled_notified = 0
+      `).all();
+
+      if (pendingPosts.length > 0) {
+        console.log(`[Scheduler] Publishing ${pendingPosts.length} scheduled posts...`);
+        const updateNotified = db.prepare(`
+          UPDATE community_posts
+          SET scheduled_notified = 1
+          WHERE id = ?
+        `);
+
+        for (const post of pendingPosts) {
+          sendCommunityPostNotification(post.id, post.user_id, post.content, post.media_url, post.project_id, post.audience, false, io);
+          updateNotified.run(post.id);
+        }
+
+        if (io) {
+          io.emit('new_post');
+        }
+      }
+    } catch (error) {
+      console.error('[Scheduler] Error processing scheduled posts:', error);
+    }
+  }, 10000);
+}
 
 export default router;

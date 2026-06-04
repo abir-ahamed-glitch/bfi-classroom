@@ -576,6 +576,47 @@ export function initializeDatabase() {
     // Column probably already exists
   }
 
+  // Post likes reaction_type migration
+  try {
+    db.prepare("ALTER TABLE post_likes ADD COLUMN reaction_type TEXT DEFAULT 'like'").run();
+    console.log('✅ Migrated post_likes: added reaction_type column');
+  } catch (error) {
+    // Column probably already exists
+  }
+
+  // Post shares count migration
+  try {
+    db.prepare("ALTER TABLE community_posts ADD COLUMN shares_count INTEGER DEFAULT 0").run();
+    console.log('✅ Migrated community_posts: added shares_count column');
+  } catch (error) {
+    // Column probably already exists
+  }
+
+  // Backfill any NULL reaction_type rows to 'like'
+  try {
+    const updated1 = db.prepare("UPDATE post_likes SET reaction_type = 'like' WHERE reaction_type IS NULL").run();
+    if (updated1.changes > 0) console.log(`✅ Backfilled ${updated1.changes} post_likes rows with reaction_type='like'`);
+    const updated2 = db.prepare("UPDATE comment_likes SET reaction_type = 'like' WHERE reaction_type IS NULL").run();
+    if (updated2.changes > 0) console.log(`✅ Backfilled ${updated2.changes} comment_likes rows with reaction_type='like'`);
+  } catch (error) {
+    // Ignore
+  }
+
+  // Scheduled posts migration
+  try {
+    db.prepare("ALTER TABLE community_posts ADD COLUMN scheduled_at TEXT DEFAULT NULL").run();
+    console.log('✅ Migrated community_posts: added scheduled_at column');
+  } catch (error) {
+    // Column probably already exists
+  }
+
+  try {
+    db.prepare("ALTER TABLE community_posts ADD COLUMN scheduled_notified INTEGER DEFAULT 0").run();
+    console.log('✅ Migrated community_posts: added scheduled_notified column');
+  } catch (error) {
+    // Column probably already exists
+  }
+
   const plainMessages = db.prepare(`
     SELECT id, content
     FROM messages

@@ -934,6 +934,99 @@ router.delete('/conversations/:otherId', authenticateToken, (req, res) => {
     res.status(500).json({ error: 'Internal server error' });
   }
 });
+// GET /api/inbox/recipients (For direct message sharing modal)
+router.get('/recipients', authenticateToken, (req, res) => {
+  try {
+    const userId = req.user.id;
+    const userRole = req.user.role;
+    const query = req.query.q?.toString().trim() || '';
+    
+    let users;
+    if (query) {
+      const likeQuery = `%${query}%`;
+      users = db.prepare(`
+        SELECT u.id, u.first_name, u.last_name, u.role, u.username, u.profile_picture, sp.batch_number
+        FROM users u
+        LEFT JOIN student_profiles sp ON sp.user_id = u.id
+        WHERE u.id != ?
+          AND u.is_active = 1
+          AND (
+            lower(trim(u.first_name || ' ' || u.last_name)) LIKE lower(?)
+            OR lower(u.username) LIKE lower(?)
+            OR lower(u.role) LIKE lower(?)
+          )
+        ORDER BY u.first_name ASC, u.last_name ASC
+        LIMIT 100
+      `).all(userId, likeQuery, likeQuery, likeQuery);
+    } else {
+      if (userRole === 'student') {
+        users = db.prepare(`
+          SELECT u.id, u.first_name, u.last_name, u.role, u.username, u.profile_picture, sp.batch_number
+          FROM users u
+          LEFT JOIN student_profiles sp ON sp.user_id = u.id
+          WHERE u.id != ?
+            AND u.is_active = 1
+            AND (
+              u.role = 'instructor'
+              OR (u.role = 'student' AND sp.batch_number = (SELECT batch_number FROM student_profiles WHERE user_id = ?))
+              OR EXISTS(
+                SELECT 1 FROM messages m 
+                WHERE (m.sender_id = ? AND m.receiver_id = u.id)
+                   OR (m.sender_id = u.id AND m.receiver_id = ?)
+              )
+            )
+          ORDER BY
+            CASE
+              -- 1st: Has active chat/inbox conversation
+              WHEN EXISTS(
+                SELECT 1 FROM messages m 
+                WHERE (m.sender_id = ? AND m.receiver_id = u.id)
+                   OR (m.sender_id = u.id AND m.receiver_id = ?)
+              ) THEN 0
+              -- 2nd: Batchmates (if current user is student)
+              WHEN u.role = 'student' 
+                   AND sp.batch_number = (SELECT batch_number FROM student_profiles WHERE user_id = ?) THEN 1
+              -- 3rd: Teachers
+              WHEN u.role = 'instructor' THEN 2
+              ELSE 3
+            END ASC,
+            u.first_name ASC,
+            u.last_name ASC
+          LIMIT 150
+        `).all(userId, userId, userId, userId, userId, userId, userId);
+      } else {
+        users = db.prepare(`
+          SELECT u.id, u.first_name, u.last_name, u.role, u.username, u.profile_picture, sp.batch_number
+          FROM users u
+          LEFT JOIN student_profiles sp ON sp.user_id = u.id
+          WHERE u.id != ?
+            AND u.is_active = 1
+          ORDER BY
+            CASE
+              -- 1st: Has active chat/inbox conversation
+              WHEN EXISTS(
+                SELECT 1 FROM messages m 
+                WHERE (m.sender_id = ? AND m.receiver_id = u.id)
+                   OR (m.sender_id = u.id AND m.receiver_id = ?)
+              ) THEN 0
+              -- 2nd: Teachers
+              WHEN u.role = 'instructor' THEN 1
+              -- 3rd: Admins
+              WHEN u.role = 'admin' THEN 2
+              ELSE 3
+            END ASC,
+            u.first_name ASC,
+            u.last_name ASC
+          LIMIT 150
+        `).all(userId, userId, userId);
+      }
+    }
+    res.json({ users });
+  } catch (err) {
+    console.error('Error fetching recipients:', err);
+    res.status(500).json({ error: 'Failed to fetch recipients' });
+  }
+});
 
 router.get('/users', authenticateToken, (req, res) => {
   try {

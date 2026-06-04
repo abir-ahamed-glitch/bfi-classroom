@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { resolveMediaUrl } from '../utils/mediaUtils';
 import {
   ArrowLeft,
@@ -453,6 +453,7 @@ const getRoleDisplayText = (role, batch) => {
 
 export default function Inbox() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { currentUser } = useAuth();
   const { initiateCall, onlineUsers } = useCall();
   const [loading, setLoading] = useState(true);
@@ -1495,9 +1496,46 @@ export default function Inbox() {
   };
 
   useEffect(() => {
-    fetchConversations();
+    if (location.state?.selectedUser) {
+      const u = location.state.selectedUser;
+      const targetUserId = u.id || u.user_id;
+      const run = async () => {
+        // Fetch conversations first, and if we find the user, select it
+        await fetchConversations(targetUserId);
+        
+        // If not found in conversations, start a new conversation (dummy chat)
+        setConversations(prev => {
+          const existing = prev.find(chat => normalizeUserId(chat.other_user_id) === normalizeUserId(targetUserId));
+          if (!existing) {
+            const nextChat = {
+              other_user_id: targetUserId,
+              first_name: u.first_name,
+              last_name: u.last_name,
+              role: u.role,
+              username: u.username,
+              email: u.email,
+              profile_picture: u.profile_picture,
+              mobile_number: u.mobile_number,
+              student_id: u.student_id,
+              public_key: u.public_key,
+              last_message: '',
+              unread_count: 0,
+            };
+            selectChat(nextChat);
+            return [nextChat, ...prev];
+          } else {
+            selectChat(existing);
+            return prev;
+          }
+        });
+      };
+      run();
+      window.history.replaceState({}, document.title);
+    } else {
+      fetchConversations();
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [location.state]);
 
   useEffect(() => {
     // Only update the activeChatRef here, keep previousChatIdRef for the scroll effect to compare
@@ -2089,9 +2127,9 @@ export default function Inbox() {
       try {
         const parsed = JSON.parse(localStorage.getItem('chat_drafts') || '{}');
         const drafts = parsed && typeof parsed === 'object' ? parsed : {};
-        setNewMessage(drafts[chat.other_user_id] || '');
+        setNewMessage(location.state?.shareText || drafts[chat.other_user_id] || '');
       } catch (e) {
-        setNewMessage('');
+        setNewMessage(location.state?.shareText || '');
       }
 
       setActiveChat(chat);

@@ -1,14 +1,24 @@
 import React, { useState, useEffect, useRef, memo } from 'react';
 import { Globe } from 'lucide-react';
+import { resolveMediaUrl } from '../utils/mediaUtils';
 
 // ─── URL Detection ─────────────────────────────────────────────────────────────
-const URL_REGEX = /https?:\/\/(www\.)?[-a-zA-Z0-9@:%._+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b([-a-zA-Z0-9()@:%_+.~#?&//=]*)/gi;
+const URL_REGEX = /https?:\/\/(?:localhost|(?:\d{1,3}\.){3}\d{1,3}|(?:www\.)?[-a-zA-Z0-9@:%._\+~#=]{1,256}(?:\.[a-zA-Z0-9()]{1,6})?)(?::\d+)?\b(?:[-a-zA-Z0-9()@:%_\+.~#?&//=\*]*)/gi;
 
 function extractUrls(text) {
   if (!text) return [];
   const matches = [...text.matchAll(new RegExp(URL_REGEX.source, 'gi'))];
   return [...new Set(matches.map(m => m[0]))];
 }
+
+const isInternalUrl = (urlStr) => {
+  try {
+    const url = new URL(urlStr);
+    return url.host === window.location.host;
+  } catch {
+    return !urlStr.startsWith('http://') && !urlStr.startsWith('https://');
+  }
+};
 
 // ─── Platform registry ────────────────────────────────────────────────────────
 const KNOWN_PLATFORMS = {
@@ -157,12 +167,50 @@ const LinkPreviewCard = memo(({ url }) => {
   const isFBSentinel    = directThumb?.startsWith('__facebook__');
   const hasDirectThumb  = directThumb && !isVimeoSentinel && !isFBSentinel;
 
-  // Fetch OG preview + handle Vimeo/Facebook oEmbed thumbnails
+  const communityPostMatch = url.match(/\/community#post-(\d+)/);
+  const isCommunityPost = !!communityPostMatch;
+  const communityPostId = communityPostMatch ? communityPostMatch[1] : null;
+
+  // Fetch OG preview + handle Vimeo/Facebook oEmbed thumbnails + local community posts
   useEffect(() => {
     let cancelled = false;
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
+
+    if (isCommunityPost && communityPostId) {
+      fetch(`${apiBase()}/api/community/posts/${communityPostId}`, {
+        headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
+        signal: controller.signal,
+      })
+        .then(r => r.json())
+        .then(data => {
+          if (!cancelled && !data.error) {
+            let thumb = null;
+            if (data.media_url) {
+              thumb = resolveMediaUrl(data.media_url);
+            } else if (data.shared_project && (data.shared_project.thumbnail_url || data.shared_project.poster_url)) {
+              thumb = resolveMediaUrl(data.shared_project.thumbnail_url || data.shared_project.poster_url);
+            }
+
+            setPreview({
+              title: data.content ? (data.content.length > 80 ? data.content.substring(0, 80) + '...' : data.content) : (data.shared_project ? `Shared Project: ${data.shared_project.title}` : 'BFI Community Post'),
+              siteName: `${data.first_name} ${data.last_name} on BFI Community`,
+              description: data.content || (data.shared_project ? data.shared_project.synopsis : 'Click to view the post on BFI Community'),
+              image: thumb,
+              favicon: null,
+            });
+          }
+        })
+        .catch((err) => {
+          console.error('Error fetching preview for community post:', err);
+        })
+        .finally(() => {
+          if (!cancelled) setLoading(false);
+        });
+
+      return () => { cancelled = true; controller.abort(); };
+    }
 
     const tasks = [
       // Task 1: OG metadata from our server
@@ -192,14 +240,12 @@ const LinkPreviewCard = memo(({ url }) => {
       );
     }
 
-    // Removed broken Facebook graph API call that requires access token
-
     Promise.allSettled(tasks).finally(() => {
       if (!cancelled) setLoading(false);
     });
 
     return () => { cancelled = true; controller.abort(); };
-  }, [url, directThumb, isVimeoSentinel]);
+  }, [url, directThumb, isVimeoSentinel, isCommunityPost, communityPostId]);
 
   // Best thumbnail: direct (YouTube/Dailymotion) > async resolved (Vimeo/FB) > OG image
   const thumbSrc = hasDirectThumb
@@ -209,7 +255,7 @@ const LinkPreviewCard = memo(({ url }) => {
   // ── Loading skeleton ──
   if (loading && !thumbSrc && !preview) {
     return (
-      <a href={url} target="_blank" rel="noopener noreferrer" className="link-preview-card loading">
+      <a href={url} target={isInternalUrl(url) ? "_self" : "_blank"} rel="noopener noreferrer" className="link-preview-card loading">
         <div className="link-preview-skeleton">
           <div className="link-preview-skeleton-thumb" />
           <div className="link-preview-skeleton-body">
@@ -230,7 +276,7 @@ const LinkPreviewCard = memo(({ url }) => {
   return (
     <a
       href={url}
-      target="_blank"
+      target={isInternalUrl(url) ? "_self" : "_blank"}
       rel="noopener noreferrer"
       className="link-preview-card"
       style={{ '--lp-accent': accentColor }}
@@ -281,7 +327,7 @@ export function MessageWithLinks({ content, renderText }) {
       <a
         key={`u-${match.index}`}
         href={match[0]}
-        target="_blank"
+        target={isInternalUrl(match[0]) ? "_self" : "_blank"}
         rel="noopener noreferrer"
         className="message-inline-link"
       >

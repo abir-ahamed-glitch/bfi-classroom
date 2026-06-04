@@ -22,7 +22,7 @@ import authRoutes from './routes/auth.js';
 import adminRoutes from './routes/admin.js';
 import studentRoutes from './routes/student.js';
 import portfolioRoutes from './routes/portfolio.js';
-import communityRoutes from './routes/community.js';
+import communityRoutes, { startCommunityScheduler } from './routes/community.js';
 import courseRoutes from './routes/course.js';
 import inboxRoutes from './routes/inbox.js';
 import bfiaaRoutes from './routes/bfiaa.js';
@@ -535,6 +535,7 @@ app.use((err, req, res, _next) => {
 });
 
 // Start Server
+startCommunityScheduler(io);
 httpServer.listen(PORT, () => {
   console.log(`🚀 BFI Classroom API Gateway running on port ${PORT}`);
 });

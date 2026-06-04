@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef, useCallback, memo } from 'react';
 import { createPortal } from 'react-dom';
-import { useLocation } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { io } from 'socket.io-client';
-import { MessageSquare, Heart, Image as ImageIcon, Send, Film, Share2, Trash2, Pin, PinOff, Play, Video, GripVertical, X, Pencil, ChevronLeft, ChevronRight, Smile, MoreVertical, Download, Globe, GraduationCap, EyeOff, ChevronDown } from 'lucide-react';
+import { MessageSquare, Heart, Image as ImageIcon, Send, Film, Share2, Trash2, Pin, PinOff, Play, Video, GripVertical, X, Pencil, ChevronLeft, ChevronRight, Smile, MoreVertical, Download, Globe, GraduationCap, EyeOff, ChevronDown, ThumbsUp, MessageCircle, Search, Clock } from 'lucide-react';
 import { AudienceSelector } from '../components/PrivacySelector';
 import data from '@emoji-mart/data';
 import { Picker } from 'emoji-mart';
@@ -76,6 +76,26 @@ const REACTION_OPTIONS = [
 export default function Community() {
   const { currentUser } = useAuth();
   const { showAlert, showConfirm } = useModal();
+  const navigate = useNavigate();
+
+  // Reactors popup modal state
+  const [reactorsModalPostId, setReactorsModalPostId] = useState(null);
+  const [reactorsModalCommentId, setReactorsModalCommentId] = useState(null);
+  const [reactorsList, setReactorsList] = useState([]);
+  const [loadingReactors, setLoadingReactors] = useState(false);
+  const [activeReactorTab, setActiveReactorTab] = useState('all');
+
+  // Share dropdown state
+  const [activeSharePostId, setActiveSharePostId] = useState(null);
+
+  // "Send to" modal states
+  const [shareModalPost, setShareModalPost] = useState(null);
+  const [recipients, setRecipients] = useState([]);
+  const [selectedRecipients, setSelectedRecipients] = useState(new Set());
+  const [shareSearchQuery, setShareSearchQuery] = useState('');
+  const [shareMessageText, setShareMessageText] = useState('');
+  const [loadingRecipients, setLoadingRecipients] = useState(false);
+  const [sendingShare, setSendingShare] = useState(false);
   const [postAudience, setPostAudience] = useState('public');
   const [editingPostId, setEditingPostId] = useState(null);
   const [editingPostText, setEditingPostText] = useState('');
@@ -91,6 +111,14 @@ export default function Community() {
   const [selectedProjectId, setSelectedProjectId] = useState(null);
   const [selectedProjectTitle, setSelectedProjectTitle] = useState('');
   const [showProjectOptions, setShowProjectOptions] = useState(false);
+  const [scheduledAt, setScheduledAt] = useState(null);
+  const [showSchedulePicker, setShowSchedulePicker] = useState(false);
+  const [pickerMonth, setPickerMonth] = useState(new Date().getMonth());
+  const [pickerYear, setPickerYear] = useState(new Date().getFullYear());
+  const [pickerDay, setPickerDay] = useState(new Date().getDate());
+  const [pickerHour, setPickerHour] = useState(12);
+  const [pickerMinute, setPickerMinute] = useState(0);
+  const [pickerPeriod, setPickerPeriod] = useState('PM');
   const [userProjects, setUserProjects] = useState([]);
   const [socket, setSocket] = useState(null);
   const [brokenThumbs, setBrokenThumbs] = useState({});
@@ -104,11 +132,16 @@ export default function Community() {
   const [activeReplyMentions, setActiveReplyMentions] = useState({}); // commentId -> string (user name)
   const [activeReplyInputCommentId, setActiveReplyInputCommentId] = useState(null);
   const [activeReactionCommentId, setActiveReactionCommentId] = useState(null);
+  const [activeReactionPostId, setActiveReactionPostId] = useState(null);
   const [expandedComments, setExpandedComments] = useState({}); // commentId -> boolean
   const hoverTimerRef = useRef(null);
   const closeTimerRef = useRef(null);
   const longPressTimerRef = useRef(null);
   const isLongPressRef = useRef(false);
+  const postHoverTimerRef = useRef(null);
+  const postCloseTimerRef = useRef(null);
+  const postLongPressTimerRef = useRef(null);
+  const isPostLongPressRef = useRef(false);
   const [commentEmojiPickerPostId, setCommentEmojiPickerPostId] = useState(null);
   const [activeCommentMenuId, setActiveCommentMenuId] = useState(null);
   const [editingCommentId, setEditingCommentId] = useState(null);
@@ -304,7 +337,92 @@ export default function Community() {
   }, [posts, currentUser?.id]);
 
   const [fetchingProjects, setFetchingProjects] = useState(false);
+  const handleScheduleClick = () => {
+    setShowProjectOptions(false);
+    const isOpen = !showSchedulePicker;
+    setShowSchedulePicker(isOpen);
+    
+    if (isOpen) {
+      const sourceDate = scheduledAt ? new Date(scheduledAt) : new Date(Date.now() + 60 * 60000);
+      setPickerYear(sourceDate.getFullYear());
+      setPickerMonth(sourceDate.getMonth());
+      setPickerDay(sourceDate.getDate());
+      
+      let hr = sourceDate.getHours();
+      const prd = hr >= 12 ? 'PM' : 'AM';
+      hr = hr % 12;
+      hr = hr === 0 ? 12 : hr;
+      setPickerHour(hr);
+      setPickerMinute(sourceDate.getMinutes());
+      setPickerPeriod(prd);
+    }
+  };
+
+  const renderCalendarDays = () => {
+    const cells = [];
+    const daysInMonth = new Date(pickerYear, pickerMonth + 1, 0).getDate();
+    const firstDayIndex = new Date(pickerYear, pickerMonth, 1).getDay();
+
+    for (let i = 0; i < firstDayIndex; i++) {
+      cells.push(<div key={`empty-${i}`} className="calendar-day-empty"></div>);
+    }
+
+    for (let day = 1; day <= daysInMonth; day++) {
+      const isSelected = pickerDay === day;
+      const isToday = new Date().getDate() === day && new Date().getMonth() === pickerMonth && new Date().getFullYear() === pickerYear;
+      
+      cells.push(
+        <button
+          key={`day-${day}`}
+          type="button"
+          className={`calendar-day-btn ${isSelected ? 'selected' : ''} ${isToday ? 'today' : ''}`}
+          onClick={() => setPickerDay(day)}
+        >
+          {day}
+        </button>
+      );
+    }
+    return cells;
+  };
+
+  const handlePrevMonth = () => {
+    setPickerMonth(prev => {
+      if (prev === 0) {
+        setPickerYear(y => y - 1);
+        return 11;
+      }
+      return prev - 1;
+    });
+  };
+
+  const handleNextMonth = () => {
+    setPickerMonth(prev => {
+      if (prev === 11) {
+        setPickerYear(y => y + 1);
+        return 0;
+      }
+      return prev + 1;
+    });
+  };
+
+  const handleConfirmSchedule = () => {
+    let hours24 = pickerHour;
+    if (pickerPeriod === 'PM' && hours24 < 12) hours24 += 12;
+    if (pickerPeriod === 'AM' && hours24 === 12) hours24 = 0;
+    
+    const localDate = new Date(pickerYear, pickerMonth, pickerDay, hours24, pickerMinute, 0);
+    
+    if (localDate <= new Date()) {
+      showAlert('Please select a future date and time.', { title: 'Invalid Time' });
+      return;
+    }
+    
+    setScheduledAt(localDate.toISOString());
+    setShowSchedulePicker(false);
+  };
+
   const handleShareProjectClick = () => {
+    setShowSchedulePicker(false);
     if (!showProjectOptions) {
       setFetchingProjects(true);
       fetchUserProjects().finally(() => setFetchingProjects(false));
@@ -445,6 +563,83 @@ export default function Community() {
     }
   }, [loading, posts.length, location.hash, forceHighlight]);
 
+  // Fetch post or comment reactors list when modal is opened
+  useEffect(() => {
+    const targetId = reactorsModalPostId || reactorsModalCommentId;
+    if (!targetId) {
+      setReactorsList([]);
+      return;
+    }
+    const endpoint = reactorsModalPostId
+      ? `/api/community/posts/${reactorsModalPostId}/reactors`
+      : `/api/community/comments/${reactorsModalCommentId}/reactors`;
+    setLoadingReactors(true);
+    setActiveReactorTab('all');
+    fetch(endpoint, {
+      headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
+    })
+      .then(res => {
+        if (!res.ok) throw new Error('Failed to fetch reactors');
+        return res.json();
+      })
+      .then(data => {
+        setReactorsList(data);
+      })
+      .catch(err => {
+        console.error('Error fetching reactors:', err);
+        showAlert('Failed to fetch reactors list.', { title: 'Error' });
+        setReactorsModalPostId(null);
+        setReactorsModalCommentId(null);
+      })
+      .finally(() => {
+        setLoadingReactors(false);
+      });
+  }, [reactorsModalPostId, reactorsModalCommentId]);
+
+  // Handle outside clicks to close the share dropdown
+  useEffect(() => {
+    const handleOutsideClick = (e) => {
+      if (activeSharePostId && !e.target.closest('.share-btn-container')) {
+        setActiveSharePostId(null);
+      }
+    };
+    document.addEventListener('mousedown', handleOutsideClick);
+    return () => document.removeEventListener('mousedown', handleOutsideClick);
+  }, [activeSharePostId]);
+
+  // Fetch recipients list when share modal is opened or query changes
+  useEffect(() => {
+    if (!shareModalPost) {
+      setRecipients([]);
+      return;
+    }
+    setLoadingRecipients(true);
+    const delayDebounce = setTimeout(() => {
+      const url = shareSearchQuery 
+        ? `/api/inbox/recipients?q=${encodeURIComponent(shareSearchQuery)}` 
+        : '/api/inbox/recipients';
+        
+      fetch(url, {
+        headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
+      })
+        .then(res => {
+          if (!res.ok) throw new Error('Failed to fetch recipients');
+          return res.json();
+        })
+        .then(data => {
+          setRecipients(data.users || []);
+        })
+        .catch(err => {
+          console.error('Error fetching recipients:', err);
+        })
+        .finally(() => {
+          setLoadingRecipients(false);
+        });
+    }, shareSearchQuery ? 300 : 0);
+
+    return () => clearTimeout(delayDebounce);
+  }, [shareModalPost, shareSearchQuery]);
+
   const handlePostSubmit = async (e) => {
     e.preventDefault();
     if (!content.trim() && mediaImages.length === 0 && !selectedProjectId) return;
@@ -478,18 +673,22 @@ export default function Community() {
           content, 
           media_url: mediaUrlPayload,
           project_id: selectedProjectId,
-          audience: postAudience
+          audience: postAudience,
+          scheduled_at: scheduledAt
         })
       });
 
       if (res.ok) {
+        const data = await res.json();
         setContent('');
         setMediaImages([]);
         setSelectedProjectId(null);
         setSelectedProjectTitle('');
         setPostAudience('public');
+        setScheduledAt(null);
+        setShowSchedulePicker(false);
         fetchPosts();
-        if(socket) socket.emit('new_post', { user: currentUser.username });
+        if (socket && !scheduledAt) socket.emit('new_post', { user: currentUser.username });
       }
     } catch (err) {
       console.error(err);
@@ -615,19 +814,34 @@ export default function Community() {
     }
   };
 
-  const toggleLike = async (postId) => {
+  const toggleLike = async (postId, reactionType = 'like') => {
     try {
       const res = await fetch(`/api/community/posts/${postId}/like`, {
         method: 'POST',
-        headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('token')}` 
+        },
+        body: JSON.stringify({ reaction_type: reactionType })
       });
       if (res.ok) {
+        const data = await res.json();
         setPosts(posts.map(p => {
           if (p.id === postId) {
+            let updatedReactions = [...(p.reactions || [])];
+            if (data.liked) {
+              if (!updatedReactions.includes(data.reaction_type)) {
+                updatedReactions.push(data.reaction_type);
+              }
+            }
             return {
               ...p,
-              is_liked: !p.is_liked,
-              likes_count: p.is_liked ? p.likes_count - 1 : p.likes_count + 1
+              is_liked: data.liked,
+              user_reaction: data.reaction_type,
+              reactions: updatedReactions.filter(Boolean),
+              likes_count: data.liked 
+                ? (p.is_liked ? p.likes_count : p.likes_count + 1) 
+                : (p.is_liked ? p.likes_count - 1 : p.likes_count)
             };
           }
           return p;
@@ -795,6 +1009,69 @@ export default function Community() {
     clearTimeout(longPressTimerRef.current);
   };
 
+  // ── Post Reaction Handlers ──
+  const handlePostLikeMouseEnter = (postId) => {
+    if (window.matchMedia('(hover: hover)').matches) {
+      clearTimeout(postHoverTimerRef.current);
+      clearTimeout(postCloseTimerRef.current);
+      postHoverTimerRef.current = setTimeout(() => {
+        setActiveReactionPostId(postId);
+      }, 400);
+    }
+  };
+
+  const handlePostLikeMouseLeave = (postId) => {
+    if (window.matchMedia('(hover: hover)').matches) {
+      clearTimeout(postHoverTimerRef.current);
+      clearTimeout(postCloseTimerRef.current);
+      postCloseTimerRef.current = setTimeout(() => {
+        setActiveReactionPostId(current => current === postId ? null : current);
+      }, 600);
+    }
+  };
+
+  const handlePostPopupMouseEnter = () => {
+    clearTimeout(postCloseTimerRef.current);
+  };
+
+  const handlePostReactionSelect = (postId, reactionType) => {
+    setActiveReactionPostId(null);
+    clearTimeout(postCloseTimerRef.current);
+    toggleLike(postId, reactionType);
+  };
+
+  const handlePostLikeClick = (postId, currentReaction) => {
+    if (isPostLongPressRef.current) return;
+    if (currentReaction) {
+      toggleLike(postId, currentReaction);
+    } else {
+      toggleLike(postId, 'like');
+    }
+  };
+
+  const handlePostLikeTouchStart = (e, postId) => {
+    clearTimeout(postLongPressTimerRef.current);
+    isPostLongPressRef.current = false;
+    postLongPressTimerRef.current = setTimeout(() => {
+      isPostLongPressRef.current = true;
+      setActiveReactionPostId(postId);
+      if (navigator.vibrate) {
+        try { navigator.vibrate(50); } catch (err) {}
+      }
+    }, 500);
+  };
+
+  const handlePostLikeTouchEnd = (e, postId, currentReaction) => {
+    clearTimeout(postLongPressTimerRef.current);
+    if (!isPostLongPressRef.current) {
+      handlePostLikeClick(postId, currentReaction);
+    }
+  };
+
+  const handlePostLikeTouchMove = () => {
+    clearTimeout(postLongPressTimerRef.current);
+  };
+
   const handleCommentDelete = async (postId, commentId) => {
     setActiveCommentMenuId(null);
     const confirmed = await showConfirm(
@@ -893,30 +1170,41 @@ export default function Community() {
     }
   };
 
-  const handleSharePost = async (post) => {
-    const shareData = {
-      title: 'BFI Community Post',
-      text: `${post.first_name} ${post.last_name} shared on BFI Community:\n\n${post.content ? post.content.substring(0, 100) + '...' : 'Check out this post!'}`,
-      url: window.location.origin + '/community'
+  const handleShareOptionClick = async (post, option) => {
+    setActiveSharePostId(null);
+    const shareUrl = `${window.location.origin}/community#post-${post.id}`;
+    const shareText = `${post.first_name} ${post.last_name} shared on BFI Community:\n\n${post.content ? post.content.substring(0, 100) + '...' : 'Check out this post!'}`;
+
+    const recordShare = async () => {
+      try {
+        const response = await fetch(`/api/community/posts/${post.id}/share`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${localStorage.getItem('token')}`
+          }
+        });
+        if (response.ok) {
+          setPosts(prev => prev.map(p => p.id === post.id ? { ...p, shares_count: (p.shares_count || 0) + 1 } : p));
+        }
+      } catch (err) {
+        console.error('Error tracking post share:', err);
+      }
     };
 
-    try {
-      if (navigator.share) {
-        await navigator.share(shareData);
-      } else {
-        await navigator.clipboard.writeText(`${shareData.text}\n\n${shareData.url}`);
+    if (option === 'copy') {
+      try {
+        await navigator.clipboard.writeText(shareUrl);
         await showAlert('Post link copied to clipboard!', { title: 'Copied!' });
+        await recordShare();
+      } catch (err) {
+        console.error('Copy failed:', err);
+        await showAlert('Failed to copy link. Please manually copy the URL.', { title: 'Copy Failed' });
       }
-    } catch (err) {
-      if (err.name !== 'AbortError') {
-        console.error('Error sharing:', err);
-        try {
-          await navigator.clipboard.writeText(`${shareData.text}\n\n${shareData.url}`);
-          await showAlert('Post link copied to clipboard!', { title: 'Copied!' });
-        } catch {
-          await showAlert('Failed to copy link. Please manually copy the URL.', { title: 'Copy Failed' });
-        }
-      }
+    } else if (option === 'message') {
+      setShareModalPost(post);
+      setShareSearchQuery('');
+      setSelectedRecipients(new Set());
+      setShareMessageText('');
     }
   };
 
@@ -1141,6 +1429,141 @@ export default function Community() {
                 </div>
               )}
             </div>
+
+            <div style={{ position: 'relative' }}>
+              <button 
+                className={`btn btn-glass ${scheduledAt ? 'scheduled-active' : ''}`}
+                style={{ padding: '0.4rem 0.8rem', fontSize: '0.85rem', color: scheduledAt ? 'var(--primary)' : 'inherit' }}
+                onClick={handleScheduleClick}
+              >
+                <Clock size={16} /> {scheduledAt ? 'Scheduled' : 'Schedule'}
+              </button>
+
+              {showSchedulePicker && (
+                <div className="bfi-community-dropdown schedule-dropdown animate-fade-in" style={{ width: '280px', padding: '1rem', right: 'auto', left: 0 }}>
+                  <div className="dropdown-header" style={{ marginBottom: '0.75rem', paddingBottom: '0.5rem', borderBottom: '1px solid var(--border-color)', fontWeight: 600, color: 'var(--text-main)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'transparent', padding: '0 0 0.5rem' }}>
+                    <span>Schedule Post</span>
+                    <button 
+                      type="button" 
+                      onClick={() => setShowSchedulePicker(false)}
+                      style={{ background: 'transparent', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '0.9rem', padding: 0 }}
+                    >
+                      &times;
+                    </button>
+                  </div>
+                  
+                  {/* Calendar Month Selector */}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                    <button 
+                      type="button" 
+                      onClick={(e) => { e.stopPropagation(); handlePrevMonth(); }}
+                      className="btn btn-glass"
+                      style={{ padding: '0.2rem 0.5rem', fontSize: '0.75rem', height: 'auto', minWidth: 'auto' }}
+                    >
+                      &larr;
+                    </button>
+                    <span style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-main)' }}>
+                      {[
+                        "January", "February", "March", "April", "May", "June",
+                        "July", "August", "September", "October", "November", "December"
+                      ][pickerMonth]} {pickerYear}
+                    </span>
+                    <button 
+                      type="button" 
+                      onClick={(e) => { e.stopPropagation(); handleNextMonth(); }}
+                      className="btn btn-glass"
+                      style={{ padding: '0.2rem 0.5rem', fontSize: '0.75rem', height: 'auto', minWidth: 'auto' }}
+                    >
+                      &rarr;
+                    </button>
+                  </div>
+
+                  {/* Calendar Weekday Names */}
+                  <div className="calendar-grid" style={{ marginBottom: '0.25rem' }}>
+                    {['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'].map(day => (
+                      <div key={day} className="calendar-weekday">{day}</div>
+                    ))}
+                  </div>
+
+                  {/* Calendar Day Buttons */}
+                  <div className="calendar-grid" style={{ marginBottom: '0.75rem' }}>
+                    {renderCalendarDays()}
+                  </div>
+
+                  <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: '0.75rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                    <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', textAlign: 'center' }}>Time (Local Time)</label>
+                    
+                    {/* Time Select Boxes */}
+                    <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', justifyContent: 'center' }}>
+                      <select 
+                        value={pickerHour} 
+                        onChange={(e) => setPickerHour(parseInt(e.target.value))}
+                        className="time-picker-select"
+                        style={{ padding: '0.25rem 0.5rem', borderRadius: '6px', border: '1px solid var(--border-color)', backgroundColor: 'var(--bg-card)', color: 'var(--text-main)', fontSize: '0.8rem', cursor: 'pointer' }}
+                      >
+                        {Array.from({ length: 12 }, (_, i) => i + 1).map(h => (
+                          <option key={h} value={h}>{h}</option>
+                        ))}
+                      </select>
+                      <span style={{ color: 'var(--text-muted)' }}>:</span>
+                      <select 
+                        value={pickerMinute} 
+                        onChange={(e) => setPickerMinute(parseInt(e.target.value))}
+                        className="time-picker-select"
+                        style={{ padding: '0.25rem 0.5rem', borderRadius: '6px', border: '1px solid var(--border-color)', backgroundColor: 'var(--bg-card)', color: 'var(--text-main)', fontSize: '0.8rem', cursor: 'pointer' }}
+                      >
+                        {Array.from({ length: 60 }, (_, i) => i).map(m => (
+                          <option key={m} value={m}>{m.toString().padStart(2, '0')}</option>
+                        ))}
+                      </select>
+                      <select 
+                        value={pickerPeriod} 
+                        onChange={(e) => setPickerPeriod(e.target.value)}
+                        className="time-picker-select"
+                        style={{ padding: '0.25rem 0.5rem', borderRadius: '6px', border: '1px solid var(--border-color)', backgroundColor: 'var(--bg-card)', color: 'var(--text-main)', fontSize: '0.8rem', cursor: 'pointer' }}
+                      >
+                        <option value="AM">AM</option>
+                        <option value="PM">PM</option>
+                      </select>
+                    </div>
+
+                    {/* Constructed Selected String */}
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', textAlign: 'center', marginTop: '0.25rem', lineHeight: 1.4 }}>
+                      Selected:<br />
+                      <strong style={{ color: 'var(--text-main)' }}>
+                        {[
+                          "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                          "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+                        ][pickerMonth]} {pickerDay}, {pickerYear} @ {pickerHour}:{pickerMinute.toString().padStart(2, '0')} {pickerPeriod}
+                      </strong>
+                    </div>
+
+                    {/* Action buttons */}
+                    <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end', marginTop: '0.5rem' }}>
+                      {scheduledAt && (
+                        <button 
+                          className="btn btn-glass btn-sm" 
+                          style={{ padding: '0.25rem 0.5rem', fontSize: '0.75rem' }}
+                          onClick={() => {
+                            setScheduledAt(null);
+                            setShowSchedulePicker(false);
+                          }}
+                        >
+                          Clear
+                        </button>
+                      )}
+                      <button 
+                        className="btn btn-primary btn-sm" 
+                        style={{ padding: '0.25rem 0.75rem', fontSize: '0.75rem', fontWeight: 600 }}
+                        onClick={handleConfirmSchedule}
+                      >
+                        Confirm
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
           <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
             <AudienceSelector value={postAudience} onChange={setPostAudience} />
@@ -1248,13 +1671,18 @@ export default function Community() {
                       )}
                     </div>
                   </div>
-                  <span className="post-time" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                    {formatTime(post.created_at)}
+                  <span className="post-time" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                    {formatTime(post.scheduled_at || post.created_at)}
                     <span style={{ display: 'inline-flex', opacity: 0.6 }} title={`Audience: ${post.audience || 'public'}`}>
                       {post.audience === 'only_me' && <EyeOff size={12} />}
                       {post.audience === 'batchmates' && <GraduationCap size={12} />}
                       {(!post.audience || post.audience === 'public') && <Globe size={12} />}
                     </span>
+                    {post.scheduled_at && new Date(post.scheduled_at) > new Date() && (
+                      <span className="scheduled-badge" style={{ display: 'inline-flex', alignItems: 'center', gap: '0.25rem', padding: '1px 6px', fontSize: '0.7rem', background: 'rgba(234, 179, 8, 0.15)', color: '#eab308', borderRadius: '4px', fontWeight: '500', border: '1px solid rgba(234, 179, 8, 0.3)' }} title={`Scheduled for ${new Date(post.scheduled_at).toLocaleString()}`}>
+                        <Clock size={10} /> Scheduled
+                      </span>
+                    )}
                   </span>
                 </div>
               </div>
@@ -1410,28 +1838,138 @@ export default function Community() {
               )}
             </div>
 
-            {/* Post Actions */}
+            {/* Post Actions — Facebook-style layout */}
             <div className="post-actions">
-              <button 
-                className={`action-btn ${post.is_liked ? 'liked' : ''}`}
-                onClick={() => toggleLike(post.id)}
-              >
-                <Heart size={18} fill={post.is_liked ? "currentColor" : "none"} /> 
-                {post.likes_count} Likes
-              </button>
-              <button 
-                className="action-btn"
-                onClick={() => {
-                  const input = document.getElementById(`comment-input-${post.id}`);
-                  if (input) input.focus();
-                }}
-              >
-                <MessageSquare size={18} /> 
-                {post.comments?.length || 0} Comments
-              </button>
-              <button className="action-btn" onClick={() => handleSharePost(post)}>
-                <Share2 size={18} /> Share
-              </button>
+              <div className="post-actions-left">
+                <div 
+                  style={{ position: 'relative', display: 'inline-block' }}
+                  onMouseEnter={() => handlePostLikeMouseEnter(post.id)}
+                  onMouseLeave={() => handlePostLikeMouseLeave(post.id)}
+                >
+                  {activeReactionPostId === post.id && (
+                    <div 
+                      className="reactions-popup animate-fade-in"
+                      onMouseEnter={handlePostPopupMouseEnter}
+                      onMouseLeave={() => handlePostLikeMouseLeave(post.id)}
+                      style={{
+                        position: 'absolute',
+                        bottom: '100%',
+                        left: '0',
+                        borderRadius: '30px',
+                        padding: '0.4rem 0.6rem',
+                        display: 'flex',
+                        gap: '0.5rem',
+                        zIndex: 100000
+                      }}
+                    >
+                      {REACTION_OPTIONS.map(opt => (
+                        <button
+                          key={opt.type}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handlePostReactionSelect(post.id, opt.type);
+                          }}
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            fontSize: '1.5rem',
+                            cursor: 'pointer',
+                            padding: '2px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            transition: 'transform 0.15s ease'
+                          }}
+                          className="reaction-emoji-btn"
+                          title={opt.label}
+                        >
+                          {opt.emoji}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  
+                  <button 
+                    className="action-btn"
+                    onTouchStart={(e) => handlePostLikeTouchStart(e, post.id)}
+                    onTouchEnd={(e) => handlePostLikeTouchEnd(e, post.id, post.user_reaction)}
+                    onTouchMove={handlePostLikeTouchMove}
+                    onClick={() => handlePostLikeClick(post.id, post.user_reaction)}
+                    style={{
+                      color: post.user_reaction ? (REACTION_OPTIONS.find(o => o.type === post.user_reaction)?.color || 'var(--accent-primary)') : undefined
+                    }}
+                  >
+                    <ThumbsUp size={18} fill={post.user_reaction ? "currentColor" : "none"} />
+                    <span 
+                      onClick={(e) => {
+                        if (post.likes_count > 0) {
+                          e.stopPropagation();
+                          setReactorsModalPostId(post.id);
+                        }
+                      }}
+                      style={{ cursor: post.likes_count > 0 ? 'pointer' : 'default' }}
+                    >
+                      {post.likes_count}
+                    </span>
+                  </button>
+                </div>
+                <button 
+                  className="action-btn"
+                  onClick={() => {
+                    const input = document.getElementById(`comment-input-${post.id}`);
+                    if (input) input.focus();
+                  }}
+                >
+                  <MessageCircle size={18} /> 
+                  <span>{post.comments?.length || 0}</span>
+                </button>
+                <div className="share-btn-container" style={{ position: 'relative', display: 'inline-block' }}>
+                  <button 
+                    className="action-btn" 
+                    onClick={() => setActiveSharePostId(activeSharePostId === post.id ? null : post.id)}
+                  >
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ display: 'inline-block', verticalAlign: 'middle' }}>
+                      <path d="M15 8v-4l7 7-7 7v-4.1C10.5 11.6 7 13.5 4 18c0-4.5 3-9 11-10z" />
+                    </svg>
+                    <span>{post.shares_count || 0}</span>
+                  </button>
+                  {activeSharePostId === post.id && (
+                    <div className="share-dropdown">
+                      <button className="share-dropdown-item" onClick={() => handleShareOptionClick(post, 'copy')}>
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: '4px' }}><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                        <span>Copy Link</span>
+                      </button>
+                      <button className="share-dropdown-item" onClick={() => handleShareOptionClick(post, 'message')}>
+                        <MessageCircle size={14} style={{ marginRight: '4px' }} />
+                        <span>Send in Message</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+              {post.likes_count > 0 && post.reactions && post.reactions.length > 0 && (
+                <div 
+                  className="post-reaction-badges"
+                  onClick={() => setReactorsModalPostId(post.id)}
+                  style={{ cursor: 'pointer' }}
+                >
+                  {(() => {
+                    const matchingOptions = post.reactions
+                      .map(t => REACTION_OPTIONS.find(o => o.type === t))
+                      .filter(Boolean);
+                    return matchingOptions.slice(0, 3).map((o, idx) => (
+                      <span 
+                        key={o.type} 
+                        className="post-reaction-badge"
+                        style={{ zIndex: 10 - idx }}
+                        title={o.label}
+                      >
+                        {o.emoji}
+                      </span>
+                    ));
+                  })()}
+                </div>
+              )}
             </div>
 
             {/* Comments Section */}
@@ -1801,7 +2339,10 @@ export default function Community() {
                                 Reply
                               </button>
                               {comment.likes_count > 0 && (
-                                <span style={{ color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '0.2rem' }}>
+                                <span 
+                                  style={{ color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '0.2rem', cursor: 'pointer' }}
+                                  onClick={() => { setReactorsModalPostId(null); setReactorsModalCommentId(comment.id); }}
+                                >
                                   {(() => {
                                     const rxList = comment.reactions || [];
                                     const matchingOptions = rxList.map(t => REACTION_OPTIONS.find(o => o.type === t)).filter(Boolean);
@@ -2271,7 +2812,10 @@ export default function Community() {
                                       Reply
                                     </button>
                                     {reply.likes_count > 0 && (
-                                      <span style={{ color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '0.15rem' }}>
+                                      <span 
+                                        style={{ color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '0.15rem', cursor: 'pointer' }}
+                                        onClick={() => { setReactorsModalPostId(null); setReactorsModalCommentId(reply.id); }}
+                                      >
                                         {(() => {
                                           const rxList = reply.reactions || [];
                                           const matchingOptions = rxList.map(t => REACTION_OPTIONS.find(o => o.type === t)).filter(Boolean);
@@ -2854,10 +3398,15 @@ export default function Community() {
         .shared-label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 1px; color: var(--text-muted); }
         .shared-details h4 { margin: 0; font-size: 1.1rem; }
         
-        .post-actions { display: flex; gap: 0.5rem; border-top: 1px solid var(--glass-border); padding-top: 1rem; }
-        .action-btn { background: transparent; border: none; color: var(--text-secondary); display: flex; align-items: center; gap: 0.5rem; cursor: pointer; padding: 0.5rem 1rem; border-radius: 6px; font-size: 0.9rem; transition: all 0.2s; }
+        .post-actions { display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--glass-border); padding-top: 1rem; }
+        .post-actions-left { display: flex; gap: 0.25rem; align-items: center; }
+        .action-btn { background: transparent; border: none; color: var(--text-secondary); display: flex; align-items: center; gap: 0.4rem; cursor: pointer; padding: 0.5rem 0.85rem; border-radius: 6px; font-size: 0.9rem; transition: all 0.2s; user-select: none; -webkit-user-select: none; }
         .action-btn:hover { background: rgba(255,255,255,0.05); color: var(--text-primary); }
         .action-btn.liked { color: var(--danger); }
+        .post-reaction-badges { display: flex; align-items: center; flex-direction: row-reverse; padding-right: 0.25rem; }
+        .post-reaction-badge { display: flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 50%; font-size: 0.85rem; margin-left: -4px; background: var(--bg-primary); border: 2px solid var(--bg-secondary); position: relative; transition: transform 0.15s ease; }
+        .post-reaction-badge:hover { transform: scale(1.2); }
+        .post-reaction-badges > .post-reaction-badge:first-child { margin-left: 0; }
         
         .comments-section { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--glass-border); display: flex; flex-direction: column; gap: 1rem; }
         .comment { display: flex; gap: 1rem; }
@@ -2974,6 +3523,63 @@ export default function Community() {
           border: 1px solid rgba(0, 0, 0, 0.08);
           box-shadow: 0 10px 30px rgba(0, 0, 0, 0.06);
         }
+        .calendar-grid {
+          display: grid;
+          grid-template-columns: repeat(7, 1fr);
+          gap: 4px;
+          margin-top: 0.5rem;
+        }
+        .calendar-weekday {
+          font-size: 0.7rem;
+          color: var(--text-muted);
+          font-weight: 600;
+          text-align: center;
+          padding: 2px 0;
+        }
+        .calendar-day-empty {
+          width: 28px;
+          height: 28px;
+        }
+        .calendar-day-btn {
+          width: 28px;
+          height: 28px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          background: transparent;
+          border: none;
+          color: var(--text-primary);
+          font-size: 0.75rem;
+          border-radius: 50%;
+          cursor: pointer;
+          transition: all 0.2s ease;
+          padding: 0;
+        }
+        .calendar-day-btn:hover {
+          background: rgba(255, 255, 255, 0.1);
+        }
+        [data-mode="light"] .calendar-day-btn:hover {
+          background: rgba(0, 0, 0, 0.05);
+        }
+        .calendar-day-btn.selected {
+          background: var(--accent-primary) !important;
+          color: #fff !important;
+          font-weight: 600;
+          box-shadow: 0 0 8px rgba(225, 29, 72, 0.4);
+        }
+        .calendar-day-btn.today {
+          border: 1px solid var(--accent-primary);
+        }
+        .time-picker-select {
+          padding: 0.25rem 0.5rem;
+          border-radius: 6px;
+          border: 1px solid var(--border-color);
+          background: var(--bg-card);
+          color: var(--text-main);
+          font-size: 0.8rem;
+          outline: none;
+          cursor: pointer;
+        }
         .option-item {
           display: flex;
           align-items: center;
@@ -3008,6 +3614,11 @@ export default function Community() {
           background: rgba(255,255,255,0.1);
           border-color: var(--accent-primary);
           color: var(--text-primary);
+        }
+        .btn-glass.scheduled-active {
+          background: rgba(234, 179, 8, 0.1) !important;
+          border-color: #eab308 !important;
+          color: #eab308 !important;
         }
 
         .proj-thumbnail-placeholder {
@@ -3336,6 +3947,544 @@ export default function Community() {
         .reaction-emoji-btn:hover {
           transform: scale(1.35) translateY(-4px) !important;
         }
+
+        /* Reactors Modal styles */
+        .reactors-modal-overlay {
+          position: fixed;
+          top: 0; left: 0; right: 0; bottom: 0;
+          background: rgba(0, 0, 0, 0.6);
+          backdrop-filter: blur(8px);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          z-index: 1100;
+          animation: reactorsFadeIn 0.25s ease-out;
+        }
+        .reactors-modal-content {
+          width: 90%;
+          max-width: 550px;
+          max-height: 80vh;
+          background: rgba(15, 23, 42, 0.95);
+          border: 1px solid rgba(255, 255, 255, 0.1);
+          box-shadow: 0 20px 40px rgba(0,0,0,0.5);
+          border-radius: 16px;
+          display: flex;
+          flex-direction: column;
+          overflow: hidden;
+          animation: reactorsScaleUp 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+        }
+        [data-mode="light"] .reactors-modal-content {
+          background: rgba(255, 255, 255, 0.95);
+          border: 1px solid rgba(0, 0, 0, 0.1);
+          box-shadow: 0 20px 40px rgba(0,0,0,0.15);
+        }
+        @keyframes reactorsFadeIn {
+          from { opacity: 0; }
+          to { opacity: 1; }
+        }
+        @keyframes reactorsScaleUp {
+          from { transform: scale(0.9); opacity: 0; }
+          to { transform: scale(1); opacity: 1; }
+        }
+        .reactors-modal-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          padding: 1.25rem 1.5rem;
+          border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+          position: relative;
+        }
+        [data-mode="light"] .reactors-modal-header {
+          border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+        }
+        .reactors-modal-title {
+          font-size: 1.15rem;
+          font-weight: 600;
+          color: var(--text-primary);
+          margin: 0;
+        }
+        .reactors-modal-close {
+          background: rgba(255, 255, 255, 0.05);
+          border: none;
+          color: var(--text-secondary);
+          width: 32px;
+          height: 32px;
+          border-radius: 50%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          cursor: pointer;
+          transition: background 0.2s, color 0.2s;
+        }
+        .reactors-modal-close:hover {
+          background: rgba(255, 255, 255, 0.1);
+          color: var(--text-primary);
+        }
+        [data-mode="light"] .reactors-modal-close {
+          background: rgba(0, 0, 0, 0.05);
+        }
+        [data-mode="light"] .reactors-modal-close:hover {
+          background: rgba(0, 0, 0, 0.1);
+        }
+        
+        /* Tabs Container */
+        .reactors-modal-tabs {
+          display: flex;
+          gap: 0.5rem;
+          padding: 0 1rem;
+          border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+          overflow-x: auto;
+          white-space: nowrap;
+          scrollbar-width: none;
+        }
+        .reactors-modal-tabs::-webkit-scrollbar {
+          display: none;
+        }
+        [data-mode="light"] .reactors-modal-tabs {
+          border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+        }
+        .reactors-tab-btn {
+          background: none;
+          border: none;
+          padding: 1rem 0.75rem;
+          color: var(--text-secondary);
+          font-size: 0.95rem;
+          font-weight: 500;
+          cursor: pointer;
+          position: relative;
+          display: flex;
+          align-items: center;
+          gap: 0.35rem;
+          transition: color 0.2s;
+        }
+        .reactors-tab-btn:hover {
+          color: var(--text-primary);
+        }
+        .reactors-tab-btn.active {
+          color: var(--accent-primary);
+          font-weight: 600;
+        }
+        .reactors-tab-btn.active::after {
+          content: '';
+          position: absolute;
+          bottom: 0; left: 0; right: 0;
+          height: 3px;
+          background: var(--accent-primary);
+          border-radius: 3px 3px 0 0;
+        }
+        
+        /* Body / Users List */
+        .reactors-modal-body {
+          flex: 1;
+          overflow-y: auto;
+          padding: 1rem 1.5rem;
+          min-height: 250px;
+        }
+        .reactor-item {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          padding: 0.75rem 0;
+          border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+        }
+        .reactor-item:last-child {
+          border-bottom: none;
+        }
+        [data-mode="light"] .reactor-item {
+          border-bottom: 1px solid rgba(0, 0, 0, 0.04);
+        }
+        .reactor-info {
+          display: flex;
+          align-items: center;
+          gap: 1rem;
+        }
+        .reactor-avatar-wrapper {
+          position: relative;
+          width: 44px;
+          height: 44px;
+        }
+        .reactor-avatar {
+          width: 100%;
+          height: 100%;
+          border-radius: 50%;
+          object-fit: cover;
+          background: var(--bg-tertiary);
+        }
+        .reactor-badge-overlay {
+          position: absolute;
+          bottom: -2px;
+          right: -2px;
+          background: var(--bg-primary);
+          border-radius: 50%;
+          width: 20px;
+          height: 20px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 0.75rem;
+          border: 2px solid var(--bg-primary);
+          box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+        }
+        [data-mode="light"] .reactor-badge-overlay {
+          border-color: rgba(255, 255, 255, 0.95);
+        }
+        .reactor-name-role {
+          display: flex;
+          flex-direction: column;
+        }
+        .reactor-name {
+          font-weight: 500;
+          color: var(--text-primary);
+          cursor: pointer;
+          transition: color 0.15s;
+        }
+        .reactor-name:hover {
+          color: var(--accent-primary);
+          text-decoration: underline;
+        }
+        .reactor-role {
+          font-size: 0.75rem;
+          color: var(--text-secondary);
+          margin-top: 2px;
+        }
+        
+        .reactor-action-btn {
+          display: flex;
+          align-items: center;
+          gap: 0.4rem;
+          background: rgba(255, 255, 255, 0.06);
+          border: 1px solid rgba(255, 255, 255, 0.08);
+          color: var(--text-primary);
+          padding: 0.5rem 1rem;
+          border-radius: 8px;
+          font-size: 0.85rem;
+          font-weight: 500;
+          cursor: pointer;
+          transition: background 0.2s, border-color 0.2s;
+        }
+        .reactor-action-btn:hover {
+          background: rgba(255, 255, 255, 0.12);
+          border-color: rgba(255, 255, 255, 0.2);
+        }
+        [data-mode="light"] .reactor-action-btn {
+          background: rgba(0, 0, 0, 0.04);
+          border: 1px solid rgba(0, 0, 0, 0.06);
+        }
+        [data-mode="light"] .reactor-action-btn:hover {
+          background: rgba(0, 0, 0, 0.08);
+          border-color: rgba(0, 0, 0, 0.12);
+        }
+        
+        .reactors-empty {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          height: 200px;
+          color: var(--text-secondary);
+        }
+
+        /* Share dropdown menu styling */
+        .share-dropdown {
+          position: absolute;
+          bottom: 100%;
+          left: 0;
+          margin-bottom: 8px;
+          background: rgba(15, 23, 42, 0.98);
+          border: 1px solid rgba(255, 255, 255, 0.12);
+          border-radius: 10px;
+          padding: 6px;
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
+          z-index: 100;
+          min-width: 170px;
+          box-shadow: 0 12px 30px rgba(0,0,0,0.4);
+          animation: shareDropdownPop 0.2s cubic-bezier(0.18, 0.89, 0.32, 1.28) forwards;
+        }
+        [data-mode="light"] .share-dropdown {
+          background: rgba(255, 255, 255, 0.98);
+          border: 1px solid rgba(0, 0, 0, 0.08);
+          box-shadow: 0 12px 30px rgba(0,0,0,0.12);
+        }
+        @keyframes shareDropdownPop {
+          from { opacity: 0; transform: translateY(6px) scale(0.94); }
+          to { opacity: 1; transform: translateY(0) scale(1); }
+        }
+        .share-dropdown-item {
+          background: none;
+          border: none;
+          width: 100%;
+          text-align: left;
+          padding: 8px 12px;
+          color: var(--text-primary);
+          font-size: 0.88rem;
+          border-radius: 6px;
+          cursor: pointer;
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          transition: background 0.15s, color 0.15s;
+        }
+        .share-dropdown-item:hover {
+          background: rgba(255, 255, 255, 0.08);
+          color: var(--accent-primary);
+        }
+        [data-mode="light"] .share-dropdown-item:hover {
+          background: rgba(0, 0, 0, 0.04);
+          color: var(--accent-primary);
+        }
+
+        /* "Send to" Modal CSS */
+        .share-modal-overlay {
+          position: fixed;
+          top: 0; left: 0; right: 0; bottom: 0;
+          background: rgba(0, 0, 0, 0.6);
+          backdrop-filter: blur(8px);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          z-index: 1100;
+          animation: shareFadeIn 0.25s ease-out;
+        }
+        .share-modal-content {
+          width: 95%;
+          max-width: 500px;
+          height: 85vh;
+          max-height: 700px;
+          background: rgba(15, 23, 42, 0.96);
+          border: 1px solid rgba(255, 255, 255, 0.1);
+          box-shadow: 0 24px 48px rgba(0,0,0,0.5);
+          border-radius: 16px;
+          display: flex;
+          flex-direction: column;
+          overflow: hidden;
+          animation: shareScaleUp 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+        }
+        [data-mode="light"] .share-modal-content {
+          background: rgba(255, 255, 255, 0.98);
+          border: 1px solid rgba(0, 0, 0, 0.08);
+          box-shadow: 0 24px 48px rgba(0,0,0,0.15);
+        }
+        @keyframes shareFadeIn {
+          from { opacity: 0; }
+          to { opacity: 1; }
+        }
+        @keyframes shareScaleUp {
+          from { transform: scale(0.9); opacity: 0; }
+          to { transform: scale(1); opacity: 1; }
+        }
+        .share-modal-header {
+          display: flex;
+          align-items: center;
+          padding: 1rem 1.25rem;
+          border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        }
+        [data-mode="light"] .share-modal-header {
+          border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+        }
+        .share-modal-back, .share-modal-close {
+          background: none;
+          border: none;
+          color: var(--text-secondary);
+          width: 36px;
+          height: 36px;
+          border-radius: 50%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          cursor: pointer;
+          transition: background 0.2s, color 0.2s;
+        }
+        .share-modal-back:hover, .share-modal-close:hover {
+          background: rgba(255, 255, 255, 0.08);
+          color: var(--text-primary);
+        }
+        [data-mode="light"] .share-modal-back:hover, [data-mode="light"] .share-modal-close:hover {
+          background: rgba(0, 0, 0, 0.05);
+        }
+        .share-modal-title {
+          flex: 1;
+          text-align: center;
+          font-size: 1.15rem;
+          font-weight: 600;
+          color: var(--text-primary);
+          margin: 0;
+        }
+        
+        /* Search Box */
+        .share-search-container {
+          display: flex;
+          align-items: center;
+          background: rgba(255, 255, 255, 0.05);
+          border: 1px solid rgba(255, 255, 255, 0.08);
+          border-radius: 20px;
+          padding: 8px 14px;
+          margin: 1rem 1.25rem;
+          gap: 8px;
+        }
+        [data-mode="light"] .share-search-container {
+          background: rgba(0, 0, 0, 0.03);
+          border: 1px solid rgba(0, 0, 0, 0.06);
+        }
+        .share-search-icon {
+          color: var(--text-secondary);
+        }
+        .share-search-input {
+          background: none;
+          border: none;
+          color: var(--text-primary);
+          font-size: 0.9rem;
+          width: 100%;
+          outline: none;
+        }
+        
+        /* Recipients List */
+        .share-modal-body {
+          flex: 1;
+          overflow-y: auto;
+          padding: 0 1.25rem 1rem;
+        }
+        .share-recipient-row {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          padding: 0.75rem 0.5rem;
+          border-radius: 8px;
+          cursor: pointer;
+          transition: background 0.15s;
+          margin-bottom: 4px;
+        }
+        .share-recipient-row:hover {
+          background: rgba(255, 255, 255, 0.04);
+        }
+        [data-mode="light"] .share-recipient-row:hover {
+          background: rgba(0, 0, 0, 0.03);
+        }
+        .share-recipient-info {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+        }
+        .share-recipient-avatar-wrapper {
+          width: 40px;
+          height: 40px;
+          border-radius: 50%;
+          overflow: hidden;
+          background: var(--bg-tertiary);
+        }
+        .share-recipient-avatar {
+          width: 100%;
+          height: 100%;
+          object-fit: cover;
+        }
+        .share-recipient-details {
+          display: flex;
+          flex-direction: column;
+          gap: 2px;
+        }
+        .share-recipient-name {
+          font-weight: 500;
+          color: var(--text-primary);
+          font-size: 0.92rem;
+        }
+        .share-recipient-role {
+          font-size: 0.75rem;
+          color: var(--text-secondary);
+        }
+        
+        /* Checkbox styling */
+        .share-checkbox {
+          width: 18px;
+          height: 18px;
+          border-radius: 4px;
+          border: 2px solid var(--text-secondary);
+          cursor: pointer;
+          accent-color: var(--accent-primary);
+        }
+
+        /* Modal Footer */
+        .share-modal-footer {
+          padding: 1rem 1.25rem;
+          border-top: 1px solid rgba(255, 255, 255, 0.08);
+          display: flex;
+          flex-direction: column;
+          gap: 12px;
+          background: rgba(10, 15, 30, 0.5);
+        }
+        [data-mode="light"] .share-modal-footer {
+          border-top: 1px solid rgba(0, 0, 0, 0.08);
+          background: rgba(0, 0, 0, 0.01);
+        }
+        .share-input-wrapper {
+          position: relative;
+          display: flex;
+          align-items: center;
+          background: rgba(255, 255, 255, 0.05);
+          border: 1px solid rgba(255, 255, 255, 0.08);
+          border-radius: 20px;
+          padding: 8px 16px;
+        }
+        [data-mode="light"] .share-input-wrapper {
+          background: rgba(0, 0, 0, 0.03);
+          border: 1px solid rgba(0, 0, 0, 0.06);
+        }
+        .share-optional-message {
+          background: none;
+          border: none;
+          color: var(--text-primary);
+          font-size: 0.9rem;
+          width: 100%;
+          outline: none;
+        }
+        .share-input-dot {
+          width: 6px;
+          height: 6px;
+          border-radius: 50%;
+          background: #22c55e;
+          margin-left: 8px;
+        }
+        .share-send-btn {
+          width: 100%;
+          background: var(--accent-primary);
+          border: none;
+          color: white;
+          padding: 10px;
+          border-radius: 8px;
+          font-weight: 600;
+          font-size: 0.95rem;
+          cursor: pointer;
+          transition: opacity 0.2s, background 0.2s;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+        .share-send-btn:hover:not(:disabled) {
+          background: var(--accent-hover, #be123c);
+        }
+        .share-send-btn:disabled {
+          background: rgba(255, 255, 255, 0.08);
+          color: var(--text-secondary);
+          cursor: not-allowed;
+        }
+        [data-mode="light"] .share-send-btn:disabled {
+          background: rgba(0, 0, 0, 0.05);
+        }
+        .share-loading-spinner {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          height: 200px;
+          color: var(--text-secondary);
+        }
+        .share-empty-list {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          height: 150px;
+          color: var(--text-secondary);
+          font-size: 0.9rem;
+        }
       `}</style>
 
       {/* ── Lightbox Portal ── */}
@@ -3420,6 +4569,299 @@ export default function Community() {
               ))}
             </div>
           )}
+        </div>,
+        document.body
+      )}
+
+      {/* ── Reactors Modal Portal ── */}
+      {(reactorsModalPostId || reactorsModalCommentId) && createPortal(
+        <div className="reactors-modal-overlay" onClick={() => { setReactorsModalPostId(null); setReactorsModalCommentId(null); }}>
+          <div className="reactors-modal-content" onClick={e => e.stopPropagation()}>
+            <div className="reactors-modal-header">
+              <h3 className="reactors-modal-title">People who reacted</h3>
+              <button className="reactors-modal-close" onClick={() => { setReactorsModalPostId(null); setReactorsModalCommentId(null); }}>
+                <X size={16} />
+              </button>
+            </div>
+            
+            {loadingReactors ? (
+              <div className="reactors-empty" style={{ minHeight: '200px' }}>
+                <div className="spinner">Loading...</div>
+              </div>
+            ) : reactorsList.length === 0 ? (
+              <div className="reactors-empty" style={{ minHeight: '200px' }}>
+                <p>No reactions yet.</p>
+              </div>
+            ) : (
+              <>
+                {/* Tabs */}
+                <div className="reactors-modal-tabs">
+                  <button 
+                    className={`reactors-tab-btn ${activeReactorTab === 'all' ? 'active' : ''}`}
+                    onClick={() => setActiveReactorTab('all')}
+                  >
+                    All {reactorsList.length}
+                  </button>
+                  {(() => {
+                    const presentTypes = [...new Set(reactorsList.map(r => r.reaction_type))];
+                    return presentTypes.map(type => {
+                      const opt = REACTION_OPTIONS.find(o => o.type === type);
+                      const emoji = opt ? opt.emoji : '👍';
+                      const count = reactorsList.filter(r => r.reaction_type === type).length;
+                      return (
+                        <button
+                          key={type}
+                          className={`reactors-tab-btn ${activeReactorTab === type ? 'active' : ''}`}
+                          onClick={() => setActiveReactorTab(type)}
+                        >
+                          <span style={{ fontSize: '1rem' }}>{emoji}</span>
+                          <span>{count}</span>
+                        </button>
+                      );
+                    });
+                  })()}
+                </div>
+                
+                {/* List */}
+                <div className="reactors-modal-body custom-scrollbar">
+                  {(() => {
+                    const filtered = activeReactorTab === 'all' 
+                      ? reactorsList 
+                      : reactorsList.filter(r => r.reaction_type === activeReactorTab);
+                    return filtered.map(reactor => {
+                      const opt = REACTION_OPTIONS.find(o => o.type === reactor.reaction_type);
+                      const emoji = opt ? opt.emoji : '👍';
+                      return (
+                        <div key={reactor.user_id} className="reactor-item">
+                          <div className="reactor-info">
+                            <div className="reactor-avatar-wrapper">
+                              {reactor.profile_picture ? (
+                                <img 
+                                  className="reactor-avatar" 
+                                  src={resolveMediaUrl(reactor.profile_picture)} 
+                                  alt="" 
+                                />
+                              ) : (
+                                <img 
+                                  className="reactor-avatar" 
+                                  src={`${import.meta.env.BASE_URL}avatars/male1.png`} 
+                                  alt="" 
+                                  style={{ opacity: 0.5 }} 
+                                />
+                              )}
+                              <div className="reactor-badge-overlay">
+                                {emoji}
+                              </div>
+                            </div>
+                            <div className="reactor-name-role">
+                              <span 
+                                className="reactor-name"
+                                onClick={() => {
+                                  setReactorsModalPostId(null);
+                                  setReactorsModalCommentId(null);
+                                  navigate(`/profile/${reactor.user_id}`);
+                                }}
+                              >
+                                {reactor.first_name} {reactor.last_name}
+                              </span>
+                              <span className="reactor-role">
+                                {reactor.role === 'admin' ? 'Admin' : reactor.role === 'instructor' ? 'Teacher' : 'Student'}
+                              </span>
+                            </div>
+                          </div>
+                          
+                          {Number(reactor.user_id) !== Number(currentUser?.id) && (
+                            <button 
+                              className="reactor-action-btn"
+                              onClick={() => {
+                                setReactorsModalPostId(null);
+                                setReactorsModalCommentId(null);
+                                navigate('/inbox', { 
+                                  state: { 
+                                    selectedUser: {
+                                      id: reactor.user_id,
+                                      first_name: reactor.first_name,
+                                      last_name: reactor.last_name,
+                                      role: reactor.role,
+                                      profile_picture: reactor.profile_picture,
+                                      username: reactor.username
+                                    } 
+                                  } 
+                                });
+                              }}
+                            >
+                              <MessageCircle size={14} />
+                              <span>Message</span>
+                            </button>
+                          )}
+                        </div>
+                      );
+                    });
+                  })()}
+                </div>
+              </>
+            )}
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* ── "Send to" Modal Portal ── */}
+      {shareModalPost && createPortal(
+        <div className="share-modal-overlay" onClick={() => setShareModalPost(null)}>
+          <div className="share-modal-content" onClick={e => e.stopPropagation()}>
+            <div className="share-modal-header">
+              <button className="share-modal-back" onClick={() => setShareModalPost(null)} aria-label="Back">
+                <ChevronLeft size={20} />
+              </button>
+              <h3 className="share-modal-title">Send to</h3>
+              <button className="share-modal-close" onClick={() => setShareModalPost(null)} aria-label="Close">
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="share-search-container">
+              <Search size={16} className="share-search-icon" />
+              <input 
+                type="text" 
+                className="share-search-input" 
+                placeholder="Search for people"
+                value={shareSearchQuery}
+                onChange={e => setShareSearchQuery(e.target.value)}
+              />
+            </div>
+
+            <div className="share-modal-body custom-scrollbar">
+              {loadingRecipients ? (
+                <div className="share-loading-spinner">
+                  <div className="spinner">Loading...</div>
+                </div>
+              ) : recipients.length === 0 ? (
+                <div className="share-empty-list">
+                  <p>No results found</p>
+                </div>
+              ) : (
+                recipients.map(user => {
+                  const isChecked = selectedRecipients.has(user.id);
+                  return (
+                    <div 
+                      key={user.id} 
+                      className={`share-recipient-row ${isChecked ? 'selected' : ''}`}
+                      onClick={() => {
+                        setSelectedRecipients(prev => {
+                          const next = new Set(prev);
+                          if (next.has(user.id)) {
+                            next.delete(user.id);
+                          } else {
+                            next.add(user.id);
+                          }
+                          return next;
+                        });
+                      }}
+                    >
+                      <div className="share-recipient-info">
+                        <div className="share-recipient-avatar-wrapper">
+                          {user.profile_picture ? (
+                            <img 
+                              className="share-recipient-avatar" 
+                              src={resolveMediaUrl(user.profile_picture)} 
+                              alt="" 
+                            />
+                          ) : (
+                            <img 
+                              className="share-recipient-avatar" 
+                              src={`${import.meta.env.BASE_URL}avatars/male1.png`} 
+                              alt="" 
+                              style={{ opacity: 0.5 }} 
+                            />
+                          )}
+                        </div>
+                        <div className="share-recipient-details">
+                          <span className="share-recipient-name">
+                            {user.first_name} {user.last_name}
+                          </span>
+                          <span className="share-recipient-role">
+                            {user.role === 'admin' ? 'Admin' : user.role === 'instructor' ? 'Teacher' : user.batch_number ? `Student - ${user.batch_number} Batch` : 'Student'}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="share-checkbox-wrapper">
+                        <input 
+                          type="checkbox" 
+                          className="share-checkbox" 
+                          checked={isChecked} 
+                          readOnly 
+                        />
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            <div className="share-modal-footer">
+              <div className="share-input-wrapper">
+                <input 
+                  type="text" 
+                  className="share-optional-message"
+                  placeholder="Add an optional message here..."
+                  value={shareMessageText}
+                  onChange={e => setShareMessageText(e.target.value)}
+                  disabled={sendingShare}
+                />
+                <span className="share-input-dot"></span>
+              </div>
+              <button 
+                className="share-send-btn" 
+                disabled={selectedRecipients.size === 0 || sendingShare}
+                onClick={async () => {
+                  setSendingShare(true);
+                  const shareUrl = `${window.location.origin}/community#post-${shareModalPost.id}`;
+                  const postContentText = shareModalPost.content ? shareModalPost.content.substring(0, 100) + '...' : 'Check out this post!';
+                  const fullMessage = shareMessageText.trim() 
+                    ? `${shareMessageText.trim()}\n\nCheck out this post on BFI Community:\n${shareUrl}`
+                    : `Check out this post on BFI Community:\n${shareUrl}`;
+
+                  try {
+                    const sendPromises = [...selectedRecipients].map(async (recipientId) => {
+                      return fetch('/api/inbox/messages', {
+                        method: 'POST',
+                        headers: {
+                          'Content-Type': 'application/json',
+                          'Authorization': `Bearer ${localStorage.getItem('token')}`
+                        },
+                        body: JSON.stringify({
+                          receiver_id: recipientId,
+                          content: fullMessage
+                        })
+                      });
+                    });
+                    
+                    await Promise.all(sendPromises);
+                    
+                    await fetch(`/api/community/posts/${shareModalPost.id}/share`, {
+                      method: 'POST',
+                      headers: {
+                        'Authorization': `Bearer ${localStorage.getItem('token')}`
+                      }
+                    });
+
+                    setPosts(prev => prev.map(p => p.id === shareModalPost.id ? { ...p, shares_count: (p.shares_count || 0) + 1 } : p));
+                    
+                    await showAlert('Post shared successfully!', { title: 'Shared' });
+                    setShareModalPost(null);
+                  } catch (err) {
+                    console.error('Error sharing post:', err);
+                    await showAlert('Failed to share post with some recipients.', { title: 'Error' });
+                  } finally {
+                    setSendingShare(false);
+                  }
+                }}
+              >
+                {sendingShare ? 'Sending...' : 'Send'}
+              </button>
+            </div>
+          </div>
         </div>,
         document.body
       )}
