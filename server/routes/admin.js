@@ -972,65 +972,103 @@ router.put('/students/:id/academic-records/:courseId', authenticateToken, requir
 // Create global announcement
 router.post('/announcements', authenticateToken, requireRole('admin'), sanitizeInput, (req, res) => {
   try {
-    const { title, content, priority = 'normal', targetCourse = null, targetBatch = null, image_url = null } = req.body;
+    const { title, content, priority = 'normal', targetCourse = null, targetBatch = null, image_url = null, scheduled_at = null } = req.body;
     if (!title || !content) {
       return res.status(400).json({ error: 'Title and content are required.' });
     }
-    
-    const stmt = db.prepare('INSERT INTO announcements (admin_id, title, content, priority, target_course, target_batch, image_url) VALUES (?, ?, ?, ?, ?, ?, ?)');
-    const info = stmt.run(req.user.id, title, content, priority, targetCourse || null, targetBatch || null, image_url || null);
-    
-    // Insert into notifications table for relevant users
-    let targetUsers = [];
-    if (!targetCourse && !targetBatch) {
-      targetUsers = db.prepare('SELECT id FROM users').all();
-    } else {
-      let query = `
-        SELECT DISTINCT u.id 
-        FROM users u
-        LEFT JOIN student_course_enrollments e ON u.id = e.user_id
-        LEFT JOIN student_profiles p ON u.id = p.user_id
-        WHERE u.role = 'student'
-      `;
-      const params = [];
-      if (targetCourse) {
-        query += ` AND e.course_name = ?`;
-        params.push(targetCourse);
-      }
-      if (targetBatch) {
-        query += ` AND p.batch_number = ?`;
-        params.push(targetBatch);
-      }
-      targetUsers = db.prepare(query).all(...params);
-    }
 
-    if (targetUsers.length > 0) {
-      const insertNotification = db.prepare('INSERT INTO notifications (user_id, type, title, message, link, image_url) VALUES (?, ?, ?, ?, ?, ?)');
-      const insertMany = db.transaction((users) => {
-        for (const user of users) {
-          if (user.id !== req.user.id) {
-            insertNotification.run(user.id, 'notice', 'New Notice', title, '/notices', image_url || null);
-          }
+    let scheduledAtValue = null;
+    if (scheduled_at) {
+      const scheduledDate = new Date(scheduled_at);
+      if (isNaN(scheduledDate.getTime())) {
+        return res.status(400).json({ error: 'Invalid scheduled_at date.' });
+      }
+      if (scheduledDate <= new Date()) {
+        return res.status(400).json({ error: 'Scheduled time must be in the future.' });
+      }
+      scheduledAtValue = scheduledDate.toISOString();
+    }
+    
+    const stmt = db.prepare('INSERT INTO announcements (admin_id, title, content, priority, target_course, target_batch, image_url, scheduled_at, scheduled_notified) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
+    const info = stmt.run(req.user.id, title, content, priority, targetCourse || null, targetBatch || null, image_url || null, scheduledAtValue, 0);
+    
+    if (!scheduledAtValue) {
+      // Insert into notifications table for relevant users
+      let targetUsers = [];
+      if (!targetCourse && !targetBatch) {
+        targetUsers = db.prepare('SELECT id FROM users').all();
+      } else {
+        let query = `
+          SELECT DISTINCT u.id 
+          FROM users u
+          LEFT JOIN student_course_enrollments e ON u.id = e.user_id
+          LEFT JOIN student_profiles p ON u.id = p.user_id
+          WHERE u.role = 'student'
+        `;
+        const params = [];
+        if (targetCourse) {
+          query += ` AND e.course_name = ?`;
+          params.push(targetCourse);
         }
-      });
-      insertMany(targetUsers);
+        if (targetBatch) {
+          query += ` AND p.batch_number = ?`;
+          params.push(targetBatch);
+        }
+        targetUsers = db.prepare(query).all(...params);
+      }
+
+      const targetUserNotifications = [];
+      if (targetUsers.length > 0) {
+        const insertNotification = db.prepare('INSERT INTO notifications (user_id, type, title, message, link, image_url) VALUES (?, ?, ?, ?, ?, ?)');
+        const insertMany = db.transaction((users) => {
+          for (const user of users) {
+            if (user.id !== req.user.id) {
+              const res = insertNotification.run(user.id, 'notice', 'New Notice', title, '/notices', image_url || null);
+              targetUserNotifications.push({ userId: user.id, notifId: res.lastInsertRowid });
+            }
+          }
+        });
+        insertMany(targetUsers);
+      }
+
+      // Broadcast real-time notification to all connected users
+      const io = req.app.get('io');
+      if (io) {
+        io.emit('new_announcement', {
+          id: info.lastInsertRowid,
+          title,
+          priority,
+          target_course: targetCourse || null,
+          target_batch: targetBatch || null,
+          image_url: image_url || null
+        });
+
+        const adminUser = db.prepare('SELECT first_name, last_name, profile_picture FROM users WHERE id = ?').get(req.user.id);
+        const adminName = adminUser ? `${adminUser.first_name} ${adminUser.last_name}` : 'Admin';
+        const adminAvatar = adminUser ? adminUser.profile_picture : null;
+
+        for (const item of targetUserNotifications) {
+          io.to(`user:${item.userId}`).emit('notification_received', {
+            id: item.notifId,
+            type: 'notice',
+            title: 'New Notice',
+            message: title,
+            link: '/notices',
+            image_url: image_url || null,
+            sender_name: adminName,
+            sender_avatar: adminAvatar,
+            created_at: new Date().toISOString()
+          });
+        }
+        io.emit('new_notification');
+      }
     }
 
-    // Broadcast real-time notification to all connected users
-    const io = req.app.get('io');
-    if (io) {
-      io.emit('new_announcement', {
-        id: info.lastInsertRowid,
-        title,
-        priority,
-        target_course: targetCourse || null,
-        target_batch: targetBatch || null,
-        image_url: image_url || null
-      });
-      io.emit('new_notification');
-    }
-
-    res.status(201).json({ message: 'Announcement created successfully.', id: info.lastInsertRowid });
+    res.status(201).json({ 
+      message: scheduledAtValue ? 'Announcement scheduled successfully.' : 'Announcement created successfully.', 
+      id: info.lastInsertRowid,
+      scheduled_at: scheduledAtValue
+    });
   } catch (error) {
     console.error('Error creating announcement:', error);
     res.status(500).json({ error: 'Internal server error while creating announcement.' });
@@ -1097,5 +1135,103 @@ router.get('/targeting-options', authenticateToken, requireRole('admin'), (req, 
     res.status(500).json({ error: 'Internal server error while fetching targeting options.' });
   }
 });
+
+export function startAnnouncementScheduler(io) {
+  // Check every 10 seconds for scheduled announcements that are due to be published
+  setInterval(() => {
+    try {
+      const pendingAnnouncements = db.prepare(`
+        SELECT id, admin_id, title, content, priority, target_course, target_batch, image_url, scheduled_at
+        FROM announcements
+        WHERE scheduled_at IS NOT NULL
+          AND datetime(scheduled_at) <= datetime('now')
+          AND scheduled_notified = 0
+      `).all();
+
+      if (pendingAnnouncements.length > 0) {
+        console.log(`[Announcement Scheduler] Publishing ${pendingAnnouncements.length} scheduled announcements...`);
+        const updateNotified = db.prepare(`
+          UPDATE announcements
+          SET scheduled_notified = 1
+          WHERE id = ?
+        `);
+
+        for (const ann of pendingAnnouncements) {
+          // Get target users
+          let targetUsers = [];
+          if (!ann.target_course && !ann.target_batch) {
+            targetUsers = db.prepare('SELECT id FROM users').all();
+          } else {
+            let query = `
+              SELECT DISTINCT u.id 
+              FROM users u
+              LEFT JOIN student_course_enrollments e ON u.id = e.user_id
+              LEFT JOIN student_profiles p ON u.id = p.user_id
+              WHERE u.role = 'student'
+            `;
+            const params = [];
+            if (ann.target_course) {
+              query += ` AND e.course_name = ?`;
+              params.push(ann.target_course);
+            }
+            if (ann.target_batch) {
+              query += ` AND p.batch_number = ?`;
+              params.push(ann.target_batch);
+            }
+            targetUsers = db.prepare(query).all(...params);
+          }
+
+          const targetUserNotifications = [];
+          if (targetUsers.length > 0) {
+            const insertNotification = db.prepare('INSERT INTO notifications (user_id, type, title, message, link, image_url) VALUES (?, ?, ?, ?, ?, ?)');
+            const insertMany = db.transaction((users) => {
+              for (const user of users) {
+                if (user.id !== ann.admin_id) {
+                  const res = insertNotification.run(user.id, 'notice', 'New Notice', ann.title, '/notices', ann.image_url || null);
+                  targetUserNotifications.push({ userId: user.id, notifId: res.lastInsertRowid });
+                }
+              }
+            });
+            insertMany(targetUsers);
+          }
+
+          updateNotified.run(ann.id);
+
+          if (io) {
+            io.emit('new_announcement', {
+              id: ann.id,
+              title: ann.title,
+              priority: ann.priority,
+              target_course: ann.target_course || null,
+              target_batch: ann.target_batch || null,
+              image_url: ann.image_url || null
+            });
+
+            const adminUser = db.prepare('SELECT first_name, last_name, profile_picture FROM users WHERE id = ?').get(ann.admin_id);
+            const adminName = adminUser ? `${adminUser.first_name} ${adminUser.last_name}` : 'Admin';
+            const adminAvatar = adminUser ? adminUser.profile_picture : null;
+
+            for (const item of targetUserNotifications) {
+              io.to(`user:${item.userId}`).emit('notification_received', {
+                id: item.notifId,
+                type: 'notice',
+                title: 'New Notice',
+                message: ann.title,
+                link: '/notices',
+                image_url: ann.image_url || null,
+                sender_name: adminName,
+                sender_avatar: adminAvatar,
+                created_at: new Date().toISOString()
+              });
+            }
+            io.emit('new_notification');
+          }
+        }
+      }
+    } catch (error) {
+      console.error('[Announcement Scheduler] Error processing scheduled announcements:', error);
+    }
+  }, 10000);
+}
 
 export default router;

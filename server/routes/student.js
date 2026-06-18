@@ -296,7 +296,7 @@ router.get('/dashboard', authenticateToken, (req, res) => {
     }
 
     const announcements = db.prepare(`
-      SELECT a.id, a.title, a.content, a.priority, a.target_course, a.target_batch, a.image_url, a.created_at, u.first_name as admin_name
+      SELECT a.id, a.title, a.content, a.priority, a.target_course, a.target_batch, a.image_url, a.created_at, a.scheduled_at, u.first_name as admin_name
       FROM announcements a
       JOIN users u ON a.admin_id = u.id
       WHERE (
@@ -311,7 +311,8 @@ router.get('/dashboard', authenticateToken, (req, res) => {
             a.target_batch IS NULL OR a.target_batch = '' OR a.target_batch = ?
           )
         )
-      ) AND a.created_at >= datetime('now', '-14 days')
+      ) AND (a.scheduled_at IS NULL OR datetime(a.scheduled_at) <= datetime('now'))
+        AND a.created_at >= datetime('now', '-14 days')
       ORDER BY a.created_at DESC
       LIMIT 20
     `).all(req.user.id, batchFilter);
@@ -348,7 +349,7 @@ router.get('/notices', authenticateToken, (req, res) => {
     if (req.user.role === 'admin') {
       // Admins see all announcements
       announcements = db.prepare(`
-        SELECT a.id, a.title, a.content, a.priority, a.target_course, a.target_batch, a.image_url, a.created_at, u.first_name as admin_name
+        SELECT a.id, a.title, a.content, a.priority, a.target_course, a.target_batch, a.image_url, a.created_at, a.scheduled_at, u.first_name as admin_name
         FROM announcements a
         JOIN users u ON a.admin_id = u.id
         ORDER BY a.created_at DESC
@@ -366,20 +367,22 @@ router.get('/notices', authenticateToken, (req, res) => {
       }
 
       announcements = db.prepare(`
-        SELECT a.id, a.title, a.content, a.priority, a.target_course, a.target_batch, a.image_url, a.created_at, u.first_name as admin_name
+        SELECT a.id, a.title, a.content, a.priority, a.target_course, a.target_batch, a.image_url, a.created_at, a.scheduled_at, u.first_name as admin_name
         FROM announcements a
         JOIN users u ON a.admin_id = u.id
         WHERE (
-          (a.target_course IS NULL OR a.target_course = '') AND (a.target_batch IS NULL OR a.target_batch = '')
-        ) OR (
-          (a.target_course IS NULL OR a.target_course = '' OR EXISTS (
-            SELECT 1 FROM student_course_enrollments sce
-            WHERE sce.user_id = ? AND sce.course_name = a.target_course
-          ))
-          AND (
-            a.target_batch IS NULL OR a.target_batch = '' OR a.target_batch = ?
+          (
+            (a.target_course IS NULL OR a.target_course = '') AND (a.target_batch IS NULL OR a.target_batch = '')
+          ) OR (
+            (a.target_course IS NULL OR a.target_course = '' OR EXISTS (
+              SELECT 1 FROM student_course_enrollments sce
+              WHERE sce.user_id = ? AND sce.course_name = a.target_course
+            ))
+            AND (
+              a.target_batch IS NULL OR a.target_batch = '' OR a.target_batch = ?
+            )
           )
-        )
+        ) AND (a.scheduled_at IS NULL OR datetime(a.scheduled_at) <= datetime('now'))
         ORDER BY a.created_at DESC
         LIMIT 50
       `).all(req.user.id, batchFilter);

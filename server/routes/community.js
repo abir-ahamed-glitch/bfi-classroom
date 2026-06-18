@@ -7,13 +7,37 @@ const router = express.Router();
 function sendCommunityPostNotification(postId, posterId, content, media_url, project_id, audience, isUpdate = false, io) {
   try {
     // 1. Get poster details
-    const poster = db.prepare('SELECT first_name, last_name, role FROM users WHERE id = ?').get(posterId);
+    const poster = db.prepare('SELECT first_name, last_name, role, profile_picture FROM users WHERE id = ?').get(posterId);
     const posterName = poster ? `${poster.first_name} ${poster.last_name}` : 'A user';
 
     // 2. Prepare message snippet & image
     let snippet = (content || '').trim().substring(0, 50);
     if (content && content.length > 50) snippet += '...';
     if (!snippet) snippet = project_id ? 'Shared a project' : 'Shared a media post';
+
+    let messageText;
+    const isSnippetDefault = !(content || '').trim();
+    if (isUpdate) {
+      if (project_id) {
+        messageText = isSnippetDefault 
+          ? `${posterName} updated their shared project`
+          : `${posterName} updated their shared project: "${snippet}"`;
+      } else {
+        messageText = isSnippetDefault
+          ? `${posterName} updated their post`
+          : `${posterName} updated their post: "${snippet}"`;
+      }
+    } else {
+      if (project_id) {
+        messageText = isSnippetDefault
+          ? `${posterName} shared a project`
+          : `${posterName} shared a project: "${snippet}"`;
+      } else {
+        messageText = isSnippetDefault
+          ? `${posterName} shared a post`
+          : `${posterName} posted: "${snippet}"`;
+      }
+    }
     
     let imageUrl = null;
     if (project_id) {
@@ -73,14 +97,29 @@ function sendCommunityPostNotification(postId, posterId, content, media_url, pro
 
     if (targetUsers.length > 0) {
       const insertNotification = db.prepare('INSERT INTO notifications (user_id, type, title, message, link, image_url) VALUES (?, ?, ?, ?, ?, ?)');
+      const targetUserNotifications = [];
       const insertMany = db.transaction((users) => {
         for (const user of users) {
-          insertNotification.run(user.id, 'community', notifTitle, snippet, notifLink, imageUrl);
+          const res = insertNotification.run(user.id, 'community', notifTitle, messageText, notifLink, imageUrl);
+          targetUserNotifications.push({ userId: user.id, notifId: res.lastInsertRowid });
         }
       });
       insertMany(targetUsers);
 
       if (io) {
+        for (const item of targetUserNotifications) {
+          io.to(`user:${item.userId}`).emit('notification_received', {
+            id: item.notifId,
+            type: 'community',
+            title: notifTitle,
+            message: messageText,
+            link: notifLink,
+            image_url: imageUrl,
+            sender_name: posterName,
+            sender_avatar: poster ? poster.profile_picture : null,
+            created_at: new Date().toISOString()
+          });
+        }
         io.emit('new_notification');
       }
     }
@@ -104,7 +143,7 @@ function getCommentText(content) {
 
 function sendCommentNotifications(postId, commentId, commenterId, content, parentId, io) {
   try {
-    const commenter = db.prepare('SELECT first_name, last_name FROM users WHERE id = ?').get(commenterId);
+    const commenter = db.prepare('SELECT first_name, last_name, profile_picture FROM users WHERE id = ?').get(commenterId);
     if (!commenter) return;
     const commenterName = `${commenter.first_name} ${commenter.last_name}`;
 
@@ -112,30 +151,115 @@ function sendCommentNotifications(postId, commentId, commenterId, content, paren
     let snippet = textContent.trim().substring(0, 50);
     if (textContent.length > 50) snippet += '...';
 
-    const insertNotification = db.prepare(`
-      INSERT INTO notifications (user_id, type, title, message, link)
-      VALUES (?, ?, ?, ?, ?)
-    `);
+    // Get the post details to find the post owner and image
+    const post = db.prepare('SELECT user_id, content, image_url, shared_project_id FROM community_posts WHERE id = ?').get(postId);
+    if (!post) return;
 
-    const notifiedUserIds = new Set();
-
-    // 1. Reply Notification
-    if (parentId) {
-      const parentComment = db.prepare('SELECT user_id FROM post_comments WHERE id = ?').get(parentId);
-      if (parentComment && parentComment.user_id !== commenterId) {
-        insertNotification.run(
-          parentComment.user_id,
-          'community',
-          'New reply to your comment',
-          `${commenterName} replied to your comment: "${snippet}"`,
-          `/community#post-${postId}`
-        );
-        notifiedUserIds.add(parentComment.user_id);
+    // Resolve post image
+    let imageUrl = null;
+    if (post.shared_project_id) {
+      const proj = db.prepare('SELECT thumbnail_url, poster_url FROM projects WHERE id = ?').get(post.shared_project_id);
+      if (proj) imageUrl = proj.thumbnail_url || proj.poster_url;
+    } else if (post.image_url) {
+      try {
+        const parsed = JSON.parse(post.image_url);
+        if (Array.isArray(parsed) && parsed.length > 0) imageUrl = parsed[0].url;
+      } catch {
+        imageUrl = post.image_url;
       }
     }
 
-    // 2. Mention Notification
-    const matches = textContent.match(/@([a-zA-Z0-9._\-]+)/g) || [];
+    const insertNotification = db.prepare(`
+      INSERT INTO notifications (user_id, type, title, message, link, image_url)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `);
+
+    const notifiedUserIds = new Set();
+    const notifiedUsers = [];
+
+    // 1. Reply Notification
+    if (parentId) {
+      const parentComment = db.prepare('SELECT user_id, parent_id FROM post_comments WHERE id = ?').get(parentId);
+      if (parentComment && parentComment.user_id !== commenterId) {
+        const isReply = parentComment.parent_id !== null;
+        const targetType = isReply ? 'reply' : 'comment';
+        const notifTitle = isReply ? 'New reply to your reply' : 'New reply to your comment';
+        const messageText = snippet ? `${commenterName} replied to your ${targetType}: "${snippet}"` : `${commenterName} replied to your ${targetType}`;
+        const res = insertNotification.run(
+          parentComment.user_id,
+          'community',
+          notifTitle,
+          messageText,
+          `/community#post-${postId}`,
+          imageUrl
+        );
+        notifiedUserIds.add(parentComment.user_id);
+        notifiedUsers.push({
+          userId: parentComment.user_id,
+          notifId: res.lastInsertRowid,
+          title: notifTitle,
+          message: messageText
+        });
+      }
+    }
+
+    // 2. Post Owner Notification (when someone comments on their post)
+    if (post.user_id !== commenterId && !notifiedUserIds.has(post.user_id)) {
+      const messageText = snippet ? `${commenterName} commented on your post: "${snippet}"` : `${commenterName} commented on your post`;
+      const res = insertNotification.run(
+        post.user_id,
+        'community',
+        'New comment on your post',
+        messageText,
+        `/community#post-${postId}`,
+        imageUrl
+      );
+      notifiedUserIds.add(post.user_id);
+      notifiedUsers.push({
+        userId: post.user_id,
+        notifId: res.lastInsertRowid,
+        title: 'New comment on your post',
+        message: messageText
+      });
+    }
+
+    // 3. Previous Commenters Notification (social activity alert)
+    const postOwner = db.prepare('SELECT first_name, last_name FROM users WHERE id = ?').get(post.user_id);
+    const postOwnerName = postOwner ? `${postOwner.first_name} ${postOwner.last_name}` : 'a user';
+
+    const previousCommenters = db.prepare(`
+      SELECT DISTINCT user_id FROM post_comments 
+      WHERE post_id = ? AND user_id != ? AND user_id != ?
+    `).all(postId, commenterId, post.user_id);
+
+    for (const c of previousCommenters) {
+      if (!notifiedUserIds.has(c.user_id)) {
+        let messageText;
+        if (commenterId === post.user_id) {
+          messageText = snippet ? `${commenterName} also commented on their post: "${snippet}"` : `${commenterName} also commented on their post`;
+        } else {
+          messageText = snippet ? `${commenterName} also commented on ${postOwnerName}'s post: "${snippet}"` : `${commenterName} also commented on ${postOwnerName}'s post`;
+        }
+        const res = insertNotification.run(
+          c.user_id,
+          'community',
+          'Activity on post',
+          messageText,
+          `/community#post-${postId}`,
+          imageUrl
+        );
+        notifiedUserIds.add(c.user_id);
+        notifiedUsers.push({
+          userId: c.user_id,
+          notifId: res.lastInsertRowid,
+          title: 'Activity on post',
+          message: messageText
+        });
+      }
+    }
+
+    // 4. Mention Notification
+    const matches = textContent.match(/@([a-zA-Z0-9._-]+)/g) || [];
     const mentionTokens = matches.map(m => m.slice(1).trim().toLowerCase());
 
     if (mentionTokens.length > 0) {
@@ -150,19 +274,27 @@ function sendCommentNotifications(postId, commentId, commenterId, content, paren
 
       for (const u of users) {
         if (u.id !== commenterId && !notifiedUserIds.has(u.id)) {
-          insertNotification.run(
+          const messageText = snippet ? `${commenterName} mentioned you in a comment: "${snippet}"` : `${commenterName} mentioned you in a comment`;
+          const res = insertNotification.run(
             u.id,
             'community',
             'You were mentioned',
-            `${commenterName} mentioned you in a comment: "${snippet}"`,
-            `/community#post-${postId}`
+            messageText,
+            `/community#post-${postId}`,
+            imageUrl
           );
           notifiedUserIds.add(u.id);
+          notifiedUsers.push({
+            userId: u.id,
+            notifId: res.lastInsertRowid,
+            title: 'You were mentioned',
+            message: messageText
+          });
         }
       }
     }
 
-    // 3. Name-based Mention Notification (for replies prepopulated with user names)
+    // 5. Name-based Mention Notification (for replies prepopulated with user names)
     const nameMentionUsers = db.prepare(`
       SELECT id FROM users
       WHERE ? = (first_name || ' ' || last_name)
@@ -171,18 +303,39 @@ function sendCommentNotifications(postId, commentId, commenterId, content, paren
 
     for (const u of nameMentionUsers) {
       if (u.id !== commenterId && !notifiedUserIds.has(u.id)) {
-        insertNotification.run(
+        const messageText = snippet ? `${commenterName} mentioned you in a comment: "${snippet}"` : `${commenterName} mentioned you in a comment`;
+        const res = insertNotification.run(
           u.id,
           'community',
           'You were mentioned',
-          `${commenterName} mentioned you in a comment: "${snippet}"`,
-          `/community#post-${postId}`
+          messageText,
+          `/community#post-${postId}`,
+          imageUrl
         );
         notifiedUserIds.add(u.id);
+        notifiedUsers.push({
+          userId: u.id,
+          notifId: res.lastInsertRowid,
+          title: 'You were mentioned',
+          message: messageText
+        });
       }
     }
 
-    if (notifiedUserIds.size > 0 && io) {
+    if (notifiedUsers.length > 0 && io) {
+      for (const item of notifiedUsers) {
+        io.to(`user:${item.userId}`).emit('notification_received', {
+          id: item.notifId,
+          type: 'community',
+          title: item.title,
+          message: item.message,
+          link: `/community#post-${postId}`,
+          image_url: imageUrl,
+          sender_name: commenterName,
+          sender_avatar: commenter.profile_picture,
+          created_at: new Date().toISOString()
+        });
+      }
       io.emit('new_notification');
     }
   } catch (err) {
@@ -192,13 +345,13 @@ function sendCommentNotifications(postId, commentId, commenterId, content, paren
 
 function sendCommentReactionNotification(postId, commentId, likerId, rxType, io) {
   try {
-    const comment = db.prepare('SELECT user_id, content FROM post_comments WHERE id = ?').get(commentId);
+    const comment = db.prepare('SELECT user_id, content, parent_id FROM post_comments WHERE id = ?').get(commentId);
     if (!comment) return;
     
     // Don't notify if reacting to own comment/reply
     if (comment.user_id === likerId) return;
 
-    const liker = db.prepare('SELECT first_name, last_name FROM users WHERE id = ?').get(likerId);
+    const liker = db.prepare('SELECT first_name, last_name, profile_picture FROM users WHERE id = ?').get(likerId);
     if (!liker) return;
     const likerName = `${liker.first_name} ${liker.last_name}`;
 
@@ -208,20 +361,55 @@ function sendCommentReactionNotification(postId, commentId, likerId, rxType, io)
 
     const rxLabel = rxType.charAt(0).toUpperCase() + rxType.slice(1);
 
+    // Get the post details to find the post image
+    const post = db.prepare('SELECT image_url, shared_project_id FROM community_posts WHERE id = ?').get(postId);
+    let imageUrl = null;
+    if (post) {
+      if (post.shared_project_id) {
+        const proj = db.prepare('SELECT thumbnail_url, poster_url FROM projects WHERE id = ?').get(post.shared_project_id);
+        if (proj) imageUrl = proj.thumbnail_url || proj.poster_url;
+      } else if (post.image_url) {
+        try {
+          const parsed = JSON.parse(post.image_url);
+          if (Array.isArray(parsed) && parsed.length > 0) imageUrl = parsed[0].url;
+        } catch {
+          imageUrl = post.image_url;
+        }
+      }
+    }
+
+    const isReply = comment.parent_id !== null;
+    const targetType = isReply ? 'reply' : 'comment';
+    const notifTitle = isReply ? 'New reaction on your reply' : 'New reaction on your comment';
+
     const insertNotification = db.prepare(`
-      INSERT INTO notifications (user_id, type, title, message, link)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT INTO notifications (user_id, type, title, message, link, image_url)
+      VALUES (?, ?, ?, ?, ?, ?)
     `);
 
-    insertNotification.run(
+    const messageText = snippet ? `${likerName} reacted with "${rxLabel}" to your ${targetType}: "${snippet}"` : `${likerName} reacted with "${rxLabel}" to your ${targetType}`;
+
+    const res = insertNotification.run(
       comment.user_id,
       'community',
-      'New reaction on your comment',
-      `${likerName} reacted with "${rxLabel}" to your comment: "${snippet}"`,
-      `/community#post-${postId}`
+      notifTitle,
+      messageText,
+      `/community#post-${postId}`,
+      imageUrl
     );
 
     if (io) {
+      io.to(`user:${comment.user_id}`).emit('notification_received', {
+        id: res.lastInsertRowid,
+        type: 'community',
+        title: notifTitle,
+        message: messageText,
+        link: `/community#post-${postId}`,
+        image_url: imageUrl,
+        sender_name: likerName,
+        sender_avatar: liker.profile_picture,
+        created_at: new Date().toISOString()
+      });
       io.emit('new_notification');
     }
   } catch (err) {
@@ -231,36 +419,63 @@ function sendCommentReactionNotification(postId, commentId, likerId, rxType, io)
 
 function sendPostReactionNotification(postId, likerId, rxType, io) {
   try {
-    const post = db.prepare('SELECT user_id, content FROM community_posts WHERE id = ?').get(postId);
+    const post = db.prepare('SELECT user_id, content, image_url, shared_project_id FROM community_posts WHERE id = ?').get(postId);
     if (!post) return;
     
     // Don't notify if reacting to own post
     if (post.user_id === likerId) return;
 
-    const liker = db.prepare('SELECT first_name, last_name FROM users WHERE id = ?').get(likerId);
+    const liker = db.prepare('SELECT first_name, last_name, profile_picture FROM users WHERE id = ?').get(likerId);
     if (!liker) return;
     const likerName = `${liker.first_name} ${liker.last_name}`;
 
     let snippet = (post.content || '').trim().substring(0, 40);
     if (post.content && post.content.length > 40) snippet += '...';
-    if (!snippet) snippet = 'your post';
+
+    // Resolve post image
+    let imageUrl = null;
+    if (post.shared_project_id) {
+      const proj = db.prepare('SELECT thumbnail_url, poster_url FROM projects WHERE id = ?').get(post.shared_project_id);
+      if (proj) imageUrl = proj.thumbnail_url || proj.poster_url;
+    } else if (post.image_url) {
+      try {
+        const parsed = JSON.parse(post.image_url);
+        if (Array.isArray(parsed) && parsed.length > 0) imageUrl = parsed[0].url;
+      } catch {
+        imageUrl = post.image_url;
+      }
+    }
 
     const rxLabel = rxType.charAt(0).toUpperCase() + rxType.slice(1);
 
     const insertNotification = db.prepare(`
-      INSERT INTO notifications (user_id, type, title, message, link)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT INTO notifications (user_id, type, title, message, link, image_url)
+      VALUES (?, ?, ?, ?, ?, ?)
     `);
 
-    insertNotification.run(
+    const messageText = snippet ? `${likerName} reacted with "${rxLabel}" to your post: "${snippet}"` : `${likerName} reacted with "${rxLabel}" to your post`;
+
+    const res = insertNotification.run(
       post.user_id,
       'community',
       'New reaction on your post',
-      `${likerName} reacted with "${rxLabel}" to ${snippet}`,
-      `/community#post-${postId}`
+      messageText,
+      `/community#post-${postId}`,
+      imageUrl
     );
 
     if (io) {
+      io.to(`user:${post.user_id}`).emit('notification_received', {
+        id: res.lastInsertRowid,
+        type: 'community',
+        title: 'New reaction on your post',
+        message: messageText,
+        link: `/community#post-${postId}`,
+        image_url: imageUrl,
+        sender_name: likerName,
+        sender_avatar: liker.profile_picture,
+        created_at: new Date().toISOString()
+      });
       io.emit('new_notification');
     }
   } catch (err) {
@@ -920,13 +1135,13 @@ router.post('/posts/:id/comments/:commentId/report', authenticateToken, (req, re
   }
 });
 
-// Edit a post (content and/or audience)
+// Edit a post (content, audience, and/or media_url)
 router.put('/posts/:id', authenticateToken, sanitizeInput, (req, res) => {
   try {
     const postId = parseInt(req.params.id);
     const userId = req.user.id;
     const userRole = req.user.role?.toLowerCase();
-    const { content, audience } = req.body;
+    const { content, audience, media_url } = req.body;
 
     if (isNaN(postId)) {
       return res.status(400).json({ error: 'Invalid post ID.' });
@@ -954,17 +1169,28 @@ router.put('/posts/:id', authenticateToken, sanitizeInput, (req, res) => {
     // Fetch previous post details
     const prevPost = db.prepare('SELECT content, image_url as media_url, shared_project_id as project_id, audience FROM community_posts WHERE id = ?').get(postId);
 
-    // Update post
-    if (audience !== undefined && content !== undefined) {
-      db.prepare('UPDATE community_posts SET content = ?, audience = ? WHERE id = ?')
-        .run(content || null, audience, postId);
-    } else if (content !== undefined) {
-      db.prepare('UPDATE community_posts SET content = ? WHERE id = ?')
-        .run(content || null, postId);
-    } else if (audience !== undefined) {
-      db.prepare('UPDATE community_posts SET audience = ? WHERE id = ?')
-        .run(audience, postId);
+    let finalMediaUrl = prevPost.media_url;
+    if (media_url !== undefined) {
+      finalMediaUrl = media_url || null;
     }
+
+    let postType = 'text';
+    if (prevPost.project_id) {
+      postType = 'project_share';
+    } else if (finalMediaUrl) {
+      postType = 'image';
+    }
+
+    // Update post
+    db.prepare('UPDATE community_posts SET content = ?, audience = ?, image_url = ?, post_type = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+      .run(
+        content !== undefined ? (content || null) : prevPost.content,
+        audience !== undefined ? audience : prevPost.audience,
+        finalMediaUrl,
+        postType,
+        postId
+      );
+
 
     // Check if we turned an Only Me or Batchmates post to Public
     const newAudience = audience !== undefined ? audience : prevPost.audience;
@@ -973,7 +1199,7 @@ router.put('/posts/:id', authenticateToken, sanitizeInput, (req, res) => {
 
     if (isTurnedToPublic) {
       const finalContent = content !== undefined ? content : prevPost.content;
-      sendCommunityPostNotification(postId, userId, finalContent, prevPost.media_url, prevPost.project_id, 'public', true, req.app.get('io'));
+      sendCommunityPostNotification(postId, userId, finalContent, finalMediaUrl, prevPost.project_id, 'public', true, req.app.get('io'));
     }
 
     const io = req.app.get('io');

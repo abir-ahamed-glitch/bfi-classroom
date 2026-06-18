@@ -25,3 +25,12 @@ dist-ssr
 
 # Database files
 server/bfi_classroom.db*
+
+# Uploads and temporary files
+uploads/
+scratch/
+scratch.js
+*.docx
+*.ps1
+test_*.js
+test_helper.js

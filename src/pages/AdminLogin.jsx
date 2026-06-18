@@ -13,6 +13,15 @@ export default function AdminLogin() {
   const { login } = useAuth();
   const navigate = useNavigate();
 
+  // Strip the 'admin@' prefix from display value (it is always locked/prepended)
+  const usernameDisplay = username.startsWith('admin@') ? username.slice(6) : username;
+
+  const handleUsernameChange = (e) => {
+    // Strip any accidental 'admin@' the user might type; we always prepend it
+    const raw = e.target.value.replace(/^admin@/i, '').replace(/\s/g, '');
+    setUsername('admin@' + raw);
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
@@ -71,18 +80,40 @@ export default function AdminLogin() {
 
           <div className="input-group">
             <label htmlFor="username">Admin Username</label>
-            <div className="input-wrapper">
-              <User size={18} className="input-icon" />
-              <input 
+            <div className="input-wrapper" style={{ display: 'flex', alignItems: 'center', gap: 0, position: 'relative' }}>
+              <span style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '0.3rem',
+                background: 'rgba(239,68,68,0.15)',
+                border: '1px solid rgba(239,68,68,0.35)',
+                borderRight: 'none',
+                borderRadius: '10px 0 0 10px',
+                padding: '0 0.75rem',
+                height: '46px',
+                color: '#ef4444',
+                fontWeight: 700,
+                fontSize: '0.9rem',
+                letterSpacing: '0.01em',
+                whiteSpace: 'nowrap',
+                flexShrink: 0,
+                userSelect: 'none',
+              }}>
+                <User size={15} style={{ opacity: 0.8 }} />
+                admin@
+              </span>
+              <input
                 id="username"
-                type="text" 
-                className="input-glass" 
-                placeholder="Enter admin username"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
+                type="text"
+                className="input-glass"
+                placeholder="yourname"
+                value={usernameDisplay}
+                onChange={handleUsernameChange}
+                style={{ borderRadius: '0 10px 10px 0', paddingLeft: '0.85rem', flex: 1 }}
                 required
               />
             </div>
+
           </div>
 
           <div className="input-group">

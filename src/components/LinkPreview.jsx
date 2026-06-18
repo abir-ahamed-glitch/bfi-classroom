@@ -3,7 +3,7 @@ import { Globe } from 'lucide-react';
 import { resolveMediaUrl } from '../utils/mediaUtils';
 
 // ─── URL Detection ─────────────────────────────────────────────────────────────
-const URL_REGEX = /https?:\/\/(?:localhost|(?:\d{1,3}\.){3}\d{1,3}|(?:www\.)?[-a-zA-Z0-9@:%._\+~#=]{1,256}(?:\.[a-zA-Z0-9()]{1,6})?)(?::\d+)?\b(?:[-a-zA-Z0-9()@:%_\+.~#?&//=\*]*)/gi;
+const URL_REGEX = /https?:\/\/(?:localhost|(?:\d{1,3}\.){3}\d{1,3}|(?:www\.)?[-a-zA-Z0-9@:%._+~#=]{1,256}(?:\.[a-zA-Z0-9()]{1,6})?)(?::\d+)?\b(?:[-a-zA-Z0-9()@:%_+.~#?&//=*]*)/gi;
 
 function extractUrls(text) {
   if (!text) return [];

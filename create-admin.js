@@ -5,11 +5,26 @@ const args = process.argv.slice(2);
 
 if (args.length < 3) {
   console.log('Usage: node create-admin.js <username> <email> <password>');
-  console.log('Example: node create-admin.js admin2 admin2@bfibd.org MySecurePassword!');
+  console.log('Example: node create-admin.js admin@abir admin@bfibd.org MySecurePassword!');
+  console.log('');
+  console.log('Note: Admin usernames MUST start with "admin@".');
+  console.log('      If you omit it, it will be added automatically.');
   process.exit(1);
 }
 
-const [username, email, password] = args;
+let [username, email, password] = args;
+
+// Enforce the admin@ prefix rule
+if (!username.startsWith('admin@')) {
+  const suffix = username.replace(/^@/, ''); // handle '@name' -> 'name'
+  username = 'admin@' + suffix;
+  console.log(`ℹ️  Username adjusted to enforce admin@ prefix: "${username}"`);
+}
+
+if (username === 'admin@') {
+  console.error('Error: Username suffix is required after "admin@". Example: admin@abir');
+  process.exit(1);
+}
 
 try {
   const existingUser = db.prepare('SELECT id FROM users WHERE email = ? OR username = ?').get(email, username);

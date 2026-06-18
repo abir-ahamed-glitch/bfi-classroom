@@ -35,6 +35,8 @@ import TeacherManager from './pages/admin/TeacherManager';
 import CertificateDesigner from './pages/admin/CertificateDesigner';
 import AnnouncementsManager from './pages/admin/AnnouncementsManager';
 import CourseMaterialsManager from './pages/admin/CourseMaterialsManager';
+import Analytics from './pages/admin/Analytics';
+import Reports from './pages/admin/Reports';
 import Certificates from './pages/Certificates';
 import StudentPortal from './pages/StudentPortal';
 import Sidebar from './components/Sidebar';
@@ -42,6 +44,7 @@ import ErrorBoundary from './components/ErrorBoundary';
 import SkeletonLoader from './components/SkeletonLoader';
 import { IncomingCallAlert, ActiveCallScreen } from './components/CallComponents';
 import NotificationPanel from './components/NotificationPanel';
+import NotificationToast from './components/NotificationToast';
 
 
 // Protected Route Wrapper
@@ -180,6 +183,7 @@ const Layout = ({ children }) => {
         </main>
         <IncomingCallAlert />
         <ActiveCallScreen />
+        <NotificationToast />
       </div>
     </CallProvider>
   );
@@ -373,6 +377,21 @@ function App() {
             <ProtectedRoute requiredRole={['admin']}>
               <Layout>
                 <CourseMaterialsManager />
+              </Layout>
+            </ProtectedRoute>
+          } />
+
+          <Route path="/admin/analytics" element={
+            <ProtectedRoute requiredRole={['admin']}>
+              <Layout>
+                <Analytics />
+              </Layout>
+            </ProtectedRoute>
+          } />
+          <Route path="/admin/reports" element={
+            <ProtectedRoute requiredRole={['admin']}>
+              <Layout>
+                <Reports />
               </Layout>
             </ProtectedRoute>
           } />

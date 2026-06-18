@@ -1,18 +1,19 @@
 @echo off
 :: BFI Classroom - Auto-start servers on Windows boot
-:: This script is triggered by Windows Task Scheduler on login
+:: This script is triggered by Windows Startup on login
 
 cd /d "e:\Antigravity\Project 2 - BFI Classroom"
 
-:: Start PM2 with saved processes (restores bfi-classroom-backend and bfi-classroom-frontend)
-pm2 resurrect
-
-:: If resurrect fails (first time), start fresh from ecosystem config
+set "PM2_CMD=pm2"
+where pm2 >nul 2>nul
 if %ERRORLEVEL% NEQ 0 (
-    pm2 start ecosystem.config.cjs
+    set "PM2_CMD=%APPDATA%\npm\pm2"
 )
 
+:: Start or update processes from ecosystem config
+call %PM2_CMD% start ecosystem.config.cjs
+
 :: Save the state
-pm2 save
+call %PM2_CMD% save
 
 exit 0

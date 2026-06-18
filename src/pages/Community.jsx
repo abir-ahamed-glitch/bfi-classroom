@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { io } from 'socket.io-client';
-import { MessageSquare, Heart, Image as ImageIcon, Send, Film, Share2, Trash2, Pin, PinOff, Play, Video, GripVertical, X, Pencil, ChevronLeft, ChevronRight, Smile, MoreVertical, Download, Globe, GraduationCap, EyeOff, ChevronDown, ThumbsUp, MessageCircle, Search, Clock } from 'lucide-react';
+import { MessageSquare, Heart, Image as ImageIcon, Send, Film, Share2, Trash2, Pin, PinOff, Play, Video, GripVertical, X, Pencil, ChevronLeft, ChevronRight, Smile, MoreVertical, Download, Globe, GraduationCap, EyeOff, ChevronDown, ChevronUp, ThumbsUp, MessageCircle, Search, Clock, Flag } from 'lucide-react';
 import { AudienceSelector } from '../components/PrivacySelector';
 import data from '@emoji-mart/data';
 import { Picker } from 'emoji-mart';
@@ -11,6 +11,7 @@ import { resolveMediaUrl } from '../utils/mediaUtils';
 import UserHoverCard from '../components/UserHoverCard';
 import { useModal } from '../components/BFIModal';
 import PhotoEditorModal from '../components/PhotoEditorModal';
+import ReportFormModal from '../components/ReportFormModal';
 let cachedCommunityPosts = [];
 let cachedCommunityScrollY = 0;
 let cachedCommunityUserId = null;
@@ -100,6 +101,11 @@ export default function Community() {
   const [editingPostId, setEditingPostId] = useState(null);
   const [editingPostText, setEditingPostText] = useState('');
   const [editingPostAudience, setEditingPostAudience] = useState('public');
+  const [editingPostImages, setEditingPostImages] = useState([]);
+  const [activePostMenuId, setActivePostMenuId] = useState(null);
+  const [reportPost, setReportPost] = useState(null);
+  const [reportComment, setReportComment] = useState(null);
+  const [photoEditorMode, setPhotoEditorMode] = useState('new'); // 'new' or 'edit'
   
   // Use cached posts only if the same user is viewing
   const shouldUseCache = currentUser?.id === cachedCommunityUserId;
@@ -134,6 +140,7 @@ export default function Community() {
   const [activeReactionCommentId, setActiveReactionCommentId] = useState(null);
   const [activeReactionPostId, setActiveReactionPostId] = useState(null);
   const [expandedComments, setExpandedComments] = useState({}); // commentId -> boolean
+  const [expandedPostComments, setExpandedPostComments] = useState({}); // postId -> boolean
   const hoverTimerRef = useRef(null);
   const closeTimerRef = useRef(null);
   const longPressTimerRef = useRef(null);
@@ -215,8 +222,9 @@ export default function Community() {
     setMediaImages(prev => prev.filter((_, i) => i !== index));
   }, []);
 
-  const openPhotoEditor = useCallback((index) => {
+  const openPhotoEditor = useCallback((index, mode = 'new') => {
     setPhotoEditorIndex(index);
+    setPhotoEditorMode(mode);
     setPhotoEditorOpen(true);
   }, []);
 
@@ -225,11 +233,32 @@ export default function Community() {
     setPhotoEditorOpen(false);
   }, []);
 
+  const removeEditingImage = useCallback((index) => {
+    setEditingPostImages(prev => prev.filter((_, i) => i !== index));
+  }, []);
+
+  const handleEditingPhotoEditorSave = useCallback((updatedImages) => {
+    setEditingPostImages(updatedImages);
+    setPhotoEditorOpen(false);
+  }, []);
+
   const handleDragStart = (index) => { dragItem.current = index; };
   const handleDragEnter = (index) => { dragOverItem.current = index; };
   const handleDragEnd = () => {
     if (dragItem.current === null || dragOverItem.current === null) return;
     setMediaImages(prev => {
+      const arr = [...prev];
+      const dragged = arr.splice(dragItem.current, 1)[0];
+      arr.splice(dragOverItem.current, 0, dragged);
+      return arr;
+    });
+    dragItem.current = null;
+    dragOverItem.current = null;
+  };
+
+  const handleEditingDragEnd = () => {
+    if (dragItem.current === null || dragOverItem.current === null) return;
+    setEditingPostImages(prev => {
       const arr = [...prev];
       const dragged = arr.splice(dragItem.current, 1)[0];
       arr.splice(dragOverItem.current, 0, dragged);
@@ -607,6 +636,17 @@ export default function Community() {
     return () => document.removeEventListener('mousedown', handleOutsideClick);
   }, [activeSharePostId]);
 
+  // Handle outside clicks to close the post options dropdown
+  useEffect(() => {
+    const handleOutsideClick = (e) => {
+      if (activePostMenuId && !e.target.closest('.post-menu-container')) {
+        setActivePostMenuId(null);
+      }
+    };
+    document.addEventListener('mousedown', handleOutsideClick);
+    return () => document.removeEventListener('mousedown', handleOutsideClick);
+  }, [activePostMenuId]);
+
   // Fetch recipients list when share modal is opened or query changes
   useEffect(() => {
     if (!shareModalPost) {
@@ -711,6 +751,23 @@ export default function Community() {
     e.target.value = '';
   };
 
+  const handleEditingFileChange = (e) => {
+    const files = Array.from(e.target.files);
+    if (files.length === 0) return;
+    const readers = files.map(file => new Promise(resolve => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result);
+      reader.readAsDataURL(file);
+    }));
+    Promise.all(readers).then(urls => {
+      setEditingPostImages(prev => {
+        const shaped = urls.map(url => ({ url, editedUrl: undefined, caption: '' }));
+        return [...prev, ...shaped].slice(0, 10);
+      });
+    });
+    e.target.value = '';
+  };
+
   const selectProject = (proj) => {
     setSelectedProjectId(proj.id);
     setSelectedProjectTitle(proj.title);
@@ -753,15 +810,47 @@ export default function Community() {
     setEditingPostId(post.id);
     setEditingPostText(post.content || '');
     setEditingPostAudience(post.audience || 'public');
+    
+    let rawImages = [];
+    if (post.media_type === 'image' && post.media_url) {
+      try {
+        const parsed = JSON.parse(post.media_url);
+        rawImages = Array.isArray(parsed) ? parsed : [post.media_url];
+      } catch {
+        rawImages = [post.media_url];
+      }
+    }
+    const images = rawImages.map(item =>
+      typeof item === 'string'
+        ? { url: item, editedUrl: undefined, caption: '' }
+        : { url: item.url ?? item, editedUrl: undefined, caption: item.caption ?? '' }
+    );
+    setEditingPostImages(images);
   };
 
   const handleEditPostCancel = () => {
     setEditingPostId(null);
     setEditingPostText('');
     setEditingPostAudience('public');
+    setEditingPostImages([]);
   };
 
   const handleEditPostSave = async (postId) => {
+    let mediaUrlPayload = null;
+    if (editingPostImages.length === 1) {
+      const img = editingPostImages[0];
+      const finalUrl = img.editedUrl ?? img.url;
+      mediaUrlPayload = img.caption
+        ? JSON.stringify([{ url: finalUrl, caption: img.caption }])
+        : finalUrl;
+    } else if (editingPostImages.length > 1) {
+      const shaped = editingPostImages.map(img => ({
+        url: img.editedUrl ?? img.url,
+        caption: img.caption ?? ''
+      }));
+      mediaUrlPayload = JSON.stringify(shaped);
+    }
+
     try {
       const res = await fetch(`/api/community/posts/${postId}`, {
         method: 'PUT',
@@ -771,13 +860,15 @@ export default function Community() {
         },
         body: JSON.stringify({ 
           content: editingPostText,
-          audience: editingPostAudience
+          audience: editingPostAudience,
+          media_url: mediaUrlPayload
         })
       });
 
       if (res.ok) {
         setEditingPostId(null);
         setEditingPostText('');
+        setEditingPostImages([]);
         fetchPosts();
         if (socket) socket.emit('new_post');
       } else {
@@ -993,7 +1084,7 @@ export default function Community() {
       isLongPressRef.current = true;
       setActiveReactionCommentId(commentId);
       if (navigator.vibrate) {
-        try { navigator.vibrate(50); } catch (err) {}
+        try { navigator.vibrate(50); } catch (err) { /* ignore vibration failure */ }
       }
     }, 500);
   };
@@ -1056,7 +1147,7 @@ export default function Community() {
       isPostLongPressRef.current = true;
       setActiveReactionPostId(postId);
       if (navigator.vibrate) {
-        try { navigator.vibrate(50); } catch (err) {}
+        try { navigator.vibrate(50); } catch (err) { /* ignore vibration failure */ }
       }
     }, 500);
   };
@@ -1146,28 +1237,73 @@ export default function Community() {
     }
   };
 
-  const handleCommentReport = async (postId, commentId) => {
+  const handleCommentReport = (postId, comment) => {
     setActiveCommentMenuId(null);
-    const confirmed = await showConfirm(
-      "Do you want to report this comment for moderation?",
-      { title: 'Report Comment', confirmLabel: 'Report', cancelLabel: 'Cancel' }
-    );
-    if (!confirmed) return;
+    setReportComment({ ...comment, postId });
+  };
 
-    try {
-      const res = await fetch(`/api/community/posts/${postId}/comments/${commentId}/report`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
-      });
-      if (res.ok) {
-        showAlert('Thank you for reporting. Our moderation team will review this comment.', { title: 'Comment Reported' });
-      } else {
-        showAlert('Failed to report comment', { title: 'Error' });
+  const submitCommentReport = async ({ reason_category, reason_detail, screenshot_path }) => {
+    const { text } = parseCommentContent(reportComment.content);
+    const res = await fetch('/api/reports/submit', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${localStorage.getItem('token')}`,
+      },
+      body: JSON.stringify({
+        content_type: 'comment',
+        content_id: Number(reportComment.id),
+        reason_category,
+        reason_detail,
+        screenshot_path,
+        content_snapshot: text,
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      if (res.status === 409) {
+        window.dispatchEvent(new CustomEvent('showNotificationToast', {
+          detail: { type: 'report', title: 'Already Reported', message: "You've already reported this." },
+        }));
+        return;
       }
-    } catch (err) {
-      console.error(err);
-      showAlert('Failed to report comment', { title: 'Error' });
+      throw new Error(data.error || 'Failed to report comment');
     }
+    window.dispatchEvent(new CustomEvent('showNotificationToast', {
+      detail: { type: 'report', title: 'Report Submitted', message: 'Report submitted. Our team will review it.' },
+    }));
+  };
+
+  const handlePostReport = async ({ reason_category, reason_detail, screenshot_path }) => {
+    const response = await fetch('/api/reports/submit', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${localStorage.getItem('token')}`,
+      },
+      body: JSON.stringify({
+        content_type: 'post',
+        content_id: Number(reportPost.id),
+        reported_user_id: Number(reportPost.user_id),
+        reason_category,
+        reason_detail,
+        screenshot_path,
+        content_snapshot: reportPost.content || '',
+      }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      if (response.status === 409) {
+        window.dispatchEvent(new CustomEvent('showNotificationToast', {
+          detail: { type: 'report', title: 'Already Reported', message: "You've already reported this." },
+        }));
+        return;
+      }
+      throw new Error(data.error || 'Unable to submit this report.');
+    }
+    window.dispatchEvent(new CustomEvent('showNotificationToast', {
+      detail: { type: 'report', title: 'Report Submitted', message: 'Report submitted. Our team will review it.' },
+    }));
   };
 
   const handleShareOptionClick = async (post, option) => {
@@ -1320,9 +1456,9 @@ export default function Community() {
         {/* Photo Editor Modal */}
         {photoEditorOpen && (
           <PhotoEditorModal
-            images={mediaImages}
+            images={photoEditorMode === 'new' ? mediaImages : editingPostImages}
             initialIndex={photoEditorIndex}
-            onSave={handlePhotoEditorSave}
+            onSave={photoEditorMode === 'new' ? handlePhotoEditorSave : handleEditingPhotoEditorSave}
             onClose={() => setPhotoEditorOpen(false)}
           />
         )}
@@ -1578,6 +1714,8 @@ export default function Community() {
       <div className="feed-container" style={{ position: 'relative', zIndex: 1 }}>
         {posts.map(post => {
           const hasActivePicker = commentEmojiPickerPostId === post.id || (editingCommentId && post.comments?.some(c => c.id === editingCommentId));
+          const isOwner = Number(post.user_id) === Number(currentUser?.id) || post.username === currentUser?.username;
+          const isAdmin = currentUser?.role === 'admin';
           return (
             <div id={`post-${post.id}`} key={post.id} className={`post-card glass-panel ${post.is_pinned ? 'pinned-post' : ''} ${hasActivePicker ? 'active-picker' : ''}`}>
             
@@ -1625,51 +1763,71 @@ export default function Community() {
                       {post.is_pinned && <span className="pinned-badge"><Pin size={10} /> Pinned by Admin</span>}
                     </div>
                     
-                    <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                      {currentUser?.role === 'admin' && (
-                        <button 
-                          className={`pin-post-btn ${post.is_pinned ? 'active' : ''}`}
-                          onClick={() => handlePinPost(post.id, post.is_pinned)}
-                          title={post.is_pinned ? "Unpin Post" : "Pin Post"}
+                    {/* Post Options Menu (3-dot) */}
+                    {(isOwner || isAdmin || currentUser?.role !== 'admin') && (
+                      <div className="post-menu-container" style={{ position: 'relative' }}>
+                        <button
+                          className={`post-menu-trigger ${activePostMenuId === post.id ? 'active' : ''}`}
+                          onClick={() => setActivePostMenuId(activePostMenuId === post.id ? null : post.id)}
+                          title="Post Options"
                         >
-                          {post.is_pinned ? <PinOff size={14} /> : <Pin size={14} />}
+                          <MoreVertical size={16} />
                         </button>
-                      )}
-                      
-                      {(Number(post.user_id) === Number(currentUser?.id) || post.username === currentUser?.username || currentUser?.role === 'admin') && (
-                        <>
-                          <button 
-                            className="edit-post-btn" 
-                            onClick={() => handleEditPostStart(post)}
-                            title="Edit Post"
-                            style={{
-                              background: 'transparent',
-                              border: 'none',
-                              color: 'var(--text-secondary)',
-                              cursor: 'pointer',
-                              padding: '4px',
-                              display: 'flex',
-                              alignItems: 'center',
-                              justifyContent: 'center',
-                              borderRadius: '4px',
-                              transition: 'all 0.2s',
-                              opacity: 0.7
-                            }}
-                            onMouseEnter={(e) => e.currentTarget.style.opacity = 1}
-                            onMouseLeave={(e) => e.currentTarget.style.opacity = 0.7}
-                          >
-                            <Pencil size={14} />
-                          </button>
-                          <button 
-                            className="delete-post-btn" 
-                            onClick={() => handleDeletePost(post.id)} 
-                            title="Delete Post"
-                          >
-                            <Trash2 size={14} />
-                          </button>
-                        </>
-                      )}
-                    </div>
+                        
+                        {activePostMenuId === post.id && (
+                          <div className="post-menu-dropdown bfi-community-dropdown animate-fade-in" style={{ right: 0, left: 'auto' }}>
+                            {isAdmin && (
+                              <button
+                                className="post-menu-item"
+                                onClick={() => {
+                                  handlePinPost(post.id, post.is_pinned);
+                                  setActivePostMenuId(null);
+                                }}
+                              >
+                                {post.is_pinned ? <PinOff size={14} /> : <Pin size={14} />}
+                                <span>{post.is_pinned ? 'Unpin Post' : 'Pin Post'}</span>
+                              </button>
+                            )}
+                            {(isOwner || isAdmin) && (
+                              <>
+                                <button
+                                  className="post-menu-item"
+                                  onClick={() => {
+                                    handleEditPostStart(post);
+                                    setActivePostMenuId(null);
+                                  }}
+                                >
+                                  <Pencil size={14} />
+                                  <span>Edit Post</span>
+                                </button>
+                                <button
+                                  className="post-menu-item delete"
+                                  onClick={() => {
+                                    handleDeletePost(post.id);
+                                    setActivePostMenuId(null);
+                                  }}
+                                >
+                                  <Trash2 size={14} />
+                                  <span>Delete Post</span>
+                                </button>
+                              </>
+                            )}
+                            {!isOwner && currentUser?.role !== 'admin' && (
+                              <button
+                                className="post-menu-item delete"
+                                onClick={() => {
+                                  setReportPost(post);
+                                  setActivePostMenuId(null);
+                                }}
+                              >
+                                <Flag size={14} />
+                                <span>Report Post</span>
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                   <span className="post-time" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
                     {formatTime(post.scheduled_at || post.created_at)}
@@ -1691,17 +1849,102 @@ export default function Community() {
             {/* Post Content */}
             <div className="post-body">
               {editingPostId === post.id ? (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', marginTop: '0.5rem', marginBottom: '1rem' }}>
+                <div className="post-edit-container">
                   <textarea
                     className="input-glass"
                     value={editingPostText}
                     onChange={(e) => setEditingPostText(e.target.value)}
                     style={{ width: '100%', minHeight: '80px', padding: '0.75rem', resize: 'vertical' }}
                   />
+
+                  {editingPostImages.length > 0 && (
+                    <div className="media-grid-wrapper" style={{ marginBottom: '0.5rem' }}>
+                      <div className={`media-grid media-grid-${Math.min(editingPostImages.length, 4)}`}>
+                        {editingPostImages.map((imgObj, idx) => {
+                          const displaySrc = imgObj.editedUrl ?? imgObj.url;
+                          const hasCaption = imgObj.caption?.trim();
+                          const isEdited = !!imgObj.editedUrl;
+                          return (
+                            <div
+                              key={idx}
+                              className={`media-grid-item${idx === 0 && editingPostImages.length >= 3 ? ' media-grid-item--hero' : ''}`}
+                              draggable
+                              onDragStart={() => handleDragStart(idx)}
+                              onDragEnter={() => handleDragEnter(idx)}
+                              onDragEnd={handleEditingDragEnd}
+                              onDragOver={e => e.preventDefault()}
+                            >
+                              <img
+                                src={resolveMediaUrl(displaySrc)}
+                                alt={`Image ${idx + 1}`}
+                                onError={e => { e.target.style.display = 'none'; }}
+                              />
+
+                              {/* Remove button */}
+                              <button
+                                  className="media-grid-remove"
+                                  onClick={e => { e.preventDefault(); removeEditingImage(idx); }}
+                                  title="Remove image"
+                              >
+                                <X size={12} />
+                              </button>
+
+                              {/* Edit button */}
+                              <button
+                                  className="media-grid-edit"
+                                  onClick={e => { e.preventDefault(); openPhotoEditor(idx, 'edit'); }}
+                                  title="Edit photo"
+                              >
+                                <Pencil size={12} />
+                              </button>
+
+                              {/* Drag handle */}
+                              <div className="media-grid-drag-handle" title="Drag to reorder">
+                                <GripVertical size={14} />
+                              </div>
+
+                              {/* Edited badge */}
+                              {isEdited && (
+                                <div className="media-grid-edited-badge">Edited</div>
+                              )}
+
+                              {/* Caption badge */}
+                              {hasCaption && (
+                                <div className="media-grid-caption-badge">
+                                  {imgObj.caption}
+                                </div>
+                              )}
+
+                              {/* Overflow counter */}
+                              {idx === 3 && editingPostImages.length > 4 && (
+                                <div className="media-grid-overflow-badge">+{editingPostImages.length - 4}</div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                      <p className="media-grid-hint">Drag to reorder · ✕ remove · ✎ edit &amp; caption · Max 10 photos</p>
+                    </div>
+                  )}
+
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                       <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Audience:</span>
                       <AudienceSelector value={editingPostAudience} onChange={setEditingPostAudience} />
+                      
+                      <label 
+                        className="btn btn-glass" 
+                        style={{ padding: '0.35rem 0.75rem', fontSize: '0.8rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.25rem' }}
+                      >
+                        <ImageIcon size={14} /> Add Image
+                        <input 
+                          type="file" 
+                          accept="image/*" 
+                          multiple 
+                          onChange={handleEditingFileChange} 
+                          style={{ display: 'none' }} 
+                        />
+                      </label>
                     </div>
                     <div style={{ display: 'flex', gap: '0.5rem' }}>
                       <button className="btn btn-glass" style={{ padding: '0.35rem 0.75rem', fontSize: '0.8rem' }} onClick={handleEditPostCancel}>
@@ -1979,7 +2222,15 @@ export default function Community() {
                   const parentComments = commentsList.filter(c => !c.parent_id);
                   const replyComments = commentsList.filter(c => c.parent_id);
 
-                  return parentComments.map(comment => {
+                  const isPostCommentsExpanded = expandedPostComments[post.id];
+                  const hasMoreComments = parentComments.length > 4;
+                  const visibleParentComments = (hasMoreComments && !isPostCommentsExpanded)
+                    ? parentComments.slice(0, 4)
+                    : parentComments;
+
+                  return (
+                    <>
+                      {visibleParentComments.map(comment => {
                     const thisReplies = replyComments.filter(r => r.parent_id === comment.id);
                     const showReplyInput = activeReplyInputCommentId === comment.id || thisReplies.length > 0;
                     const isExpanded = expandedComments[comment.id] || activeReplyInputCommentId === comment.id;
@@ -2056,7 +2307,7 @@ export default function Community() {
                                     
                                     {comment.user_id !== currentUser?.id && (
                                       <button 
-                                        onClick={() => handleCommentReport(post.id, comment.id)}
+                                        onClick={() => handleCommentReport(post.id, comment)}
                                         className="comment-dropdown-item"
                                       >
                                         Report
@@ -2486,7 +2737,7 @@ export default function Community() {
                                           
                                           {reply.user_id !== currentUser?.id && (
                                             <button 
-                                              onClick={() => handleCommentReport(post.id, reply.id)}
+                                              onClick={() => handleCommentReport(post.id, reply)}
                                               className="comment-dropdown-item"
                                             >
                                               Report
@@ -3049,7 +3300,57 @@ export default function Community() {
                     )}
                   </div>
                 );
-                  });
+              })}
+                  {hasMoreComments && (
+                    <button
+                      type="button"
+                      className="see-more-comments-btn"
+                      onClick={() => setExpandedPostComments(prev => ({ ...prev, [post.id]: !isPostCommentsExpanded }))}
+                      style={{
+                        background: 'rgba(255, 255, 255, 0.05)',
+                        border: '1px solid var(--glass-border)',
+                        color: 'var(--text-secondary)',
+                        padding: '0.5rem 1rem',
+                        borderRadius: '8px',
+                        fontSize: '0.85rem',
+                        fontWeight: '600',
+                        cursor: 'pointer',
+                        width: '100%',
+                        textAlign: 'center',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: '0.5rem',
+                        marginTop: '0.25rem',
+                        marginBottom: '0.5rem',
+                        transition: 'all 0.2s ease',
+                        backdropFilter: 'blur(10px)',
+                        WebkitBackdropFilter: 'blur(10px)'
+                      }}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.background = 'rgba(255, 255, 255, 0.1)';
+                        e.currentTarget.style.color = 'var(--text-primary)';
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)';
+                        e.currentTarget.style.color = 'var(--text-secondary)';
+                      }}
+                    >
+                      {isPostCommentsExpanded ? (
+                        <>
+                          <ChevronUp size={14} />
+                          See less comments
+                        </>
+                      ) : (
+                        <>
+                          <ChevronDown size={14} />
+                          See more comments ({parentComments.length - 4} remaining)
+                        </>
+                      )}
+                    </button>
+                  )}
+                </>
+              );
                 })()}
                 
                 <div className="comment-input-area" style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', alignItems: 'stretch' }}>
@@ -3153,7 +3454,7 @@ export default function Community() {
                           style={{ display: 'none' }}
                         />
                       </div>
-                      <button className="btn btn-primary" onClick={() => handleCommentSubmit(post.id)}>Reply</button>
+                      <button className="btn btn-primary" onClick={() => handleCommentSubmit(post.id)}>Comment</button>
 
                       {commentEmojiPickerPostId === post.id && (
                         <div 
@@ -3404,8 +3705,48 @@ export default function Community() {
         .action-btn:hover { background: rgba(255,255,255,0.05); color: var(--text-primary); }
         .action-btn.liked { color: var(--danger); }
         .post-reaction-badges { display: flex; align-items: center; flex-direction: row-reverse; padding-right: 0.25rem; }
-        .post-reaction-badge { display: flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 50%; font-size: 0.85rem; margin-left: -4px; background: var(--bg-primary); border: 2px solid var(--bg-secondary); position: relative; transition: transform 0.15s ease; }
-        .post-reaction-badge:hover { transform: scale(1.2); }
+        .post-reaction-badge {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          width: 28px;
+          height: 28px;
+          border-radius: 50%;
+          font-size: 1.15rem;
+          margin-left: -6px;
+          background: linear-gradient(135deg, #2a3e59 0%, #0c1c30 100%);
+          border: 1px solid rgba(255, 255, 255, 0.2);
+          box-shadow: 
+            0 3px 6px rgba(0, 0, 0, 0.4), 
+            inset 0 1px 2px rgba(255, 255, 255, 0.25),
+            inset 0 -2px 4px rgba(0, 0, 0, 0.5);
+          position: relative;
+          transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.2s ease;
+          text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+        }
+        .post-reaction-badge:hover {
+          transform: scale(1.35) translateY(-3px);
+          box-shadow: 
+            0 6px 12px rgba(0, 0, 0, 0.5), 
+            inset 0 1px 2px rgba(255, 255, 255, 0.35),
+            inset 0 -2px 4px rgba(0, 0, 0, 0.5);
+          z-index: 50 !important;
+        }
+        [data-mode="light"] .post-reaction-badge {
+          background: linear-gradient(135deg, #ffffff 0%, #cbd5e1 100%);
+          border: 1px solid rgba(0, 0, 0, 0.12);
+          box-shadow: 
+            0 3px 6px rgba(0, 0, 0, 0.15), 
+            inset 0 1px 2px rgba(255, 255, 255, 0.8),
+            inset 0 -2px 4px rgba(0, 0, 0, 0.1);
+          text-shadow: 0 1px 1px rgba(255, 255, 255, 0.5);
+        }
+        [data-mode="light"] .post-reaction-badge:hover {
+          box-shadow: 
+            0 6px 12px rgba(0, 0, 0, 0.25), 
+            inset 0 1px 2px rgba(255, 255, 255, 0.9),
+            inset 0 -2px 4px rgba(0, 0, 0, 0.12);
+        }
         .post-reaction-badges > .post-reaction-badge:first-child { margin-left: 0; }
         
         .comments-section { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--glass-border); display: flex; flex-direction: column; gap: 1rem; }
@@ -4865,6 +5206,38 @@ export default function Community() {
         </div>,
         document.body
       )}
+      <ReportFormModal
+        open={!!reportComment}
+        title="Report this Comment"
+        subtitle="Reports are confidential and reviewed by our admin team."
+        categories={[
+          'Inappropriate or offensive content',
+          'Spam or misleading',
+          'Harassment or bullying',
+          'Misinformation',
+          'Nudity or sexual content',
+          'Other',
+        ]}
+        detailLabel="Want to add more context?"
+        detailPlaceholder="Describe what happened in your own words (optional, max 500 characters)"
+        onClose={() => setReportComment(null)}
+        onSubmit={submitCommentReport}
+      />
+      <ReportFormModal
+        open={!!reportPost}
+        title="Report this Post"
+        subtitle="Reports are anonymous and reviewed by our admin team."
+        categories={[
+          'Inappropriate or offensive content',
+          'Spam or misleading',
+          'Harassment or bullying',
+          'Misinformation',
+          'Nudity or sexual content',
+          'Other',
+        ]}
+        onClose={() => setReportPost(null)}
+        onSubmit={handlePostReport}
+      />
     </div>
   );
 }

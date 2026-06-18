@@ -1,0 +1,283 @@
+.report-form-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 100000;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+}
+
+.report-form-backdrop {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: rgba(0, 0, 0, 0.72);
+  backdrop-filter: blur(5px);
+}
+
+.report-form-modal {
+  position: relative;
+  width: min(480px, 100%);
+  overflow: hidden;
+  border: 1px solid var(--glass-border);
+  border-radius: 12px;
+  background: rgba(4, 10, 24, 0.98);
+  color: var(--text-primary);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.48);
+  animation: reportFormIn 180ms ease-out;
+}
+
+[data-mode="light"] .report-form-modal {
+  background: rgba(255, 255, 255, 0.99);
+  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.22);
+}
+
+.report-form-header,
+.report-form-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1.1rem 1.25rem;
+  border-bottom: 1px solid var(--glass-border);
+}
+
+.report-form-heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.8rem;
+}
+
+.report-form-icon {
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  border-radius: 8px;
+  color: #fb7185;
+  background: rgba(225, 29, 72, 0.13);
+}
+
+.report-form-heading h2 {
+  margin: 0;
+  font: 700 1.08rem/1.25 var(--font-display);
+}
+
+.report-form-heading p {
+  margin: 0.3rem 0 0;
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.report-form-close {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  border: 1px solid transparent;
+  border-radius: 50%;
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.06);
+  cursor: pointer;
+}
+
+.report-form-close:hover {
+  color: var(--text-primary);
+  border-color: var(--glass-border);
+  box-shadow: 0 5px 16px rgba(0, 0, 0, 0.18);
+}
+
+.report-form-body {
+  display: grid;
+  gap: 1rem;
+  padding: 1.25rem;
+}
+
+.report-form-field {
+  display: grid;
+  gap: 0.45rem;
+  color: var(--text-primary);
+  font-size: 0.86rem;
+  font-weight: 650;
+}
+
+.report-form-field small {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  font-weight: 500;
+}
+
+.report-form-field select,
+.report-form-field textarea {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+  padding: 0.75rem 0.85rem;
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.05);
+  font: inherit;
+  outline: none;
+}
+
+[data-mode="light"] .report-form-field select,
+[data-mode="light"] .report-form-field textarea {
+  background: #f8fafc;
+}
+
+.report-form-field select:focus,
+.report-form-field textarea:focus {
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 0 3px rgba(225, 29, 72, 0.12);
+}
+
+.report-form-field textarea {
+  resize: vertical;
+  min-height: 112px;
+  line-height: 1.5;
+}
+
+.report-form-counter {
+  justify-self: end;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  font-weight: 500;
+}
+
+.report-screenshot-field {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.report-screenshot-label {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--text-primary);
+  font-size: 0.86rem;
+  font-weight: 650;
+}
+
+.report-screenshot-label small {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  font-weight: 500;
+}
+
+.report-screenshot-dropzone {
+  min-height: 104px;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 0.35rem;
+  padding: 0.75rem;
+  border: 1px dashed rgba(148, 163, 184, 0.52);
+  border-radius: 8px;
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.025);
+  cursor: pointer;
+}
+
+.report-screenshot-dropzone:hover {
+  border-color: rgba(96, 165, 250, 0.8);
+  background: rgba(96, 165, 250, 0.06);
+}
+
+.report-screenshot-dropzone.drag-active {
+  border-color: #60a5fa;
+  background: rgba(59, 130, 246, 0.12);
+}
+
+.report-screenshot-dropzone strong { color: var(--text-primary); font-size: 0.8rem; }
+.report-screenshot-dropzone > span { font-size: 0.72rem; }
+.report-screenshot-dropzone.has-preview { min-height: 96px; }
+.report-screenshot-preview { position: relative; display: inline-flex; }
+.report-screenshot-preview img {
+  width: auto;
+  max-width: 210px;
+  height: 80px;
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+  object-fit: cover;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.25);
+}
+
+.report-screenshot-remove {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: #fff;
+  background: #dc2626;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.28);
+}
+
+.report-upload-spinner { animation: reportUploadSpin 0.8s linear infinite; }
+.report-screenshot-error { color: #f87171; font-size: 0.75rem; }
+
+.report-form-error {
+  margin: 0;
+  padding: 0.7rem 0.8rem;
+  border: 1px solid rgba(239, 68, 68, 0.24);
+  border-radius: 8px;
+  color: #fca5a5;
+  background: rgba(239, 68, 68, 0.09);
+  font-size: 0.8rem;
+}
+
+.report-form-actions {
+  justify-content: flex-end;
+  border-top: 1px solid var(--glass-border);
+  border-bottom: 0;
+}
+
+.report-form-actions button {
+  min-height: 40px;
+  padding: 0 1rem;
+  border-radius: 8px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.report-form-cancel {
+  border: 1px solid var(--glass-border);
+  color: var(--text-primary);
+  background: transparent;
+}
+
+.report-form-submit {
+  border: 1px solid #ef4444;
+  color: #fff;
+  background: #dc2626;
+}
+
+.report-form-submit:disabled,
+.report-form-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+}
+
+@keyframes reportFormIn {
+  from { opacity: 0; transform: translateY(10px) scale(0.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes reportUploadSpin { to { transform: rotate(360deg); } }
+
+@media (max-width: 560px) {
+  .report-form-layer { align-items: end; padding: 0; }
+  .report-form-modal {
+    width: 100%;
+    border-radius: 12px 12px 0 0;
+  }
+  .report-form-actions button { flex: 1; }
+}

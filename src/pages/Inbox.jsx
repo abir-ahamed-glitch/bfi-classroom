@@ -4740,7 +4740,18 @@ export default function Inbox() {
             <Send size={48} style={{ opacity: 0.2, margin: '0 auto 1.5rem auto' }} />
             <h2 className="font-display text-primary">Your Inbox</h2>
             <p>Select a conversation from the sidebar or start a new one.</p>
-            <button className="btn btn-primary" style={{ marginTop: '1rem' }} onClick={() => setComposerMode('new')}>
+            <button
+              type="button"
+              className="btn btn-primary"
+              style={{ marginTop: '1rem' }}
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                setUserSearch('');
+                setUserResults([]);
+                setComposerMode('new');
+              }}
+            >
               <UserPlus size={16} /> New message
             </button>
           </div>

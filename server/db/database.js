@@ -297,6 +297,28 @@ export function initializeDatabase() {
       FOREIGN KEY (reporter_id) REFERENCES users(id) ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS reports (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      reporter_id INTEGER NOT NULL,
+      reported_user_id INTEGER,
+      content_type TEXT NOT NULL,
+      content_id INTEGER,
+      reason_category TEXT NOT NULL,
+      reason_detail TEXT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      admin_note TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      resolved_at DATETIME,
+      resolved_by INTEGER
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_reports_status_created
+      ON reports(status, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_reports_content
+      ON reports(content_type, content_id);
+    CREATE INDEX IF NOT EXISTS idx_reports_reporter
+      ON reports(reporter_id);
+
     -- Comment likes
     CREATE TABLE IF NOT EXISTS comment_likes (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -518,6 +540,18 @@ export function initializeDatabase() {
     "ALTER TABLE announcements ADD COLUMN image_url TEXT"
   ];
   for (const migration of announcementMigrations) {
+    try {
+      db.prepare(migration).run();
+    } catch {
+      // Column probably already exists
+    }
+  }
+
+  const announcementMigrationsExtra = [
+    "ALTER TABLE announcements ADD COLUMN scheduled_at TEXT DEFAULT NULL",
+    "ALTER TABLE announcements ADD COLUMN scheduled_notified INTEGER DEFAULT 0"
+  ];
+  for (const migration of announcementMigrationsExtra) {
     try {
       db.prepare(migration).run();
     } catch {

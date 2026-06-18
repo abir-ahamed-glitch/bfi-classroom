@@ -19,7 +19,7 @@ const __dirname = path.dirname(__filename);
 
 // Import Routes
 import authRoutes from './routes/auth.js';
-import adminRoutes from './routes/admin.js';
+import adminRoutes, { startAnnouncementScheduler } from './routes/admin.js';
 import studentRoutes from './routes/student.js';
 import portfolioRoutes from './routes/portfolio.js';
 import communityRoutes, { startCommunityScheduler } from './routes/community.js';
@@ -30,7 +30,10 @@ import certificationRoutes from './routes/certification.js';
 import experienceRoutes from './routes/experience.js';
 import registryRoutes from './routes/registry.js';
 import notificationsRoutes from './routes/notifications.js';
+import analyticsRoutes from './routes/analytics.js';
+import reportsRoutes from './routes/reports.js';
 import { getJwtRefreshSecret, getJwtSecret } from './config/security.js';
+import { authenticateToken } from './middleware/auth.js';
 
 const app = express();
 const httpServer = createServer(app);
@@ -355,6 +358,18 @@ app.use(['/media/inbox-attachments', '/bfi-classroom/media/inbox-attachments'], 
 });
 
 // Static files for media uploads mapping
+const reportScreenshotsPath = path.join(__dirname, '..', 'uploads', 'report-screenshots');
+const serveReportScreenshot = (req, res) => {
+  const filename = path.basename(req.params.filename || '');
+  if (!/^report-screenshot-\d+-\d+\.(jpg|png|webp|gif)$/.test(filename)) {
+    return res.status(404).end();
+  }
+  return res.sendFile(path.join(reportScreenshotsPath, filename), (error) => {
+    if (error && !res.headersSent) res.status(error.statusCode || 404).end();
+  });
+};
+app.get('/uploads/report-screenshots/:filename', authenticateToken, serveReportScreenshot);
+app.get('/bfi-classroom/uploads/report-screenshots/:filename', authenticateToken, serveReportScreenshot);
 app.use('/bfi-classroom/media', express.static(path.join(__dirname, '..', 'uploads')));
 app.use('/media', express.static(path.join(__dirname, '..', 'uploads'))); // Keep root for backwards compatibility
 
@@ -371,6 +386,8 @@ app.use('/api/certification', certificationRoutes);
 app.use('/api/experience', experienceRoutes);
 app.use('/api/registry', registryRoutes);
 app.use('/api/notifications', notificationsRoutes);
+app.use('/api/analytics', analyticsRoutes);
+app.use('/api/reports', reportsRoutes);
 
 app.use('/api', (req, res) => {
   res.status(404).json({ error: `API route not found: ${req.method} ${req.originalUrl}` });
@@ -536,6 +553,7 @@ app.use((err, req, res, _next) => {
 
 // Start Server
 startCommunityScheduler(io);
+startAnnouncementScheduler(io);
 httpServer.listen(PORT, () => {
   console.log(`🚀 BFI Classroom API Gateway running on port ${PORT}`);
 });

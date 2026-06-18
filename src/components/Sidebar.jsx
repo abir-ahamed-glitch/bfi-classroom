@@ -29,7 +29,9 @@ import {
   UsersRound,
   ScrollText,
   Globe,
-  Bell
+  Bell,
+  BarChart2,
+  Flag
 } from 'lucide-react';
 import './Sidebar.css';
 
@@ -41,6 +43,7 @@ export default function Sidebar({ isNotifOpen, setIsNotifOpen }) {
   const [isOpen, setIsOpen] = useState(false);
   const [unreadInboxCount, setUnreadInboxCount] = useState(0);
   const [unreadNotificationCount, setUnreadNotificationCount] = useState(0);
+  const [unreadReportCount, setUnreadReportCount] = useState(0);
   const currentUserIdRef = useRef(null);
   const socketUrl = import.meta.env.VITE_SOCKET_URL || '';
   const hideBottomNav = isOpen || location.pathname.startsWith('/admin');
@@ -98,6 +101,26 @@ export default function Sidebar({ isNotifOpen, setIsNotifOpen }) {
     }
   };
 
+  const fetchUnreadReportCount = async () => {
+    if (currentUser?.role !== 'admin') {
+      setUnreadReportCount(0);
+      return;
+    }
+    const token = localStorage.getItem('token');
+    if (!token) return;
+    try {
+      const response = await fetch('/api/reports/admin/unread-count', {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setUnreadReportCount(Number(data.count || 0));
+      }
+    } catch (error) {
+      console.error('Failed to fetch unread report count', error);
+    }
+  };
+
   useEffect(() => {
     currentUserIdRef.current = Number(currentUser?.id);
   }, [currentUser?.id]);
@@ -114,10 +137,12 @@ export default function Sidebar({ isNotifOpen, setIsNotifOpen }) {
     const timeoutId = window.setTimeout(() => {
       fetchUnreadInboxCount();
       fetchUnreadNotificationCount();
+      fetchUnreadReportCount();
     }, 0);
     const intervalId = window.setInterval(() => {
       fetchUnreadInboxCount();
       fetchUnreadNotificationCount();
+      fetchUnreadReportCount();
     }, 10000);
     return () => {
       window.clearTimeout(timeoutId);
@@ -168,6 +193,10 @@ export default function Sidebar({ isNotifOpen, setIsNotifOpen }) {
 
     socket.on('new_notification', () => {
       fetchUnreadNotificationCount();
+    });
+
+    socket.on('notification_received', (notification) => {
+      window.dispatchEvent(new CustomEvent('showNotificationToast', { detail: notification }));
     });
 
     return () => {
@@ -310,6 +339,13 @@ export default function Sidebar({ isNotifOpen, setIsNotifOpen }) {
           {currentUser?.role === 'admin' && (
             <>
               <p className="nav-subtitle">Administration</p>
+              <NavLink to="/admin/analytics" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
+                <BarChart2 size={20} /> Analytics
+              </NavLink>
+              <NavLink to="/admin/reports" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
+                <Flag size={20} /> Reports
+                {unreadReportCount > 0 && <span className="nav-badge">{unreadReportCount > 99 ? '99+' : unreadReportCount}</span>}
+              </NavLink>
               <NavLink to="/admin/students" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
                 <Settings size={20} /> Student Manager
               </NavLink>

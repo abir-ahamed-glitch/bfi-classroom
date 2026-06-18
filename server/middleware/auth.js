@@ -78,8 +78,8 @@ export function sanitizeInput(req, res, next) {
   if (req.body) {
     for (const key in req.body) {
       if (typeof req.body[key] === 'string') {
-        // Skip sanitization for base64 images and complex URLs
-        if (key === 'profile_picture' || key === 'media_url') continue;
+        // Skip sanitization for base64 images, files, and complex URLs
+        if (key === 'profile_picture' || key === 'media_url' || key === 'image_url') continue;
         req.body[key] = purify.sanitize(req.body[key]);
       }
     }

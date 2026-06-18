@@ -3,10 +3,12 @@ import { Search, Loader2 } from 'lucide-react';
 import './GifPicker.css';
 
 const TENOR_API_KEY = 'LIVDSRZULELA';
+const GIF_CATEGORIES = ['Trending', 'Happy', 'Funny', 'Love', 'Wow', 'Clap', 'Sad', 'Film', 'Good Morning', 'Thank You'];
 
 export default function GifPicker({ onSelect, onClose }) {
   const [gifs, setGifs] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
+  const [activeCategory, setActiveCategory] = useState('Trending');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const pickerRef = useRef(null);
@@ -27,9 +29,10 @@ export default function GifPicker({ onSelect, onClose }) {
       setLoading(true);
       setError(null);
       try {
-        const endpoint = searchQuery.trim()
-          ? `https://g.tenor.com/v1/search?q=${encodeURIComponent(searchQuery)}&key=${TENOR_API_KEY}&limit=30`
-          : `https://g.tenor.com/v1/trending?key=${TENOR_API_KEY}&limit=30`;
+        const query = searchQuery.trim() || (activeCategory === 'Trending' ? '' : activeCategory);
+        const endpoint = query
+          ? `https://g.tenor.com/v1/search?q=${encodeURIComponent(query)}&key=${TENOR_API_KEY}&limit=50`
+          : `https://g.tenor.com/v1/trending?key=${TENOR_API_KEY}&limit=50`;
         
         const res = await fetch(endpoint);
         if (!res.ok) throw new Error('Failed to fetch GIFs');
@@ -48,7 +51,7 @@ export default function GifPicker({ onSelect, onClose }) {
     }, 400); // 400ms debounce
 
     return () => clearTimeout(delayDebounce);
-  }, [searchQuery]);
+  }, [activeCategory, searchQuery]);
 
   return (
     <div className="gif-picker-wrapper" ref={pickerRef}>
@@ -62,6 +65,21 @@ export default function GifPicker({ onSelect, onClose }) {
           onChange={(e) => setSearchQuery(e.target.value)}
           autoFocus
         />
+      </div>
+      <div className="gif-category-row">
+        {GIF_CATEGORIES.map((category) => (
+          <button
+            type="button"
+            key={category}
+            className={`gif-category-chip ${activeCategory === category ? 'active' : ''}`}
+            onClick={() => {
+              setActiveCategory(category);
+              setSearchQuery('');
+            }}
+          >
+            {category}
+          </button>
+        ))}
       </div>
 
       <div className="gif-picker-content custom-scrollbar">

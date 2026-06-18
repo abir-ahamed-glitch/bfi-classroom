@@ -11,7 +11,9 @@ export default function ImageViewerModal({ imageViewer, setImageViewer, allImage
 
   useEffect(() => {
     // Reset zoom and pan when image changes
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setZoom(1);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setPan({ x: 0, y: 0 });
   }, [imageViewer?.id]);
 

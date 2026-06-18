@@ -1,9 +1,9 @@
 .gif-picker-wrapper {
   background: #ffffff;
-  border-radius: 12px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
-  width: 320px;
-  height: 400px;
+  border-radius: 16px;
+  box-shadow: 0 18px 48px rgba(15, 23, 42, 0.22);
+  width: 340px;
+  height: 500px;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -11,22 +11,26 @@
 }
 
 [data-mode="dark"] .gif-picker-wrapper {
-  background: var(--bg-panel);
-  border-color: rgba(255,255,255,0.1);
+  background:
+    url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='grain'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='1.35' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23grain)' opacity='0.12'/%3E%3C/svg%3E"),
+    radial-gradient(circle at 18% 8%, rgba(96, 165, 250, 0.14) 0%, rgba(30, 64, 119, 0.08) 34%, transparent 66%),
+    linear-gradient(145deg, rgba(9, 25, 48, 0.98), rgba(4, 13, 27, 0.99));
+  border-color: rgba(96, 165, 250, 0.22);
+  box-shadow: 0 20px 54px rgba(0, 0, 0, 0.42), inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 
 .gif-picker-header {
-  padding: 12px;
+  padding: 12px 12px 8px;
   display: flex;
   align-items: center;
   gap: 8px;
-  border-bottom: 1px solid rgba(0,0,0,0.08);
   background: #f0f2f5;
+  border-bottom: none;
 }
 
 [data-mode="dark"] .gif-picker-header {
   border-bottom-color: rgba(255,255,255,0.08);
-  background: var(--bg-color);
+  background: rgba(4, 13, 27, 0.88);
 }
 
 .gif-search-icon {
@@ -46,6 +50,48 @@
   color: var(--text-primary);
 }
 
+.gif-category-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  overflow: visible;
+  padding: 8px 10px 10px;
+  border-bottom: 1px solid rgba(0,0,0,0.08);
+  flex: 0 0 auto;
+}
+
+[data-mode="dark"] .gif-category-row {
+  border-bottom-color: rgba(255,255,255,0.08);
+}
+
+.gif-category-chip {
+  border: none;
+  border-radius: 999px;
+  padding: 7px 12px;
+  min-width: max-content;
+  background: rgba(15,23,42,0.06);
+  color: var(--text-primary);
+  font-size: 0.78rem;
+  font-weight: 800;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.16s ease, color 0.16s ease;
+}
+
+.gif-category-chip.active {
+  background: #0084ff;
+  color: #ffffff;
+}
+
+[data-mode="dark"] .gif-category-chip {
+  background: rgba(255,255,255,0.08);
+}
+
+[data-mode="dark"] .gif-category-chip.active {
+  background: #0084ff;
+  color: #ffffff;
+}
+
 .gif-picker-content {
   flex: 1;
   overflow-y: auto;
@@ -57,7 +103,7 @@
   display: grid;
   grid-template-columns: repeat(2, 1fr);
   gap: 6px;
-  grid-auto-rows: 100px;
+  grid-auto-rows: 112px;
 }
 
 .gif-item {

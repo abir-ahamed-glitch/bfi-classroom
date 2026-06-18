@@ -79,6 +79,12 @@ router.post('/login', authLimiter, sanitizeInput, (req, res) => {
     return res.status(400).json({ error: 'Username/Email and password are required' });
   }
 
+  // Universal rule: Admin usernames MUST start with 'admin@'
+  // This is enforced at login when type is 'admin' to prevent any bypass.
+  if (type === 'admin' && !username.toLowerCase().startsWith('admin@')) {
+    return res.status(400).json({ error: 'Admin usernames must start with "admin@". Please enter your full admin username (e.g. admin@yourname).' });
+  }
+
   try {
     const query = `
       SELECT * FROM users 

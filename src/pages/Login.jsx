@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { Film, User, Lock, ArrowRight, Loader2, Eye, EyeOff } from 'lucide-react';
+import { Film, User, Lock, ArrowRight, Loader2, Eye, EyeOff, ShieldAlert } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import './Login.css'; // Add a specific CSS file for Login
 
@@ -119,14 +119,64 @@ export default function Login() {
             {isLoading ? <Loader2 size={18} className="spin" /> : 'Access Classroom'}
             {!isLoading && <ArrowRight size={18} />}
           </button>
+
+          {/* Institute Authority Area — subtle secondary button */}
+          <div style={{
+            marginTop: '1.25rem',
+            paddingTop: '1.1rem',
+            borderTop: '1px solid rgba(255,255,255,0.08)',
+            display: 'flex',
+            justifyContent: 'center',
+          }}>
+            <Link
+              to="/admin/login"
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '0.45rem',
+                textDecoration: 'none',
+                background: 'rgba(255,255,255,0.05)',
+                border: '1px solid rgba(255,255,255,0.12)',
+                borderRadius: '8px',
+                padding: '0.5rem 1.2rem',
+                width: '100%',
+                transition: 'background 0.2s, border-color 0.2s, transform 0.15s',
+                cursor: 'pointer',
+              }}
+              onMouseEnter={e => {
+                e.currentTarget.style.background = 'rgba(255,255,255,0.09)';
+                e.currentTarget.style.borderColor = 'rgba(255,255,255,0.22)';
+                e.currentTarget.style.transform = 'translateY(-1px)';
+              }}
+              onMouseLeave={e => {
+                e.currentTarget.style.background = 'rgba(255,255,255,0.05)';
+                e.currentTarget.style.borderColor = 'rgba(255,255,255,0.12)';
+                e.currentTarget.style.transform = 'translateY(0)';
+              }}
+            >
+              <ShieldAlert size={13} style={{ color: 'rgba(255,255,255,0.45)', flexShrink: 0 }} />
+              <span style={{
+                fontSize: '0.78rem',
+                fontWeight: 500,
+                letterSpacing: '0.02em',
+                background: 'linear-gradient(135deg, var(--accent-primary) 0%, var(--accent-secondary) 60%, var(--accent-tertiary) 100%)',
+                WebkitBackgroundClip: 'text',
+                WebkitTextFillColor: 'transparent',
+                backgroundClip: 'text',
+              }}>
+                Institute Authority Area
+              </span>
+            </Link>
+          </div>
         </form>
 
         <div className="login-footer">
           <p>Student registration is handled by the institute.</p>
           <p>Not a student yet? <a href="https://bfibd.org/our-courses/" target="_blank" rel="noopener noreferrer" className="text-gradient">Explore courses</a></p>
-          <p style={{ marginTop: '1.5rem', fontSize: '0.8rem' }}><Link to="/admin/login" className="text-muted">Institute Authority Area</Link></p>
         </div>
       </div>
+
     </div>
   );
 }

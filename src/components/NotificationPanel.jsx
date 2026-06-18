@@ -1,8 +1,35 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Bell, Check, Trash2, Megaphone, Users, User, X } from 'lucide-react';
+import { Bell, Check, Trash2, Megaphone, Users, User, X, FileText, File, Music, Video, Paperclip, Image as ImageIcon } from 'lucide-react';
 import { resolveMediaUrl } from '../utils/mediaUtils';
 import './NotificationPanel.css';
+
+const parseAttachment = (value) => {
+  if (!value) return null;
+  if (typeof value === 'string' && value.trim().startsWith('{')) {
+    try {
+      return JSON.parse(value);
+    } catch (e) {
+      // ignore
+    }
+  }
+  return {
+    name: 'notice_image.png',
+    type: 'image/png',
+    url: value
+  };
+};
+
+const FileIcon = ({ type, size = 18 }) => {
+  if (!type) return <File size={size} />;
+  if (type.startsWith('image/')) return <ImageIcon size={size} />;
+  if (type.startsWith('video/')) return <Video size={size} />;
+  if (type.startsWith('audio/')) return <Music size={size} />;
+  if (type === 'application/pdf') return <FileText size={size} style={{ color: '#ef4444' }} />;
+  if (type.includes('word') || type.includes('document')) return <FileText size={size} style={{ color: '#3b82f6' }} />;
+  if (type.includes('excel') || type.includes('sheet')) return <FileText size={size} style={{ color: '#10b981' }} />;
+  return <File size={size} />;
+};
 
 export default function NotificationPanel({ isOpen, onClose }) {
   const [notifications, setNotifications] = useState([]);
@@ -21,6 +48,20 @@ export default function NotificationPanel({ isOpen, onClose }) {
     // Also fetch initially to set the badge even when closed
     fetchUnreadCount();
   }, []);
+
+  useEffect(() => {
+    const handleRefresh = () => {
+      if (isOpen) {
+        fetchNotifications();
+      } else {
+        fetchUnreadCount();
+      }
+    };
+    window.addEventListener('refreshNotifications', handleRefresh);
+    return () => {
+      window.removeEventListener('refreshNotifications', handleRefresh);
+    };
+  }, [isOpen]);
 
   const fetchNotifications = async () => {
     setLoading(true);
@@ -155,24 +196,49 @@ export default function NotificationPanel({ isOpen, onClose }) {
                       })}
                     </span>
                   </div>
-                  {notif.image_url && (
-                    <div className="notification-thumbnail" style={{
-                      width: '40px',
-                      height: '40px',
-                      flexShrink: 0,
-                      borderRadius: '8px',
-                      overflow: 'hidden',
-                      background: 'var(--bg-glass)',
-                      border: '1px solid var(--border-color)'
-                    }}>
-                      <img 
-                        src={resolveMediaUrl(notif.image_url)} 
-                        alt="attachment" 
-                        style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                        onError={(e) => e.target.style.display = 'none'}
-                      />
-                    </div>
-                  )}
+                  {notif.image_url && (() => {
+                    const attachment = parseAttachment(notif.image_url);
+                    if (!attachment || !attachment.url) return null;
+                    const isImage = attachment.type?.startsWith('image/');
+                    if (isImage) {
+                      return (
+                        <div className="notification-thumbnail" style={{
+                          width: '40px',
+                          height: '40px',
+                          flexShrink: 0,
+                          borderRadius: '8px',
+                          overflow: 'hidden',
+                          background: 'var(--bg-glass)',
+                          border: '1px solid var(--border-color)'
+                        }}>
+                          <img 
+                            src={resolveMediaUrl(attachment.url)} 
+                            alt="attachment" 
+                            style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                            onError={(e) => e.target.style.display = 'none'}
+                          />
+                        </div>
+                      );
+                    } else {
+                      return (
+                        <div className="notification-thumbnail" style={{
+                          width: '40px',
+                          height: '40px',
+                          flexShrink: 0,
+                          borderRadius: '8px',
+                          overflow: 'hidden',
+                          background: 'rgba(255,255,255,0.03)',
+                          border: '1px solid var(--border-color)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          color: 'var(--accent-primary, #60a5fa)'
+                        }}>
+                          <FileIcon size={18} type={attachment.type} />
+                        </div>
+                      );
+                    }
+                  })()}
                 </div>
                 {!notif.is_read && <div className="unread-dot"></div>}
               </div>

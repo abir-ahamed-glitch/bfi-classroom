@@ -3,9 +3,10 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { resolveMediaUrl } from '../utils/mediaUtils';
 import { useAuth } from '../context/AuthContext';
 import { getOrdinalSuffix } from '../utils/formatUtils';
+import ReportFormModal from '../components/ReportFormModal';
 import {
   User, Mail, Phone, MapPin, Calendar, Briefcase, Award,
-  FolderGit2, MessageSquare, ArrowLeft, Info, Link as LinkIcon, Play, Video
+  FolderGit2, MessageSquare, ArrowLeft, Info, Link as LinkIcon, Play, Video, Flag
 } from 'lucide-react';
 
 export default function PublicProfile() {
@@ -17,6 +18,7 @@ export default function PublicProfile() {
   const [error, setError] = useState('');
   const [playingProjectId, setPlayingProjectId] = useState(null);
   const [brokenThumbs, setBrokenThumbs] = useState({});
+  const [reportProfileOpen, setReportProfileOpen] = useState(false);
 
   const getEmbedUrl = (url, source) => {
     if (!url) return '';
@@ -112,6 +114,40 @@ export default function PublicProfile() {
         }
       }
     });
+  };
+
+  const showReportToast = (message, title = 'Report Submitted') => {
+    window.dispatchEvent(new CustomEvent('showNotificationToast', {
+      detail: { type: 'report', title, message },
+    }));
+  };
+
+  const handleProfileReport = async ({ reason_category, reason_detail, screenshot_path }) => {
+    const response = await fetch('/api/reports/submit', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${localStorage.getItem('token')}`,
+      },
+      body: JSON.stringify({
+        content_type: 'profile',
+        content_id: Number(profile.id),
+        reported_user_id: Number(profile.id),
+        reason_category,
+        reason_detail,
+        screenshot_path,
+        content_snapshot: `Profile of ${`${profile.first_name || ''} ${profile.last_name || ''}`.trim()} (@${profile.username || 'unknown'})`,
+      }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      if (response.status === 409) {
+        showReportToast("You've already reported this.", 'Already Reported');
+        return;
+      }
+      throw new Error(data.error || 'Unable to submit this report.');
+    }
+    showReportToast('Report submitted. Our team will review it.');
   };
 
   if (loading) {
@@ -218,12 +254,41 @@ export default function PublicProfile() {
             {bio && <p style={{ color: 'var(--text-secondary)', fontSize: '0.95rem', lineHeight: 1.5, margin: 0 }}>{bio}</p>}
           </div>
           <div style={{ alignSelf: 'flex-start' }}>
-            <button className="btn btn-primary" onClick={handleMessageClick} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <MessageSquare size={16} /> Message
-            </button>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+              <button className="btn btn-primary" onClick={handleMessageClick} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <MessageSquare size={16} /> Message
+              </button>
+              {currentUser?.role !== 'admin' && Number(profile.id) !== Number(currentUser?.id) && (
+                <button
+                  type="button"
+                  className="btn btn-glass"
+                  onClick={() => setReportProfileOpen(true)}
+                  title="Report Profile"
+                  aria-label="Report Profile"
+                  style={{ width: 42, height: 42, padding: 0, display: 'grid', placeItems: 'center' }}
+                >
+                  <Flag size={17} />
+                </button>
+              )}
+            </div>
           </div>
         </div>
       </section>
+
+      <ReportFormModal
+        open={reportProfileOpen}
+        title="Report this Profile"
+        subtitle="Help us keep BFI Classroom safe. Reports are confidential."
+        categories={[
+          'Fake or impersonation account',
+          'Inappropriate profile photo or cover',
+          'Harassment or bullying',
+          'Spam',
+          'Other',
+        ]}
+        onClose={() => setReportProfileOpen(false)}
+        onSubmit={handleProfileReport}
+      />
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '1.5rem' }}>
         
