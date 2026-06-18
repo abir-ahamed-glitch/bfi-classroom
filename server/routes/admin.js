@@ -473,23 +473,32 @@ router.put('/students/:id', authenticateToken, requireRole('admin'), sanitizeInp
         const feeInfo = course_fees?.[course] ? JSON.stringify(course_fees[course]) : null;
         updateFeeStmt.run(feeInfo, id, course);
 
-        if (course === 'Online Filmmaking Course' && course_fees?.[course]) {
+        if (course_fees?.[course]) {
           const cfee = course_fees[course];
           
-          // Phase 1 payment check
-          const phase1 = cfee.phase1 || {};
-          const amountPaidNum = parseFloat((phase1.amount_paid || '').replace(/[^\d.]/g, '')) || 0;
-          const hasPaidInst = (phase1.installments || []).some(inst => inst.status === 'Paid' && parseFloat((inst.amount || '').replace(/[^\d.]/g, '')) > 0);
-          if (amountPaidNum > 0 || hasPaidInst) {
-            forceStep1Stmt.run(id, course);
-          }
+          if (course === 'Online Filmmaking Course') {
+            // Phase 1 payment check
+            const phase1 = cfee.phase1 || {};
+            const amountPaidNum = parseFloat((phase1.amount_paid || '').replace(/[^\d.]/g, '')) || 0;
+            const hasPaidInst = (phase1.installments || []).some(inst => inst.status === 'Paid' && parseFloat((inst.amount || '').replace(/[^\d.]/g, '')) > 0);
+            if (amountPaidNum > 0 || hasPaidInst) {
+              forceStep1Stmt.run(id, course);
+            }
 
-          // Phase 2 payment check
-          const phase2 = cfee.phase2 || {};
-          const phase2PaidNum = parseFloat((phase2.amount_paid || '').replace(/[^\d.]/g, '')) || 0;
-          const phase2HasPaidInst = (phase2.installments || []).some(inst => inst.status === 'Paid' && parseFloat((inst.amount || '').replace(/[^\d.]/g, '')) > 0);
-          if (phase2PaidNum > 0 || phase2HasPaidInst) {
-            forceStep3Stmt.run(id, course);
+            // Phase 2 payment check
+            const phase2 = cfee.phase2 || {};
+            const phase2PaidNum = parseFloat((phase2.amount_paid || '').replace(/[^\d.]/g, '')) || 0;
+            const phase2HasPaidInst = (phase2.installments || []).some(inst => inst.status === 'Paid' && parseFloat((inst.amount || '').replace(/[^\d.]/g, '')) > 0);
+            if (phase2PaidNum > 0 || phase2HasPaidInst) {
+              forceStep3Stmt.run(id, course);
+            }
+          } else {
+            // Other courses (Workshops) payment check
+            const amountPaidNum = parseFloat((cfee.amount_paid || '').replace(/[^\d.]/g, '')) || 0;
+            const hasPaidInst = (cfee.installments || []).some(inst => inst.status === 'Paid' && parseFloat((inst.amount || '').replace(/[^\d.]/g, '')) > 0);
+            if (amountPaidNum > 0 || hasPaidInst) {
+              forceStep1Stmt.run(id, course);
+            }
           }
         }
       }
@@ -845,7 +854,7 @@ router.patch('/students/:id/progress', authenticateToken, requireRole('admin'), 
   }
 });
 
-// Route to update a student's academic records (Online Filmmaking Course & Film Appreciation Course)
+// Route to update a student's academic records
 router.put('/students/:id/academic-records/:courseId', authenticateToken, requireRole('admin'), (req, res) => {
   try {
     const studentId = req.params.id;
@@ -859,12 +868,8 @@ router.put('/students/:id/academic-records/:courseId', authenticateToken, requir
       return res.status(404).json({ error: 'Course enrollment not found.' });
     }
 
-    if (enrollment.course_name !== 'Online Filmmaking Course' && enrollment.course_name !== 'Film Appreciation Course') {
-      return res.status(400).json({ error: 'Academic records are not supported for this course.' });
-    }
-
-    // Custom flow for Film Appreciation Course (no attendance, no assignments, score out of 100)
-    if (enrollment.course_name === 'Film Appreciation Course') {
+    // Custom flow for all courses except Online Filmmaking Course (no attendance, no assignments, score out of 100)
+    if (enrollment.course_name !== 'Online Filmmaking Course') {
       const exam = parseInt(exam_written) || 0;
       const completed = exam >= 33 ? 1 : 0;
       

@@ -95,8 +95,8 @@ export default function StudentPortal() {
   // Get Online Filmmaking Course enrollment for academic data
   const filmmakingEnrollment = profile?.enrollments?.find(c => c.course_name === 'Online Filmmaking Course');
 
-  // Get Film Appreciation Course enrollment
-  const filmAppreciationEnrollment = profile?.enrollments?.find(c => c.course_name === 'Film Appreciation Course');
+  // Get other course enrollment (courses that do not require attendance)
+  const otherEnrollment = profile?.enrollments?.find(c => c.course_name !== 'Online Filmmaking Course');
   
   // Calculate attendance percentage (Filmmaking only)
   const attendanceTotal = filmmakingEnrollment?.attendance_total || 22;
@@ -113,9 +113,9 @@ export default function StudentPortal() {
   };
   const filmmakingTotal = examData.examScore + examData.assignments.screenplay + examData.assignments.shootingScript;
 
-  // Extract exam data — Film Appreciation Course
+  // Extract exam data — Other Courses
   const facExamData = {
-    examScore: filmAppreciationEnrollment?.exam_written || 0
+    examScore: otherEnrollment?.exam_written || 0
   };
 
   // Phase 2 participation data (Filmmaking only)
@@ -456,8 +456,8 @@ export default function StudentPortal() {
         </div>
       </section>
 
-      {/* ── Film Appreciation Course: Admission & Exam Results ── */}
-      {filmAppreciationEnrollment && (
+      {/* ── Other Courses: Admission & Exam Results ── */}
+      {otherEnrollment && (
         <section id="detailed-records" className="academic-card" style={{ padding: '2rem', marginBottom: '2rem' }}>
           {/* Card header */}
           <div style={{ marginBottom: '1.5rem' }}>
@@ -467,7 +467,7 @@ export default function StudentPortal() {
           </div>
 
           {/* Congratulations banner if completed */}
-          {filmAppreciationEnrollment.step4_completed === 1 && (
+          {otherEnrollment.step4_completed === 1 && (
             <div style={{ width: '100%', display: 'flex', alignItems: 'center', gap: '1rem', background: 'linear-gradient(135deg, rgba(52, 211, 153, 0.15) 0%, rgba(16, 185, 129, 0.05) 100%)', borderRadius: '12px', padding: '1.25rem', border: '1px solid rgba(52, 211, 153, 0.3)', marginBottom: '1.5rem' }}>
               <div style={{ width: '48px', height: '48px', borderRadius: '50%', background: 'rgba(52, 211, 153, 0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
                 <Award size={26} color="#34d399" />
@@ -475,7 +475,7 @@ export default function StudentPortal() {
               <div style={{ flex: 1 }}>
                 <h4 style={{ margin: '0 0 0.25rem 0', color: '#34d399', fontWeight: '700', fontSize: '1.05rem' }}>Course Completed Successfully!</h4>
                 <p style={{ margin: 0, fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-                  Congratulations! You have successfully completed all the requirements of the Film Appreciation Course at Bangladesh Film Institute. Your digital certificate is ready for download.
+                  Congratulations! You have successfully completed all the requirements of the {otherEnrollment.course_name} at Bangladesh Film Institute. Your digital certificate is ready for download.
                 </p>
               </div>
             </div>
@@ -487,10 +487,10 @@ export default function StudentPortal() {
             {/* Left: Admission Status */}
             <div style={{ flex: '1 1 260px', display: 'flex', flexDirection: 'column', gap: '1.5rem', padding: '0.5rem 2rem 0.5rem 0.5rem' }}>
               <h4 style={{ margin: '0 0 0.25rem 0', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <Award size={17} className="text-accent" /> {filmAppreciationEnrollment.step1_completed ? 'Admission Confirmed' : 'Admission Pending'}
+                <Award size={17} className="text-accent" /> {otherEnrollment.step1_completed ? 'Admission Confirmed' : 'Admission Pending'}
               </h4>
 
-              {filmAppreciationEnrollment.step1_completed ? (
+              {otherEnrollment.step1_completed ? (
                 /* Green seal icon (Confirmed) */
                 <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem' }}>
                   <div style={{ width: '90px', height: '90px', borderRadius: '50%', background: 'rgba(52, 211, 153, 0.1)', border: '2px solid rgba(52, 211, 153, 0.3)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -500,7 +500,7 @@ export default function StudentPortal() {
                   <div className="academic-inner-section" style={{ width: '100%' }}>
                     <p style={{ margin: 0, fontSize: '0.95rem', color: 'var(--text-secondary)', lineHeight: '1.6' }}>
                       Your enrolment has been formally confirmed by Bangladesh Film Institute (BFI). You are now an officially registered student of the
-                      {' '}<strong style={{ color: 'var(--text-primary)' }}>Film Appreciation Course</strong> and are authorised to participate in all scheduled academic activities.
+                      {' '}<strong style={{ color: 'var(--text-primary)' }}>{otherEnrollment.course_name}</strong> and are authorised to participate in all scheduled academic activities.
                     </p>
                   </div>
 
@@ -518,7 +518,7 @@ export default function StudentPortal() {
 
                   <div className="academic-inner-section" style={{ width: '100%' }}>
                     <p style={{ margin: 0, fontSize: '0.95rem', color: 'var(--text-secondary)', lineHeight: '1.6' }}>
-                      Your admission to the <strong style={{ color: 'var(--text-primary)' }}>Film Appreciation Course</strong> is currently being processed by Bangladesh Film Institute (BFI).
+                      Your admission to the <strong style={{ color: 'var(--text-primary)' }}>{otherEnrollment.course_name}</strong> is currently being processed by Bangladesh Film Institute (BFI).
                       Once the administration confirms your registration, your status will be updated here.
                     </p>
                   </div>

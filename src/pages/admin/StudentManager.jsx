@@ -715,7 +715,7 @@ export default function StudentManager() {
       }
     }
 
-    if (courseName === 'Film Appreciation Course') {
+    if (courseName !== 'Online Filmmaking Course') {
       const student = students.find(s => s.id === studentId);
       const e = student?.enrollments?.find(env => env.id === enrollmentId);
       const willBeChecked = !currentValue;
@@ -1048,7 +1048,7 @@ export default function StudentManager() {
     setAcademicStudent({ ...student, enrollment });
     setAcademicCourseId(courseId);
     
-    if (enrollment.course_name === 'Film Appreciation Course') {
+    if (enrollment.course_name !== 'Online Filmmaking Course') {
       setAcademicFormData({
         attendance_classes: '0',
         attendance_total: '0',
@@ -1481,9 +1481,9 @@ export default function StudentManager() {
                     </td>
                     <td className="student-table-col-actions" style={{ padding: '1.25rem 1.5rem', textAlign: 'center' }}>
                       <div className="student-table-actions" style={{ display: 'flex', gap: '0.5rem', justifyContent: 'center' }}>
-                        {s.enrollments && s.enrollments.find(e => e.course_name === 'Online Filmmaking Course' || e.course_name === 'Film Appreciation Course') && (() => {
-                          const e = s.enrollments.find(enroll => enroll.course_name === 'Online Filmmaking Course' || enroll.course_name === 'Film Appreciation Course');
-                          const isAppreciation = e.course_name === 'Film Appreciation Course';
+                        {s.enrollments && s.enrollments.length > 0 && (() => {
+                          const e = s.enrollments[0];
+                          const isAppreciation = e.course_name !== 'Online Filmmaking Course';
                           return (
                             <button 
                               onClick={() => openAcademicModal(s, e.id)}
@@ -1541,7 +1541,7 @@ export default function StudentManager() {
 
       {/* Edit Modal Overlay */}
       {editingStudent && createPortal(
-        <div className="modern-modal-overlay" onClick={() => setEditingStudent(null)}>
+        <div className="modern-modal-overlay">
           <form onSubmit={submitEdit} className="modern-modal-content glass-panel shadow-2xl" style={{ width: '100%', maxWidth: '500px', margin: 'auto' }} onClick={(e) => e.stopPropagation()}>
             <div className="modern-modal-header">
               <h3 className="font-display" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -1692,7 +1692,7 @@ export default function StudentManager() {
       )}
 
       {confirmConfig && typeof document !== 'undefined' && createPortal(
-        <div className="modern-modal-overlay" onClick={() => setConfirmConfig(null)}>
+        <div className="modern-modal-overlay">
           <div className="modern-modal-content glass-panel shadow-2xl" onClick={e => e.stopPropagation()}>
             <div className="modern-modal-header">
               <h3 className="font-display">{confirmConfig.title}</h3>
@@ -1723,12 +1723,12 @@ export default function StudentManager() {
 
       {/* Academic Records Modal */}
       {academicStudent && typeof document !== 'undefined' && createPortal(
-        <div className="modern-modal-overlay" onClick={closeAcademicModal}>
+        <div className="modern-modal-overlay">
           <form onSubmit={submitAcademic} className="modern-modal-content glass-panel shadow-2xl" style={{ width: '100%', maxWidth: '500px', margin: 'auto' }} onClick={e => e.stopPropagation()}>
             <div className="modern-modal-header">
               <div>
                 <h3 className="font-display" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <GraduationCap size={24} style={{ color: '#10b981' }} /> {academicStudent.enrollment?.course_name === 'Film Appreciation Course' ? 'Exam Result' : 'Academic Records'}
+                  <GraduationCap size={24} style={{ color: '#10b981' }} /> {academicStudent.enrollment?.course_name !== 'Online Filmmaking Course' ? 'Exam Result' : 'Academic Records'}
                 </h3>
                 <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginTop: '0.2rem' }}>
                   {academicStudent.full_name} <span style={{ opacity: 0.7 }}>({academicStudent.batch_number ? `${getOrdinalSuffix(academicStudent.batch_number)} Batch` : 'No Batch'})</span>
@@ -1741,7 +1741,7 @@ export default function StudentManager() {
             </div>
 
             <div className="modern-modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem', maxHeight: '60vh', overflowY: 'auto' }}>
-              {academicStudent.enrollment?.course_name === 'Film Appreciation Course' ? (
+              {academicStudent.enrollment?.course_name !== 'Online Filmmaking Course' ? (
                 /* Film Appreciation Course: single Exam Result out of 100, no attendance */
                 <div style={{ padding: '1rem', background: 'rgba(255,255,255,0.02)', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.05)' }}>
                   <h3 style={{ fontSize: '1rem', marginBottom: '1rem', color: 'var(--text-primary)' }}>Exam Result (Total: 100)</h3>
@@ -1883,7 +1883,7 @@ export default function StudentManager() {
             <div className="modern-modal-footer" style={{ display: 'flex', gap: '1rem' }}>
               <button type="button" onClick={closeAcademicModal} className="modern-btn modern-btn--secondary" style={{ flex: 1 }}>Cancel</button>
               <button type="submit" className="modern-btn modern-btn--primary" disabled={isAcademicSaving} style={{ flex: 1, background: '#10b981', borderColor: '#10b981' }}>
-                {isAcademicSaving ? 'Saving...' : (academicStudent.enrollment?.course_name === 'Film Appreciation Course' ? 'Save Result' : 'Save Records')}
+                {isAcademicSaving ? 'Saving...' : (academicStudent.enrollment?.course_name !== 'Online Filmmaking Course' ? 'Save Result' : 'Save Records')}
               </button>
             </div>
           </form>
@@ -1893,7 +1893,7 @@ export default function StudentManager() {
 
       {/* Phase 2 Completion Modal */}
       {phase2Student && typeof document !== 'undefined' && createPortal(
-        <div className="modern-modal-overlay" onClick={closePhase2Modal}>
+        <div className="modern-modal-overlay">
           <form onSubmit={submitPhase2} className="modern-modal-content glass-panel shadow-2xl" style={{ width: '100%', maxWidth: '480px', margin: 'auto' }} onClick={e => e.stopPropagation()}>
             <div className="modern-modal-header">
               <div>

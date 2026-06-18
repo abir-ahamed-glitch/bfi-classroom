@@ -672,8 +672,8 @@
   top: 0;
   right: -100%;
   bottom: 0;
-  width: 65%;
-  max-width: 900px;
+  width: 80%;
+  max-width: 1200px;
   min-width: 320px;
   background: #0d1117;
   border-left: 1px solid rgba(255, 255, 255, 0.08);
@@ -802,14 +802,31 @@
   background: rgba(255, 255, 255, 0.015);
 }
 
+.analytics-drawer-table-container::-webkit-scrollbar {
+  height: 8px;
+}
+.analytics-drawer-table-container::-webkit-scrollbar-track {
+  background: rgba(148, 163, 184, 0.05);
+  border-radius: 999px;
+}
+.analytics-drawer-table-container::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.3);
+  border-radius: 999px;
+}
+.analytics-drawer-table-container::-webkit-scrollbar-thumb:hover {
+  background: rgba(96, 165, 250, 0.5);
+}
+
 .analytics-drawer-table {
   width: 100%;
+  min-width: 1050px;
   border-collapse: collapse;
   text-align: left;
+  table-layout: auto;
 }
 
 .analytics-drawer-table th {
-  padding: 1rem 1.25rem;
+  padding: 0.75rem 0.6rem;
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
   color: var(--text-muted);
   font-size: 0.75rem;
@@ -820,10 +837,11 @@
 }
 
 .analytics-drawer-table td {
-  padding: 1rem 1.25rem;
+  padding: 0.75rem 0.6rem;
   border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-  font-size: 0.85rem;
+  font-size: 0.82rem;
   color: var(--text-secondary);
+  vertical-align: middle;
 }
 
 .analytics-drawer-table tr:last-child td {
@@ -1053,3 +1071,152 @@
 [data-mode="light"] .analytics-drawer-empty-icon {
   color: rgba(100, 116, 139, 0.42);
 }
+
+/* ============================================================
+   Student List Table & Modal Styles
+   ============================================================ */
+.student-manager-table-scroll {
+  padding: 0 !important;
+  overflow-x: auto !important;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.72) rgba(148, 163, 184, 0.12);
+  touch-action: pan-x pan-y;
+}
+.student-manager-table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+}
+.student-manager-table th,
+.student-manager-table td {
+  padding: 0.95rem 0.75rem !important;
+  border-bottom: 1px solid var(--glass-border);
+}
+.student-manager-table .student-table-col-id {
+  width: 9%;
+  white-space: nowrap;
+}
+.student-manager-table .student-table-col-name {
+  width: 24%;
+}
+.student-manager-table .student-table-col-contact {
+  width: 23%;
+}
+.student-manager-table .student-table-col-batch {
+  width: 9%;
+  white-space: nowrap;
+}
+.student-manager-table .student-table-col-progress {
+  width: 17%;
+}
+.student-manager-table .student-table-col-joined {
+  width: 8%;
+  white-space: nowrap;
+}
+.student-manager-table .student-table-col-actions {
+  width: 13%;
+}
+.student-table-batch-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  white-space: nowrap;
+}
+.student-table-course-card {
+  min-width: 0;
+  width: 100%;
+}
+.student-table-actions {
+  flex-wrap: nowrap;
+  min-width: max-content;
+}
+.student-manager-table-scroll::-webkit-scrollbar {
+  height: 12px;
+}
+.student-manager-table-scroll::-webkit-scrollbar-track {
+  background: rgba(148, 163, 184, 0.12);
+  border-radius: 999px;
+}
+.student-manager-table-scroll::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.72);
+  border-radius: 999px;
+  border: 2px solid rgba(15, 23, 42, 0.12);
+}
+.student-manager-table-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(96, 165, 250, 0.82);
+}
+
+@media (max-width: 1600px) {
+  .student-manager-table-scroll {
+    width: 100% !important;
+    max-width: 100% !important;
+    max-height: min(58vh, 420px);
+    overflow: auto !important;
+    margin-left: 0;
+    margin-right: 0;
+    overscroll-behavior: contain;
+  }
+  .student-manager-table {
+    width: max-content;
+    min-width: 1320px;
+    table-layout: auto;
+  }
+  .student-manager-table th {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: rgba(15, 15, 18, 0.96);
+  }
+  [data-mode="light"] .student-manager-table th {
+    background: rgba(255, 255, 255, 0.96);
+  }
+  .student-manager-table th,
+  .student-manager-table td {
+    padding: 1rem 1.25rem !important;
+  }
+  .student-manager-table .student-table-col-id {
+    min-width: 120px;
+    width: auto;
+  }
+  .student-manager-table .student-table-col-name {
+    min-width: 220px;
+    width: auto;
+  }
+  .student-manager-table .student-table-col-contact {
+    min-width: 280px;
+    width: auto;
+  }
+  .student-manager-table .student-table-col-batch {
+    min-width: 130px;
+    width: auto;
+  }
+  .student-manager-table .student-table-col-progress {
+    min-width: 260px;
+    width: auto;
+  }
+  .student-manager-table .student-table-col-joined {
+    min-width: 130px;
+    width: auto;
+  }
+  .student-manager-table .student-table-col-actions {
+    min-width: 220px;
+    width: auto;
+  }
+  .student-table-course-card {
+    max-width: 210px;
+  }
+}
+
+.modern-modal-grid-2col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+}
+
+@media (max-width: 480px) {
+  .modern-modal-grid-2col {
+    grid-template-columns: 1fr !important;
+    gap: 0.75rem;
+  }
+}
+

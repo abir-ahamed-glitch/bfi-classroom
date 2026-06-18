@@ -166,10 +166,11 @@ function getMissingAttendanceRows() {
     JOIN users u ON u.id = sce.user_id
     JOIN student_profiles sp ON sp.user_id = u.id
     -- Future refinement: limit this audit to students who have actually reached Phase 2.
-    WHERE (
-      COALESCE(sce.phase2_shooting_attended, 0) = 0
-      OR COALESCE(sce.phase2_editing_attended, 0) = 0
-    )
+    WHERE sce.course_name = 'Online Filmmaking Course'
+      AND (
+        COALESCE(sce.phase2_shooting_attended, 0) = 0
+        OR COALESCE(sce.phase2_editing_attended, 0) = 0
+      )
     ORDER BY sp.student_id ASC
   `).all();
 }
@@ -228,11 +229,27 @@ router.get('/stats', authenticateToken, requireRole('admin'), (req, res) => {
       WHERE step1_completed = 1
     `).get();
 
-    // Currently enrolled (has at least one enrollment record)
-    const currentlyEnrolled = db.prepare(`
-      SELECT COUNT(DISTINCT user_id) as count
-      FROM student_course_enrollments
-    `).get();
+    // Currently enrolled
+    // Rule:
+    // For 'Online Filmmaking Course': Must have step1_completed = 1
+    // For any course: Must have paid full or partial fee
+    const allEnrollments = db.prepare(`SELECT user_id, course_name, course_type, step1_completed, fee_details FROM student_course_enrollments`).all();
+    const enrolledUserIds = new Set();
+    for (const e of allEnrollments) {
+      let isEnrolled = false;
+      const feeDetails = parseFeeDetails(e.fee_details);
+      const status = getFeeStatus(feeDetails, e.course_type);
+      const hasPaid = status === 'paid' || status === 'partial';
+
+      if (e.course_name === 'Online Filmmaking Course') {
+        if (e.step1_completed === 1) isEnrolled = true;
+      } else {
+        if (hasPaid) isEnrolled = true;
+      }
+
+      if (isEnrolled) enrolledUserIds.add(e.user_id);
+    }
+    const currentlyEnrolled = { count: enrolledUserIds.size };
 
     // Passed Phase 1 Exam (step2_completed = 1)
     const passedPhase1 = db.prepare(`
@@ -248,18 +265,25 @@ router.get('/stats', authenticateToken, requireRole('admin'), (req, res) => {
       WHERE step2_completed = 1
     `).get();
 
-    // Completed Phase 2 (step3_completed = 1 for filmmaking)
-    const completedPhase2 = db.prepare(`
+    // Total admitted Phase 2 (step3_completed = 1)
+    const totalAdmittedPhase2 = db.prepare(`
       SELECT COUNT(DISTINCT user_id) as count
       FROM student_course_enrollments
       WHERE step3_completed = 1
     `).get();
 
-    // Submitted assignment / film (step3 = shooting+editing done)
+    // Completed Phase 2 (step3_completed = 1 for filmmaking)
+    const completedPhase2 = db.prepare(`
+      SELECT COUNT(DISTINCT user_id) as count
+      FROM student_course_enrollments
+      WHERE step4_completed = 1
+    `).get();
+
+    // Submitted assignment / film (step4_completed = 1)
     const submittedFilm = db.prepare(`
       SELECT COUNT(DISTINCT user_id) as count
       FROM student_course_enrollments
-      WHERE step3_completed = 1
+      WHERE step4_completed = 1
     `).get();
 
     // Certificates issued (step4_completed = 1)
@@ -282,6 +306,7 @@ router.get('/stats', authenticateToken, requireRole('admin'), (req, res) => {
       passedPhase1Exam: passedPhase1.count || 0,
       failedOrDropped,
       completedPhase1: completedPhase1.count || 0,
+      totalAdmittedPhase2: totalAdmittedPhase2.count || 0,
       completedPhase2: completedPhase2.count || 0,
       submittedFilm: submittedFilm.count || 0,
       certificatesIssued: certificatesIssued.count || 0,
@@ -344,8 +369,8 @@ router.get('/students/admitted', authenticateToken, requireRole('admin'), (req, 
   }
 });
 
-// GET /api/analytics/students/enrolled
-router.get('/students/enrolled', authenticateToken, requireRole('admin'), (req, res) => {
+// GET /api/analytics/students/admitted-phase2
+router.get('/students/admitted-phase2', authenticateToken, requireRole('admin'), (req, res) => {
   try {
     const rows = db.prepare(`
       SELECT
@@ -355,14 +380,83 @@ router.get('/students/enrolled', authenticateToken, requireRole('admin'), (req, 
         TRIM(u.first_name || ' ' || u.last_name) AS name,
         sp.student_id,
         sp.batch_number,
-        GROUP_CONCAT(DISTINCT sce.course_name) AS course_name,
-        MIN(sce.created_at) AS enrolled_date
+        MAX(sce.updated_at) AS admitted_date
       FROM student_course_enrollments sce
       JOIN users u ON u.id = sce.user_id
       LEFT JOIN student_profiles sp ON sp.user_id = u.id
+      WHERE sce.step3_completed = 1
       GROUP BY u.id
-      ORDER BY datetime(enrolled_date) DESC, u.id DESC
+      ORDER BY datetime(admitted_date) DESC, u.id DESC
     `).all();
+    res.json(rows);
+  } catch (error) {
+    console.error('[Analytics] /students/admitted-phase2 error:', error);
+    res.status(500).json({ error: 'Failed to fetch admitted phase 2 students' });
+  }
+});
+
+// GET /api/analytics/students/enrolled
+router.get('/students/enrolled', authenticateToken, requireRole('admin'), (req, res) => {
+  try {
+    const rawEnrollments = db.prepare(`
+      SELECT
+        sce.id AS enrollment_id,
+        sce.user_id,
+        sce.course_name,
+        sce.course_type,
+        sce.step1_completed,
+        sce.fee_details,
+        sce.created_at AS enrolled_date,
+        u.first_name,
+        u.last_name,
+        sp.student_id,
+        sp.batch_number
+      FROM student_course_enrollments sce
+      JOIN users u ON u.id = sce.user_id
+      LEFT JOIN student_profiles sp ON sp.user_id = u.id
+    `).all();
+
+    const enrolledMap = new Map();
+
+    for (const e of rawEnrollments) {
+      let isEnrolled = false;
+      const feeDetails = parseFeeDetails(e.fee_details);
+      const status = getFeeStatus(feeDetails, e.course_type);
+      const hasPaid = status === 'paid' || status === 'partial';
+
+      if (e.course_name === 'Online Filmmaking Course') {
+        if (e.step1_completed === 1) isEnrolled = true;
+      } else {
+        if (hasPaid) isEnrolled = true;
+      }
+
+      if (isEnrolled) {
+        if (!enrolledMap.has(e.user_id)) {
+          enrolledMap.set(e.user_id, {
+            user_id: e.user_id,
+            first_name: e.first_name,
+            last_name: e.last_name,
+            name: `${e.first_name || ''} ${e.last_name || ''}`.trim(),
+            student_id: e.student_id,
+            batch_number: e.batch_number,
+            course_name: new Set([e.course_name]),
+            enrolled_date: e.enrolled_date
+          });
+        } else {
+          const student = enrolledMap.get(e.user_id);
+          student.course_name.add(e.course_name);
+          if (new Date(e.enrolled_date) < new Date(student.enrolled_date)) {
+            student.enrolled_date = e.enrolled_date;
+          }
+        }
+      }
+    }
+
+    const rows = Array.from(enrolledMap.values()).map(s => ({
+      ...s,
+      course_name: Array.from(s.course_name).join(', ')
+    })).sort((a, b) => new Date(b.enrolled_date) - new Date(a.enrolled_date));
+
     res.json(rows);
   } catch (error) {
     console.error('[Analytics] /students/enrolled error:', error);
