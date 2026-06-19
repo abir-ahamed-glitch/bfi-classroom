@@ -46,7 +46,7 @@ export default function Sidebar({ isNotifOpen, setIsNotifOpen }) {
   const [unreadReportCount, setUnreadReportCount] = useState(0);
   const currentUserIdRef = useRef(null);
   const socketUrl = import.meta.env.VITE_SOCKET_URL || '';
-  const hideBottomNav = isOpen || location.pathname.startsWith('/admin');
+  const hideBottomNav = isOpen;
 
   const toggleSidebar = () => setIsOpen(!isOpen);
   const closeSidebar = () => setIsOpen(false);

@@ -11,7 +11,7 @@ import {
   AlertTriangle, Users, CheckCircle, Clock, FileText, BarChart2,
   RefreshCw, Award, UserPlus, Megaphone, FileSpreadsheet,
   TrendingUp, GraduationCap, Film, CreditCard, Activity,
-  UserX, BookOpen, ShieldCheck, Search, X, ChevronRight,
+  UserX, BookOpen, ShieldCheck, Search, X, ChevronRight, ChevronLeft,
   CheckSquare, Square, Edit, Lock, Clapperboard, MessageSquare,
 } from 'lucide-react';
 import { getOrdinalSuffix } from '../../utils/formatUtils';
@@ -44,6 +44,7 @@ function timeAgo(timestamp) {
 }
 
 function formatNumber(n) {
+  if (typeof n !== 'number') return n;
   if (n >= 1000) return (n / 1000).toFixed(1) + 'k';
   return String(n);
 }
@@ -664,6 +665,29 @@ const STAT_DRAWERS = {
       ['issued_date', 'Issued Date'],
     ],
   },
+  'students/attendance': {
+    title: 'Class Attendance (1st Phase)',
+    subtitle: 'Students and their attendance qualifications (requires >= 80% to qualify)',
+    columns: [
+      ['name', 'Name'],
+      ['student_id', 'Student ID'],
+      ['batch_number', 'Batch'],
+      ['attendance_classes', 'Classes Attended'],
+      ['attendance_total', 'Total Classes'],
+      ['attendance_percentage', 'Attendance %'],
+      ['attendance_status', 'Status'],
+    ],
+  },
+  'students/assignments': {
+    title: 'Assignment: Phase 1',
+    subtitle: 'Detailed assignment scores and submission statuses for Screenplay and Shooting Script',
+    columns: [], // Dynamically generated
+  },
+  'students/phase2-attendance': {
+    title: 'Shooting & Editing Attendance',
+    subtitle: 'Detailed Phase 2 shooting and editing attendance list',
+    columns: [], // Dynamically generated
+  },
 };
 
 const DATE_DRAWER_FIELDS = new Set([
@@ -756,6 +780,9 @@ export default function Analytics() {
   const [drawerLoading, setDrawerLoading] = useState(false);
   const [drawerError, setDrawerError] = useState('');
   const [drawerSearch, setDrawerSearch] = useState('');
+  const [attendanceFilter, setAttendanceFilter] = useState('qualified'); // 'qualified' | 'not_qualified'
+  const [assignmentFilter, setAssignmentFilter] = useState('screenplay'); // 'screenplay' | 'shooting_script' | 'not_submitted'
+  const [phase2AttendanceFilter, setPhase2AttendanceFilter] = useState('shooting'); // 'shooting' | 'editing'
 
   // ── Student List & Action Modals States ────────────────────
   const [students, setStudents] = useState([]);
@@ -1067,6 +1094,14 @@ export default function Analytics() {
       if (!res.ok) throw new Error(data.error || 'Failed to update academic records');
       await fetchStudents();
       fetchAll(true);
+      if (activeDrawer) {
+        try {
+          const d = await apiFetch(`/${activeDrawer}`);
+          setDrawerData(d);
+        } catch (drawerErr) {
+          console.error('[Analytics] Failed to refresh drawer after academic update:', drawerErr);
+        }
+      }
       closeAcademicModal();
     } catch (err) {
       setAcademicError(err.message);
@@ -1423,7 +1458,8 @@ export default function Analytics() {
   }, []);
 
   const getDrawerTitle = () => {
-    if (STAT_DRAWERS[activeDrawer]) return STAT_DRAWERS[activeDrawer].title;
+    const basePath = activeDrawer ? activeDrawer.split('?')[0] : null;
+    if (STAT_DRAWERS[basePath]) return STAT_DRAWERS[basePath].title;
     switch (activeDrawer) {
       case 'pending-certificates': return 'Certificates Pending Auto-Issuance';
       case 'inactive-students': return 'Inactive Students';
@@ -1435,7 +1471,8 @@ export default function Analytics() {
   };
 
   const getDrawerSubtitle = () => {
-    if (STAT_DRAWERS[activeDrawer]) return STAT_DRAWERS[activeDrawer].subtitle;
+    const basePath = activeDrawer ? activeDrawer.split('?')[0] : null;
+    if (STAT_DRAWERS[basePath]) return STAT_DRAWERS[basePath].subtitle;
     switch (activeDrawer) {
       case 'pending-certificates': return 'Eligible students with no certificate issued yet';
       case 'inactive-students': return 'Students with no login activity in the last 30 days';
@@ -1454,7 +1491,59 @@ export default function Analytics() {
     return name.includes(term) || id.includes(term);
   });
 
-  const statisticsDrawer = STAT_DRAWERS[activeDrawer];
+  const basePath = activeDrawer ? activeDrawer.split('?')[0] : null;
+  let statisticsDrawer = STAT_DRAWERS[basePath];
+  if (basePath === 'students/assignments') {
+    let cols = [
+      ['name', 'Name'],
+      ['student_id', 'Student ID'],
+      ['batch_number', 'Batch'],
+    ];
+    if (assignmentFilter === 'screenplay') {
+      cols.push(['assignment_screenplay', 'Screenplay Score']);
+    } else if (assignmentFilter === 'shooting_script') {
+      cols.push(['assignment_shooting_script', 'Shooting Script Score']);
+    } else {
+      cols.push(['screenplay_status', 'Screenplay Status']);
+      cols.push(['shooting_script_status', 'Shooting Script Status']);
+    }
+    statisticsDrawer = {
+      ...statisticsDrawer,
+      columns: cols
+    };
+  }
+  if (basePath === 'students/phase2-attendance') {
+    let cols = [
+      ['name', 'Name'],
+      ['student_id', 'Student ID'],
+      ['batch_number', 'Batch'],
+    ];
+    if (phase2AttendanceFilter === 'shooting') {
+      cols.push(['phase2_shooting_attended', 'Shooting Attendance']);
+    } else {
+      cols.push(['phase2_editing_attended', 'Editing Attendance']);
+    }
+    statisticsDrawer = {
+      ...statisticsDrawer,
+      columns: cols
+    };
+  }
+
+  const displayDrawerData = filteredDrawerData.filter(row => {
+    if (basePath === 'students/attendance') {
+      return row.attendance_status === (attendanceFilter === 'qualified' ? 'Qualified' : 'Not Qualified');
+    }
+    if (basePath === 'students/assignments') {
+      if (assignmentFilter === 'screenplay') {
+        return row.assignment_screenplay > 0;
+      } else if (assignmentFilter === 'shooting_script') {
+        return row.assignment_shooting_script > 0;
+      } else if (assignmentFilter === 'not_submitted') {
+        return row.assignment_screenplay === 0 || row.assignment_shooting_script === 0;
+      }
+    }
+    return true;
+  });
 
   const renderStatisticsCell = (row, field) => {
     if (field === 'name') {
@@ -1463,10 +1552,76 @@ export default function Analytics() {
     if (field === 'exam_score') {
       return row[field] != null ? row[field] : 'N/A';
     }
+    if (field === 'phase2_shooting_attended' || field === 'phase2_editing_attended') {
+      const attended = row[field] === 1 || row[field] === true;
+      return (
+        <span style={{
+          padding: '0.2rem 0.5rem',
+          borderRadius: '4px',
+          fontSize: '0.75rem',
+          fontWeight: '600',
+          background: attended ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)',
+          color: attended ? '#10b981' : '#ef4444'
+        }}>
+          {attended ? 'Attended' : 'Not Attended'}
+        </span>
+      );
+    }
+    if (field === 'assignment_screenplay' || field === 'assignment_shooting_script') {
+      return row[field] != null ? `${row[field]} / 10` : '0 / 10';
+    }
+    if (field === 'screenplay_status') {
+      const isSubmitted = row.assignment_screenplay > 0;
+      return (
+        <span style={{
+          padding: '0.2rem 0.5rem',
+          borderRadius: '4px',
+          fontSize: '0.75rem',
+          fontWeight: '600',
+          background: isSubmitted ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)',
+          color: isSubmitted ? '#10b981' : '#ef4444'
+        }}>
+          {isSubmitted ? `Submitted (${row.assignment_screenplay}/10)` : 'Not Submitted'}
+        </span>
+      );
+    }
+    if (field === 'shooting_script_status') {
+      const isSubmitted = row.assignment_shooting_script > 0;
+      return (
+        <span style={{
+          padding: '0.2rem 0.5rem',
+          borderRadius: '4px',
+          fontSize: '0.75rem',
+          fontWeight: '600',
+          background: isSubmitted ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)',
+          color: isSubmitted ? '#10b981' : '#ef4444'
+        }}>
+          {isSubmitted ? `Submitted (${row.assignment_shooting_script}/10)` : 'Not Submitted'}
+        </span>
+      );
+    }
+    if (field === 'attendance_percentage') {
+      return row[field] != null ? `${row[field]}%` : 'N/A';
+    }
+    if (field === 'attendance_status') {
+      const isQualified = row[field] === 'Qualified';
+      return (
+        <span style={{
+          padding: '0.2rem 0.5rem',
+          borderRadius: '4px',
+          fontSize: '0.75rem',
+          fontWeight: '600',
+          background: isQualified ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)',
+          color: isQualified ? '#10b981' : '#ef4444'
+        }}>
+          {row[field] || 'N/A'}
+        </span>
+      );
+    }
     if (DATE_DRAWER_FIELDS.has(field)) {
       return row[field] ? new Date(row[field]).toLocaleDateString() : 'N/A';
     }
-    return row[field] || 'N/A';
+    return row[field] != null ? row[field] : 'N/A';
   };
 
   useEffect(() => {
@@ -1543,12 +1698,19 @@ export default function Analytics() {
     );
   };
 
+  const getDrawerCourse = () => {
+    if (!activeDrawer) return null;
+    const urlParams = new URLSearchParams(activeDrawer.includes('?') ? activeDrawer.substring(activeDrawer.indexOf('?')) : '');
+    return urlParams.get('course');
+  };
+
   const renderStudentActions = (s) => {
     if (!s) return null;
     return (
       <div className="student-table-actions" style={{ display: 'flex', gap: '0.5rem', justifyContent: 'center' }}>
         {s.enrollments && s.enrollments.length > 0 && (() => {
-          const enr = s.enrollments[0];
+          const courseParam = getDrawerCourse();
+          const enr = (courseParam && s.enrollments.find(e => e.course_name === courseParam)) || s.enrollments[0];
           const isAppreciation = enr.course_name !== 'Online Filmmaking Course';
           return (
             <button 
@@ -1743,31 +1905,199 @@ export default function Analytics() {
       </div>
 
       {/* ════════════════════════════════════════════════════════
-          SECTION 2 — Overall Institute Statistics
+          SECTION 2 — Overall Institute & Course Statistics
       ═══════════════════════════════════════════════════════ */}
-      <div className="analytics-section">
-        <p className="analytics-section-title"><TrendingUp size={13} /> Institute Statistics</p>
-        {loading ? (
+      {loading ? (
+        <div className="analytics-section">
+          <p className="analytics-section-title"><TrendingUp size={13} /> Institute Statistics</p>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: '1rem' }}>
-            {Array.from({ length: 9 }).map((_, i) => (
+            {Array.from({ length: 6 }).map((_, i) => (
               <div key={i} className="analytics-skeleton-card" style={{ height: 76 }} />
             ))}
           </div>
-        ) : (
-          <div className="stats-grid">
-            <StatCard icon={<Users size={18} />} iconVariant="blue" value={stats?.totalRegistered} label="Total Registered Students" active={activeDrawer === 'students/all'} onClick={() => setActiveDrawer('students/all')} />
-            <StatCard icon={<UserPlus size={18} />} iconVariant="sky" value={stats?.totalAdmitted} label="Total Admitted (Phase 1)" active={activeDrawer === 'students/admitted'} onClick={() => setActiveDrawer('students/admitted')} />
-            <StatCard icon={<BookOpen size={18} />} iconVariant="blue" value={stats?.currentlyEnrolled} label="Currently Enrolled" active={activeDrawer === 'students/enrolled'} onClick={() => setActiveDrawer('students/enrolled')} />
-            <StatCard icon={<ShieldCheck size={18} />} iconVariant="green" value={stats?.passedPhase1Exam} label="Passed Phase 1 Exam" active={activeDrawer === 'students/passed-exam'} onClick={() => setActiveDrawer('students/passed-exam')} />
-            <StatCard icon={<UserX size={18} />} iconVariant="red" value={stats?.failedOrDropped} label="Failed / Did Not Pass" active={activeDrawer === 'students/failed-exam'} onClick={() => setActiveDrawer('students/failed-exam')} />
-            <StatCard icon={<GraduationCap size={18} />} iconVariant="amber" value={stats?.completedPhase1} label="Completed Phase 1" active={activeDrawer === 'students/completed-phase1'} onClick={() => setActiveDrawer('students/completed-phase1')} />
-            <StatCard icon={<UserPlus size={18} />} iconVariant="sky" value={stats?.totalAdmittedPhase2} label="Total Admitted (Phase 2)" active={activeDrawer === 'students/admitted-phase2'} onClick={() => setActiveDrawer('students/admitted-phase2')} />
-            <StatCard icon={<Film size={18} />} iconVariant="amber" value={stats?.completedPhase2} label="Completed Phase 2" active={activeDrawer === 'students/completed-phase2'} onClick={() => setActiveDrawer('students/completed-phase2')} />
-            <StatCard icon={<FileText size={18} />} iconVariant="purple" value={stats?.submittedFilm} label="Submitted Assignment / Film" active={activeDrawer === 'students/submitted-film'} onClick={() => setActiveDrawer('students/submitted-film')} />
-            <StatCard icon={<Award size={18} />} iconVariant="green" value={stats?.certificatesIssued} label="Certificates Issued" active={activeDrawer === 'students/certificates-issued'} onClick={() => setActiveDrawer('students/certificates-issued')} />
+        </div>
+      ) : (
+        <>
+          {/* Global Institute Statistics */}
+          <div className="analytics-section">
+            <p className="analytics-section-title"><TrendingUp size={13} /> Institute Statistics</p>
+            <div className="stats-grid">
+              <StatCard 
+                icon={<Users size={18} />} 
+                iconVariant="blue" 
+                value={stats?.institute?.totalRegistered != null ? stats.institute.totalRegistered : stats?.totalRegistered} 
+                label="Total Registered Students" 
+                active={activeDrawer === 'students/all'} 
+                onClick={() => setActiveDrawer('students/all')} 
+              />
+              <StatCard 
+                icon={<BookOpen size={18} />} 
+                iconVariant="blue" 
+                value={stats?.institute?.totalAdmittedEnrolled != null ? stats.institute.totalAdmittedEnrolled : stats?.currentlyEnrolled} 
+                label="Total Admitted / Enrolled Students" 
+                active={activeDrawer === 'students/enrolled'} 
+                onClick={() => setActiveDrawer('students/enrolled')} 
+              />
+              <StatCard 
+                icon={<CheckCircle size={18} />} 
+                iconVariant="green" 
+                value={stats?.institute?.totalPassed != null ? stats.institute.totalPassed : stats?.completedPhase2} 
+                label="Total Passed Students" 
+                active={activeDrawer === 'students/certificates-issued'} 
+                onClick={() => setActiveDrawer('students/certificates-issued')} 
+              />
+              <StatCard 
+                icon={<Award size={18} />} 
+                iconVariant="green" 
+                value={stats?.institute?.certificatesIssued != null ? stats.institute.certificatesIssued : stats?.certificatesIssued} 
+                label="Certificates Issued" 
+                active={activeDrawer === 'students/certificates-issued'} 
+                onClick={() => setActiveDrawer('students/certificates-issued')} 
+              />
+              <StatCard 
+                icon={<UserX size={18} />} 
+                iconVariant="red" 
+                value={stats?.failedOrDropped} 
+                label="Failed / Did Not Pass" 
+                active={activeDrawer === 'students/failed-exam'} 
+                onClick={() => setActiveDrawer('students/failed-exam')} 
+              />
+            </div>
           </div>
-        )}
-      </div>
+
+          {/* Active Course-Specific Statistics */}
+          {stats?.courses && stats.courses.map(course => {
+            const courseName = course.courseName;
+            const courseType = course.courseType;
+            const courseStats = course.stats;
+
+            if (courseType === 'filmmaking') {
+              return (
+                <div key={courseName} className="analytics-section">
+                  <p className="analytics-section-title"><Clapperboard size={13} /> {courseName} Statistics</p>
+                  <div className="stats-grid">
+                    <StatCard 
+                      icon={<UserPlus size={18} />} 
+                      iconVariant="sky" 
+                      value={courseStats.totalAdmitted} 
+                      label="Total Admitted (Phase 1)" 
+                      active={activeDrawer === `students/admitted?course=${encodeURIComponent(courseName)}`} 
+                      onClick={() => setActiveDrawer(`students/admitted?course=${encodeURIComponent(courseName)}`)} 
+                    />
+                    <StatCard 
+                      icon={<CheckSquare size={18} />} 
+                      iconVariant="green" 
+                      value={
+                        <div className="stat-card-value-split">
+                          <span style={{ color: '#10b981' }}>Qualified {courseStats.classAttendance1stPhase}</span>
+                          <span className="stat-card-value-divider">|</span>
+                          <span style={{ color: '#ef4444' }}>Not Qualified {courseStats.classAttendance1stPhaseNotQualified != null ? courseStats.classAttendance1stPhaseNotQualified : (courseStats.totalAdmitted - courseStats.classAttendance1stPhase)}</span>
+                        </div>
+                      }
+                      label="Class Attendance (1st Phase)" 
+                      active={activeDrawer === `students/attendance?course=${encodeURIComponent(courseName)}`} 
+                      onClick={() => {
+                        setAttendanceFilter('qualified');
+                        setActiveDrawer(`students/attendance?course=${encodeURIComponent(courseName)}`);
+                      }} 
+                    />
+                    <StatCard 
+                      icon={<FileText size={18} />} 
+                      iconVariant="sky" 
+                      value={
+                        <div className="stat-card-value-split">
+                          <span style={{ color: '#10b981' }}>Screenplay {courseStats.screenplayCount || 0}</span>
+                          <span className="stat-card-value-divider">|</span>
+                          <span style={{ color: '#fbbf24' }}>Shooting Script {courseStats.shootingScriptCount || 0}</span>
+                        </div>
+                      }
+                      label="Assignment: Phase 1" 
+                      active={activeDrawer === `students/assignments?course=${encodeURIComponent(courseName)}`} 
+                      onClick={() => {
+                        setAssignmentFilter('screenplay');
+                        setActiveDrawer(`students/assignments?course=${encodeURIComponent(courseName)}`);
+                      }} 
+                    />
+                    <StatCard 
+                      icon={<ShieldCheck size={18} />} 
+                      iconVariant="green" 
+                      value={courseStats.passedPhase1Exam} 
+                      label="Passed Phase 1 Exam" 
+                      active={activeDrawer === `students/passed-exam?course=${encodeURIComponent(courseName)}`} 
+                      onClick={() => setActiveDrawer(`students/passed-exam?course=${encodeURIComponent(courseName)}`)} 
+                    />
+                    <StatCard 
+                      icon={<GraduationCap size={18} />} 
+                      iconVariant="amber" 
+                      value={courseStats.completedPhase1} 
+                      label="Completed Phase 1" 
+                      active={activeDrawer === `students/completed-phase1?course=${encodeURIComponent(courseName)}`} 
+                      onClick={() => setActiveDrawer(`students/completed-phase1?course=${encodeURIComponent(courseName)}`)} 
+                    />
+                    <StatCard 
+                      icon={<UserPlus size={18} />} 
+                      iconVariant="sky" 
+                      value={courseStats.totalAdmittedPhase2} 
+                      label="Total Admitted (Phase 2)" 
+                      active={activeDrawer === `students/admitted-phase2?course=${encodeURIComponent(courseName)}`} 
+                      onClick={() => setActiveDrawer(`students/admitted-phase2?course=${encodeURIComponent(courseName)}`)} 
+                    />
+                    <StatCard 
+                      icon={<Film size={18} />} 
+                      iconVariant="purple" 
+                      value={
+                        <div className="stat-card-value-split">
+                          <span style={{ color: '#10b981' }}>Shooting {courseStats.shootingAttendedCount || 0}</span>
+                          <span className="stat-card-value-divider">|</span>
+                          <span style={{ color: '#fbbf24' }}>Editing {courseStats.editingAttendedCount || 0}</span>
+                        </div>
+                      }
+                      label="Shooting & Editing Attendance" 
+                      active={activeDrawer === `students/phase2-attendance?course=${encodeURIComponent(courseName)}`} 
+                      onClick={() => {
+                        setPhase2AttendanceFilter('shooting');
+                        setActiveDrawer(`students/phase2-attendance?course=${encodeURIComponent(courseName)}`);
+                      }} 
+                    />
+                    <StatCard 
+                      icon={<Film size={18} />} 
+                      iconVariant="amber" 
+                      value={courseStats.completedPhase2} 
+                      label="Completed Phase 2" 
+                      active={activeDrawer === `students/completed-phase2?course=${encodeURIComponent(courseName)}`} 
+                      onClick={() => setActiveDrawer(`students/completed-phase2?course=${encodeURIComponent(courseName)}`)} 
+                    />
+                  </div>
+                </div>
+              );
+            } else {
+              return (
+                <div key={courseName} className="analytics-section">
+                  <p className="analytics-section-title"><BookOpen size={13} /> {courseName} Statistics</p>
+                  <div className="stats-grid">
+                    <StatCard 
+                      icon={<UserPlus size={18} />} 
+                      iconVariant="sky" 
+                      value={courseStats.totalAdmitted} 
+                      label="Total Admitted / Enrolled" 
+                      active={activeDrawer === `students/admitted?course=${encodeURIComponent(courseName)}`} 
+                      onClick={() => setActiveDrawer(`students/admitted?course=${encodeURIComponent(courseName)}`)} 
+                    />
+                    <StatCard 
+                      icon={<Award size={18} />} 
+                      iconVariant="green" 
+                      value={courseStats.completedCourse} 
+                      label="Completed Course" 
+                      active={activeDrawer === `students/certificates-issued?course=${encodeURIComponent(courseName)}`} 
+                      onClick={() => setActiveDrawer(`students/certificates-issued?course=${encodeURIComponent(courseName)}`)} 
+                    />
+                  </div>
+                </div>
+              );
+            }
+          })}
+        </>
+      )}
 
       {/* ════════════════════════════════════════════════════════
           SECTION 3 — Charts
@@ -2104,6 +2434,10 @@ export default function Analytics() {
       {/* Slide-In Drawer */}
       <div className={`analytics-drawer${activeDrawer ? ' active' : ''}`}>
         <div className="analytics-drawer-header">
+          <button className="analytics-drawer-back-btn" onClick={() => setActiveDrawer(null)}>
+            <ChevronLeft size={20} />
+            <span>Back</span>
+          </button>
           <div className="analytics-drawer-title-group">
             <h2>{getDrawerTitle()}</h2>
             <p>{getDrawerSubtitle()}</p>
@@ -2114,6 +2448,207 @@ export default function Analytics() {
         </div>
 
         <div className="analytics-drawer-content">
+          {basePath === 'students/attendance' && (
+            <div className="analytics-drawer-filter-group">
+              <button
+                onClick={() => setAttendanceFilter('qualified')}
+                style={{
+                  flex: 1,
+                  padding: '0.8rem 1rem',
+                  borderRadius: '10px',
+                  border: '1px solid',
+                  borderColor: attendanceFilter === 'qualified' ? '#10b981' : 'rgba(255, 255, 255, 0.08)',
+                  background: attendanceFilter === 'qualified' ? 'rgba(16, 185, 129, 0.08)' : 'rgba(255, 255, 255, 0.02)',
+                  color: attendanceFilter === 'qualified' ? '#10b981' : 'var(--text-secondary)',
+                  cursor: 'pointer',
+                  textAlign: 'left',
+                  transition: 'all 0.2s',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between'
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <CheckSquare size={16} />
+                  <span style={{ fontWeight: '600', fontSize: '0.85rem' }}>Qualified Student</span>
+                </div>
+                <span style={{ fontSize: '1.1rem', fontWeight: '800' }}>
+                  {drawerData.filter(row => row.attendance_status === 'Qualified').length}
+                </span>
+              </button>
+
+              <button
+                onClick={() => setAttendanceFilter('not_qualified')}
+                style={{
+                  flex: 1,
+                  padding: '0.8rem 1rem',
+                  borderRadius: '10px',
+                  border: '1px solid',
+                  borderColor: attendanceFilter === 'not_qualified' ? '#ef4444' : 'rgba(255, 255, 255, 0.08)',
+                  background: attendanceFilter === 'not_qualified' ? 'rgba(239, 68, 68, 0.08)' : 'rgba(255, 255, 255, 0.02)',
+                  color: attendanceFilter === 'not_qualified' ? '#ef4444' : 'var(--text-secondary)',
+                  cursor: 'pointer',
+                  textAlign: 'left',
+                  transition: 'all 0.2s',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between'
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <AlertTriangle size={16} />
+                  <span style={{ fontWeight: '600', fontSize: '0.85rem' }}>Not Qualified Student</span>
+                </div>
+                <span style={{ fontSize: '1.1rem', fontWeight: '800' }}>
+                  {drawerData.filter(row => row.attendance_status === 'Not Qualified').length}
+                </span>
+              </button>
+            </div>
+          )}
+
+          {basePath === 'students/assignments' && (
+            <div className="analytics-drawer-filter-group">
+              <button
+                onClick={() => setAssignmentFilter('screenplay')}
+                style={{
+                  flex: 1,
+                  padding: '0.8rem 1rem',
+                  borderRadius: '10px',
+                  border: '1px solid',
+                  borderColor: assignmentFilter === 'screenplay' ? '#10b981' : 'rgba(255, 255, 255, 0.08)',
+                  background: assignmentFilter === 'screenplay' ? 'rgba(16, 185, 129, 0.08)' : 'rgba(255, 255, 255, 0.02)',
+                  color: assignmentFilter === 'screenplay' ? '#10b981' : 'var(--text-secondary)',
+                  cursor: 'pointer',
+                  textAlign: 'left',
+                  transition: 'all 0.2s',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between'
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <FileText size={16} />
+                  <span style={{ fontWeight: '600', fontSize: '0.85rem' }}>Screenplay</span>
+                </div>
+                <span style={{ fontSize: '1.1rem', fontWeight: '800' }}>
+                  {drawerData.filter(row => row.assignment_screenplay > 0).length}
+                </span>
+              </button>
+
+              <button
+                onClick={() => setAssignmentFilter('shooting_script')}
+                style={{
+                  flex: 1,
+                  padding: '0.8rem 1rem',
+                  borderRadius: '10px',
+                  border: '1px solid',
+                  borderColor: assignmentFilter === 'shooting_script' ? '#fbbf24' : 'rgba(255, 255, 255, 0.08)',
+                  background: assignmentFilter === 'shooting_script' ? 'rgba(251, 191, 36, 0.08)' : 'rgba(255, 255, 255, 0.02)',
+                  color: assignmentFilter === 'shooting_script' ? '#fbbf24' : 'var(--text-secondary)',
+                  cursor: 'pointer',
+                  textAlign: 'left',
+                  transition: 'all 0.2s',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between'
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <FileText size={16} />
+                  <span style={{ fontWeight: '600', fontSize: '0.85rem' }}>Shooting Script</span>
+                </div>
+                <span style={{ fontSize: '1.1rem', fontWeight: '800' }}>
+                  {drawerData.filter(row => row.assignment_shooting_script > 0).length}
+                </span>
+              </button>
+
+              <button
+                onClick={() => setAssignmentFilter('not_submitted')}
+                style={{
+                  flex: 1,
+                  padding: '0.8rem 1rem',
+                  borderRadius: '10px',
+                  border: '1px solid',
+                  borderColor: assignmentFilter === 'not_submitted' ? '#ef4444' : 'rgba(255, 255, 255, 0.08)',
+                  background: assignmentFilter === 'not_submitted' ? 'rgba(239, 68, 68, 0.08)' : 'rgba(255, 255, 255, 0.02)',
+                  color: assignmentFilter === 'not_submitted' ? '#ef4444' : 'var(--text-secondary)',
+                  cursor: 'pointer',
+                  textAlign: 'left',
+                  transition: 'all 0.2s',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between'
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <AlertTriangle size={16} />
+                  <span style={{ fontWeight: '600', fontSize: '0.85rem' }}>Not Submitted</span>
+                </div>
+                <span style={{ fontSize: '1.1rem', fontWeight: '800' }}>
+                  {drawerData.filter(row => row.assignment_screenplay === 0 || row.assignment_shooting_script === 0).length}
+                </span>
+              </button>
+            </div>
+          )}
+
+          {basePath === 'students/phase2-attendance' && (
+            <div className="analytics-drawer-filter-group">
+              <button
+                onClick={() => setPhase2AttendanceFilter('shooting')}
+                style={{
+                  flex: 1,
+                  padding: '0.8rem 1rem',
+                  borderRadius: '10px',
+                  border: '1px solid',
+                  borderColor: phase2AttendanceFilter === 'shooting' ? '#10b981' : 'rgba(255, 255, 255, 0.08)',
+                  background: phase2AttendanceFilter === 'shooting' ? 'rgba(16, 185, 129, 0.08)' : 'rgba(255, 255, 255, 0.02)',
+                  color: phase2AttendanceFilter === 'shooting' ? '#10b981' : 'var(--text-secondary)',
+                  cursor: 'pointer',
+                  textAlign: 'left',
+                  transition: 'all 0.2s',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between'
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <Film size={16} />
+                  <span style={{ fontWeight: '600', fontSize: '0.85rem' }}>Shooting</span>
+                </div>
+                <span style={{ fontSize: '1.1rem', fontWeight: '800' }}>
+                  {drawerData.filter(row => row.phase2_shooting_attended === 1 || row.phase2_shooting_attended === true).length}
+                </span>
+              </button>
+
+              <button
+                onClick={() => setPhase2AttendanceFilter('editing')}
+                style={{
+                  flex: 1,
+                  padding: '0.8rem 1rem',
+                  borderRadius: '10px',
+                  border: '1px solid',
+                  borderColor: phase2AttendanceFilter === 'editing' ? '#fbbf24' : 'rgba(255, 255, 255, 0.08)',
+                  background: phase2AttendanceFilter === 'editing' ? 'rgba(251, 191, 36, 0.08)' : 'rgba(255, 255, 255, 0.02)',
+                  color: phase2AttendanceFilter === 'editing' ? '#fbbf24' : 'var(--text-secondary)',
+                  cursor: 'pointer',
+                  textAlign: 'left',
+                  transition: 'all 0.2s',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between'
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <Film size={16} />
+                  <span style={{ fontWeight: '600', fontSize: '0.85rem' }}>Editing</span>
+                </div>
+                <span style={{ fontSize: '1.1rem', fontWeight: '800' }}>
+                  {drawerData.filter(row => row.phase2_editing_attended === 1 || row.phase2_editing_attended === true).length}
+                </span>
+              </button>
+            </div>
+          )}
+
           <div className="analytics-drawer-actions">
             <div className="analytics-drawer-search-wrapper">
               <Search size={16} />
@@ -2126,7 +2661,7 @@ export default function Analytics() {
               />
             </div>
             <div className="analytics-drawer-count">
-              Showing {filteredDrawerData.length} {filteredDrawerData.length === 1 ? 'student' : 'students'}
+              Showing {displayDrawerData.length} {displayDrawerData.length === 1 ? 'student' : 'students'}
             </div>
           </div>
 
@@ -2140,7 +2675,7 @@ export default function Analytics() {
             <div style={{ padding: '2rem', textAlign: 'center', color: '#f87171', fontSize: '0.9rem' }}>
               {drawerError}
             </div>
-          ) : filteredDrawerData.length === 0 ? (
+          ) : displayDrawerData.length === 0 ? (
             <div className="analytics-drawer-empty">
               <UserX size={48} className="analytics-drawer-empty-icon" />
               <div className="analytics-drawer-empty-text">
@@ -2164,7 +2699,7 @@ export default function Analytics() {
                     </tr>
                   </thead>
                   <tbody>
-                    {filteredDrawerData.map((row, index) => {
+                    {displayDrawerData.map((row, index) => {
                       const s = students.find(student => student.id === row.user_id);
                       return (
                         <tr key={row.enrollment_id || row.user_id}>

@@ -222,19 +222,12 @@ router.get('/stats', authenticateToken, requireRole('admin'), (req, res) => {
       SELECT COUNT(*) as count FROM users WHERE role = 'student'
     `).get();
 
-    // Total admitted Phase 1 (step1_completed = 1)
-    const totalAdmitted = db.prepare(`
-      SELECT COUNT(DISTINCT user_id) as count
-      FROM student_course_enrollments
-      WHERE step1_completed = 1
-    `).get();
-
-    // Currently enrolled
-    // Rule:
-    // For 'Online Filmmaking Course': Must have step1_completed = 1
-    // For any course: Must have paid full or partial fee
-    const allEnrollments = db.prepare(`SELECT user_id, course_name, course_type, step1_completed, fee_details FROM student_course_enrollments`).all();
+    // Currently enrolled / admitted (global)
+    const allEnrollments = db.prepare(`SELECT user_id, course_name, course_type, step1_completed, step2_completed, step4_completed, fee_details FROM student_course_enrollments`).all();
     const enrolledUserIds = new Set();
+    const passedUserIds = new Set();
+    const passedPhase1UserIds = new Set();
+
     for (const e of allEnrollments) {
       let isEnrolled = false;
       const feeDetails = parseFeeDetails(e.fee_details);
@@ -248,68 +241,178 @@ router.get('/stats', authenticateToken, requireRole('admin'), (req, res) => {
       }
 
       if (isEnrolled) enrolledUserIds.add(e.user_id);
+      if (e.step4_completed === 1) passedUserIds.add(e.user_id);
+      if (e.step2_completed === 1) passedPhase1UserIds.add(e.user_id);
     }
-    const currentlyEnrolled = { count: enrolledUserIds.size };
 
-    // Passed Phase 1 Exam (step2_completed = 1)
-    const passedPhase1 = db.prepare(`
-      SELECT COUNT(DISTINCT user_id) as count
-      FROM student_course_enrollments
-      WHERE step2_completed = 1
-    `).get();
+    // Total Passed Students (unique student count who completed any course)
+    const totalPassed = passedUserIds.size;
 
-    // Completed Phase 1 = passed exam (same as step2)
-    const completedPhase1 = db.prepare(`
-      SELECT COUNT(DISTINCT user_id) as count
-      FROM student_course_enrollments
-      WHERE step2_completed = 1
-    `).get();
-
-    // Total admitted Phase 2 (step3_completed = 1)
-    const totalAdmittedPhase2 = db.prepare(`
-      SELECT COUNT(DISTINCT user_id) as count
-      FROM student_course_enrollments
-      WHERE step3_completed = 1
-    `).get();
-
-    // Completed Phase 2 (step3_completed = 1 for filmmaking)
-    const completedPhase2 = db.prepare(`
-      SELECT COUNT(DISTINCT user_id) as count
-      FROM student_course_enrollments
-      WHERE step4_completed = 1
-    `).get();
-
-    // Submitted assignment / film (step4_completed = 1)
-    const submittedFilm = db.prepare(`
-      SELECT COUNT(DISTINCT user_id) as count
-      FROM student_course_enrollments
-      WHERE step4_completed = 1
-    `).get();
-
-    // Certificates issued (step4_completed = 1)
+    // Certificates issued (total count of step4_completed rows)
     const certificatesIssued = db.prepare(`
       SELECT COUNT(*) as count
       FROM student_course_enrollments
       WHERE step4_completed = 1
     `).get();
 
-    // Failed / Did Not Pass: registered but never passed exam
+    // Failed / Did Not Pass (global)
     const failedOrDropped = Math.max(
       0,
-      (totalRegistered.count || 0) - (passedPhase1.count || 0)
+      (totalRegistered.count || 0) - passedPhase1UserIds.size
     );
+
+    // Course-specific statistics for active courses
+    const activeCourses = db.prepare(`
+      SELECT DISTINCT course_name, course_type
+      FROM student_course_enrollments
+    `).all();
+
+    const coursesStats = activeCourses.map(c => {
+      const courseName = c.course_name;
+      const courseType = c.course_type;
+
+      if (courseType === 'filmmaking') {
+        const totalAdmitted = db.prepare(`
+          SELECT COUNT(DISTINCT user_id) as count
+          FROM student_course_enrollments
+          WHERE step1_completed = 1 AND course_name = ?
+        `).get(courseName).count || 0;
+
+        const classAttendance1stPhase = db.prepare(`
+          SELECT COUNT(DISTINCT user_id) as count
+          FROM student_course_enrollments
+          WHERE step1_completed = 1 AND course_name = ?
+            AND attendance_total > 0
+            AND (CAST(attendance_classes AS REAL) / CAST(attendance_total AS REAL)) >= 0.8
+        `).get(courseName).count || 0;
+
+        const classAttendance1stPhaseNotQualified = db.prepare(`
+          SELECT COUNT(DISTINCT user_id) as count
+          FROM student_course_enrollments
+          WHERE step1_completed = 1 AND course_name = ?
+            AND (attendance_total = 0 OR (CAST(attendance_classes AS REAL) / CAST(attendance_total AS REAL)) < 0.8)
+        `).get(courseName).count || 0;
+
+        const screenplayCount = db.prepare(`
+          SELECT COUNT(DISTINCT user_id) as count
+          FROM student_course_enrollments
+          WHERE step1_completed = 1 AND course_name = ?
+            AND assignment_screenplay > 0
+        `).get(courseName).count || 0;
+
+        const shootingScriptCount = db.prepare(`
+          SELECT COUNT(DISTINCT user_id) as count
+          FROM student_course_enrollments
+          WHERE step1_completed = 1 AND course_name = ?
+            AND assignment_shooting_script > 0
+        `).get(courseName).count || 0;
+
+        const passedPhase1Exam = db.prepare(`
+          SELECT COUNT(DISTINCT user_id) as count
+          FROM student_course_enrollments
+          WHERE step2_completed = 1 AND course_name = ?
+        `).get(courseName).count || 0;
+
+        const completedPhase1 = db.prepare(`
+          SELECT COUNT(DISTINCT user_id) as count
+          FROM student_course_enrollments
+          WHERE step2_completed = 1 AND course_name = ?
+        `).get(courseName).count || 0;
+
+        const totalAdmittedPhase2 = db.prepare(`
+          SELECT COUNT(DISTINCT user_id) as count
+          FROM student_course_enrollments
+          WHERE step3_completed = 1 AND course_name = ?
+        `).get(courseName).count || 0;
+
+        const shootingAttendedCount = db.prepare(`
+          SELECT COUNT(DISTINCT user_id) as count
+          FROM student_course_enrollments
+          WHERE step3_completed = 1 AND course_name = ?
+            AND phase2_shooting_attended = 1
+        `).get(courseName).count || 0;
+
+        const editingAttendedCount = db.prepare(`
+          SELECT COUNT(DISTINCT user_id) as count
+          FROM student_course_enrollments
+          WHERE step3_completed = 1 AND course_name = ?
+            AND phase2_editing_attended = 1
+        `).get(courseName).count || 0;
+
+        const completedPhase2 = db.prepare(`
+          SELECT COUNT(DISTINCT user_id) as count
+          FROM student_course_enrollments
+          WHERE step4_completed = 1 AND course_name = ?
+        `).get(courseName).count || 0;
+
+        const submittedFilm = db.prepare(`
+          SELECT COUNT(DISTINCT user_id) as count
+          FROM student_course_enrollments
+          WHERE step4_completed = 1 AND course_name = ?
+        `).get(courseName).count || 0;
+
+        return {
+          courseName,
+          courseType,
+          stats: {
+            totalAdmitted,
+            classAttendance1stPhase,
+            classAttendance1stPhaseNotQualified,
+            screenplayCount,
+            shootingScriptCount,
+            passedPhase1Exam,
+            completedPhase1,
+            totalAdmittedPhase2,
+            shootingAttendedCount,
+            editingAttendedCount,
+            completedPhase2,
+            submittedFilm
+          }
+        };
+      } else {
+        const totalAdmitted = db.prepare(`
+          SELECT COUNT(DISTINCT user_id) as count
+          FROM student_course_enrollments
+          WHERE step1_completed = 1 AND course_name = ?
+        `).get(courseName).count || 0;
+
+        const completedCourse = db.prepare(`
+          SELECT COUNT(DISTINCT user_id) as count
+          FROM student_course_enrollments
+          WHERE step4_completed = 1 AND course_name = ?
+        `).get(courseName).count || 0;
+
+        return {
+          courseName,
+          courseType,
+          stats: {
+            totalAdmitted,
+            completedCourse
+          }
+        };
+      }
+    });
 
     res.json({
       totalRegistered: totalRegistered.count || 0,
-      totalAdmitted: totalAdmitted.count || 0,
-      currentlyEnrolled: currentlyEnrolled.count || 0,
-      passedPhase1Exam: passedPhase1.count || 0,
+      totalAdmitted: enrolledUserIds.size, // backward compatibility / fallback if needed
+      currentlyEnrolled: enrolledUserIds.size,
+      passedPhase1Exam: passedPhase1UserIds.size,
       failedOrDropped,
-      completedPhase1: completedPhase1.count || 0,
-      totalAdmittedPhase2: totalAdmittedPhase2.count || 0,
-      completedPhase2: completedPhase2.count || 0,
-      submittedFilm: submittedFilm.count || 0,
+      completedPhase1: passedPhase1UserIds.size,
+      totalAdmittedPhase2: db.prepare(`SELECT COUNT(DISTINCT user_id) as count FROM student_course_enrollments WHERE step3_completed = 1`).get().count || 0,
+      completedPhase2: certificatesIssued.count || 0,
+      submittedFilm: certificatesIssued.count || 0,
       certificatesIssued: certificatesIssued.count || 0,
+      // Our new structured fields:
+      institute: {
+        totalRegistered: totalRegistered.count || 0,
+        totalAdmittedEnrolled: enrolledUserIds.size,
+        totalPassed,
+        failedOrDropped,
+        certificatesIssued: certificatesIssued.count || 0
+      },
+      courses: coursesStats
     });
   } catch (error) {
     console.error('[Analytics] /stats error:', error);
@@ -343,10 +446,109 @@ router.get('/students/all', authenticateToken, requireRole('admin'), (req, res) 
   }
 });
 
+// GET /api/analytics/students/attendance
+router.get('/students/attendance', authenticateToken, requireRole('admin'), (req, res) => {
+  try {
+    const course = req.query.course;
+    const queryStr = `
+      SELECT
+        sce.id AS enrollment_id,
+        sce.user_id,
+        u.first_name,
+        u.last_name,
+        TRIM(u.first_name || ' ' || u.last_name) AS name,
+        sp.student_id,
+        sp.batch_number,
+        sce.attendance_classes,
+        sce.attendance_total
+      FROM student_course_enrollments sce
+      JOIN users u ON u.id = sce.user_id
+      LEFT JOIN student_profiles sp ON sp.user_id = u.id
+      WHERE sce.step1_completed = 1 ${course ? 'AND sce.course_name = ?' : ''}
+      ORDER BY u.id DESC
+    `;
+    const rows = course ? db.prepare(queryStr).all(course) : db.prepare(queryStr).all();
+    const mapped = rows.map(r => {
+      const total = r.attendance_total != null ? r.attendance_total : 22;
+      const attended = r.attendance_classes != null ? r.attendance_classes : 0;
+      const pct = total > 0 ? Math.round((attended / total) * 100) : 0;
+      const status = pct >= 80 ? 'Qualified' : 'Not Qualified';
+      return {
+        ...r,
+        attendance_percentage: pct,
+        attendance_status: status
+      };
+    });
+    res.json(mapped);
+  } catch (error) {
+    console.error('[Analytics] /students/attendance error:', error);
+    res.status(500).json({ error: 'Failed to fetch student attendance list' });
+  }
+});
+
+// GET /api/analytics/students/assignments
+router.get('/students/assignments', authenticateToken, requireRole('admin'), (req, res) => {
+  try {
+    const course = req.query.course;
+    const queryStr = `
+      SELECT
+        sce.id AS enrollment_id,
+        sce.user_id,
+        u.first_name,
+        u.last_name,
+        TRIM(u.first_name || ' ' || u.last_name) AS name,
+        sp.student_id,
+        sp.batch_number,
+        sce.assignment_screenplay,
+        sce.assignment_shooting_script
+      FROM student_course_enrollments sce
+      JOIN users u ON u.id = sce.user_id
+      LEFT JOIN student_profiles sp ON sp.user_id = u.id
+      WHERE sce.step1_completed = 1 ${course ? 'AND sce.course_name = ?' : ''}
+      ORDER BY u.id DESC
+    `;
+    const rows = course ? db.prepare(queryStr).all(course) : db.prepare(queryStr).all();
+    res.json(rows);
+  } catch (error) {
+    console.error('[Analytics] /students/assignments error:', error);
+    res.status(500).json({ error: 'Failed to fetch student assignments list' });
+  }
+});
+
+// GET /api/analytics/students/phase2-attendance
+router.get('/students/phase2-attendance', authenticateToken, requireRole('admin'), (req, res) => {
+  try {
+    const course = req.query.course;
+    const queryStr = `
+      SELECT
+        sce.id AS enrollment_id,
+        sce.user_id,
+        u.first_name,
+        u.last_name,
+        TRIM(u.first_name || ' ' || u.last_name) AS name,
+        sp.student_id,
+        sp.batch_number,
+        sce.phase2_shooting_attended,
+        sce.phase2_editing_attended
+      FROM student_course_enrollments sce
+      JOIN users u ON u.id = sce.user_id
+      LEFT JOIN student_profiles sp ON sp.user_id = u.id
+      WHERE sce.step3_completed = 1 ${course ? 'AND sce.course_name = ?' : ''}
+      ORDER BY u.id DESC
+    `;
+    const rows = course ? db.prepare(queryStr).all(course) : db.prepare(queryStr).all();
+    res.json(rows);
+  } catch (error) {
+    console.error('[Analytics] /students/phase2-attendance error:', error);
+    res.status(500).json({ error: 'Failed to fetch student phase 2 attendance list' });
+  }
+});
+
 // GET /api/analytics/students/admitted
 router.get('/students/admitted', authenticateToken, requireRole('admin'), (req, res) => {
   try {
-    const rows = db.prepare(`
+    const course = req.query.course;
+    const queryStr = `
       SELECT
         u.id AS user_id,
         u.first_name,
@@ -358,10 +560,11 @@ router.get('/students/admitted', authenticateToken, requireRole('admin'), (req, 
       FROM student_course_enrollments sce
       JOIN users u ON u.id = sce.user_id
       LEFT JOIN student_profiles sp ON sp.user_id = u.id
-      WHERE sce.step1_completed = 1
+      WHERE sce.step1_completed = 1 ${course ? 'AND sce.course_name = ?' : ''}
       GROUP BY u.id
       ORDER BY datetime(admitted_date) DESC, u.id DESC
-    `).all();
+    `;
+    const rows = course ? db.prepare(queryStr).all(course) : db.prepare(queryStr).all();
     res.json(rows);
   } catch (error) {
     console.error('[Analytics] /students/admitted error:', error);
@@ -372,7 +575,8 @@ router.get('/students/admitted', authenticateToken, requireRole('admin'), (req, 
 // GET /api/analytics/students/admitted-phase2
 router.get('/students/admitted-phase2', authenticateToken, requireRole('admin'), (req, res) => {
   try {
-    const rows = db.prepare(`
+    const course = req.query.course;
+    const queryStr = `
       SELECT
         u.id AS user_id,
         u.first_name,
@@ -384,10 +588,11 @@ router.get('/students/admitted-phase2', authenticateToken, requireRole('admin'),
       FROM student_course_enrollments sce
       JOIN users u ON u.id = sce.user_id
       LEFT JOIN student_profiles sp ON sp.user_id = u.id
-      WHERE sce.step3_completed = 1
+      WHERE sce.step3_completed = 1 ${course ? 'AND sce.course_name = ?' : ''}
       GROUP BY u.id
       ORDER BY datetime(admitted_date) DESC, u.id DESC
-    `).all();
+    `;
+    const rows = course ? db.prepare(queryStr).all(course) : db.prepare(queryStr).all();
     res.json(rows);
   } catch (error) {
     console.error('[Analytics] /students/admitted-phase2 error:', error);
@@ -398,7 +603,8 @@ router.get('/students/admitted-phase2', authenticateToken, requireRole('admin'),
 // GET /api/analytics/students/enrolled
 router.get('/students/enrolled', authenticateToken, requireRole('admin'), (req, res) => {
   try {
-    const rawEnrollments = db.prepare(`
+    const course = req.query.course;
+    const queryStr = `
       SELECT
         sce.id AS enrollment_id,
         sce.user_id,
@@ -414,7 +620,9 @@ router.get('/students/enrolled', authenticateToken, requireRole('admin'), (req, 
       FROM student_course_enrollments sce
       JOIN users u ON u.id = sce.user_id
       LEFT JOIN student_profiles sp ON sp.user_id = u.id
-    `).all();
+      ${course ? 'WHERE sce.course_name = ?' : ''}
+    `;
+    const rawEnrollments = course ? db.prepare(queryStr).all(course) : db.prepare(queryStr).all();
 
     const enrolledMap = new Map();
 
@@ -467,7 +675,8 @@ router.get('/students/enrolled', authenticateToken, requireRole('admin'), (req, 
 // GET /api/analytics/students/passed-exam
 router.get('/students/passed-exam', authenticateToken, requireRole('admin'), (req, res) => {
   try {
-    const rows = db.prepare(`
+    const course = req.query.course;
+    const queryStr = `
       SELECT
         u.id AS user_id,
         u.first_name,
@@ -480,10 +689,11 @@ router.get('/students/passed-exam', authenticateToken, requireRole('admin'), (re
       FROM student_course_enrollments sce
       JOIN users u ON u.id = sce.user_id
       LEFT JOIN student_profiles sp ON sp.user_id = u.id
-      WHERE sce.step2_completed = 1
+      WHERE sce.step2_completed = 1 ${course ? 'AND sce.course_name = ?' : ''}
       GROUP BY u.id
       ORDER BY datetime(pass_date) DESC, u.id DESC
-    `).all();
+    `;
+    const rows = course ? db.prepare(queryStr).all(course) : db.prepare(queryStr).all();
     res.json(rows);
   } catch (error) {
     console.error('[Analytics] /students/passed-exam error:', error);
@@ -526,7 +736,8 @@ router.get('/students/failed-exam', authenticateToken, requireRole('admin'), (re
 // GET /api/analytics/students/completed-phase1
 router.get('/students/completed-phase1', authenticateToken, requireRole('admin'), (req, res) => {
   try {
-    const rows = db.prepare(`
+    const course = req.query.course;
+    const queryStr = `
       SELECT
         u.id AS user_id,
         u.first_name,
@@ -538,10 +749,11 @@ router.get('/students/completed-phase1', authenticateToken, requireRole('admin')
       FROM student_course_enrollments sce
       JOIN users u ON u.id = sce.user_id
       LEFT JOIN student_profiles sp ON sp.user_id = u.id
-      WHERE sce.step2_completed = 1
+      WHERE sce.step2_completed = 1 ${course ? 'AND sce.course_name = ?' : ''}
       GROUP BY u.id
       ORDER BY datetime(completion_date) DESC, u.id DESC
-    `).all();
+    `;
+    const rows = course ? db.prepare(queryStr).all(course) : db.prepare(queryStr).all();
     res.json(rows);
   } catch (error) {
     console.error('[Analytics] /students/completed-phase1 error:', error);
@@ -552,7 +764,8 @@ router.get('/students/completed-phase1', authenticateToken, requireRole('admin')
 // GET /api/analytics/students/completed-phase2
 router.get('/students/completed-phase2', authenticateToken, requireRole('admin'), (req, res) => {
   try {
-    const rows = db.prepare(`
+    const course = req.query.course;
+    const queryStr = `
       SELECT
         u.id AS user_id,
         u.first_name,
@@ -564,10 +777,11 @@ router.get('/students/completed-phase2', authenticateToken, requireRole('admin')
       FROM student_course_enrollments sce
       JOIN users u ON u.id = sce.user_id
       LEFT JOIN student_profiles sp ON sp.user_id = u.id
-      WHERE sce.step3_completed = 1
+      WHERE sce.step3_completed = 1 ${course ? 'AND sce.course_name = ?' : ''}
       GROUP BY u.id
       ORDER BY datetime(completion_date) DESC, u.id DESC
-    `).all();
+    `;
+    const rows = course ? db.prepare(queryStr).all(course) : db.prepare(queryStr).all();
     res.json(rows);
   } catch (error) {
     console.error('[Analytics] /students/completed-phase2 error:', error);
@@ -578,7 +792,8 @@ router.get('/students/completed-phase2', authenticateToken, requireRole('admin')
 // GET /api/analytics/students/submitted-film
 router.get('/students/submitted-film', authenticateToken, requireRole('admin'), (req, res) => {
   try {
-    const rows = db.prepare(`
+    const course = req.query.course;
+    const queryStr = `
       SELECT
         u.id AS user_id,
         u.first_name,
@@ -590,10 +805,11 @@ router.get('/students/submitted-film', authenticateToken, requireRole('admin'), 
       FROM student_course_enrollments sce
       JOIN users u ON u.id = sce.user_id
       LEFT JOIN student_profiles sp ON sp.user_id = u.id
-      WHERE sce.step3_completed = 1
+      WHERE sce.step3_completed = 1 ${course ? 'AND sce.course_name = ?' : ''}
       GROUP BY u.id
       ORDER BY datetime(submission_date) DESC, u.id DESC
-    `).all();
+    `;
+    const rows = course ? db.prepare(queryStr).all(course) : db.prepare(queryStr).all();
     res.json(rows);
   } catch (error) {
     console.error('[Analytics] /students/submitted-film error:', error);
@@ -604,7 +820,8 @@ router.get('/students/submitted-film', authenticateToken, requireRole('admin'), 
 // GET /api/analytics/students/certificates-issued
 router.get('/students/certificates-issued', authenticateToken, requireRole('admin'), (req, res) => {
   try {
-    const rows = db.prepare(`
+    const course = req.query.course;
+    const queryStr = `
       SELECT
         sce.id AS enrollment_id,
         u.id AS user_id,
@@ -618,9 +835,10 @@ router.get('/students/certificates-issued', authenticateToken, requireRole('admi
       FROM student_course_enrollments sce
       JOIN users u ON u.id = sce.user_id
       LEFT JOIN student_profiles sp ON sp.user_id = u.id
-      WHERE sce.step4_completed = 1
+      WHERE sce.step4_completed = 1 ${course ? 'AND sce.course_name = ?' : ''}
       ORDER BY datetime(sce.updated_at) DESC, sce.id DESC
-    `).all();
+    `;
+    const rows = course ? db.prepare(queryStr).all(course) : db.prepare(queryStr).all();
     res.json(rows);
   } catch (error) {
     console.error('[Analytics] /students/certificates-issued error:', error);

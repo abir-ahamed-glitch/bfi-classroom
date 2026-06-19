@@ -296,6 +296,7 @@
     box-shadow: 20px 0 50px rgba(0,0,0,0.5);
     border-right: 1px solid var(--glass-border);
     padding-top: 4rem; /* push content below mobile header bar */
+    z-index: 20000 !important;
   }
 
   .sidebar.open {
@@ -324,6 +325,7 @@
 
   .sidebar-backdrop {
     display: block;
+    z-index: 19999 !important;
   }
 }
 
@@ -350,7 +352,7 @@
     bottom: 0;
     left: 0;
     right: 0;
-    z-index: 1001;
+    z-index: 10010;
     height: 60px;
     padding-bottom: env(safe-area-inset-bottom, 0px);
     background: rgba(6, 9, 16, 0.92);

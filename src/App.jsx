@@ -111,7 +111,7 @@ const Layout = ({ children }) => {
         </div>
 
         <Sidebar isNotifOpen={isNotifOpen} setIsNotifOpen={setIsNotifOpen} />
-        <main ref={mainRef} className={`main-content ${hideHeader ? 'inbox-main-content' : ''}`} style={{ position: 'relative', zIndex: 1 }}>
+        <main ref={mainRef} className={`main-content ${hideHeader ? 'inbox-main-content' : ''}`} style={{ position: 'relative' }}>
           {/* Desktop Institutional Header */}
           {!hideHeader && (
           <div className="desktop-only-header" style={{
