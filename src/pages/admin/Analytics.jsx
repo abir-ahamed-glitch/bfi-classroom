@@ -2177,17 +2177,33 @@ export default function Analytics() {
             ) : (
               <>
                 <ResponsiveContainer width="100%" height={200}>
-                  <PieChart>
+                  <PieChart margin={{ top: 0, right: 10, bottom: 0, left: 10 }}>
                     <Pie
                       data={feeData.slices.filter(s => s.value > 0)}
                       cx="50%"
                       cy="50%"
-                      innerRadius={55}
-                      outerRadius={85}
+                      innerRadius={35}
+                      outerRadius={65}
                       paddingAngle={3}
                       dataKey="value"
                       nameKey="name"
-                      label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+                      label={({ name, percent, x, y, cx }) => {
+                        if (percent < 0.05) return null;
+                        return (
+                          <text
+                            x={x}
+                            y={y}
+                            fill="rgba(255, 255, 255, 0.85)"
+                            fontSize={11}
+                            fontWeight="500"
+                            textAnchor={x > cx ? 'start' : 'end'}
+                            dominantBaseline="central"
+                          >
+                            <tspan x={x} dy="-0.6em">{name}</tspan>
+                            <tspan x={x} dy="1.2em">{(percent * 100).toFixed(0)}%</tspan>
+                          </text>
+                        );
+                      }}
                       labelLine={false}
                     >
                       {feeData.slices.filter(s => s.value > 0).map((entry, index) => (
