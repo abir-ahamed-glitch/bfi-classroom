@@ -455,6 +455,28 @@ export function initializeDatabase() {
       FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL
     );
 
+    -- Certificate Downloads
+    CREATE TABLE IF NOT EXISTS certificate_downloads (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      course_name TEXT NOT NULL,
+      downloaded_at TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    -- Batch-Wise Course Fees
+    CREATE TABLE IF NOT EXISTS batch_course_fees (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      course_name TEXT NOT NULL,
+      batch_number TEXT NOT NULL,
+      phase1_fee INTEGER NOT NULL DEFAULT 0,
+      phase2_fee INTEGER NOT NULL DEFAULT 0,
+      full_fee INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now')),
+      UNIQUE(course_name, batch_number)
+    );
+
     -- Indexes for performance
     CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
     CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
@@ -647,6 +669,31 @@ export function initializeDatabase() {
   try {
     db.prepare("ALTER TABLE community_posts ADD COLUMN scheduled_notified INTEGER DEFAULT 0").run();
     console.log('✅ Migrated community_posts: added scheduled_notified column');
+  } catch (error) {
+    // Column probably already exists
+  }
+
+  // Fee tracker reminder log migration
+  try {
+    db.prepare(`
+      CREATE TABLE IF NOT EXISTS fee_reminder_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        admin_id INTEGER NOT NULL,
+        student_user_id INTEGER NOT NULL,
+        sent_at TEXT DEFAULT (datetime('now')),
+        FOREIGN KEY (admin_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (student_user_id) REFERENCES users(id) ON DELETE CASCADE
+      )
+    `).run();
+    console.log('✅ Created fee_reminder_log table');
+  } catch (error) {
+    // Table probably already exists
+  }
+
+  // Announcements visible_to_user_id migration
+  try {
+    db.prepare("ALTER TABLE announcements ADD COLUMN visible_to_user_id INTEGER DEFAULT NULL").run();
+    console.log('✅ Migrated announcements: added visible_to_user_id column');
   } catch (error) {
     // Column probably already exists
   }

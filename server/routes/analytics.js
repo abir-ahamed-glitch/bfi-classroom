@@ -1,119 +1,9 @@
 import express from 'express';
 import db from '../db/database.js';
 import { authenticateToken, requireRole } from '../middleware/auth.js';
+import { parseFeeDetails, getBatchFee, getFeeStatus, getPhaseRemainingDue, extractFeeAmounts } from '../utils/feeResolver.js';
 
 const router = express.Router();
-
-// ─────────────────────────────────────────────────────────────────────────────
-// HELPER: Parse fee_details JSON safely
-// ─────────────────────────────────────────────────────────────────────────────
-function parseFeeDetails(raw) {
-  if (!raw) return null;
-  try {
-    return typeof raw === 'string' ? JSON.parse(raw) : raw;
-  } catch {
-    return null;
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// HELPER: Determine fee status from fee_details JSON
-// Returns 'paid' | 'partial' | 'unpaid'
-// ─────────────────────────────────────────────────────────────────────────────
-function getFeeStatus(feeDetails, courseType) {
-  if (!feeDetails) return 'unpaid';
-
-  let phase1_paid = false;
-  let phase2_paid = false;
-
-  // 1. Direct field checks if they exist
-  if (feeDetails.phase1_paid !== undefined) {
-    phase1_paid = !!feeDetails.phase1_paid;
-  } else if (courseType === 'filmmaking') {
-    if (feeDetails.phase1) {
-      const p1 = feeDetails.phase1;
-      const status = (p1.status || '').toLowerCase();
-      const full = parseFloat((p1.full_fee || '').toString().replace(/[^\d.]/g, '')) || 0;
-      const paid = parseFloat((p1.amount_paid || '').toString().replace(/[^\d.]/g, '')) || 0;
-      const disc = parseFloat((p1.discount || '').toString().replace(/[^\d.]/g, '')) || 0;
-      const insts = p1.installments || [];
-      phase1_paid = (
-        status === 'paid full' ||
-        status === 'waived' ||
-        full === 0 ||
-        (paid + disc >= full) ||
-        (insts.length > 0 && insts.every(i => (i.status || '').toLowerCase() === 'paid'))
-      );
-    }
-  } else {
-    // For workshop, feeDetails itself represents phase 1/overall
-    const p1 = feeDetails;
-    const status = (p1.status || '').toLowerCase();
-    const full = parseFloat((p1.full_fee || '').toString().replace(/[^\d.]/g, '')) || 0;
-    const paid = parseFloat((p1.amount_paid || '').toString().replace(/[^\d.]/g, '')) || 0;
-    const disc = parseFloat((p1.discount || '').toString().replace(/[^\d.]/g, '')) || 0;
-    const insts = p1.installments || [];
-    phase1_paid = (
-      status === 'paid full' ||
-      status === 'waived' ||
-      full === 0 ||
-      (paid + disc >= full) ||
-      (insts.length > 0 && insts.every(i => (i.status || '').toLowerCase() === 'paid'))
-    );
-  }
-
-  if (feeDetails.phase2_paid !== undefined) {
-    phase2_paid = !!feeDetails.phase2_paid;
-  } else if (courseType === 'filmmaking') {
-    if (feeDetails.phase2) {
-      const p2 = feeDetails.phase2;
-      const status = (p2.status || '').toLowerCase();
-      const full = parseFloat((p2.full_fee || '').toString().replace(/[^\d.]/g, '')) || 0;
-      const paid = parseFloat((p2.amount_paid || '').toString().replace(/[^\d.]/g, '')) || 0;
-      const disc = parseFloat((p2.discount || '').toString().replace(/[^\d.]/g, '')) || 0;
-      const insts = p2.installments || [];
-      phase2_paid = (
-        status === 'paid full' ||
-        status === 'waived' ||
-        full === 0 ||
-        (paid + disc >= full) ||
-        (insts.length > 0 && insts.every(i => (i.status || '').toLowerCase() === 'paid'))
-      );
-    }
-  } else {
-    // Workshops have no phase 2, treat as implicitly paid
-    phase2_paid = true;
-  }
-
-  if (phase1_paid && phase2_paid) return 'paid';
-  if (phase1_paid || phase2_paid) return 'partial';
-  return 'unpaid';
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// HELPER: Extract numeric fee amounts
-// ─────────────────────────────────────────────────────────────────────────────
-function extractFeeAmounts(feeDetails, courseType) {
-  if (!feeDetails) return { total: 0, collected: 0 };
-
-  const getPhaseAmounts = (phase) => {
-    if (!phase) return { total: 0, collected: 0 };
-    const fullFee = parseFloat((phase.full_fee || '').toString().replace(/[^\d.]/g, '')) || 0;
-    const amountPaid = parseFloat((phase.amount_paid || '').toString().replace(/[^\d.]/g, '')) || 0;
-    const discount = parseFloat((phase.discount || '').toString().replace(/[^\d.]/g, '')) || 0;
-    return { total: fullFee, collected: Math.min(amountPaid + discount, fullFee) };
-  };
-
-  if (courseType === 'filmmaking') {
-    const p1 = getPhaseAmounts(feeDetails.phase1);
-    const p2 = getPhaseAmounts(feeDetails.phase2);
-    return {
-      total: p1.total + p2.total,
-      collected: p1.collected + p2.collected,
-    };
-  }
-  return getPhaseAmounts(feeDetails);
-}
 
 function getPendingCertificateRows() {
   const rows = db.prepare(`
@@ -839,7 +729,21 @@ router.get('/students/certificates-issued', authenticateToken, requireRole('admi
       ORDER BY datetime(sce.updated_at) DESC, sce.id DESC
     `;
     const rows = course ? db.prepare(queryStr).all(course) : db.prepare(queryStr).all();
-    res.json(rows);
+
+    const rowsWithDownloads = rows.map(r => {
+      const downloads = db.prepare(`
+        SELECT downloaded_at FROM certificate_downloads
+        WHERE user_id = ? AND course_name = ?
+        ORDER BY datetime(downloaded_at) DESC
+      `).all(r.user_id, r.course_name);
+      return {
+        ...r,
+        downloads,
+        downloads_count: downloads.length
+      };
+    });
+
+    res.json(rowsWithDownloads);
   } catch (error) {
     console.error('[Analytics] /students/certificates-issued error:', error);
     res.status(500).json({ error: 'Failed to fetch issued certificates' });
@@ -911,7 +815,9 @@ router.get('/funnel', authenticateToken, requireRole('admin'), (req, res) => {
 router.get('/fee-status', authenticateToken, requireRole('admin'), (req, res) => {
   try {
     const enrollments = db.prepare(`
-      SELECT fee_details, course_type FROM student_course_enrollments
+      SELECT sce.fee_details, sce.course_type, sce.course_name, sp.batch_number
+      FROM student_course_enrollments sce
+      LEFT JOIN student_profiles sp ON sp.user_id = sce.user_id
     `).all();
 
     let paid = 0, partial = 0, unpaid = 0;
@@ -919,8 +825,9 @@ router.get('/fee-status', authenticateToken, requireRole('admin'), (req, res) =>
 
     for (const row of enrollments) {
       const feeDetails = parseFeeDetails(row.fee_details);
-      const status = getFeeStatus(feeDetails, row.course_type);
-      const amounts = extractFeeAmounts(feeDetails, row.course_type);
+      const batchFee = getBatchFee(row.course_name, row.batch_number);
+      const status = getFeeStatus(feeDetails, row.course_type, batchFee);
+      const amounts = extractFeeAmounts(feeDetails, row.course_type, batchFee);
 
       if (status === 'paid') paid++;
       else if (status === 'partial') partial++;
@@ -1172,6 +1079,7 @@ router.get('/missing-attendance', authenticateToken, requireRole('admin'), (req,
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/unpaid-students', authenticateToken, requireRole('admin'), (req, res) => {
   try {
+    const targetStatus = req.query.status || 'unpaid';
     const enrollments = db.prepare(`
       SELECT 
         sce.id as enrollment_id,
@@ -1191,8 +1099,9 @@ router.get('/unpaid-students', authenticateToken, requireRole('admin'), (req, re
     const unpaidStudents = [];
     for (const row of enrollments) {
       const feeDetails = parseFeeDetails(row.fee_details);
-      const status = getFeeStatus(feeDetails, row.course_type);
-      if (status === 'unpaid') {
+      const batchFee = getBatchFee(row.course_name, row.batch_number);
+      const status = getFeeStatus(feeDetails, row.course_type, batchFee);
+      if (status === targetStatus) {
         let phase1_fee = 0;
         let phase2_fee = 0;
         let total_due = 0;
@@ -1200,19 +1109,26 @@ router.get('/unpaid-students', authenticateToken, requireRole('admin'), (req, re
           if (row.course_type === 'filmmaking') {
             const p1 = feeDetails.phase1 || {};
             const p2 = feeDetails.phase2 || {};
-            phase1_fee = parseFloat((p1.full_fee || '').toString().replace(/[^\d.]/g, '')) || 0;
-            phase2_fee = parseFloat((p2.full_fee || '').toString().replace(/[^\d.]/g, '')) || 0;
-            
-            const p1_paid = parseFloat((p1.amount_paid || '').toString().replace(/[^\d.]/g, '')) || 0;
-            const p1_disc = parseFloat((p1.discount || '').toString().replace(/[^\d.]/g, '')) || 0;
-            const p2_paid = parseFloat((p2.amount_paid || '').toString().replace(/[^\d.]/g, '')) || 0;
-            const p2_disc = parseFloat((p2.discount || '').toString().replace(/[^\d.]/g, '')) || 0;
-            total_due = Math.max(0, phase1_fee - p1_paid - p1_disc) + Math.max(0, phase2_fee - p2_paid - p2_disc);
+            // Use batch fee as fallback if student-level full_fee is blank/zero
+            const bf1 = batchFee ? batchFee.phase1_fee : 0;
+            const bf2 = batchFee ? batchFee.phase2_fee : 0;
+            phase1_fee = (parseFloat((p1.full_fee || '').toString().replace(/[^\d.]/g, '')) || 0) || bf1;
+            phase2_fee = (parseFloat((p2.full_fee || '').toString().replace(/[^\d.]/g, '')) || 0) || bf2;
+            total_due = getPhaseRemainingDue(p1, bf1) + getPhaseRemainingDue(p2, bf2);
           } else {
-            phase1_fee = parseFloat((feeDetails.full_fee || '').toString().replace(/[^\d.]/g, '')) || 0;
-            const paid = parseFloat((feeDetails.amount_paid || '').toString().replace(/[^\d.]/g, '')) || 0;
-            const disc = parseFloat((feeDetails.discount || '').toString().replace(/[^\d.]/g, '')) || 0;
-            total_due = Math.max(0, phase1_fee - paid - disc);
+            const bff = batchFee ? (batchFee.full_fee || 0) : 0;
+            phase1_fee = (parseFloat((feeDetails.full_fee || '').toString().replace(/[^\d.]/g, '')) || 0) || bff;
+            total_due = getPhaseRemainingDue(feeDetails, bff);
+          }
+        } else if (batchFee) {
+          // No fee_details at all — use pure batch totals
+          if (row.course_type === 'filmmaking') {
+            phase1_fee = batchFee.phase1_fee || 0;
+            phase2_fee = batchFee.phase2_fee || 0;
+            total_due = phase1_fee + phase2_fee;
+          } else {
+            phase1_fee = batchFee.full_fee || 0;
+            total_due = phase1_fee;
           }
         }
         unpaidStudents.push({

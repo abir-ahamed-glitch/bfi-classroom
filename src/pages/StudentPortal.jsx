@@ -272,13 +272,18 @@ export default function StudentPortal() {
                   const fullFeeNum = parseFloat((data.full_fee || '').replace(/[^\d.]/g, '')) || 0;
                   const amountPaidNum = parseFloat((data.amount_paid || '').replace(/[^\d.]/g, '')) || 0;
                   const discountNum = parseFloat((data.discount || '').replace(/[^\d.]/g, '')) || 0;
-                  const remainingDue = Math.max(0, fullFeeNum - discountNum - amountPaidNum);
+                  const rawRemainingDue = Math.max(0, fullFeeNum - discountNum - amountPaidNum);
+
+                  const installments = data.installments || [];
+                  const remainingDue = installments.length > 0
+                    ? installments.filter(inst => (inst.status || '').toLowerCase() !== 'paid').reduce((sum, inst) => sum + (parseFloat((inst.amount || '').toString().replace(/[^\d.]/g, '')) || 0), 0)
+                    : rawRemainingDue;
 
                   const isFullySatisfied = fullFeeNum > 0 && amountPaidNum + discountNum >= fullFeeNum;
-                  const allInstallmentsPaid = remainingDue > 0 && 
-                    (data.installments || []).length > 0 && 
-                    (data.installments || []).every(inst => inst.status === 'Paid');
-                  const isFullyCompleted = isFullySatisfied || allInstallmentsPaid;
+                  const allInstallmentsPaid = rawRemainingDue > 0 && 
+                    installments.length > 0 && 
+                    installments.every(inst => inst.status === 'Paid');
+                  const isFullyCompleted = isFullySatisfied || allInstallmentsPaid || remainingDue === 0;
 
                   let completionMessage = '';
                   if (title) {

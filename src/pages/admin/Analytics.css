@@ -1315,4 +1315,9 @@
   }
 }
 
-
+/* Responsive downloads count label adjustment */
+@media (max-width: 1100px) {
+  .analytics-download-badge-text {
+    display: none;
+  }
+}

@@ -55,6 +55,20 @@ export default function Certificates() {
     try {
       setDownloadingId(index);
       await downloadCertificatePdf(cert, cert.template || {});
+      
+      // Log the download event to backend
+      try {
+        await fetch('/api/certification/log-download', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${localStorage.getItem('token')}`
+          },
+          body: JSON.stringify({ courseName: cert.courseName })
+        });
+      } catch (logErr) {
+        console.error('Failed to log certificate download:', logErr);
+      }
     } catch (err) {
       console.error('Certificate download failed', err);
       await showAlert('Unable to generate the certificate right now. Please try again.', { title: 'Download Failed' });

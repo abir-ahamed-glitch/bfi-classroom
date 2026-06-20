@@ -300,22 +300,26 @@ router.get('/dashboard', authenticateToken, (req, res) => {
       FROM announcements a
       JOIN users u ON a.admin_id = u.id
       WHERE (
-        (
-          (a.target_course IS NULL OR a.target_course = '') AND (a.target_batch IS NULL OR a.target_batch = '')
-        ) OR (
-          (a.target_course IS NULL OR a.target_course = '' OR EXISTS (
-            SELECT 1 FROM student_course_enrollments sce
-            WHERE sce.user_id = ? AND sce.course_name = a.target_course
-          ))
-          AND (
-            a.target_batch IS NULL OR a.target_batch = '' OR a.target_batch = ?
+        a.visible_to_user_id = ? OR (
+          a.visible_to_user_id IS NULL AND (
+            (
+              (a.target_course IS NULL OR a.target_course = '') AND (a.target_batch IS NULL OR a.target_batch = '')
+            ) OR (
+              (a.target_course IS NULL OR a.target_course = '' OR EXISTS (
+                SELECT 1 FROM student_course_enrollments sce
+                WHERE sce.user_id = ? AND sce.course_name = a.target_course
+              ))
+              AND (
+                a.target_batch IS NULL OR a.target_batch = '' OR a.target_batch = ?
+              )
+            )
           )
         )
       ) AND (a.scheduled_at IS NULL OR datetime(a.scheduled_at) <= datetime('now'))
         AND a.created_at >= datetime('now', '-14 days')
       ORDER BY a.created_at DESC
       LIMIT 20
-    `).all(req.user.id, batchFilter);
+    `).all(req.user.id, req.user.id, batchFilter);
 
     // 5. Enrollments
     const enrollments = db.prepare('SELECT * FROM student_course_enrollments WHERE user_id = ?').all(req.user.id);
@@ -371,21 +375,25 @@ router.get('/notices', authenticateToken, (req, res) => {
         FROM announcements a
         JOIN users u ON a.admin_id = u.id
         WHERE (
-          (
-            (a.target_course IS NULL OR a.target_course = '') AND (a.target_batch IS NULL OR a.target_batch = '')
-          ) OR (
-            (a.target_course IS NULL OR a.target_course = '' OR EXISTS (
-              SELECT 1 FROM student_course_enrollments sce
-              WHERE sce.user_id = ? AND sce.course_name = a.target_course
-            ))
-            AND (
-              a.target_batch IS NULL OR a.target_batch = '' OR a.target_batch = ?
+          a.visible_to_user_id = ? OR (
+            a.visible_to_user_id IS NULL AND (
+              (
+                (a.target_course IS NULL OR a.target_course = '') AND (a.target_batch IS NULL OR a.target_batch = '')
+              ) OR (
+                (a.target_course IS NULL OR a.target_course = '' OR EXISTS (
+                  SELECT 1 FROM student_course_enrollments sce
+                  WHERE sce.user_id = ? AND sce.course_name = a.target_course
+                ))
+                AND (
+                  a.target_batch IS NULL OR a.target_batch = '' OR a.target_batch = ?
+                )
+              )
             )
           )
         ) AND (a.scheduled_at IS NULL OR datetime(a.scheduled_at) <= datetime('now'))
         ORDER BY a.created_at DESC
         LIMIT 50
-      `).all(req.user.id, batchFilter);
+      `).all(req.user.id, req.user.id, batchFilter);
     }
 
     res.json({ announcements });

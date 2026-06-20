@@ -404,15 +404,47 @@ router.put('/students/:id', authenticateToken, requireRole('admin'), sanitizeInp
       firstName, lastName, email, mobileNumber, username, batchNumber, phase1_fee, phase2_fee, courses, snNo, year, course_fees
     } = req.body;
 
+    console.log(`[AdminAPI] PUT /students/${id} called with:`, {
+      firstName, lastName, email, username, batchNumber, snNo, year, courses, course_fees
+    });
+
     // Validate Phase 2 fee details restriction: Cannot set Phase 2 details if Phase 1 exam is not passed
     if (course_fees?.['Online Filmmaking Course']?.phase2) {
-      const existingEnrollment = db.prepare('SELECT step2_completed FROM student_course_enrollments WHERE user_id = ? AND course_name = ?').get(id, 'Online Filmmaking Course');
+      const existingEnrollment = db.prepare('SELECT step2_completed, fee_details FROM student_course_enrollments WHERE user_id = ? AND course_name = ?').get(id, 'Online Filmmaking Course');
       const step2Completed = existingEnrollment ? existingEnrollment.step2_completed : 0;
       if (step2Completed !== 1) {
         const p2 = course_fees['Online Filmmaking Course'].phase2;
+        
+        // Parse existing Phase 2 details
+        let existingP2 = null;
+        if (existingEnrollment && existingEnrollment.fee_details) {
+          try {
+            const parsed = JSON.parse(existingEnrollment.fee_details);
+            existingP2 = parsed?.phase2;
+          } catch (e) {
+            console.error('Failed to parse existing fee details:', e);
+          }
+        }
+
+        // Check if there is any new/modified Phase 2 data compared to what's already saved
         const hasP2Data = p2.full_fee || p2.amount_paid || p2.status || p2.discount || (p2.installments && p2.installments.length > 0);
+        
         if (hasP2Data) {
-          return res.status(400).json({ error: 'Cannot set Phase 2 fee details because the student has not passed the Phase 1 exam.' });
+          // Compare p2 to existingP2
+          const cleanString = (val) => String(val || '').trim();
+          const cleanNum = (val) => parseFloat(String(val || '').replace(/[^\d.]/g, '')) || 0;
+          
+          const fullFeeChanged = cleanString(p2.full_fee) !== cleanString(existingP2?.full_fee);
+          const amountPaidChanged = cleanNum(p2.amount_paid) !== cleanNum(existingP2?.amount_paid);
+          const statusChanged = cleanString(p2.status) !== cleanString(existingP2?.status);
+          const discountChanged = cleanString(p2.discount) !== cleanString(existingP2?.discount);
+          
+          // Check installments change
+          const instChanged = JSON.stringify(p2.installments || []) !== JSON.stringify(existingP2?.installments || []);
+
+          if (fullFeeChanged || amountPaidChanged || statusChanged || discountChanged || instChanged) {
+            return res.status(400).json({ error: 'Cannot set or modify Phase 2 fee details because the student has not passed the Phase 1 exam.' });
+          }
         }
       }
     }
@@ -641,6 +673,32 @@ router.get('/students', authenticateToken, requireRole('admin'), (req, res) => {
   } catch (error) {
     console.error('Error fetching students:', error);
     res.status(500).json({ error: 'Internal server error while fetching students.' });
+  }
+});
+
+// Route to get a specific student details
+router.get('/students/:id', authenticateToken, requireRole('admin'), (req, res) => {
+  try {
+    const { id } = req.params;
+    const student = db.prepare(`
+      SELECT 
+        u.id, u.username, u.email, u.first_name, u.last_name, u.mobile_number, u.is_active, u.created_at,
+        p.student_id, p.batch_number, p.full_name, p.whatsapp_number,
+        p.phase1_fee, p.phase2_fee
+      FROM users u
+      LEFT JOIN student_profiles p ON u.id = p.user_id
+      WHERE u.role = 'student' AND u.id = ?
+    `).get(id);
+
+    if (!student) {
+      return res.status(404).json({ error: 'Student not found' });
+    }
+
+    const enrollments = db.prepare('SELECT * FROM student_course_enrollments WHERE user_id = ?').all(student.id);
+    res.json({ student: { ...student, enrollments } });
+  } catch (error) {
+    console.error('Error fetching student details:', error);
+    res.status(500).json({ error: 'Internal server error while fetching student details.' });
   }
 });
 

@@ -1,85 +1,10 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
+import { useLocation } from 'react-router-dom';
 import { createPortal } from 'react-dom';
 import { UserPlus, Search, Copy, CheckCircle2, User, UserCheck, CheckSquare, Square, Edit, X, FileSpreadsheet, Trash2, GraduationCap, Clapperboard, Lock } from 'lucide-react';
 import BulkStudentImport from '../../components/admin/BulkStudentImport';
 import { getOrdinalSuffix } from '../../utils/formatUtils';
-
-// Helper function to dynamically sync installments and payment status based on fees
-const syncInstallmentsAndStatus = (target) => {
-  if (!target) return;
-  const fullFeeNum = parseFloat((target.full_fee || '').replace(/[^\d.]/g, '')) || 0;
-  const amountPaidNum = parseFloat((target.amount_paid || '').replace(/[^\d.]/g, '')) || 0;
-  const discountNum = parseFloat((target.discount || '').replace(/[^\d.]/g, '')) || 0;
-  const remainingDue = Math.max(0, fullFeeNum - discountNum - amountPaidNum);
-
-  // 1. Auto-detect payment status
-  if (fullFeeNum > 0) {
-    if (amountPaidNum + discountNum >= fullFeeNum) {
-      target.status = 'Paid Full';
-    } else {
-      if (target.status === 'Paid Full') {
-        if (amountPaidNum > 0 || discountNum > 0) {
-          target.status = 'Partial';
-        } else {
-          target.status = 'Due';
-        }
-      } else if (!target.status) {
-        if (amountPaidNum > 0 || discountNum > 0) {
-          target.status = 'Partial';
-        } else {
-          target.status = 'Due';
-        }
-      }
-    }
-  }
-
-  // 2. Auto-adjust installments
-  if (remainingDue <= 0) {
-    target.installments = [];
-  } else {
-    const currentInst = target.installments || [];
-    if (currentInst.length === 0) {
-      target.installments = [{ amount: String(remainingDue), dueDate: '', status: 'Pending' }];
-    } else {
-      const updatedInst = [];
-      let runningSum = 0;
-      for (let i = 0; i < currentInst.length; i++) {
-        const inst = currentInst[i];
-        const amountVal = parseFloat((inst.amount || '').replace(/[^\d.]/g, '')) || 0;
-        
-        if (runningSum >= remainingDue) {
-          break;
-        }
-        
-        if (runningSum + amountVal >= remainingDue) {
-          const leftover = remainingDue - runningSum;
-          updatedInst.push({
-            ...inst,
-            amount: String(leftover)
-          });
-          runningSum = remainingDue;
-          break;
-        } else {
-          updatedInst.push({
-            ...inst,
-            amount: String(amountVal)
-          });
-          runningSum += amountVal;
-        }
-      }
-      
-      if (runningSum < remainingDue) {
-        const leftover = remainingDue - runningSum;
-        updatedInst.push({
-          amount: String(leftover),
-          dueDate: '',
-          status: 'Pending'
-        });
-      }
-      target.installments = updatedInst;
-    }
-  }
-};
+import EditStudentModal from '../../components/admin/EditStudentModal';
 
 const hasPendingDueOrPartialPayment = (course) => {
   if (!course || !course.fee_details) return false;
@@ -124,392 +49,17 @@ const hasPendingDueOrPartialPayment = (course) => {
     return remainingDue > 0;
   };
 
-  if (course.course_type === 'filmmaking') {
+  if (course.course_name === 'Online Filmmaking Course') {
     return isUnpaid(feeDetails.phase1) || isUnpaid(feeDetails.phase2);
   } else {
     return isUnpaid(feeDetails);
   }
 };
 
-// Helper subcomponent for rendering fee fields and installment details
-function FeeRow({ 
-  courseName, 
-  label, 
-  phaseKey, 
-  feeData, 
-  onChange, 
-  onDiscountBlur, 
-  onRemoveInstallment, 
-  onInstallmentChange,
-  disabled = false
-}) {
-  const key = phaseKey ? `${phaseKey}.` : '';
-  const courseFees = feeData?.[courseName] || {};
-  const data = phaseKey ? (courseFees[phaseKey] || {}) : courseFees;
-
-  const fullFeeNum = parseFloat((data.full_fee || '').replace(/[^\d.]/g, '')) || 0;
-  const amountPaidNum = parseFloat((data.amount_paid || '').replace(/[^\d.]/g, '')) || 0;
-  const discountNum = parseFloat((data.discount || '').replace(/[^\d.]/g, '')) || 0;
-  const remainingDue = Math.max(0, fullFeeNum - discountNum - amountPaidNum);
-  
-  const hasError = amountPaidNum > fullFeeNum;
-  const hasSumError = (amountPaidNum + discountNum) > fullFeeNum;
-
-  const isFullySatisfied = fullFeeNum > 0 && amountPaidNum + discountNum >= fullFeeNum;
-  const allInstallmentsPaid = remainingDue > 0 && 
-    (data.installments || []).length > 0 && 
-    (data.installments || []).every(inst => inst.status === 'Paid');
-  const isFullyCompleted = isFullySatisfied || allInstallmentsPaid;
-
-  let completionMessage = '';
-  if (label) {
-    if (label.toLowerCase().includes('phase 1')) {
-      completionMessage = '1st Phase fee completed';
-    } else if (label.toLowerCase().includes('phase 2')) {
-      completionMessage = '2nd Phase fee completed';
-    } else {
-      completionMessage = `${label} fee completed`;
-    }
-  } else {
-    completionMessage = `${courseName} fee completed`;
-  }
-
-  return (
-    <div style={{ padding: '0.75rem', background: 'rgba(255,255,255,0.02)', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.05)', opacity: disabled ? 0.85 : 1 }}>
-      {disabled && (
-        <div style={{
-          fontSize: '0.75rem',
-          color: '#fbbf24',
-          background: 'rgba(245, 158, 11, 0.05)',
-          border: '1px solid rgba(245, 158, 11, 0.2)',
-          padding: '0.4rem 0.6rem',
-          borderRadius: '6px',
-          marginBottom: '0.6rem',
-          display: 'flex',
-          alignItems: 'center',
-          gap: '0.4rem',
-          fontWeight: '500'
-        }}>
-          <span>⚠️</span> Locked until "Phase 1: Passed Exam" is checked
-        </div>
-      )}
-      {(label || (fullFeeNum > 0 && amountPaidNum + discountNum >= fullFeeNum)) && (
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.6rem' }}>
-          {label ? (
-            <p style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-muted)', margin: 0, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
-              {disabled && <span>🔒</span>} {label}
-            </p>
-          ) : <div />}
-          {fullFeeNum > 0 && amountPaidNum + discountNum >= fullFeeNum && (
-            <span style={{ 
-              fontSize: '0.72rem', 
-              fontWeight: '600', 
-              color: '#34d399', 
-              background: 'rgba(52, 211, 153, 0.1)', 
-              padding: '0.15rem 0.45rem', 
-              borderRadius: '4px',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.3rem',
-              border: '1px solid rgba(52, 211, 153, 0.2)'
-            }}>
-              <span style={{ display: 'inline-block', width: '6px', height: '6px', borderRadius: '50%', background: '#34d399' }}></span>
-              Paid
-            </span>
-          )}
-        </div>
-      )}
-      
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem', marginBottom: '0.5rem' }}>
-        <div>
-          <label style={{ display: 'block', marginBottom: '0.25rem', color: 'var(--text-secondary)', fontSize: '0.78rem' }}>Course Fee</label>
-          <input
-            type="text"
-            value={data.full_fee || ''}
-            disabled={disabled}
-            onChange={e => onChange(courseName, `${key}full_fee`, e.target.value)}
-            className="input-glass"
-            placeholder="e.g. 15,000"
-            style={{ 
-              paddingLeft: '0.65rem', 
-              fontSize: '0.83rem',
-              opacity: disabled ? 0.5 : 1,
-              cursor: disabled ? 'not-allowed' : 'text'
-            }}
-          />
-        </div>
-        <div>
-          <label style={{ display: 'block', marginBottom: '0.25rem', color: 'var(--text-secondary)', fontSize: '0.78rem' }}>Amount Paid</label>
-          <input
-            type="text"
-            value={data.amount_paid || ''}
-            disabled={disabled}
-            onChange={e => onChange(courseName, `${key}amount_paid`, e.target.value)}
-            className="input-glass"
-            placeholder="e.g. 10,000"
-            style={{ 
-              paddingLeft: '0.65rem', 
-              fontSize: '0.83rem',
-              borderColor: (hasError || hasSumError) ? '#ef4444' : 'rgba(255,255,255,0.1)',
-              opacity: disabled ? 0.5 : 1,
-              cursor: disabled ? 'not-allowed' : 'text'
-            }}
-          />
-        </div>
-      </div>
-
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem', marginBottom: '0.5rem' }}>
-        <div>
-          <label style={{ display: 'block', marginBottom: '0.25rem', color: '#10b981', fontSize: '0.78rem', fontWeight: 600 }}>🏷️ Discount</label>
-          <input
-            type="text"
-            value={data.discount || ''}
-            disabled={disabled}
-            onChange={e => onChange(courseName, `${key}discount`, e.target.value)}
-            onBlur={e => onDiscountBlur(courseName, phaseKey, e.target.value)}
-            className="input-glass"
-            placeholder="e.g. 2,000 or 10%"
-            style={{ 
-              paddingLeft: '0.65rem', 
-              fontSize: '0.83rem',
-              opacity: disabled ? 0.5 : 1,
-              cursor: disabled ? 'not-allowed' : 'text'
-            }}
-          />
-        </div>
-        <div>
-          <label style={{ display: 'block', marginBottom: '0.25rem', color: 'var(--text-secondary)', fontSize: '0.78rem' }}>Payment Status</label>
-          <select
-            value={data.status || ''}
-            disabled={disabled}
-            onChange={e => onChange(courseName, `${key}status`, e.target.value)}
-            className="input-glass"
-            style={{ 
-              paddingTop: '0.2rem', 
-              paddingBottom: '0.2rem', 
-              paddingLeft: '0.65rem', 
-              paddingRight: '1.75rem', 
-              fontSize: '0.83rem', 
-              height: '38px',
-              backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='rgba(255,255,255,0.6)'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'%3E%3C/path%3E%3C/svg%3E")`,
-              backgroundPosition: 'right 0.5rem center',
-              backgroundSize: '1rem',
-              backgroundRepeat: 'no-repeat',
-              appearance: 'none',
-              cursor: disabled ? 'not-allowed' : 'pointer',
-              opacity: disabled ? 0.5 : 1,
-              color: data.status ? (
-                data.status === 'Paid Full' ? '#34d399' :
-                data.status === 'Partial' ? '#fbbf24' :
-                data.status === 'Pending' ? '#60a5fa' :
-                data.status === 'Waived' ? '#c084fc' : '#f87171'
-              ) : 'var(--text-secondary)',
-              borderColor: data.status ? (
-                data.status === 'Paid Full' ? 'rgba(52, 211, 153, 0.3)' :
-                data.status === 'Partial' ? 'rgba(251, 191, 36, 0.3)' :
-                data.status === 'Pending' ? 'rgba(96, 165, 250, 0.3)' :
-                data.status === 'Waived' ? 'rgba(192, 132, 252, 0.3)' : 'rgba(248, 113, 113, 0.3)'
-              ) : 'rgba(255,255,255,0.1)',
-              fontWeight: data.status ? '600' : 'normal'
-            }}
-          >
-            <option value="" style={{ color: 'var(--text-secondary)', background: 'var(--bg-secondary, #030b19)' }}>— Select —</option>
-            <option value="Paid Full" style={{ color: '#34d399', background: 'var(--bg-secondary, #030b19)' }}>✅ Paid Full</option>
-            <option value="Partial" style={{ color: '#fbbf24', background: 'var(--bg-secondary, #030b19)' }}>⚠️ Partial Payment</option>
-            <option value="Pending" style={{ color: '#60a5fa', background: 'var(--bg-secondary, #030b19)' }}>🕐 Pending</option>
-            <option value="Waived" style={{ color: '#c084fc', background: 'var(--bg-secondary, #030b19)' }}>🎁 Waived / Free</option>
-            <option value="Due" style={{ color: '#f87171', background: 'var(--bg-secondary, #030b19)' }}>❌ Due / Unpaid</option>
-          </select>
-        </div>
-      </div>
-
-      {(hasError || hasSumError) && (
-        <p style={{ color: '#ef4444', fontSize: '0.75rem', margin: '0.25rem 0 0.5rem 0' }}>
-          {hasError 
-            ? '⚠️ Amount paid cannot exceed the course fee.' 
-            : '⚠️ Amount paid + discount cannot exceed the course fee.'}
-        </p>
-      )}
-
-      {/* Installment Section: only shows if remainingDue > 0 */}
-      {remainingDue > 0 && (
-        <div style={{ 
-          marginTop: '0.75rem', 
-          padding: '0.75rem', 
-          background: 'rgba(245, 158, 11, 0.02)', 
-          borderRadius: '8px', 
-          border: '1px dashed rgba(245, 158, 11, 0.3)' 
-        }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.6rem' }}>
-            <span style={{ fontSize: '0.78rem', color: '#fbbf24', fontWeight: 600 }}>
-              📅 Installment Details (Due: {remainingDue.toLocaleString()} BDT)
-            </span>
-          </div>
-          
-          {(data.installments || []).length === 0 ? (
-            <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontStyle: 'italic', margin: 0 }}>
-              No installment details specified.
-            </p>
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
-              {(data.installments || []).map((inst, instIdx) => {
-                const instStatusColor = inst.status === 'Paid' ? '#34d399' : '#fbbf24';
-                return (
-                  <div 
-                    key={instIdx} 
-                    style={{ 
-                      display: 'flex', 
-                      flexDirection: 'column',
-                      gap: '0.5rem', 
-                      padding: '0.6rem', 
-                      background: 'rgba(255, 255, 255, 0.02)', 
-                      borderRadius: '8px', 
-                      border: '1px solid rgba(255, 255, 255, 0.06)' 
-                    }}
-                  >
-                    {/* Top Row: Installment # Label, Amount input, and Remove Button */}
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem' }}>
-                      <span style={{ fontSize: '0.72rem', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase' }}>
-                        Installment #{instIdx + 1}
-                      </span>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flex: 1, justifyContent: 'flex-end' }}>
-                        <div style={{ position: 'relative', width: '130px' }}>
-                          <span style={{ position: 'absolute', left: '0.5rem', top: '50%', transform: 'translateY(-50%)', fontSize: '0.7rem', color: 'var(--text-muted)' }}>BDT</span>
-                          <input
-                            type="text"
-                            value={inst.amount || ''}
-                            disabled={disabled}
-                            onChange={e => onInstallmentChange(courseName, phaseKey, instIdx, 'amount', e.target.value)}
-                            placeholder="Amount"
-                            className="input-glass"
-                            style={{ 
-                              fontSize: '0.78rem', 
-                              paddingLeft: '2.2rem', 
-                              paddingRight: '0.5rem', 
-                              height: '28px', 
-                              paddingTop: 0, 
-                              paddingBottom: 0, 
-                              textAlign: 'right',
-                              opacity: disabled ? 0.5 : 1,
-                              cursor: disabled ? 'not-allowed' : 'text'
-                            }}
-                          />
-                        </div>
-                        <button 
-                          type="button" 
-                          disabled={disabled}
-                          onClick={() => onRemoveInstallment(courseName, phaseKey, instIdx)} 
-                          style={{ 
-                            background: disabled ? 'rgba(255,255,255,0.05)' : 'rgba(239, 68, 68, 0.1)', 
-                            border: 'none', 
-                            color: disabled ? 'var(--text-muted)' : '#f87171', 
-                            cursor: disabled ? 'not-allowed' : 'pointer', 
-                            display: 'flex', 
-                            alignItems: 'center', 
-                            justifyContent: 'center', 
-                            borderRadius: '4px',
-                            width: '24px',
-                            height: '24px',
-                            padding: 0,
-                            opacity: disabled ? 0.5 : 1
-                          }}
-                        >
-                          ✕
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* Bottom Row: Due Date and Status Dropdown */}
-                    <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: '0.5rem' }}>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
-                        <label style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>Due Date</label>
-                        <input
-                          type="date"
-                          value={inst.dueDate || ''}
-                          disabled={disabled}
-                          onChange={e => onInstallmentChange(courseName, phaseKey, instIdx, 'dueDate', e.target.value)}
-                          className="input-glass"
-                          min={instIdx > 0 ? (data.installments[instIdx - 1].dueDate || '') : ''}
-                          style={{ 
-                            fontSize: '0.78rem', 
-                            padding: '0.25rem 0.5rem', 
-                            height: '28px',
-                            opacity: disabled ? 0.5 : 1,
-                            cursor: disabled ? 'not-allowed' : 'text'
-                          }}
-                        />
-                      </div>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
-                        <label style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>Status</label>
-                        <select
-                          value={inst.status || 'Pending'}
-                          disabled={disabled}
-                          onChange={e => onInstallmentChange(courseName, phaseKey, instIdx, 'status', e.target.value)}
-                          className="input-glass"
-                          style={{ 
-                            fontSize: '0.78rem', 
-                            paddingTop: '0.1rem',
-                            paddingBottom: '0.1rem',
-                            paddingLeft: '0.5rem', 
-                            paddingRight: '1.5rem', 
-                            height: '28px', 
-                            appearance: 'none',
-                            backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='rgba(255,255,255,0.6)'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'%3E%3C/path%3E%3C/svg%3E")`,
-                            backgroundPosition: 'right 0.35rem center',
-                            backgroundSize: '0.8rem',
-                            backgroundRepeat: 'no-repeat',
-                            color: instStatusColor,
-                            borderColor: disabled ? 'rgba(255,255,255,0.1)' : `${instStatusColor}4D`,
-                            fontWeight: '600',
-                            cursor: disabled ? 'not-allowed' : 'pointer',
-                            opacity: disabled ? 0.5 : 1
-                          }}
-                        >
-                          <option value="Pending" style={{ color: '#fbbf24', background: 'var(--bg-secondary, #030b19)' }}>Pending</option>
-                          <option value="Paid" style={{ color: '#34d399', background: 'var(--bg-secondary, #030b19)' }}>Paid</option>
-                        </select>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Fully Completed Banner */}
-      {isFullyCompleted && (
-        <div style={{
-          marginTop: '0.75rem',
-          padding: '0.6rem 0.75rem',
-          background: 'rgba(16, 185, 129, 0.06)',
-          border: '1px solid rgba(16, 185, 129, 0.2)',
-          borderRadius: '8px',
-          display: 'flex',
-          alignItems: 'center',
-          gap: '0.5rem',
-          color: '#34d399',
-          fontSize: '0.78rem',
-          fontWeight: '600'
-        }}>
-          <span style={{ 
-            display: 'inline-block', 
-            width: '6px', 
-            height: '6px', 
-            borderRadius: '50%', 
-            background: '#34d399', 
-            boxShadow: '0 0 8px #34d399' 
-          }}></span>
-          {completionMessage}
-        </div>
-      )}
-    </div>
-  );
-}
-
 export default function StudentManager() {
+  const location = useLocation();
   const [students, setStudents] = useState([]);
+  const [hasAutoOpened, setHasAutoOpened] = useState(false);
   const [isDeploying, setIsDeploying] = useState(false);
   const [successData, setSuccessData] = useState(null);
   const [errorMsg, setErrorMsg] = useState('');
@@ -518,15 +68,6 @@ export default function StudentManager() {
 
   // Edit Modal State
   const [editingStudent, setEditingStudent] = useState(null);
-  const [editFormData, setEditFormData] = useState({
-    firstName: '', lastName: '', email: '', username: '', batchNumber: '', mobileNumber: '',
-    phase1_fee: '', phase2_fee: '',
-    course_fees: {},   // { [courseName]: { amount: '', status: '' } }
-    discount: '',      // discount note / amount
-    courses: []
-  });
-  const [isEditing, setIsEditing] = useState(false);
-  const [editError, setEditError] = useState('');
 
   // Academic Records Modal State
   const [academicStudent, setAcademicStudent] = useState(null);
@@ -628,6 +169,17 @@ export default function StudentManager() {
     fetchStudents();
   }, []);
 
+  // Auto-open Edit Modal if navigated here from Fee Tracker with a student ID
+  useEffect(() => {
+    if (students.length > 0 && location.state?.editStudentId && !hasAutoOpened) {
+      const studentToEdit = students.find(s => s.id === location.state.editStudentId);
+      if (studentToEdit) {
+        setHasAutoOpened(true);
+        openEditModal(studentToEdit);
+      }
+    }
+  }, [students, location.state, hasAutoOpened]);
+
   // Prevent background scrolling when modal is open
   useEffect(() => {
     if (editingStudent || confirmConfig || academicStudent || phase2Student) {
@@ -661,11 +213,17 @@ export default function StudentManager() {
       const fullFeeNum = parseFloat((phase1.full_fee || '').replace(/[^\d.]/g, '')) || 0;
       const amountPaidNum = parseFloat((phase1.amount_paid || '').replace(/[^\d.]/g, '')) || 0;
       const discountNum = parseFloat((phase1.discount || '').replace(/[^\d.]/g, '')) || 0;
-      const remainingDue = Math.max(0, fullFeeNum - discountNum - amountPaidNum);
+      const rawRemainingDue = Math.max(0, fullFeeNum - discountNum - amountPaidNum);
       
-      const phase1PaidAny = amountPaidNum > 0 || (phase1.installments || []).some(inst => inst.status === 'Paid' && parseFloat((inst.amount || '').replace(/[^\d.]/g, '')) > 0);
+      const phase1Installments = phase1.installments || [];
+      const remainingDue = phase1Installments.length > 0
+        ? phase1Installments.filter(inst => (inst.status || '').toLowerCase() !== 'paid').reduce((sum, inst) => sum + (parseFloat((inst.amount || '').toString().replace(/[^\d.]/g, '')) || 0), 0)
+        : rawRemainingDue;
+      
+      const phase1PaidAny = amountPaidNum > 0 || phase1Installments.some(inst => inst.status === 'Paid' && parseFloat((inst.amount || '').replace(/[^\d.]/g, '')) > 0);
       const phase1FullyPaid = (fullFeeNum > 0 && amountPaidNum + discountNum >= fullFeeNum) ||
-        (fullFeeNum > 0 && remainingDue > 0 && (phase1.installments || []).length > 0 && (phase1.installments || []).every(inst => inst.status === 'Paid'));
+        (fullFeeNum > 0 && rawRemainingDue > 0 && phase1Installments.length > 0 && phase1Installments.every(inst => inst.status === 'Paid')) ||
+        (fullFeeNum > 0 && remainingDue === 0);
 
       const phase2 = feeDetails?.phase2 || {};
       const phase2PaidAny = (parseFloat((phase2.amount_paid || '').replace(/[^\d.]/g, '')) || 0) > 0 ||
@@ -693,6 +251,11 @@ export default function StudentManager() {
         }
         if (stepField === 'step3_completed' && !phase1FullyPaid) {
           setConfirmConfig({ title: 'Action Restricted', message: 'Cannot check "Phase 2: Admitted" because Phase 1 is not fully paid.', confirmText: 'OK', isAlert: true, onConfirm: () => {} });
+          return;
+        }
+        // Open Edit Student modal so admin can fill Phase 2 payment details
+        if (stepField === 'step3_completed') {
+          openEditModal(student);
           return;
         }
       } else {
@@ -861,261 +424,26 @@ export default function StudentManager() {
   };
 
   const openEditModal = (student) => {
-    setEditError('');
     setEditingStudent(student);
-    const names = student.full_name ? student.full_name.split(' ') : ['', ''];
-    
-    let extractedSn = '';
-    let extractedYear = new Date().getFullYear().toString();
-    if (student.student_id && student.student_id.startsWith('BFI')) {
-      const idStr = student.student_id.substring(3);
-      if (idStr.length === 8) {
-        extractedSn = idStr.substring(0, 2);
-        extractedYear = idStr.substring(4, 8);
-      }
-    }
-
-    // Build course_fees with per-course structure:
-    // Online Filmmaking Course → { phase1: {full_fee, amount_paid, status, discount, installments}, phase2: ... }
-    // All other courses        → { full_fee, amount_paid, status, discount, installments }
-    const builtFees = {};
-    (student.enrollments || []).forEach(enr => {
-      const cn = enr.course_name;
-      let enrFeeDetails = {};
-      if (enr.fee_details) {
-        try {
-          enrFeeDetails = typeof enr.fee_details === 'string' ? JSON.parse(enr.fee_details) : enr.fee_details;
-        } catch (e) {
-          console.error('Failed to parse fee_details', e);
-        }
-      }
-      if (cn === 'Online Filmmaking Course') {
-        builtFees[cn] = {
-          phase1: {
-            full_fee:    enrFeeDetails?.phase1?.full_fee    ?? '',
-            amount_paid: enrFeeDetails?.phase1?.amount_paid ?? '',
-            status:      enrFeeDetails?.phase1?.status      ?? '',
-            discount:    enrFeeDetails?.phase1?.discount    ?? '',
-            installments: enrFeeDetails?.phase1?.installments || []
-          },
-          phase2: {
-            full_fee:    enrFeeDetails?.phase2?.full_fee    ?? '',
-            amount_paid: enrFeeDetails?.phase2?.amount_paid ?? '',
-            status:      enrFeeDetails?.phase2?.status      ?? '',
-            discount:    enrFeeDetails?.phase2?.discount    ?? '',
-            installments: enrFeeDetails?.phase2?.installments || []
-          }
-        };
-        syncInstallmentsAndStatus(builtFees[cn].phase1);
-        syncInstallmentsAndStatus(builtFees[cn].phase2);
-      } else {
-        builtFees[cn] = {
-          full_fee:    enrFeeDetails?.full_fee    ?? '',
-          amount_paid: enrFeeDetails?.amount_paid ?? '',
-          status:      enrFeeDetails?.status      ?? '',
-          discount:    enrFeeDetails?.discount    ?? '',
-          installments: enrFeeDetails?.installments || []
-        };
-        syncInstallmentsAndStatus(builtFees[cn]);
-      }
-    });
-
-    setEditFormData({
-      firstName: student.first_name || names[0] || '',
-      lastName: student.last_name || names.slice(1).join(' ') || '',
-      email: student.email || '',
-      mobileNumber: student.mobile_number || '',
-      username: student.username || '',
-      batchNumber: student.batch_number || '',
-      snNo: extractedSn,
-      year: extractedYear,
-      phase1_fee: student.phase1_fee || '',
-      phase2_fee: student.phase2_fee || '',
-      course_fees: builtFees,
-      discount: student.discount || '',
-      courses: student.enrollments ? student.enrollments.map(e => e.course_name) : []
-    });
   };
 
-  const handleCourseChange = (courseName) => {
-    const currentCourses = formData.courses;
-    if (currentCourses.includes(courseName)) {
-      setFormData({ ...formData, courses: currentCourses.filter(c => c !== courseName) });
-    } else {
-      setFormData({ ...formData, courses: [...currentCourses, courseName] });
-    }
-  };
-
-  const handleEditCourseChange = (courseName) => {
-    const currentCourses = editFormData.courses || [];
-    const isRemoving = currentCourses.includes(courseName);
-    const newCourses = isRemoving
-      ? currentCourses.filter(c => c !== courseName)
-      : [...currentCourses, courseName];
-
-    const newFees = { ...editFormData.course_fees };
-    if (!isRemoving && !newFees[courseName]) {
-      if (courseName === 'Online Filmmaking Course') {
-        newFees[courseName] = {
-          phase1: { full_fee: '', amount_paid: '', status: '', discount: '', installments: [] },
-          phase2: { full_fee: '', amount_paid: '', status: '', discount: '', installments: [] }
-        };
-        syncInstallmentsAndStatus(newFees[courseName].phase1);
-        syncInstallmentsAndStatus(newFees[courseName].phase2);
-      } else {
-        newFees[courseName] = { full_fee: '', amount_paid: '', status: '', discount: '', installments: [] };
-        syncInstallmentsAndStatus(newFees[courseName]);
-      }
-    } else if (isRemoving) {
-      delete newFees[courseName];
-    }
-
-    setEditFormData({ ...editFormData, courses: newCourses, course_fees: newFees });
-  };
-
-  const handleCourseFeeChange = (courseName, field, value) => {
-    setEditFormData(prev => {
-      const fees = { ...prev.course_fees };
-      if (field.includes('.')) {
-        const [phase, key] = field.split('.');
-        fees[courseName] = {
-          ...fees[courseName],
-          [phase]: { ...fees[courseName]?.[phase], [key]: value }
-        };
-        syncInstallmentsAndStatus(fees[courseName][phase]);
-      } else {
-        fees[courseName] = { ...fees[courseName], [field]: value };
-        syncInstallmentsAndStatus(fees[courseName]);
-      }
-      return { ...prev, course_fees: fees };
-    });
-  };
-
-  const handleDiscountBlur = (courseName, phaseKey, discountValue) => {
-    if (!discountValue) return;
-    const match = discountValue.trim().match(/^(\d+(?:\.\d+)?)\s*%/);
-    if (match) {
-      const percent = parseFloat(match[1]);
-      const feeData = editFormData.course_fees?.[courseName] || {};
-      const feeStr = phaseKey ? feeData[phaseKey]?.full_fee : feeData.full_fee;
-      const feeNum = parseFloat((feeStr || '').replace(/[^\d.]/g, ''));
-      if (!isNaN(feeNum)) {
-        const calculated = Math.round((feeNum * percent) / 100);
-        const field = phaseKey ? `${phaseKey}.discount` : 'discount';
-        handleCourseFeeChange(courseName, field, String(calculated));
-      }
-    }
-  };
-
-  const handleRemoveInstallment = (courseName, phaseKey, index) => {
-    setEditFormData(prev => {
-      const fees = { ...prev.course_fees };
-      const target = phaseKey ? fees[courseName]?.[phaseKey] : fees[courseName];
-      if (target) {
-        const currentInst = target.installments || [];
-        const updatedInst = currentInst.filter((_, idx) => idx !== index);
-        target.installments = updatedInst;
-        syncInstallmentsAndStatus(target);
-      }
-      return { ...prev, course_fees: fees };
-    });
-  };
-
-  const handleInstallmentChange = (courseName, phaseKey, index, key, value) => {
-    setEditFormData(prev => {
-      const fees = { ...prev.course_fees };
-      const target = phaseKey ? fees[courseName]?.[phaseKey] : fees[courseName];
-      if (target) {
-        const currentInst = target.installments || [];
-        const updatedInst = currentInst.map((inst, idx) => {
-          if (idx === index) {
-            return { ...inst, [key]: value };
-          }
-          return inst;
-        });
-        target.installments = updatedInst;
-        syncInstallmentsAndStatus(target);
-      }
-      return { ...prev, course_fees: fees };
-    });
-  };
-
-  const handleEditChange = (e) => setEditFormData({ ...editFormData, [e.target.name]: e.target.value });
-
-  const openAcademicModal = (student, courseId) => {
-    setAcademicError('');
-    const enrollment = student.enrollments.find(e => e.id === courseId);
+  const openAcademicModal = (student, enrollmentId) => {
+    const enrollment = student.enrollments?.find(e => e.id === enrollmentId);
     setAcademicStudent({ ...student, enrollment });
-    setAcademicCourseId(courseId);
+    setAcademicCourseId(enrollmentId);
     
-    if (enrollment.course_name !== 'Online Filmmaking Course') {
-      setAcademicFormData({
-        attendance_classes: '0',
-        attendance_total: '0',
-        exam_written: enrollment.exam_written?.toString() || '0',
-        assignment_screenplay: '0',
-        assignment_shooting_script: '0'
-      });
-    } else {
-      setAcademicFormData({
-        attendance_classes: enrollment.attendance_classes?.toString() || '0',
-        attendance_total: enrollment.attendance_total?.toString() || '22',
-        exam_written: enrollment.exam_written?.toString() || '0',
-        assignment_screenplay: enrollment.assignment_screenplay?.toString() || '0',
-        assignment_shooting_script: enrollment.assignment_shooting_script?.toString() || '0'
-      });
-    }
+    setAcademicFormData({
+      attendance_classes: enrollment?.attendance_classes || '',
+      attendance_total: enrollment?.attendance_total || '',
+      exam_written: enrollment?.exam_written || '',
+      assignment_screenplay: enrollment?.assignment_screenplay || '',
+      assignment_shooting_script: enrollment?.assignment_shooting_script || ''
+    });
   };
 
   const closeAcademicModal = () => {
     setAcademicStudent(null);
     setAcademicCourseId(null);
-  };
-
-  // ---- Phase 2 Modal handlers ----
-  const openPhase2Modal = (student, courseId) => {
-    setPhase2Error('');
-    const enrollment = student.enrollments.find(e => e.id === courseId);
-    if (!enrollment?.step1_completed || !enrollment?.step2_completed || !enrollment?.step3_completed) {
-      setConfirmConfig({ title: 'Action Restricted', message: 'Cannot update "Phase 2: Completed Course". All previous phases must be completed first.', confirmText: 'OK', isAlert: true, onConfirm: () => {} });
-      return;
-    }
-    setPhase2Student({ ...student, enrollment });
-    setPhase2CourseId(courseId);
-    setPhase2FormData({
-      phase2_shooting_attended: !!(enrollment?.phase2_shooting_attended),
-      phase2_editing_attended: !!(enrollment?.phase2_editing_attended)
-    });
-  };
-
-  const closePhase2Modal = () => {
-    setPhase2Student(null);
-    setPhase2CourseId(null);
-  };
-
-  const submitPhase2 = async (e) => {
-    e.preventDefault();
-    setIsPhase2Saving(true);
-    setPhase2Error('');
-
-    try {
-      const res = await fetch(`/api/admin/students/${phase2Student.id}/phase2-attendance/${phase2CourseId}`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('token')}`
-        },
-        body: JSON.stringify(phase2FormData)
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to update Phase 2 attendance');
-      await fetchStudents();
-      closePhase2Modal();
-    } catch (err) {
-      setPhase2Error(err.message);
-    } finally {
-      setIsPhase2Saving(false);
-    }
   };
 
   const handleAcademicChange = (e) => {
@@ -1136,10 +464,14 @@ export default function StudentManager() {
         },
         body: JSON.stringify(academicFormData)
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to update academic records');
-      await fetchStudents();
-      closeAcademicModal();
+
+      if (res.ok) {
+        fetchStudents();
+        closeAcademicModal();
+      } else {
+        const data = await res.json();
+        throw new Error(data.error || 'Failed to save academic records');
+      }
     } catch (err) {
       setAcademicError(err.message);
     } finally {
@@ -1147,79 +479,52 @@ export default function StudentManager() {
     }
   };
 
-  const validateFees = () => {
-    for (const courseName of editFormData.courses || []) {
-      const isOFC = courseName === 'Online Filmmaking Course';
-      const feeData = editFormData.course_fees?.[courseName] || {};
-      
-      const checkRow = (data, label) => {
-        const fullFee = parseFloat((data.full_fee || '').replace(/[^\d.]/g, '')) || 0;
-        const amountPaid = parseFloat((data.amount_paid || '').replace(/[^\d.]/g, '')) || 0;
-        const discount = parseFloat((data.discount || '').replace(/[^\d.]/g, '')) || 0;
-        
-        if (amountPaid > fullFee) {
-          return `${label}: Amount Paid (${amountPaid.toLocaleString()} BDT) cannot exceed the Course Fee (${fullFee.toLocaleString()} BDT).`;
-        }
-        if (amountPaid + discount > fullFee) {
-          return `${label}: Amount Paid + Discount cannot exceed the Course Fee.`;
-        }
-
-        // Validate that installments are chronological
-        const installments = data.installments || [];
-        for (let i = 1; i < installments.length; i++) {
-          const prevDate = installments[i - 1].dueDate;
-          const currDate = installments[i].dueDate;
-          if (prevDate && currDate && currDate < prevDate) {
-            return `${label}: Installment #${i + 1} due date (${currDate}) cannot be earlier than Installment #${i} due date (${prevDate}).`;
-          }
-        }
-
-        return null;
-      };
-
-      if (isOFC) {
-        const err1 = checkRow(feeData.phase1 || {}, `${courseName} (Phase 1)`);
-        if (err1) return err1;
-        const err2 = checkRow(feeData.phase2 || {}, `${courseName} (Phase 2)`);
-        if (err2) return err2;
-      } else {
-        const err = checkRow(feeData, courseName);
-        if (err) return err;
-      }
-    }
-    return null;
+  const openPhase2Modal = (student, enrollmentId) => {
+    const enrollment = student.enrollments?.find(e => e.id === enrollmentId);
+    setPhase2Student({ ...student, enrollment });
+    setPhase2CourseId(enrollmentId);
+    
+    setPhase2FormData({
+      phase2_shooting_attended: !!(enrollment?.phase2_shooting_attended),
+      phase2_editing_attended: !!(enrollment?.phase2_editing_attended)
+    });
   };
 
-  const submitEdit = async (e) => {
+  const closePhase2Modal = () => {
+    setPhase2Student(null);
+    setPhase2CourseId(null);
+  };
+
+  const handlePhase2Change = (e) => {
+    setPhase2FormData({ ...phase2FormData, [e.target.name]: e.target.checked });
+  };
+
+  const submitPhase2 = async (e) => {
     e.preventDefault();
-    setEditError('');
-
-    const valError = validateFees();
-    if (valError) {
-      setEditError(valError);
-      return;
-    }
-
-    setIsEditing(true);
+    setIsPhase2Saving(true);
+    setPhase2Error('');
 
     try {
-      const res = await fetch(`/api/admin/students/${editingStudent.id}`, {
+      const res = await fetch(`/api/admin/students/${phase2Student.id}/phase2-attendance/${phase2CourseId}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${localStorage.getItem('token')}`
         },
-        body: JSON.stringify(editFormData)
+        body: JSON.stringify(phase2FormData)
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to update student profile');
-      
-      setEditingStudent(null);
-      fetchStudents();
+
+      if (res.ok) {
+        fetchStudents();
+        closePhase2Modal();
+      } else {
+        const data = await res.json();
+        throw new Error(data.error || 'Failed to save Phase 2 completion');
+      }
     } catch (err) {
-      setEditError(err.message);
+      setPhase2Error(err.message);
     } finally {
-      setIsEditing(false);
+      setIsPhase2Saving(false);
     }
   };
 
@@ -1366,9 +671,55 @@ export default function StudentManager() {
         {/* Students List */}
         <div style={{ marginTop: '3rem' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '1rem' }}>
-            <h2 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', margin: 0 }}>
-              <UserCheck className="text-secondary" /> Registered Students
-            </h2>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+              <h2 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', margin: 0 }}>
+                <UserCheck className="text-secondary" /> Registered Students
+              </h2>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                <span style={{
+                  background: 'rgba(59, 130, 246, 0.12)',
+                  color: 'var(--accent-secondary)',
+                  border: '1px solid rgba(59, 130, 246, 0.25)',
+                  fontSize: '0.8rem',
+                  padding: '0.25rem 0.75rem',
+                  borderRadius: '50px',
+                  fontWeight: '600',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '0.25rem'
+                }}>
+                  Total Registered: <span style={{ color: 'var(--text-primary)', fontWeight: '700' }}>{students.length}</span>
+                </span>
+                <span style={{
+                  background: 'rgba(16, 185, 129, 0.12)',
+                  color: 'var(--success)',
+                  border: '1px solid rgba(16, 185, 129, 0.25)',
+                  fontSize: '0.8rem',
+                  padding: '0.25rem 0.75rem',
+                  borderRadius: '50px',
+                  fontWeight: '600',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '0.25rem'
+                }}>
+                  Total Admitted: <span style={{ color: 'var(--text-primary)', fontWeight: '700' }}>{students.filter(s => s.enrollments && s.enrollments.some(e => e.step1_completed === 1)).length}</span>
+                </span>
+                <span style={{
+                  background: 'rgba(201, 168, 76, 0.12)',
+                  color: 'var(--accent-primary)',
+                  border: '1px solid rgba(201, 168, 76, 0.25)',
+                  fontSize: '0.8rem',
+                  padding: '0.25rem 0.75rem',
+                  borderRadius: '50px',
+                  fontWeight: '600',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '0.25rem'
+                }}>
+                  Total Completed: <span style={{ color: 'var(--text-primary)', fontWeight: '700' }}>{students.filter(s => s.enrollments && s.enrollments.some(e => e.step4_completed === 1)).length}</span>
+                </span>
+              </div>
+            </div>
             <div className="input-wrapper" style={{ width: '100%', maxWidth: '350px' }}>
               <Search className="input-icon" size={18} />
               <input 
@@ -1540,155 +891,12 @@ export default function StudentManager() {
       </div>
 
       {/* Edit Modal Overlay */}
-      {editingStudent && createPortal(
-        <div className="modern-modal-overlay">
-          <form onSubmit={submitEdit} className="modern-modal-content glass-panel shadow-2xl" style={{ width: '100%', maxWidth: '500px', margin: 'auto' }} onClick={(e) => e.stopPropagation()}>
-            <div className="modern-modal-header">
-              <h3 className="font-display" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <Edit className="text-accent" /> Edit Student Details
-              </h3>
-              <button type="button" className="icon-btn-ghost" onClick={() => setEditingStudent(null)} aria-label="Close">
-                <X size={20} />
-              </button>
-            </div>
-            
-            <div className="modern-modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '1rem', maxHeight: '60vh', overflowY: 'auto' }}>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-                <div>
-                  <label style={{ display: 'block', marginBottom: '0.4rem', color: 'var(--text-secondary)' }}>First Name</label>
-                  <input type="text" name="firstName" value={editFormData.firstName} onChange={handleEditChange} className="input-glass" required />
-                </div>
-                <div>
-                  <label style={{ display: 'block', marginBottom: '0.4rem', color: 'var(--text-secondary)' }}>Last Name</label>
-                  <input type="text" name="lastName" value={editFormData.lastName} onChange={handleEditChange} className="input-glass" required />
-                </div>
-              </div>
-
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-                <div>
-                  <label style={{ display: 'block', marginBottom: '0.4rem', color: 'var(--text-secondary)' }}>Email</label>
-                  <input type="email" name="email" value={editFormData.email} onChange={handleEditChange} className="input-glass" required style={{ paddingLeft: '1rem' }} />
-                </div>
-                <div>
-                  <label style={{ display: 'block', marginBottom: '0.4rem', color: 'var(--text-secondary)' }}>Mobile Number</label>
-                  <input type="text" name="mobileNumber" value={editFormData.mobileNumber} onChange={handleEditChange} className="input-glass" placeholder="+880..." style={{ paddingLeft: '1rem' }} />
-                </div>
-              </div>
-
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-                <div>
-                  <label style={{ display: 'block', marginBottom: '0.4rem', color: 'var(--text-secondary)' }}>Username</label>
-                  <input type="text" name="username" value={editFormData.username} onChange={handleEditChange} className="input-glass" required style={{ paddingLeft: '1rem' }} />
-                </div>
-                <div>
-                  <label style={{ display: 'block', marginBottom: '0.4rem', color: 'var(--text-secondary)' }}>Batch Number</label>
-                  <input type="text" name="batchNumber" value={editFormData.batchNumber} onChange={handleEditChange} className="input-glass" style={{ paddingLeft: '1rem' }} />
-                </div>
-              </div>
-
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-                <div>
-                  <label style={{ display: 'block', marginBottom: '0.4rem', color: 'var(--text-secondary)' }}>SN No. (2 digits)</label>
-                  <input type="text" name="snNo" value={editFormData.snNo} onChange={handleEditChange} className="input-glass" style={{ paddingLeft: '1rem' }} placeholder="e.g. 05" />
-                </div>
-                <div>
-                  <label style={{ display: 'block', marginBottom: '0.4rem', color: 'var(--text-secondary)' }}>Year (4 digits)</label>
-                  <input type="text" name="year" value={editFormData.year} onChange={handleEditChange} className="input-glass" style={{ paddingLeft: '1rem' }} placeholder="e.g. 2024" />
-                </div>
-              </div>
-
-
-              {/* Enrolled Courses */}
-              <div style={{ padding: '1rem', background: 'rgba(255,255,255,0.02)', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.05)', marginTop: '0.25rem' }}>
-                <h3 style={{ fontSize: '1rem', marginBottom: '1rem', color: 'var(--text-secondary)' }}>Enrolled Courses</h3>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.8rem' }}>
-                  {availableCourses.map(course => (
-                    <label key={course.name} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', background: (editFormData.courses || []).includes(course.name) ? 'rgba(56, 189, 248, 0.1)' : 'transparent', padding: '0.4rem 0.8rem', borderRadius: '8px', border: '1px solid', borderColor: (editFormData.courses || []).includes(course.name) ? 'var(--accent-primary)' : 'rgba(255,255,255,0.1)', transition: 'all 0.2s' }}>
-                      <input
-                        type="checkbox"
-                        checked={(editFormData.courses || []).includes(course.name)}
-                        onChange={() => handleEditCourseChange(course.name)}
-                        style={{ width: '15px', height: '15px' }}
-                      />
-                      <span style={{ fontSize: '0.85rem' }}>{course.name}</span>
-                    </label>
-                  ))}
-                </div>
-              </div>
-
-              {/* ── Dynamic Course Fee Section ─────────────────────────── */}
-              {(editFormData.courses || []).length > 0 && (
-                <div style={{ padding: '1rem', background: 'rgba(201,168,76,0.04)', borderRadius: '12px', border: '1px solid rgba(201,168,76,0.18)', marginTop: '0.25rem' }}>
-                  <h3 style={{ fontSize: '0.95rem', marginBottom: '0.9rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                    <span>💰</span> Course Fee Details
-                  </h3>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
-                    {(editFormData.courses || []).map(courseName => {
-                      const isOFC = courseName === 'Online Filmmaking Course';
-                      return (
-                        <div key={courseName} style={{ padding: '0.8rem', background: 'rgba(255,255,255,0.025)', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.06)' }}>
-                          <p style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--accent-primary)', marginBottom: '0.7rem', letterSpacing: '0.01em' }}>{courseName}</p>
-                          {isOFC ? (
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
-                              <FeeRow 
-                                courseName={courseName}
-                                label="Phase 1" 
-                                phaseKey="phase1" 
-                                feeData={editFormData.course_fees}
-                                onChange={handleCourseFeeChange}
-                                onDiscountBlur={handleDiscountBlur}
-                                onRemoveInstallment={handleRemoveInstallment}
-                                onInstallmentChange={handleInstallmentChange}
-                              />
-                              {(() => {
-                                const ofcEnr = editingStudent?.enrollments?.find(e => e.course_name === 'Online Filmmaking Course');
-                                const isPhase1Passed = ofcEnr ? ofcEnr.step2_completed === 1 : false;
-                                return (
-                                  <FeeRow 
-                                    courseName={courseName}
-                                    label="Phase 2" 
-                                    phaseKey="phase2" 
-                                    feeData={editFormData.course_fees}
-                                    onChange={handleCourseFeeChange}
-                                    onDiscountBlur={handleDiscountBlur}
-                                    onRemoveInstallment={handleRemoveInstallment}
-                                    onInstallmentChange={handleInstallmentChange}
-                                    disabled={!isPhase1Passed}
-                                  />
-                                );
-                              })()}
-                            </div>
-                          ) : (
-                            <FeeRow 
-                              courseName={courseName}
-                              label={null} 
-                              phaseKey={null} 
-                              feeData={editFormData.course_fees}
-                              onChange={handleCourseFeeChange}
-                              onDiscountBlur={handleDiscountBlur}
-                              onRemoveInstallment={handleRemoveInstallment}
-                              onInstallmentChange={handleInstallmentChange}
-                            />
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-
-              {editError && <div className="error-alert" style={{ marginTop: '0.5rem' }}>{editError}</div>}
-            </div>
-
-            <div className="modern-modal-footer" style={{ display: 'flex', gap: '1rem' }}>
-              <button type="button" onClick={() => setEditingStudent(null)} className="modern-btn modern-btn--secondary" style={{ flex: 1 }}>Cancel</button>
-              <button type="submit" className="modern-btn modern-btn--primary" disabled={isEditing} style={{ flex: 1 }}>
-                {isEditing ? 'Saving...' : 'Save Changes'}
-              </button>
-            </div>
-          </form>
-        </div>,
-        document.body
+      {editingStudent && (
+        <EditStudentModal 
+          student={editingStudent} 
+          onClose={() => setEditingStudent(null)} 
+          onSaveSuccess={fetchStudents} 
+        />
       )}
 
       {confirmConfig && typeof document !== 'undefined' && createPortal(
@@ -2023,7 +1231,7 @@ export default function StudentManager() {
           min-width: max-content;
         }
         .student-manager-table-scroll::-webkit-scrollbar {
-          height: 12px;
+          height: 16px;
         }
         .student-manager-table-scroll::-webkit-scrollbar-track {
           background: rgba(148, 163, 184, 0.12);

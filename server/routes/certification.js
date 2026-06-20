@@ -219,4 +219,29 @@ router.get('/my-certificate', authenticateToken, (req, res) => {
   res.status(404).json({ error: 'Deprecated. Use /my-certificates' });
 });
 
+// POST Log Certificate Download
+router.post('/log-download', authenticateToken, (req, res) => {
+  try {
+    const { courseName } = req.body;
+    if (!courseName) {
+      return res.status(400).json({ error: 'Course name is required.' });
+    }
+
+    db.prepare(`
+      INSERT INTO certificate_downloads (user_id, course_name)
+      VALUES (?, ?)
+    `).run(req.user.id, courseName);
+
+    const io = req.app.get('io');
+    if (io) {
+      io.emit('certificate_downloaded', { userId: req.user.id, courseName });
+    }
+
+    res.json({ message: 'Certificate download logged successfully.' });
+  } catch (error) {
+    console.error('Error logging certificate download:', error);
+    res.status(500).json({ error: 'Internal server error.' });
+  }
+});
+
 export default router;

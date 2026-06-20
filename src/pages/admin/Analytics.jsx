@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
+import { io } from 'socket.io-client';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
   FunnelChart, Funnel, LabelList, Cell,
@@ -200,16 +201,21 @@ function FeeRow({
   const fullFeeNum = parseFloat((data.full_fee || '').replace(/[^\d.]/g, '')) || 0;
   const amountPaidNum = parseFloat((data.amount_paid || '').replace(/[^\d.]/g, '')) || 0;
   const discountNum = parseFloat((data.discount || '').replace(/[^\d.]/g, '')) || 0;
-  const remainingDue = Math.max(0, fullFeeNum - discountNum - amountPaidNum);
+  const rawRemainingDue = Math.max(0, fullFeeNum - discountNum - amountPaidNum);
+
+  const installments = data.installments || [];
+  const remainingDue = installments.length > 0
+    ? installments.filter(inst => (inst.status || '').toLowerCase() !== 'paid').reduce((sum, inst) => sum + (parseFloat((inst.amount || '').toString().replace(/[^\d.]/g, '')) || 0), 0)
+    : rawRemainingDue;
   
   const hasError = amountPaidNum > fullFeeNum;
   const hasSumError = (amountPaidNum + discountNum) > fullFeeNum;
 
   const isFullySatisfied = fullFeeNum > 0 && amountPaidNum + discountNum >= fullFeeNum;
-  const allInstallmentsPaid = remainingDue > 0 && 
-    (data.installments || []).length > 0 && 
-    (data.installments || []).every(inst => inst.status === 'Paid');
-  const isFullyCompleted = isFullySatisfied || allInstallmentsPaid;
+  const allInstallmentsPaid = rawRemainingDue > 0 && 
+    installments.length > 0 && 
+    installments.every(inst => inst.status === 'Paid');
+  const isFullyCompleted = isFullySatisfied || allInstallmentsPaid || remainingDue === 0;
 
   let completionMessage = '';
   if (label) {
@@ -381,8 +387,8 @@ function FeeRow({
         </p>
       )}
 
-      {/* Installment Section: only shows if remainingDue > 0 */}
-      {remainingDue > 0 && (
+      {/* Installment Section: only shows if rawRemainingDue > 0 or there are existing installments */}
+      {(rawRemainingDue > 0 || installments.length > 0) && (
         <div style={{ 
           marginTop: '0.75rem', 
           padding: '0.75rem', 
@@ -663,6 +669,7 @@ const STAT_DRAWERS = {
       ['batch_number', 'Batch'],
       ['course_name', 'Course'],
       ['issued_date', 'Issued Date'],
+      ['downloads_count', 'Downloads'],
     ],
   },
   'students/attendance': {
@@ -786,9 +793,6 @@ export default function Analytics() {
 
   // ── Student List & Action Modals States ────────────────────
   const [students, setStudents] = useState([]);
-  const [studentsLoading, setStudentsLoading] = useState(true);
-  const [studentsError, setStudentsError] = useState('');
-  const [searchQuery, setSearchQuery] = useState('');
 
   const availableCourses = [
     { name: 'Online Filmmaking Course', type: 'filmmaking' },
@@ -837,6 +841,21 @@ export default function Analytics() {
   const [confirmConfig, setConfirmConfig] = useState(null);
 
 
+  const fetchDrawerData = useCallback(async () => {
+    if (!activeDrawer) return;
+    setDrawerLoading(true);
+    setDrawerError('');
+    try {
+      const data = await apiFetch(`/${activeDrawer}`);
+      setDrawerData(data);
+    } catch (err) {
+      console.error(`[Analytics] Error fetching drawer ${activeDrawer}:`, err);
+      setDrawerError('Failed to load detail data. Please check your credentials or backend server status.');
+    } finally {
+      setDrawerLoading(false);
+    }
+  }, [activeDrawer]);
+
   // Fetch drawer details on open
   useEffect(() => {
     if (!activeDrawer) {
@@ -845,22 +864,10 @@ export default function Analytics() {
       return;
     }
 
-    const fetchDrawerData = async () => {
-      setDrawerLoading(true);
-      setDrawerError('');
-      try {
-        const data = await apiFetch(`/${activeDrawer}`);
-        setDrawerData(data);
-      } catch (err) {
-        console.error(`[Analytics] Error fetching drawer ${activeDrawer}:`, err);
-        setDrawerError('Failed to load detail data. Please check your credentials or backend server status.');
-      } finally {
-        setDrawerLoading(false);
-      }
-    };
-
     fetchDrawerData();
-  }, [activeDrawer]);
+  }, [activeDrawer, fetchDrawerData]);
+
+
 
   useEffect(() => {
     if (!activeDrawer) return undefined;
@@ -904,8 +911,6 @@ export default function Analytics() {
 
   // ── Students Management Handlers ────────────────────────────
   const fetchStudents = async () => {
-    setStudentsLoading(true);
-    setStudentsError('');
     try {
       const res = await fetch(`/api/admin/students?t=${Date.now()}`, {
         headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
@@ -913,15 +918,9 @@ export default function Analytics() {
       if (res.ok) {
         const data = await res.json();
         setStudents(data.students);
-      } else {
-        const data = await res.json();
-        setStudentsError(data.error || 'Failed to fetch students list.');
       }
     } catch (err) {
       console.error('Failed to fetch students', err);
-      setStudentsError('An error occurred while fetching the students list.');
-    } finally {
-      setStudentsLoading(false);
     }
   };
 
@@ -943,11 +942,17 @@ export default function Analytics() {
       const fullFeeNum = parseFloat((phase1.full_fee || '').replace(/[^\d.]/g, '')) || 0;
       const amountPaidNum = parseFloat((phase1.amount_paid || '').replace(/[^\d.]/g, '')) || 0;
       const discountNum = parseFloat((phase1.discount || '').replace(/[^\d.]/g, '')) || 0;
-      const remainingDue = Math.max(0, fullFeeNum - discountNum - amountPaidNum);
+      const rawRemainingDue = Math.max(0, fullFeeNum - discountNum - amountPaidNum);
       
-      const phase1PaidAny = amountPaidNum > 0 || (phase1.installments || []).some(inst => inst.status === 'Paid' && parseFloat((inst.amount || '').replace(/[^\d.]/g, '')) > 0);
+      const phase1Installments = phase1.installments || [];
+      const remainingDue = phase1Installments.length > 0
+        ? phase1Installments.filter(inst => (inst.status || '').toLowerCase() !== 'paid').reduce((sum, inst) => sum + (parseFloat((inst.amount || '').toString().replace(/[^\d.]/g, '')) || 0), 0)
+        : rawRemainingDue;
+      
+      const phase1PaidAny = amountPaidNum > 0 || phase1Installments.some(inst => inst.status === 'Paid' && parseFloat((inst.amount || '').replace(/[^\d.]/g, '')) > 0);
       const phase1FullyPaid = (fullFeeNum > 0 && amountPaidNum + discountNum >= fullFeeNum) ||
-        (fullFeeNum > 0 && remainingDue > 0 && (phase1.installments || []).length > 0 && (phase1.installments || []).every(inst => inst.status === 'Paid'));
+        (fullFeeNum > 0 && rawRemainingDue > 0 && phase1Installments.length > 0 && phase1Installments.every(inst => inst.status === 'Paid')) ||
+        (fullFeeNum > 0 && remainingDue === 0);
 
       const phase2 = feeDetails?.phase2 || {};
       const phase2PaidAny = (parseFloat((phase2.amount_paid || '').replace(/[^\d.]/g, '')) || 0) > 0 ||
@@ -1460,12 +1465,19 @@ export default function Analytics() {
   const getDrawerTitle = () => {
     const basePath = activeDrawer ? activeDrawer.split('?')[0] : null;
     if (STAT_DRAWERS[basePath]) return STAT_DRAWERS[basePath].title;
-    switch (activeDrawer) {
+    
+    const urlParams = new URLSearchParams(activeDrawer && activeDrawer.includes('?') ? activeDrawer.substring(activeDrawer.indexOf('?')) : '');
+    const status = urlParams.get('status');
+
+    switch (basePath) {
       case 'pending-certificates': return 'Certificates Pending Auto-Issuance';
       case 'inactive-students': return 'Inactive Students';
       case 'failed-students': return 'Failed / Did Not Pass Exam';
       case 'missing-attendance': return 'Missing Phase 2 Attendance';
-      case 'unpaid-students': return 'Unpaid Students';
+      case 'unpaid-students': 
+        if (status === 'paid') return 'Paid Students';
+        if (status === 'partial') return 'Partially Paid Students';
+        return 'Unpaid Students';
       default: return 'Detail List';
     }
   };
@@ -1473,12 +1485,19 @@ export default function Analytics() {
   const getDrawerSubtitle = () => {
     const basePath = activeDrawer ? activeDrawer.split('?')[0] : null;
     if (STAT_DRAWERS[basePath]) return STAT_DRAWERS[basePath].subtitle;
-    switch (activeDrawer) {
+
+    const urlParams = new URLSearchParams(activeDrawer && activeDrawer.includes('?') ? activeDrawer.substring(activeDrawer.indexOf('?')) : '');
+    const status = urlParams.get('status');
+
+    switch (basePath) {
       case 'pending-certificates': return 'Eligible students with no certificate issued yet';
       case 'inactive-students': return 'Students with no login activity in the last 30 days';
       case 'failed-students': return 'Registered students who have not yet passed the Phase 1 Exam';
       case 'missing-attendance': return 'Filmmaking students who are missing phase 2 shooting or editing attendance';
-      case 'unpaid-students': return 'Students with outstanding unpaid fee statuses';
+      case 'unpaid-students': 
+        if (status === 'paid') return 'Students who have fully paid all course fees';
+        if (status === 'partial') return 'Students who have partially paid course fees';
+        return 'Students with outstanding unpaid fee statuses';
       default: return '';
     }
   };
@@ -1618,6 +1637,41 @@ export default function Analytics() {
         </span>
       );
     }
+    if (field === 'downloads_count') {
+      const count = row.downloads_count || 0;
+      if (count === 0) {
+        return (
+          <span style={{ color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+            0 <span className="analytics-download-badge-text">downloads</span>
+          </span>
+        );
+      }
+      const historyStr = row.downloads
+        ? row.downloads.map(d => {
+            const dateStr = d.downloaded_at.includes('T') ? d.downloaded_at : d.downloaded_at.replace(' ', 'T');
+            const utcStr = dateStr.endsWith('Z') ? dateStr : dateStr + 'Z';
+            return new Date(utcStr).toLocaleString();
+          }).join('\n')
+        : '';
+      return (
+        <span 
+          title={historyStr}
+          style={{
+            cursor: 'help',
+            padding: '0.2rem 0.5rem',
+            borderRadius: '4px',
+            fontSize: '0.75rem',
+            fontWeight: '600',
+            background: 'rgba(56, 189, 248, 0.1)',
+            color: 'var(--accent-secondary)',
+            border: '1px solid rgba(56, 189, 248, 0.2)',
+            whiteSpace: 'nowrap'
+          }}
+        >
+          {count} <span className="analytics-download-badge-text">{count === 1 ? 'download' : 'downloads'}</span>
+        </span>
+      );
+    }
     if (DATE_DRAWER_FIELDS.has(field)) {
       return row[field] ? new Date(row[field]).toLocaleDateString() : 'N/A';
     }
@@ -1635,6 +1689,31 @@ export default function Analytics() {
       if (activityTimerRef.current) clearInterval(activityTimerRef.current);
     };
   }, [fetchAll, fetchActivity]);
+
+  // Socket.io connection for live updates on certificate download
+  useEffect(() => {
+    const socketUrl = import.meta.env.VITE_SOCKET_URL || window.location.origin;
+    const token = localStorage.getItem('token');
+    const socket = io(socketUrl, { auth: { token }, transports: ['websocket', 'polling'] });
+
+    socket.on('certificate_downloaded', (payload) => {
+      console.log('[Analytics] Certificate downloaded socket event received:', payload);
+      // Re-fetch dashboard stats silently
+      fetchAll(true);
+
+      // Re-fetch drawer data if active drawer is certificates-issued
+      if (activeDrawer) {
+        const basePath = activeDrawer.split('?')[0];
+        if (basePath === 'students/certificates-issued') {
+          fetchDrawerData();
+        }
+      }
+    });
+
+    return () => {
+      socket.disconnect();
+    };
+  }, [activeDrawer, fetchDrawerData, fetchAll]);
 
   useEffect(() => {
     fetchStudents();
@@ -1766,19 +1845,7 @@ export default function Analytics() {
   };
 
 
-  const filteredStudents = (students || []).filter(s => {
-    if (!searchQuery) return true;
-    const q = searchQuery.toLowerCase();
-    return (
-      (s.full_name && s.full_name.toLowerCase().includes(q)) ||
-      (s.first_name && s.first_name.toLowerCase().includes(q)) ||
-      (s.last_name && s.last_name.toLowerCase().includes(q)) ||
-      (s.student_id && s.student_id.toLowerCase().includes(q)) ||
-      (s.email && s.email.toLowerCase().includes(q)) ||
-      (s.mobile_number && s.mobile_number.includes(q)) ||
-      (s.batch_number && s.batch_number.toString().toLowerCase().includes(q))
-    );
-  });
+
 
   // ── Format last updated ────────────────────────────────────
   const lastUpdatedStr = lastUpdated
@@ -2210,9 +2277,11 @@ export default function Analytics() {
                         <Cell 
                           key={`cell-${index}`} 
                           fill={entry.color} 
-                          style={{ cursor: entry.name === 'Unpaid' ? 'pointer' : 'default' }}
+                          style={{ cursor: 'pointer' }}
                           onClick={() => {
-                            if (entry.name === 'Unpaid') setActiveDrawer('unpaid-students');
+                            if (entry.name === 'Fully Paid') setActiveDrawer('unpaid-students?status=paid');
+                            else if (entry.name === 'Partially Paid') setActiveDrawer('unpaid-students?status=partial');
+                            else if (entry.name === 'Unpaid') setActiveDrawer('unpaid-students?status=unpaid');
                           }}
                         />
                       ))}
@@ -2221,11 +2290,11 @@ export default function Analytics() {
                   </PieChart>
                 </ResponsiveContainer>
                 <div className="fee-pie-summary">
-                  <div className="fee-pie-stat">
-                    <div className="fee-pie-stat-value">{formatCurrency(feeData.collectedAmount)}</div>
+                  <div className="fee-pie-stat" style={{ cursor: 'pointer' }} onClick={() => setActiveDrawer('unpaid-students?status=paid')}>
+                    <div className="fee-pie-stat-value" style={{ color: '#22c55e' }}>{formatCurrency(feeData.collectedAmount)}</div>
                     <div className="fee-pie-stat-label">Collected</div>
                   </div>
-                  <div className="fee-pie-stat" style={{ cursor: 'pointer' }} onClick={() => setActiveDrawer('unpaid-students')}>
+                  <div className="fee-pie-stat" style={{ cursor: 'pointer' }} onClick={() => setActiveDrawer('unpaid-students?status=unpaid')}>
                     <div className="fee-pie-stat-value" style={{ color: '#ef4444' }}>{formatCurrency(feeData.outstandingAmount)}</div>
                     <div className="fee-pie-stat-label">Outstanding</div>
                   </div>
@@ -2289,116 +2358,6 @@ export default function Analytics() {
         </div>
       </div>
 
-      {/* ════════════════════════════════════════════════════════
-          SECTION 4 — Student Course Progression & Actions
-      ═══════════════════════════════════════════════════════ */}
-      <div className="analytics-section">
-        <p className="analytics-section-title"><Users size={13} /> Student Course Progression & Actions</p>
-        <div className="glass-panel" style={{ padding: '0 !important', overflow: 'hidden', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid rgba(255, 255, 255, 0.08)', borderRadius: '16px' }}>
-          
-          <div style={{ padding: '1.25rem 1.5rem', borderBottom: '1px solid rgba(255, 255, 255, 0.08)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
-            <div style={{ position: 'relative', minWidth: '300px', flex: '1 0 auto', maxWidth: '400px' }}>
-              <Search size={18} style={{ position: 'absolute', left: '0.75rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
-              <input
-                type="text"
-                placeholder="Search by name, ID, email, batch..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="input-glass"
-                style={{ width: '100%', paddingLeft: '2.5rem', height: '38px', borderRadius: '8px' }}
-              />
-            </div>
-            <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-              Showing {filteredStudents.length} {filteredStudents.length === 1 ? 'student' : 'students'}
-            </div>
-          </div>
-
-          <div className="student-manager-table-scroll">
-            {studentsLoading ? (
-              <div style={{ padding: '2rem' }}>
-                {Array.from({ length: 4 }).map((_, i) => (
-                  <div key={i} className="analytics-skeleton-card" style={{ height: 56, marginBottom: '0.75rem', borderRadius: '10px' }} />
-                ))}
-              </div>
-            ) : studentsError ? (
-              <div style={{ padding: '3rem 2rem', textAlign: 'center', color: '#f87171', fontSize: '0.9rem' }}>
-                {studentsError}
-              </div>
-            ) : filteredStudents.length === 0 ? (
-              <div className="analytics-drawer-empty" style={{ padding: '4rem 2rem' }}>
-                <UserX size={48} className="analytics-drawer-empty-icon" />
-                <div className="analytics-drawer-empty-text">No students found matching your search.</div>
-              </div>
-            ) : (
-              <table className="student-manager-table">
-                <thead>
-                  <tr style={{ background: 'rgba(0,0,0,0.1)' }}>
-                    <th className="student-table-col-id" style={{ padding: '1.25rem 1.5rem', fontWeight: '600', color: 'var(--text-muted)' }}>Student ID</th>
-                    <th className="student-table-col-name" style={{ padding: '1.25rem 1.5rem', fontWeight: '600', color: 'var(--text-muted)' }}>Name</th>
-                    <th className="student-table-col-contact" style={{ padding: '1.25rem 1.5rem', fontWeight: '600', color: 'var(--text-muted)' }}>Contact</th>
-                    <th className="student-table-col-batch" style={{ padding: '1.25rem 1.5rem', fontWeight: '600', color: 'var(--text-muted)' }}>Batch</th>
-                    <th className="student-table-col-progress" style={{ padding: '1.25rem 1.5rem', fontWeight: '600', color: 'var(--text-muted)' }}>Course Progression</th>
-                    <th className="student-table-col-joined" style={{ padding: '1.25rem 1.5rem', fontWeight: '600', color: 'var(--text-muted)' }}>Joined</th>
-                    <th className="student-table-col-actions" style={{ padding: '1.25rem 1.5rem', fontWeight: '600', color: 'var(--text-muted)', textAlign: 'center' }}>Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredStudents.map((s) => (
-                    <tr 
-                      key={s.id}
-                      style={{ 
-                        borderBottom: '1px solid rgba(255, 255, 255, 0.05)', 
-                        transition: 'background 0.2s',
-                      }} 
-                      onMouseEnter={(e) => e.currentTarget.style.background = 'rgba(14, 165, 233, 0.03)'} 
-                      onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
-                    >
-                      <td className="student-table-col-id" style={{ padding: '1.25rem 1.5rem', color: 'var(--text-secondary)', fontWeight: '500', fontSize: '0.85rem' }}>
-                        {s.student_id}
-                      </td>
-                      <td className="student-table-col-name" style={{ padding: '1.25rem 1.5rem' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                          <div style={{ width: '36px', height: '36px', borderRadius: '50%', background: 'linear-gradient(135deg, var(--accent-primary), var(--accent-secondary))', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold', fontSize: '1rem', flexShrink: 0 }}>
-                            {s.full_name ? s.full_name.charAt(0).toUpperCase() : s.first_name ? s.first_name.charAt(0).toUpperCase() : 'S'}
-                          </div>
-                          <span style={{ fontWeight: '600', color: 'var(--text-primary)' }}>{s.full_name || `${s.first_name || ''} ${s.last_name || ''}`}</span>
-                        </div>
-                      </td>
-                      <td className="student-table-col-contact" style={{ padding: '1.25rem 1.5rem' }}>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
-                          <span style={{ display: 'inline-block', background: 'rgba(56, 189, 248, 0.1)', color: 'var(--accent-primary)', padding: '0.2rem 0.6rem', borderRadius: '6px', fontSize: '0.8rem', fontWeight: '600', width: 'fit-content' }}>
-                            @{s.username}
-                          </span>
-                          <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{s.email}</span>
-                        </div>
-                      </td>
-                      <td className="student-table-col-batch" style={{ padding: '1.25rem 1.5rem' }}>
-                        {s.batch_number ? (
-                          <span className="badge-pill student-table-batch-pill" style={{ background: 'rgba(139, 92, 246, 0.1)', color: '#8b5cf6', borderColor: 'rgba(139, 92, 246, 0.2)' }}>
-                            {getOrdinalSuffix(s.batch_number)} Batch
-                          </span>
-                        ) : (
-                          <span style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>N/A</span>
-                        )}
-                      </td>
-                      <td className="student-table-col-progress" style={{ padding: '1.25rem 1.5rem' }}>
-                        {renderCourseProgression(s)}
-                      </td>
-                      <td className="student-table-col-joined" style={{ padding: '1.25rem 1.5rem', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
-                        {s.created_at ? new Date(s.created_at).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) : 'N/A'}
-                      </td>
-                      <td className="student-table-col-actions" style={{ padding: '1.25rem 1.5rem', textAlign: 'center' }}>
-                        {renderStudentActions(s)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
-
-        </div>
-      </div>
 
       {/* ════════════════════════════════════════════════════════
           SECTION 5 — Recent Activity Feed
@@ -2791,7 +2750,7 @@ export default function Analytics() {
                         <th className="student-table-col-actions" style={{ textAlign: 'center' }}>Actions</th>
                       </>
                     )}
-                    {activeDrawer === 'unpaid-students' && (
+                    {basePath === 'unpaid-students' && (
                       <>
                         <th className="student-table-col-batch">Batch</th>
                         <th>Phase 1 Fee</th>
@@ -2885,12 +2844,12 @@ export default function Analytics() {
                             </td>
                           </>
                         )}
-                        {activeDrawer === 'unpaid-students' && (
+                        {basePath === 'unpaid-students' && (
                           <>
                             <td className="student-table-col-batch">{row.batch_number || 'N/A'}</td>
                             <td>{row.phase1_fee ? `${row.phase1_fee} ৳` : '0 ৳'}</td>
                             <td>{row.phase2_fee ? `${row.phase2_fee} ৳` : '0 ৳'}</td>
-                            <td style={{ color: '#f87171', fontWeight: '600' }}>
+                            <td style={{ color: row.total_due > 0 ? '#f87171' : '#10b981', fontWeight: '600' }}>
                               {row.total_due ? `${row.total_due} ৳` : '0 ৳'}
                             </td>
                             <td className="student-table-col-progress">

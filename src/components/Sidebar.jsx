@@ -31,7 +31,9 @@ import {
   Globe,
   Bell,
   BarChart2,
-  Flag
+  Flag,
+  DollarSign,
+  Wallet
 } from 'lucide-react';
 import './Sidebar.css';
 
@@ -360,6 +362,12 @@ export default function Sidebar({ isNotifOpen, setIsNotifOpen }) {
               </NavLink>
               <NavLink to="/admin/announcements" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
                 <Megaphone size={20} /> Announcements
+              </NavLink>
+              <NavLink to="/admin/batch-fees" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
+                <DollarSign size={20} /> Batch Fee Manager
+              </NavLink>
+              <NavLink to="/admin/fee-tracker" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
+                <Wallet size={20} /> Fee Tracker
               </NavLink>
             </>
           )}

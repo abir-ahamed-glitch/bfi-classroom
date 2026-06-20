@@ -32,6 +32,8 @@ import registryRoutes from './routes/registry.js';
 import notificationsRoutes from './routes/notifications.js';
 import analyticsRoutes from './routes/analytics.js';
 import reportsRoutes from './routes/reports.js';
+import feesRoutes from './routes/fees.js';
+import feeTrackerRoutes from './routes/fee-tracker.js';
 import { getJwtRefreshSecret, getJwtSecret } from './config/security.js';
 import { authenticateToken } from './middleware/auth.js';
 
@@ -373,9 +375,10 @@ app.get('/bfi-classroom/uploads/report-screenshots/:filename', authenticateToken
 app.use('/bfi-classroom/media', express.static(path.join(__dirname, '..', 'uploads')));
 app.use('/media', express.static(path.join(__dirname, '..', 'uploads'))); // Keep root for backwards compatibility
 
-// Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/admin', feesRoutes);
+app.use('/api/admin', feeTrackerRoutes);
 app.use('/api/student', studentRoutes);
 app.use('/api/portfolio', portfolioRoutes);
 app.use('/api/community', communityRoutes);
