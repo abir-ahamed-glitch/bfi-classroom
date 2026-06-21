@@ -26,13 +26,31 @@ const PRIVACY_OPTIONS = [
   }
 ];
 
-export default function PrivacySelector({ fieldName, currentValue = 'public', onChange, compact = false }) {
+export default function PrivacySelector({ fieldName, currentValue = 'public', onChange, compact = false, isTeacher = false, isAdmin = false }) {
   const [isOpen, setIsOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [justSaved, setJustSaved] = useState(false);
   const ref = useRef(null);
 
-  const current = PRIVACY_OPTIONS.find(o => o.value === currentValue) || PRIVACY_OPTIONS[0];
+  const options = PRIVACY_OPTIONS.map(opt => {
+    if (isTeacher && opt.value === 'batchmates') {
+      return {
+        ...opt,
+        label: 'Teachers',
+        description: 'Only other teachers'
+      };
+    }
+    if (isAdmin && opt.value === 'batchmates') {
+      return {
+        ...opt,
+        label: 'Admins',
+        description: 'Only other admins'
+      };
+    }
+    return opt;
+  });
+
+  const current = options.find(o => o.value === currentValue) || options[0];
 
   useEffect(() => {
     const handleClickOutside = (e) => {
@@ -96,7 +114,7 @@ export default function PrivacySelector({ fieldName, currentValue = 'public', on
 
       {isOpen && (
         <div className="privacy-dropdown" onClick={(e) => e.stopPropagation()}>
-          {PRIVACY_OPTIONS.map(option => {
+          {options.map(option => {
             const OptionIcon = option.Icon;
             const isSelected = option.value === currentValue;
             return (
@@ -124,11 +142,29 @@ export default function PrivacySelector({ fieldName, currentValue = 'public', on
 }
 
 // Lightweight inline version for Community post composer
-export function AudienceSelector({ value = 'public', onChange }) {
+export function AudienceSelector({ value = 'public', onChange, isTeacher = false, isAdmin = false }) {
   const [isOpen, setIsOpen] = useState(false);
   const ref = useRef(null);
 
-  const current = PRIVACY_OPTIONS.find(o => o.value === value) || PRIVACY_OPTIONS[0];
+  const options = PRIVACY_OPTIONS.map(opt => {
+    if (isTeacher && opt.value === 'batchmates') {
+      return {
+        ...opt,
+        label: 'Teachers',
+        description: 'Only other teachers'
+      };
+    }
+    if (isAdmin && opt.value === 'batchmates') {
+      return {
+        ...opt,
+        label: 'Admins',
+        description: 'Only other admins'
+      };
+    }
+    return opt;
+  });
+
+  const current = options.find(o => o.value === value) || options[0];
 
   useEffect(() => {
     const handleClickOutside = (e) => {
@@ -157,7 +193,7 @@ export function AudienceSelector({ value = 'public', onChange }) {
 
       {isOpen && (
         <div className="privacy-dropdown" onClick={(e) => e.stopPropagation()}>
-          {PRIVACY_OPTIONS.map(option => {
+          {options.map(option => {
             const OptionIcon = option.Icon;
             const isSelected = option.value === value;
             return (

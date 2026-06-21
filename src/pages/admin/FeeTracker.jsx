@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { Wallet, Search, Filter, Download, ArrowRight, CheckCircle, Clock, AlertCircle, ChevronDown, ChevronUp } from 'lucide-react';
+import { Wallet, Search, Filter, Download, ArrowRight, CheckCircle, Clock, AlertCircle, ChevronDown, ChevronUp, GraduationCap, Clapperboard, Edit, Trash2, X } from 'lucide-react';
+import { createPortal } from 'react-dom';
+import { getOrdinalSuffix } from '../../utils/formatUtils';
 import './FeeTracker.css';
 import { Link, useNavigate } from 'react-router-dom';
 import EditStudentModal from '../../components/admin/EditStudentModal';
@@ -29,6 +31,23 @@ const FeeTracker = () => {
   // Edit modal state
   const [editingStudent, setEditingStudent] = useState(null);
 
+  // --- Start of Copied Modals State ---
+  const [academicStudent, setAcademicStudent] = useState(null);
+  const [academicCourseId, setAcademicCourseId] = useState(null);
+  const [academicFormData, setAcademicFormData] = useState({});
+  const [isAcademicSaving, setIsAcademicSaving] = useState(false);
+  const [academicError, setAcademicError] = useState('');
+
+  const [phase2Student, setPhase2Student] = useState(null);
+  const [phase2CourseId, setPhase2CourseId] = useState(null);
+  const [phase2FormData, setPhase2FormData] = useState({});
+  const [isPhase2Saving, setIsPhase2Saving] = useState(false);
+  const [phase2Error, setPhase2Error] = useState('');
+
+  const [confirmConfig, setConfirmConfig] = useState(null);
+  // --- End of Copied Modals State ---
+
+
   const fetchFeeData = async () => {
     setLoading(true);
     try {
@@ -53,6 +72,132 @@ const FeeTracker = () => {
     } finally {
       setLoading(false);
     }
+  };
+
+
+  const handleSaveSuccess = async () => {
+    try {
+      const queryParams = new URLSearchParams();
+      if (statusFilter) queryParams.append('status', statusFilter);
+      if (courseFilter) queryParams.append('course', courseFilter);
+      if (batchFilter) queryParams.append('batch', batchFilter);
+      if (searchQuery) queryParams.append('search', searchQuery);
+
+      const res = await fetch('/api/admin/fee-tracker/students?' + queryParams.toString(), {
+        headers: { 'Authorization': 'Bearer ' + localStorage.getItem('token') }
+      });
+      if (!res.ok) throw new Error('Failed to fetch fee data');
+      const json = await res.json();
+      
+      setData(prev => {
+        const updatedStudents = prev.students.map(s => {
+          const fetchedStudent = json.students.find(fs => fs.user_id === s.user_id && fs.course_name === s.course_name);
+          return fetchedStudent ? fetchedStudent : s; 
+        });
+        return { ...prev, summary: json.summary, students: updatedStudents };
+      });
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const fetchFullStudent = async (userId) => {
+    const res = await fetch('/api/admin/students/' + userId, {
+      headers: { 'Authorization': 'Bearer ' + localStorage.getItem('token') }
+    });
+    if (!res.ok) throw new Error('Failed to fetch student details');
+    const { student } = await res.json();
+    return student;
+  };
+
+  const openAcademicModal = async (s) => {
+    try {
+      const fullStudent = await fetchFullStudent(s.user_id);
+      const enrollment = fullStudent.enrollments?.find(e => e.course_name === s.course_name);
+      if (!enrollment) throw new Error('Enrollment not found for this course.');
+
+      setAcademicStudent({ ...fullStudent, enrollment });
+      setAcademicCourseId(enrollment.id);
+      setAcademicFormData({
+        attendance_classes: enrollment.attendance_classes || '',
+        attendance_total: enrollment.attendance_total || '',
+        exam_written: enrollment.exam_written || '',
+        assignment_screenplay: enrollment.assignment_screenplay || '',
+        assignment_shooting_script: enrollment.assignment_shooting_script || ''
+      });
+    } catch (err) { addToast(err.message, 'error'); }
+  };
+
+  const closeAcademicModal = () => { setAcademicStudent(null); setAcademicCourseId(null); };
+  const handleAcademicChange = (e) => setAcademicFormData({ ...academicFormData, [e.target.name]: e.target.value });
+  const submitAcademic = async (e) => {
+    e.preventDefault();
+    setIsAcademicSaving(true);
+    setAcademicError('');
+    try {
+      const res = await fetch('/api/admin/students/' + academicStudent.id + '/academic-records/' + academicCourseId, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + localStorage.getItem('token') },
+        body: JSON.stringify(academicFormData)
+      });
+      if (res.ok) { handleSaveSuccess(); closeAcademicModal(); } 
+      else { const data = await res.json(); throw new Error(data.error || 'Failed to save academic records'); }
+    } catch (err) { setAcademicError(err.message); } 
+    finally { setIsAcademicSaving(false); }
+  };
+
+  const openPhase2Modal = async (s) => {
+    try {
+      const fullStudent = await fetchFullStudent(s.user_id);
+      const enrollment = fullStudent.enrollments?.find(e => e.course_name === 'Online Filmmaking Course');
+      if (!enrollment) throw new Error('Online Filmmaking Course enrollment not found.');
+
+      setPhase2Student({ ...fullStudent, enrollment });
+      setPhase2CourseId(enrollment.id);
+      setPhase2FormData({
+        phase2_shooting_attended: !!(enrollment.phase2_shooting_attended),
+        phase2_editing_attended: !!(enrollment.phase2_editing_attended)
+      });
+    } catch (err) { addToast(err.message, 'error'); }
+  };
+
+  const closePhase2Modal = () => { setPhase2Student(null); setPhase2CourseId(null); };
+  const handlePhase2Change = (e) => setPhase2FormData({ ...phase2FormData, [e.target.name]: e.target.checked });
+  const submitPhase2 = async (e) => {
+    e.preventDefault();
+    setIsPhase2Saving(true);
+    setPhase2Error('');
+    try {
+      const res = await fetch('/api/admin/students/' + phase2Student.id + '/phase2-attendance/' + phase2CourseId, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + localStorage.getItem('token') },
+        body: JSON.stringify(phase2FormData)
+      });
+      if (res.ok) { handleSaveSuccess(); closePhase2Modal(); } 
+      else { const data = await res.json(); throw new Error(data.error || 'Failed to save Phase 2 attendance'); }
+    } catch (err) { setPhase2Error(err.message); } 
+    finally { setIsPhase2Saving(false); }
+  };
+
+  const confirmDeleteStudent = async (s) => {
+    setConfirmConfig({
+      type: 'danger',
+      title: 'Delete Student',
+      message: `Are you sure you want to delete ${s.full_name} (${s.batch_number ? 'B-' + s.batch_number : 'No Batch'})? This action cannot be undone.`,
+      confirmText: 'Delete',
+      onConfirm: async () => {
+        try {
+          const res = await fetch('/api/admin/students/' + s.user_id, {
+            method: 'DELETE',
+            headers: { 'Authorization': 'Bearer ' + localStorage.getItem('token') }
+          });
+          if (!res.ok) throw new Error('Failed to delete student');
+          setData(prev => ({ ...prev, students: prev.students.filter(student => student.user_id !== s.user_id) }));
+          handleSaveSuccess();
+          addToast('Student deleted successfully', 'success');
+        } catch (err) { addToast(err.message, 'error'); }
+      }
+    });
   };
 
   useEffect(() => {
@@ -291,12 +436,41 @@ const FeeTracker = () => {
                           }
                         </button>
                       )}
-                      <button
-                        className="ft-btn-sm ft-btn-edit"
-                        onClick={() => setEditingStudent(student)}
+                      <button 
+                        onClick={() => openAcademicModal(student)}
+                        className="btn" 
+                        style={{ padding: '0.5rem', background: 'rgba(16, 185, 129, 0.1)', color: '#10b981', border: '1px solid rgba(16, 185, 129, 0.2)', borderRadius: '8px', transition: 'all 0.2s', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }} 
+                        onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(16, 185, 129, 0.2)'; e.currentTarget.style.transform = 'scale(1.05)'; }} 
+                        onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(16, 185, 129, 0.1)'; e.currentTarget.style.transform = 'scale(1)'; }} 
+                        title={student.course_name !== 'Online Filmmaking Course' ? 'Exam Result' : 'Academic Records'}
                       >
-                        Edit Details
+                        <GraduationCap size={16} />
                       </button>
+
+                      {student.course_name === 'Online Filmmaking Course' && (
+                        <button
+                          onClick={() => openPhase2Modal(student)}
+                          className="btn"
+                          style={{ padding: '0.5rem', background: 'rgba(139, 92, 246, 0.1)', color: '#8b5cf6', border: '1px solid rgba(139, 92, 246, 0.2)', borderRadius: '8px', transition: 'all 0.2s', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                          onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(139, 92, 246, 0.2)'; e.currentTarget.style.transform = 'scale(1.05)'; }}
+                          onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(139, 92, 246, 0.1)'; e.currentTarget.style.transform = 'scale(1)'; }}
+                          title="Phase 2: Shooting & Editing Attendance"
+                        >
+                          <Clapperboard size={16} />
+                        </button>
+                      )}
+
+                      <button 
+                        onClick={() => setEditingStudent(student)} 
+                        className="btn" 
+                        style={{ padding: '0.5rem', background: 'rgba(56, 189, 248, 0.1)', color: '#0284c7', border: '1px solid rgba(56, 189, 248, 0.2)', borderRadius: '8px', transition: 'all 0.2s', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }} 
+                        onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(56, 189, 248, 0.2)'; e.currentTarget.style.transform = 'scale(1.05)'; }} 
+                        onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(56, 189, 248, 0.1)'; e.currentTarget.style.transform = 'scale(1)'; }} 
+                        title="Edit Student"
+                      >
+                        <Edit size={16} />
+                      </button>
+
                     </div>
                   </td>
                 </tr>
@@ -319,8 +493,286 @@ const FeeTracker = () => {
         <EditStudentModal
           student={editingStudent}
           onClose={() => setEditingStudent(null)}
-          onSaveSuccess={fetchFeeData}
+          onSaveSuccess={handleSaveSuccess}
         />
+      )}
+      
+      {/* Copied Modals */}
+{confirmConfig && typeof document !== 'undefined' && createPortal(
+        <div className="modern-modal-overlay">
+          <div className="modern-modal-content glass-panel shadow-2xl" onClick={e => e.stopPropagation()}>
+            <div className="modern-modal-header">
+              <h3 className="font-display">{confirmConfig.title}</h3>
+              <button className="icon-btn-ghost" onClick={() => setConfirmConfig(null)} aria-label="Close"><X size={20} /></button>
+            </div>
+            <div className="modern-modal-body">
+              <p>{confirmConfig.message}</p>
+            </div>
+            <div className="modern-modal-footer">
+              {!confirmConfig.isAlert && (
+                <button className="modern-btn modern-btn--secondary" onClick={() => setConfirmConfig(null)}>Cancel</button>
+              )}
+              <button 
+                className={`modern-btn ${confirmConfig.type === 'danger' ? 'modern-btn--danger' : 'modern-btn--primary'}`}
+                style={confirmConfig.isAlert ? { width: '100%', maxWidth: '200px', margin: '0 auto' } : {}}
+                onClick={() => {
+                  confirmConfig.onConfirm();
+                  setConfirmConfig(null);
+                }}
+              >
+                {confirmConfig.confirmText || 'Confirm'}
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
+{/* Academic Records Modal */}
+      {academicStudent && typeof document !== 'undefined' && createPortal(
+        <div className="modern-modal-overlay">
+          <form onSubmit={submitAcademic} className="modern-modal-content glass-panel shadow-2xl" style={{ width: '100%', maxWidth: '500px', margin: 'auto' }} onClick={e => e.stopPropagation()}>
+            <div className="modern-modal-header">
+              <div>
+                <h3 className="font-display" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <GraduationCap size={24} style={{ color: '#10b981' }} /> {academicStudent.enrollment?.course_name !== 'Online Filmmaking Course' ? 'Exam Result' : 'Academic Records'}
+                </h3>
+                <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginTop: '0.2rem' }}>
+                  {academicStudent.full_name} <span style={{ opacity: 0.7 }}>({academicStudent.batch_number ? `${getOrdinalSuffix(academicStudent.batch_number)} Batch` : 'No Batch'})</span>
+                </p>
+                <p style={{ color: 'var(--text-primary)', fontSize: '0.85rem', marginTop: '0.4rem', fontWeight: '500', background: 'rgba(16, 185, 129, 0.1)', border: '1px solid rgba(16, 185, 129, 0.2)', padding: '0.2rem 0.6rem', borderRadius: '6px', display: 'inline-block' }}>
+                  {academicStudent.enrollment?.course_name || 'Course'}
+                </p>
+              </div>
+              <button type="button" className="icon-btn-ghost" onClick={closeAcademicModal} aria-label="Close"><X size={20} /></button>
+            </div>
+
+            <div className="modern-modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem', maxHeight: '60vh', overflowY: 'auto' }}>
+              {academicStudent.enrollment?.course_name !== 'Online Filmmaking Course' ? (
+                /* Film Appreciation Course: single Exam Result out of 100, no attendance */
+                <div style={{ padding: '1rem', background: 'rgba(255,255,255,0.02)', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.05)' }}>
+                  <h3 style={{ fontSize: '1rem', marginBottom: '1rem', color: 'var(--text-primary)' }}>Exam Result (Total: 100)</h3>
+                  <div>
+                    <label style={{ display: 'block', marginBottom: '0.4rem', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Written Exam Score (Max: 100)</label>
+                    <input type="number" name="exam_written" value={academicFormData.exam_written} onChange={handleAcademicChange} min="0" max="100" className="input-glass" style={{ paddingLeft: '1rem' }} required />
+                  </div>
+                  {(() => {
+                    const totalGained = parseInt(academicFormData.exam_written) || 0;
+                    const isPassed = totalGained >= 33;
+                    return (
+                      <p style={{ 
+                        fontSize: '0.75rem', 
+                        color: 'var(--text-muted)', 
+                        marginTop: '1.25rem',
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        flexWrap: 'wrap',
+                        gap: '0.5rem'
+                      }}>
+                        <span>Requires 33+ marks to pass.</span>
+                        <span style={{ 
+                          fontSize: '0.85rem', 
+                          fontWeight: '700', 
+                          color: isPassed ? '#34d399' : '#f87171',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '0.3rem'
+                        }}>
+                          <span>Total Gained:</span>
+                          <strong style={{ fontSize: '0.98rem' }}>{totalGained}</strong>
+                          <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 'normal' }}>/ 100</span>
+                          <span style={{ 
+                            fontSize: '0.68rem', 
+                            fontWeight: '600', 
+                            padding: '0.05rem 0.35rem', 
+                            borderRadius: '4px',
+                            marginLeft: '0.25rem',
+                            background: isPassed ? 'rgba(52, 211, 153, 0.12)' : 'rgba(239, 68, 68, 0.12)',
+                            color: isPassed ? '#34d399' : '#f87171',
+                            border: isPassed ? '1px solid rgba(52, 211, 153, 0.2)' : '1px solid rgba(239, 68, 68, 0.2)'
+                          }}>
+                            {isPassed ? 'Passed' : 'Failed'}
+                          </span>
+                        </span>
+                      </p>
+                    );
+                  })()}
+                </div>
+              ) : (
+                /* Online Filmmaking Course: attendance & full breakdown */
+                <>
+                  <div style={{ padding: '1rem', background: 'rgba(255,255,255,0.02)', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.05)' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+                      <h3 style={{ fontSize: '1rem', color: 'var(--text-primary)', margin: 0 }}>Attendance</h3>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        <label style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', whiteSpace: 'nowrap' }}>Total classes:</label>
+                        <input type="number" name="attendance_total" value={academicFormData.attendance_total} onChange={handleAcademicChange} min="1" className="input-glass" style={{ width: '100px', paddingLeft: '0.5rem', fontSize: '0.9rem' }} required />
+                      </div>
+                    </div>
+                    <div>
+                      <label style={{ display: 'block', marginBottom: '0.4rem', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Classes Attended</label>
+                      <input type="number" name="attendance_classes" value={academicFormData.attendance_classes} onChange={handleAcademicChange} min="0" max={academicFormData.attendance_total || 22} className="input-glass" style={{ paddingLeft: '1rem' }} required />
+                      <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.3rem' }}>Requires {Math.ceil((academicFormData.attendance_total || 22) * 0.8)}+ (80%) to qualify for exam.</p>
+                    </div>
+                  </div>
+
+                  <div style={{ padding: '1rem', background: 'rgba(255,255,255,0.02)', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.05)' }}>
+                    <h3 style={{ fontSize: '1rem', marginBottom: '1rem', color: 'var(--text-primary)' }}>Exam Results (Total: 100)</h3>
+                    
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                      <div>
+                        <label style={{ display: 'block', marginBottom: '0.4rem', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Written Exam (Max: 80)</label>
+                        <input type="number" name="exam_written" value={academicFormData.exam_written} onChange={handleAcademicChange} min="0" max="80" className="input-glass" style={{ paddingLeft: '1rem' }} required />
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+                        <div>
+                          <label style={{ display: 'block', marginBottom: '0.4rem', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Screenplay (Max: 10)</label>
+                          <input type="number" name="assignment_screenplay" value={academicFormData.assignment_screenplay} onChange={handleAcademicChange} min="0" max="10" className="input-glass" style={{ paddingLeft: '1rem' }} required />
+                        </div>
+                        <div>
+                          <label style={{ display: 'block', marginBottom: '0.4rem', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Shooting Script (Max: 10)</label>
+                          <input type="number" name="assignment_shooting_script" value={academicFormData.assignment_shooting_script} onChange={handleAcademicChange} min="0" max="10" className="input-glass" style={{ paddingLeft: '1rem' }} required />
+                        </div>
+                      </div>
+                    </div>
+                    {(() => {
+                      const totalGained = (parseInt(academicFormData.exam_written) || 0) + 
+                                          (parseInt(academicFormData.assignment_screenplay) || 0) + 
+                                          (parseInt(academicFormData.assignment_shooting_script) || 0);
+                      const isPassed = totalGained >= 33;
+                      return (
+                        <p style={{ 
+                          fontSize: '0.75rem', 
+                          color: 'var(--text-muted)', 
+                          marginTop: '1.25rem',
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
+                          flexWrap: 'wrap',
+                          gap: '0.5rem'
+                        }}>
+                          <span>Requires 33+ total marks to pass.</span>
+                          <span style={{ 
+                            fontSize: '0.85rem', 
+                            fontWeight: '700', 
+                            color: isPassed ? '#34d399' : '#f87171',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '0.3rem'
+                          }}>
+                            <span>Total Gained:</span>
+                            <strong style={{ fontSize: '0.98rem' }}>{totalGained}</strong>
+                            <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 'normal' }}>/ 100</span>
+                            <span style={{ 
+                              fontSize: '0.68rem', 
+                              fontWeight: '600', 
+                              padding: '0.05rem 0.35rem', 
+                              borderRadius: '4px',
+                              marginLeft: '0.25rem',
+                              background: isPassed ? 'rgba(52, 211, 153, 0.12)' : 'rgba(239, 68, 68, 0.12)',
+                              color: isPassed ? '#34d399' : '#f87171',
+                              border: isPassed ? '1px solid rgba(52, 211, 153, 0.2)' : '1px solid rgba(239, 68, 68, 0.2)'
+                            }}>
+                              {isPassed ? 'Passed' : 'Failed'}
+                            </span>
+                          </span>
+                        </p>
+                      );
+                    })()}
+                  </div>
+                </>
+              )}
+
+              {academicError && <div className="error-alert" style={{ marginTop: '0.5rem' }}>{academicError}</div>}
+            </div>
+
+            <div className="modern-modal-footer" style={{ display: 'flex', gap: '1rem' }}>
+              <button type="button" onClick={closeAcademicModal} className="modern-btn modern-btn--secondary" style={{ flex: 1 }}>Cancel</button>
+              <button type="submit" className="modern-btn modern-btn--primary" disabled={isAcademicSaving} style={{ flex: 1, background: '#10b981', borderColor: '#10b981' }}>
+                {isAcademicSaving ? 'Saving...' : (academicStudent.enrollment?.course_name !== 'Online Filmmaking Course' ? 'Save Result' : 'Save Records')}
+              </button>
+            </div>
+          </form>
+        </div>,
+        document.body
+      )}
+
+{/* Phase 2 Completion Modal */}
+      {phase2Student && typeof document !== 'undefined' && createPortal(
+        <div className="modern-modal-overlay">
+          <form onSubmit={submitPhase2} className="modern-modal-content glass-panel shadow-2xl" style={{ width: '100%', maxWidth: '480px', margin: 'auto' }} onClick={e => e.stopPropagation()}>
+            <div className="modern-modal-header">
+              <div>
+                <h3 className="font-display" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <GraduationCap size={24} style={{ color: '#8b5cf6' }} /> Phase 2: Completed Course
+                </h3>
+                <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginTop: '0.2rem' }}>
+                  {phase2Student.full_name} <span style={{ opacity: 0.7 }}>({phase2Student.batch_number ? `${getOrdinalSuffix(phase2Student.batch_number)} Batch` : 'No Batch'})</span>
+                </p>
+                <p style={{ color: 'var(--text-primary)', fontSize: '0.85rem', marginTop: '0.4rem', fontWeight: '500', background: 'rgba(139, 92, 246, 0.1)', border: '1px solid rgba(139, 92, 246, 0.2)', padding: '0.2rem 0.6rem', borderRadius: '6px', display: 'inline-block' }}>
+                  Online Filmmaking Course
+                </p>
+              </div>
+              <button type="button" className="icon-btn-ghost" onClick={closePhase2Modal} aria-label="Close"><X size={20} /></button>
+            </div>
+
+            <div className="modern-modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+              <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', margin: 0 }}>
+                Mark the parts the student has participated in. Step 4 (Phase 2: Completed Course) will be automatically checked once <strong style={{ color: 'var(--text-primary)' }}>both</strong> Shooting and Editing are attended.
+              </p>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', padding: '1rem', background: 'rgba(255,255,255,0.02)', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.05)' }}>
+                {/* Shooting */}
+                <label style={{ display: 'flex', alignItems: 'center', gap: '1rem', cursor: 'pointer', padding: '1rem', borderRadius: '10px', border: '1px solid', borderColor: phase2FormData.phase2_shooting_attended ? '#8b5cf6' : 'rgba(255,255,255,0.1)', background: phase2FormData.phase2_shooting_attended ? 'rgba(139,92,246,0.08)' : 'transparent', transition: 'all 0.2s' }}>
+                  <input
+                    type="checkbox"
+                    checked={phase2FormData.phase2_shooting_attended}
+                    onChange={(e) => setPhase2FormData({ ...phase2FormData, phase2_shooting_attended: e.target.checked })}
+                    style={{ width: '20px', height: '20px', accentColor: '#8b5cf6', flexShrink: 0 }}
+                  />
+                  <div>
+                    <div style={{ fontWeight: '600', color: 'var(--text-primary)', fontSize: '1rem' }}>🎬 Shooting</div>
+                    <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>Student participated in the Shooting part of Phase 2</div>
+                  </div>
+                </label>
+
+                {/* Editing */}
+                <label style={{ display: 'flex', alignItems: 'center', gap: '1rem', cursor: 'pointer', padding: '1rem', borderRadius: '10px', border: '1px solid', borderColor: phase2FormData.phase2_editing_attended ? '#8b5cf6' : 'rgba(255,255,255,0.1)', background: phase2FormData.phase2_editing_attended ? 'rgba(139,92,246,0.08)' : 'transparent', transition: 'all 0.2s' }}>
+                  <input
+                    type="checkbox"
+                    checked={phase2FormData.phase2_editing_attended}
+                    onChange={(e) => setPhase2FormData({ ...phase2FormData, phase2_editing_attended: e.target.checked })}
+                    style={{ width: '20px', height: '20px', accentColor: '#8b5cf6', flexShrink: 0 }}
+                  />
+                  <div>
+                    <div style={{ fontWeight: '600', color: 'var(--text-primary)', fontSize: '1rem' }}>✂️ Editing</div>
+                    <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>Student participated in the Editing part of Phase 2</div>
+                  </div>
+                </label>
+              </div>
+
+              {/* Auto-complete status indicator */}
+              <div style={{ padding: '0.75rem 1rem', borderRadius: '8px', background: (phase2FormData.phase2_shooting_attended && phase2FormData.phase2_editing_attended) ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.06)', border: '1px solid', borderColor: (phase2FormData.phase2_shooting_attended && phase2FormData.phase2_editing_attended) ? 'rgba(16,185,129,0.3)' : 'rgba(239,68,68,0.15)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                {(phase2FormData.phase2_shooting_attended && phase2FormData.phase2_editing_attended) ? (
+                  <><CheckSquare size={16} style={{ color: '#10b981', flexShrink: 0 }} /><span style={{ fontSize: '0.85rem', color: '#10b981', fontWeight: '600' }}>Both parts attended — Phase 2: Completed Course will be marked ✓</span></>
+                ) : (
+                  <><Square size={16} style={{ color: '#ef4444', flexShrink: 0 }} /><span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Both Shooting and Editing must be attended to complete Phase 2.</span></>
+                )}
+              </div>
+
+              {phase2Error && <div className="error-alert" style={{ marginTop: '0.5rem' }}>{phase2Error}</div>}
+            </div>
+
+            <div className="modern-modal-footer" style={{ display: 'flex', gap: '1rem' }}>
+              <button type="button" onClick={closePhase2Modal} className="modern-btn modern-btn--secondary" style={{ flex: 1 }}>Cancel</button>
+              <button type="submit" className="modern-btn modern-btn--primary" disabled={isPhase2Saving} style={{ flex: 1, background: '#8b5cf6', borderColor: '#8b5cf6' }}>
+                {isPhase2Saving ? 'Saving...' : 'Save Attendance'}
+              </button>
+            </div>
+          </form>
+        </div>,
+        document.body
       )}
     </div>
   );

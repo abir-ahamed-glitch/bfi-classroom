@@ -731,7 +731,7 @@ export default function StudentManager() {
               />
             </div>
           </div>
-          <div className="glass-panel student-manager-table-scroll" style={{ width: '100%', maxWidth: '100%', minWidth: 0, overflowX: 'auto', WebkitOverflowScrolling: 'touch', touchAction: 'pan-x pan-y', padding: '0', border: '1px solid var(--glass-border)', borderRadius: '12px', scrollbarGutter: 'stable both-edges' }}>
+          <div className="glass-panel student-manager-table-scroll" style={{ width: '100%', maxWidth: '100%', minWidth: 0, maxHeight: '650px', overflowY: 'auto', overflowX: 'auto', WebkitOverflowScrolling: 'touch', touchAction: 'pan-x pan-y', padding: '0', border: '1px solid var(--glass-border)', borderRadius: '12px', scrollbarGutter: 'stable both-edges' }}>
             <table className="student-manager-table" style={{ borderCollapse: 'collapse', textAlign: 'left' }}>
               <thead>
                 <tr style={{ background: 'rgba(0,0,0,0.02)', color: 'var(--text-muted)', fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
@@ -1191,6 +1191,13 @@ export default function StudentManager() {
         .student-manager-table th,
         .student-manager-table td {
           padding: 0.95rem 0.75rem !important;
+        }
+        .student-manager-table th {
+          position: sticky;
+          top: 0;
+          z-index: 10;
+          background: rgba(15, 23, 42, 0.95);
+          backdrop-filter: blur(12px);
         }
         .student-manager-table .student-table-col-id {
           width: 9%;

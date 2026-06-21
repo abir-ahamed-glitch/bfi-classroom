@@ -12,6 +12,50 @@ import UserHoverCard from '../components/UserHoverCard';
 import { useModal } from '../components/BFIModal';
 import PhotoEditorModal from '../components/PhotoEditorModal';
 import ReportFormModal from '../components/ReportFormModal';
+
+// Custom Ribbon Badge Award Icon
+const LaurelAward = ({ size = 20, style = {} }) => {
+  const goldColor = '#d4af37';
+
+  // Generate 120 points for the rosette scalloped border
+  const rosettePoints = Array.from({ length: 120 }, (_, i) => {
+    const angle = (i * 2 * Math.PI) / 120;
+    const r = 26 + 2.2 * Math.cos(angle * 16); // 16 scallops
+    const x = 50 + r * Math.sin(angle);
+    const y = 40 - r * Math.cos(angle);
+    return `${x.toFixed(2)},${y.toFixed(2)}`;
+  });
+  const rosetteOuterPath = `M ${rosettePoints.join(' L ')} Z`;
+  
+  // Create a compound path for the scalloped ring (outer scalloped path + inner circular hole)
+  const rosetteRingPath = `${rosetteOuterPath} M 50,40 m -19.5,0 a 19.5,19.5 0 1,0 39,0 a 19.5,19.5 0 1,0 -39,0`;
+
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width={size} height={size} style={style} aria-label="Award-Winning Project">
+      {/* Ribbons hanging from behind the rosette */}
+      <g fill={goldColor}>
+        {/* Left Ribbon */}
+        <path d="M 37,58 L 20,88 L 31,81 L 42,88 L 46,60 Z" />
+        {/* Right Ribbon (Mirrored) */}
+        <path d="M 63,58 L 80,88 L 69,81 L 58,88 L 54,60 Z" />
+      </g>
+
+      {/* Scalloped Rosette Ring */}
+      <path
+        d={rosetteRingPath}
+        fill={goldColor}
+        fillRule="evenodd"
+      />
+
+      {/* Central Star */}
+      <polygon
+        points="50,26.5 53.5,35.1 62.8,35.8 55.7,41.9 57.9,50.9 50,46 42.1,50.9 44.3,41.9 37.2,35.8 46.5,35.1"
+        fill={goldColor}
+      />
+    </svg>
+  );
+};
+
 let cachedCommunityPosts = [];
 let cachedCommunityScrollY = 0;
 let cachedCommunityUserId = null;
@@ -106,6 +150,7 @@ export default function Community() {
   const [reportPost, setReportPost] = useState(null);
   const [reportComment, setReportComment] = useState(null);
   const [photoEditorMode, setPhotoEditorMode] = useState('new'); // 'new' or 'edit'
+  const [selectedProject, setSelectedProject] = useState(null);
   
   // Use cached posts only if the same user is viewing
   const shouldUseCache = currentUser?.id === cachedCommunityUserId;
@@ -295,14 +340,14 @@ export default function Community() {
     try {
       if (source === 'youtube' || !source) {
         const match = url.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|watch\?.+&v=))([^&?]+)/);
-        return match ? `https://www.youtube.com/embed/${match[1]}?autoplay=1&controls=1&origin=${window.location.origin}` : url;
+        return match ? `https://www.youtube.com/embed/${match[1]}?autoplay=1&mute=1&controls=1&origin=${window.location.origin}` : url;
       }
       if (source === 'vimeo') {
         const match = url.match(/vimeo\.com\/(?:[a-z]*\/)*([0-9]{6,11})[?]?.*/);
-        return match ? `https://player.vimeo.com/video/${match[1]}?autoplay=1` : url;
+        return match ? `https://player.vimeo.com/video/${match[1]}?autoplay=1&muted=1` : url;
       }
       if (source === 'facebook') {
-        return `https://www.facebook.com/plugins/video.php?href=${encodeURIComponent(url)}&show_text=0&width=560&autoplay=true`;
+        return `https://www.facebook.com/plugins/video.php?href=${encodeURIComponent(url)}&show_text=0&width=560&autoplay=true&mute=true`;
       }
     } catch { /* ignore */ }
     return url;
@@ -2060,7 +2105,16 @@ export default function Community() {
                   ) : null}
                   <div className="proj-card-body">
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.5rem' }}>
-                      <h3 style={{ margin: 0, fontSize: '1.2rem' }}>{post.shared_project.title}</h3>
+                      <h3 
+                        onClick={() => setSelectedProject(post.shared_project)}
+                        style={{ margin: 0, fontSize: '1.2rem', display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}
+                        className="project-title-link"
+                      >
+                        {post.shared_project.title}
+                        {post.shared_project.awards && post.shared_project.awards.length > 0 ? (
+                          <LaurelAward size={28} style={{ display: 'inline-block', verticalAlign: 'middle', filter: 'drop-shadow(0 0 4px rgba(255,165,0,0.5))' }} />
+                        ) : null}
+                      </h3>
                       {post.shared_project.duration && <span className="duration-tag">{post.shared_project.duration}</span>}
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.75rem' }}>
@@ -4826,6 +4880,192 @@ export default function Community() {
           color: var(--text-secondary);
           font-size: 0.9rem;
         }
+
+        .project-title-link {
+          transition: color 0.2s ease;
+        }
+        .project-title-link:hover {
+          color: var(--accent-primary);
+          text-decoration: underline;
+        }
+        .project-modal-overlay {
+          position: fixed;
+          top: 0; left: 0; right: 0; bottom: 0;
+          background: rgba(0, 0, 0, 0.7);
+          backdrop-filter: blur(10px);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          z-index: 1200;
+          animation: projectFadeIn 0.25s ease-out;
+        }
+        .project-modal-content {
+          width: 95%;
+          max-width: 720px;
+          max-height: 90vh;
+          background: rgba(15, 23, 42, 0.96);
+          border: 1px solid rgba(255, 255, 255, 0.1);
+          box-shadow: 0 24px 48px rgba(0,0,0,0.6);
+          border-radius: 16px;
+          display: flex;
+          flex-direction: column;
+          overflow: hidden;
+          animation: projectScaleUp 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+        }
+        [data-mode="light"] .project-modal-content {
+          background: rgba(255, 255, 255, 0.98);
+          border: 1px solid rgba(0, 0, 0, 0.08);
+          box-shadow: 0 24px 48px rgba(0,0,0,0.15);
+        }
+        @keyframes projectFadeIn {
+          from { opacity: 0; }
+          to { opacity: 1; }
+        }
+        @keyframes projectScaleUp {
+          from { transform: scale(0.9); opacity: 0; }
+          to { transform: scale(1); opacity: 1; }
+        }
+        .project-modal-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          padding: 1.25rem 1.5rem;
+          border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        }
+        [data-mode="light"] .project-modal-header {
+          border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+        }
+        .project-modal-header h3 {
+          margin: 0;
+          font-size: 1.3rem;
+          font-weight: 700;
+          color: var(--text-primary);
+          display: flex;
+          align-items: center;
+          gap: 0.5rem;
+        }
+        .project-modal-close {
+          background: none;
+          border: none;
+          color: var(--text-secondary);
+          width: 36px;
+          height: 36px;
+          border-radius: 50%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          cursor: pointer;
+          transition: all 0.2s ease;
+        }
+        .project-modal-close:hover {
+          background: rgba(255, 255, 255, 0.08);
+          color: var(--text-primary);
+        }
+        [data-mode="light"] .project-modal-close:hover {
+          background: rgba(0, 0, 0, 0.04);
+        }
+        .project-modal-body {
+          padding: 1.5rem;
+          overflow-y: auto;
+          flex: 1;
+        }
+        .project-modal-meta {
+          display: flex;
+          gap: 0.75rem;
+          margin-bottom: 1.25rem;
+          flex-wrap: wrap;
+        }
+        .project-modal-badge {
+          font-size: 0.8rem;
+          padding: 0.25rem 0.75rem;
+          background: rgba(255, 255, 255, 0.06);
+          border: 1px solid rgba(255, 255, 255, 0.1);
+          color: var(--text-secondary);
+          border-radius: 50px;
+          font-weight: 500;
+        }
+        [data-mode="light"] .project-modal-badge {
+          background: rgba(0, 0, 0, 0.03);
+          border: 1px solid rgba(0, 0, 0, 0.06);
+        }
+        .project-modal-section-title {
+          font-size: 1rem;
+          font-weight: 600;
+          text-transform: uppercase;
+          letter-spacing: 0.5px;
+          color: var(--text-muted);
+          margin-bottom: 0.5rem;
+          margin-top: 1.5rem;
+        }
+        .project-modal-synopsis {
+          font-size: 0.95rem;
+          line-height: 1.6;
+          color: var(--text-primary);
+          background: rgba(255, 255, 255, 0.02);
+          border: 1px solid rgba(255, 255, 255, 0.05);
+          border-radius: 8px;
+          padding: 1rem;
+        }
+        [data-mode="light"] .project-modal-synopsis {
+          background: rgba(0, 0, 0, 0.01);
+          border: 1px solid rgba(0, 0, 0, 0.03);
+        }
+        .project-modal-credits-list {
+          display: grid;
+          grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+          gap: 0.75rem;
+        }
+        .project-modal-credit-item {
+          background: rgba(255, 255, 255, 0.03);
+          border: 1px solid rgba(255, 255, 255, 0.06);
+          border-radius: 8px;
+          padding: 0.75rem 1rem;
+          display: flex;
+          flex-direction: column;
+        }
+        [data-mode="light"] .project-modal-credit-item {
+          background: rgba(0, 0, 0, 0.02);
+          border: 1px solid rgba(0, 0, 0, 0.04);
+        }
+        .project-modal-credit-role {
+          font-size: 0.75rem;
+          color: var(--text-muted);
+          text-transform: uppercase;
+          font-weight: 600;
+        }
+        .project-modal-credit-name {
+          font-size: 0.9rem;
+          font-weight: 500;
+          color: var(--text-primary);
+          margin-top: 0.1rem;
+        }
+        .project-modal-awards-list {
+          display: flex;
+          flex-direction: column;
+          gap: 0.5rem;
+        }
+        .project-modal-award-item {
+          background: rgba(212, 175, 55, 0.06);
+          border: 1px solid rgba(212, 175, 55, 0.2);
+          border-radius: 8px;
+          padding: 0.75rem 1rem;
+          display: flex;
+          align-items: center;
+          gap: 0.75rem;
+        }
+        .project-modal-award-info {
+          display: flex;
+          flex-direction: column;
+        }
+        .project-modal-award-title {
+          font-size: 0.95rem;
+          font-weight: 600;
+          color: var(--text-primary);
+        }
+        .project-modal-award-details {
+          font-size: 0.8rem;
+          color: var(--text-muted);
+        }
       `}</style>
 
       {/* ── Lightbox Portal ── */}
@@ -5238,6 +5478,112 @@ export default function Community() {
         onClose={() => setReportPost(null)}
         onSubmit={handlePostReport}
       />
+
+      {/* ── Project Details Modal Portal ── */}
+      {selectedProject && createPortal(
+        <div className="project-modal-overlay" onClick={() => setSelectedProject(null)}>
+          <div className="project-modal-content glass-panel" onClick={e => e.stopPropagation()}>
+            <div className="project-modal-header">
+              <h3>
+                <Film size={22} className="text-accent" style={{ color: 'var(--accent-primary)' }} />
+                {selectedProject.title}
+                {selectedProject.awards && selectedProject.awards.length > 0 ? (
+                  <LaurelAward size={28} style={{ display: 'inline-block', verticalAlign: 'middle', filter: 'drop-shadow(0 0 4px rgba(255,165,0,0.5))' }} />
+                ) : null}
+              </h3>
+              <button className="project-modal-close" onClick={() => setSelectedProject(null)}>
+                <X size={20} />
+              </button>
+            </div>
+            
+            <div className="project-modal-body custom-scrollbar">
+              {/* Video Player or Poster */}
+              {selectedProject.media_link ? (
+                <div className="proj-video-wrapper" style={{ marginBottom: '1.5rem', borderRadius: '12px', overflow: 'hidden' }}>
+                  <iframe
+                    src={getEmbedUrl(selectedProject.media_link, selectedProject.media_source)}
+                    frameBorder="0"
+                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                    referrerPolicy="strict-origin-when-cross-origin"
+                    allowFullScreen
+                    style={{ width: '100%', height: '360px' }}
+                  />
+                </div>
+              ) : getProjectPoster(selectedProject) ? (
+                <div 
+                  className="proj-poster-wrapper"
+                  onClick={() => openLightbox([{ url: getProjectPoster(selectedProject), caption: selectedProject.title }], 0)}
+                  style={{ cursor: 'pointer', marginBottom: '1.5rem', borderRadius: '12px', overflow: 'hidden', display: 'flex', justifyContent: 'center', background: 'rgba(0,0,0,0.2)' }}
+                >
+                  <img
+                    src={getProjectPoster(selectedProject)}
+                    alt={selectedProject.title}
+                    style={{ maxHeight: '400px', objectFit: 'contain' }}
+                    onError={() => setBrokenThumbs(prev => ({...prev, [selectedProject.id]: true}))}
+                  />
+                </div>
+              ) : null}
+
+              {/* Metadata */}
+              <div className="project-modal-meta">
+                {selectedProject.genre && <span className="project-modal-badge">{selectedProject.genre}</span>}
+                {selectedProject.duration && (
+                  <span className="project-modal-badge">
+                    {selectedProject.duration} {selectedProject.duration.toLowerCase().includes('min') || selectedProject.duration.toLowerCase().includes('hr') ? '' : 'mins'}
+                  </span>
+                )}
+                {selectedProject.release_date && <span className="project-modal-badge">Released: {selectedProject.release_date}</span>}
+              </div>
+
+              {/* Synopsis */}
+              {selectedProject.synopsis && (
+                <>
+                  <div className="project-modal-section-title">Synopsis</div>
+                  <div className="project-modal-synopsis" style={{ whiteSpace: 'pre-wrap' }}>
+                    {selectedProject.synopsis}
+                  </div>
+                </>
+              )}
+
+              {/* Awards List */}
+              {selectedProject.awards && selectedProject.awards.length > 0 && (
+                <>
+                  <div className="project-modal-section-title">Awards & Accolades</div>
+                  <div className="project-modal-awards-list">
+                    {selectedProject.awards.map((award, index) => (
+                      <div key={index} className="project-modal-award-item">
+                        <LaurelAward size={36} style={{ filter: 'drop-shadow(0 0 4px rgba(255,165,0,0.4))' }} />
+                        <div className="project-modal-award-info">
+                          <div className="project-modal-award-title">{award.award_name}</div>
+                          <div className="project-modal-award-details">
+                            {award.festival_name} {award.award_year && `(${award.award_year})`}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+
+              {/* Credits */}
+              {selectedProject.credits && selectedProject.credits.length > 0 && (
+                <>
+                  <div className="project-modal-section-title">Credits</div>
+                  <div className="project-modal-credits-list">
+                    {selectedProject.credits.map((c, i) => (
+                      <div key={i} className="project-modal-credit-item">
+                        <span className="project-modal-credit-role">{c.role}</span>
+                        <span className="project-modal-credit-name">{c.name}</span>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
     </div>
   );
 }

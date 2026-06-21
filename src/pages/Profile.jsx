@@ -890,7 +890,7 @@ export default function Profile() {
             <div className="input-group">
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
                 <label style={{ margin: 0, display: 'inline-block' }}>Gender</label>
-                <PrivacySelector
+                <PrivacySelector isTeacher={profile?.role === "instructor"}
                   fieldName="gender"
                   currentValue={privacySettings.gender}
                   onChange={handlePrivacyChange}
@@ -908,7 +908,7 @@ export default function Profile() {
             <div className="input-group">
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
                 <label style={{ margin: 0, display: 'inline-block' }}>Birthday</label>
-                <PrivacySelector
+                <PrivacySelector isTeacher={profile?.role === "instructor"}
                   fieldName="birthday"
                   currentValue={privacySettings.birthday}
                   onChange={handlePrivacyChange}
@@ -920,7 +920,7 @@ export default function Profile() {
             <div className="input-group">
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
                 <label style={{ margin: 0, display: 'inline-block' }}>Present Address</label>
-                <PrivacySelector
+                <PrivacySelector isTeacher={profile?.role === "instructor"}
                   fieldName="present_address"
                   currentValue={privacySettings.present_address}
                   onChange={handlePrivacyChange}
@@ -932,7 +932,7 @@ export default function Profile() {
             <div className="input-group">
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
                 <label style={{ margin: 0, display: 'inline-block' }}>Permanent Address</label>
-                <PrivacySelector
+                <PrivacySelector isTeacher={profile?.role === "instructor"}
                   fieldName="permanent_address"
                   currentValue={privacySettings.permanent_address}
                   onChange={handlePrivacyChange}
@@ -944,7 +944,7 @@ export default function Profile() {
             <div className="input-group">
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
                 <label style={{ margin: 0, display: 'inline-block' }}>Educational Qualification</label>
-                <PrivacySelector
+                <PrivacySelector isTeacher={profile?.role === "instructor"}
                   fieldName="educational_qualification"
                   currentValue={privacySettings.educational_qualification}
                   onChange={handlePrivacyChange}
@@ -956,7 +956,7 @@ export default function Profile() {
             <div className="input-group">
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
                 <label style={{ margin: 0, display: 'inline-block' }}>Profession</label>
-                <PrivacySelector
+                <PrivacySelector isTeacher={profile?.role === "instructor"}
                   fieldName="profession"
                   currentValue={privacySettings.profession}
                   onChange={handlePrivacyChange}
@@ -981,7 +981,7 @@ export default function Profile() {
             <div className="input-group">
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
                 <label style={{ margin: 0, display: 'inline-block' }}>Mobile Number</label>
-                <PrivacySelector
+                <PrivacySelector isTeacher={profile?.role === "instructor"}
                   fieldName="mobile_number"
                   currentValue={privacySettings.mobile_number}
                   onChange={handlePrivacyChange}
@@ -996,7 +996,7 @@ export default function Profile() {
             <div className="input-group">
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
                 <label style={{ margin: 0, display: 'inline-block' }}>WhatsApp Number</label>
-                <PrivacySelector
+                <PrivacySelector isTeacher={profile?.role === "instructor"}
                   fieldName="whatsapp_number"
                   currentValue={privacySettings.whatsapp_number}
                   onChange={handlePrivacyChange}
@@ -1015,7 +1015,7 @@ export default function Profile() {
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
                 <Link2 size={18} style={{ color: 'var(--accent-secondary)' }} />
                 <label style={{ fontSize: '1rem', fontWeight: 600, margin: 0 }}>Social Links</label>
-                <PrivacySelector
+                <PrivacySelector isTeacher={profile?.role === "instructor"}
                   fieldName="social_links"
                   currentValue={privacySettings.social_links}
                   onChange={handlePrivacyChange}
@@ -1531,7 +1531,7 @@ export default function Profile() {
         <section className="glass-panel" style={{ padding: '2rem', marginBottom: '2rem' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
             <h3 className="font-display" style={{ margin: 0 }}>About Me (Bio)</h3>
-            <PrivacySelector
+            <PrivacySelector isTeacher={profile?.role === "instructor"}
               fieldName="bio"
               currentValue={privacySettings.bio}
               onChange={handlePrivacyChange}
@@ -1559,7 +1559,7 @@ export default function Profile() {
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
             <h3 className="font-display" style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
               <Video size={20} className="text-secondary" /> Portfolio
-              <PrivacySelector
+              <PrivacySelector isTeacher={profile?.role === "instructor"}
                 fieldName="portfolio"
                 currentValue={privacySettings.portfolio}
                 onChange={handlePrivacyChange}
@@ -1859,7 +1859,7 @@ export default function Profile() {
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
             <h3 className="font-display" style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
               <Briefcase size={20} className="text-secondary" /> Work & Cultural Experience
-              <PrivacySelector
+              <PrivacySelector isTeacher={profile?.role === "instructor"}
                 fieldName="experiences"
                 currentValue={privacySettings.experiences}
                 onChange={handlePrivacyChange}

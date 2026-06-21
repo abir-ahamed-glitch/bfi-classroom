@@ -526,6 +526,7 @@ router.get('/posts/:id', authenticateToken, (req, res) => {
     const post = db.prepare(`
       SELECT p.id, p.user_id, p.content, p.image_url as media_url, p.created_at, p.is_pinned, p.audience, p.shares_count, p.scheduled_at,
       u.first_name, u.last_name, u.username, u.profile_picture, u.role,
+      EXISTS(SELECT 1 FROM awards WHERE user_id = p.user_id) OR EXISTS(SELECT 1 FROM student_experiences WHERE user_id = p.user_id AND experience_type = 'Award') as has_awards,
       ip.subjects as instructor_subjects,
       CASE 
         WHEN p.shared_project_id IS NOT NULL THEN 'project' 
@@ -546,6 +547,7 @@ router.get('/posts/:id', authenticateToken, (req, res) => {
             'first_name', cu.first_name, 
             'last_name', cu.last_name,
             'profile_picture', cu.profile_picture,
+            'has_awards', EXISTS(SELECT 1 FROM awards WHERE user_id = c.user_id) OR EXISTS(SELECT 1 FROM student_experiences WHERE user_id = c.user_id AND experience_type = 'Award'),
             'likes_count', (SELECT count(*) FROM comment_likes WHERE comment_id = c.id),
             'is_liked', EXISTS(SELECT 1 FROM comment_likes WHERE comment_id = c.id AND user_id = :viewerId),
             'user_reaction', (SELECT reaction_type FROM comment_likes WHERE comment_id = c.id AND user_id = :viewerId),
@@ -559,7 +561,9 @@ router.get('/posts/:id', authenticateToken, (req, res) => {
         'id', proj.id, 'title', proj.title, 'thumbnail_url', proj.thumbnail_url, 
         'poster_url', proj.poster_url, 'media_link', proj.media_link, 'media_source', proj.media_source,
         'genre', proj.genre, 'duration', proj.duration, 'synopsis', proj.synopsis,
-        'credits', (SELECT json_group_array(json_object('role', rc.role, 'name', rc.name)) FROM project_credits rc WHERE rc.project_id = proj.id)
+        'has_awards', EXISTS(SELECT 1 FROM awards WHERE project_id = proj.id),
+        'credits', (SELECT json_group_array(json_object('role', rc.role, 'name', rc.name)) FROM project_credits rc WHERE rc.project_id = proj.id),
+        'awards', (SELECT json_group_array(json_object('award_name', a.award_name, 'festival_name', a.festival_name, 'award_year', a.award_year)) FROM awards a WHERE a.project_id = proj.id)
       ) as shared_project
       FROM community_posts p
       JOIN users u ON p.user_id = u.id
@@ -595,7 +599,12 @@ router.get('/posts/:id', authenticateToken, (req, res) => {
       if (!sharedProject.id) {
         sharedProject = null;
       } else {
-        try { sharedProject.credits = JSON.parse(sharedProject.credits); } catch { sharedProject.credits = []; }
+        if (typeof sharedProject.credits === 'string') {
+          try { sharedProject.credits = JSON.parse(sharedProject.credits); } catch { sharedProject.credits = []; }
+        }
+        if (typeof sharedProject.awards === 'string') {
+          try { sharedProject.awards = JSON.parse(sharedProject.awards); } catch { sharedProject.awards = []; }
+        }
       }
     } catch (e) {
       console.warn('Failed to parse shared project', e);
@@ -668,6 +677,7 @@ router.get('/posts', authenticateToken, (req, res) => {
     const posts = db.prepare(`
       SELECT p.id, p.user_id, p.content, p.image_url as media_url, p.created_at, p.is_pinned, p.audience, p.shares_count, p.scheduled_at,
       u.first_name, u.last_name, u.username, u.profile_picture, u.role,
+      EXISTS(SELECT 1 FROM awards WHERE user_id = p.user_id) OR EXISTS(SELECT 1 FROM student_experiences WHERE user_id = p.user_id AND experience_type = 'Award') as has_awards,
       ip.subjects as instructor_subjects,
       CASE 
         WHEN p.shared_project_id IS NOT NULL THEN 'project' 
@@ -688,6 +698,7 @@ router.get('/posts', authenticateToken, (req, res) => {
             'first_name', cu.first_name, 
             'last_name', cu.last_name,
             'profile_picture', cu.profile_picture,
+            'has_awards', EXISTS(SELECT 1 FROM awards WHERE user_id = c.user_id) OR EXISTS(SELECT 1 FROM student_experiences WHERE user_id = c.user_id AND experience_type = 'Award'),
             'likes_count', (SELECT count(*) FROM comment_likes WHERE comment_id = c.id),
             'is_liked', EXISTS(SELECT 1 FROM comment_likes WHERE comment_id = c.id AND user_id = :viewerId),
             'user_reaction', (SELECT reaction_type FROM comment_likes WHERE comment_id = c.id AND user_id = :viewerId),
@@ -701,7 +712,9 @@ router.get('/posts', authenticateToken, (req, res) => {
         'id', proj.id, 'title', proj.title, 'thumbnail_url', proj.thumbnail_url, 
         'poster_url', proj.poster_url, 'media_link', proj.media_link, 'media_source', proj.media_source,
         'genre', proj.genre, 'duration', proj.duration, 'synopsis', proj.synopsis,
-        'credits', (SELECT json_group_array(json_object('role', rc.role, 'name', rc.name)) FROM project_credits rc WHERE rc.project_id = proj.id)
+        'has_awards', EXISTS(SELECT 1 FROM awards WHERE project_id = proj.id),
+        'credits', (SELECT json_group_array(json_object('role', rc.role, 'name', rc.name)) FROM project_credits rc WHERE rc.project_id = proj.id),
+        'awards', (SELECT json_group_array(json_object('award_name', a.award_name, 'festival_name', a.festival_name, 'award_year', a.award_year)) FROM awards a WHERE a.project_id = proj.id)
       ) as shared_project
       FROM community_posts p
       JOIN users u ON p.user_id = u.id
@@ -736,7 +749,12 @@ router.get('/posts', authenticateToken, (req, res) => {
           sharedProject = null;
         } else {
           // Parse credits inside shared project
-          try { sharedProject.credits = JSON.parse(sharedProject.credits); } catch { sharedProject.credits = []; }
+          if (typeof sharedProject.credits === 'string') {
+            try { sharedProject.credits = JSON.parse(sharedProject.credits); } catch { sharedProject.credits = []; }
+          }
+          if (typeof sharedProject.awards === 'string') {
+            try { sharedProject.awards = JSON.parse(sharedProject.awards); } catch { sharedProject.awards = []; }
+          }
         }
       } catch (e) {
         console.warn('Failed to parse shared project', e);
