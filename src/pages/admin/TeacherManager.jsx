@@ -29,15 +29,23 @@ export default function TeacherManager() {
     'Film Production Design'
   ];
 
-  const allSubjects = customSubjects.length > 0 ? customSubjects.map((s) => s.name) : SUBJECTS;
+  const allSubjects = customSubjects.length > 0 ? customSubjects : SUBJECTS.map(name => ({
+    id: name,
+    name,
+    course_name: 'Online Filmmaking Course',
+    phase: 1
+  }));
 
-  const filteredSubjectsForAdd = allSubjects.filter(sub =>
-    sub.toLowerCase().includes(subjectSearchAdd.toLowerCase())
-  );
-
-  const filteredSubjectsForEdit = allSubjects.filter(sub =>
-    sub.toLowerCase().includes(subjectSearchEdit.toLowerCase())
-  );
+  const getGroupedSubjects = (searchQuery) => {
+    const groups = {};
+    allSubjects.forEach(sub => {
+      if (!sub.name.toLowerCase().includes(searchQuery.toLowerCase())) return;
+      const key = sub.course_name + (sub.phase ? ` (Phase ${sub.phase})` : '');
+      if (!groups[key]) groups[key] = [];
+      groups[key].push(sub.name);
+    });
+    return groups;
+  };
 
   const fetchCustomSubjects = async () => {
     try {
@@ -240,6 +248,9 @@ export default function TeacherManager() {
     t.username.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
+  const groupedSubjectsForAdd = getGroupedSubjects(subjectSearchAdd);
+  const groupedSubjectsForEdit = getGroupedSubjects(subjectSearchEdit);
+
   return (
     <div className="page-container container">
       <div style={{ marginBottom: '2rem' }}>
@@ -317,21 +328,28 @@ export default function TeacherManager() {
                 />
               </div>
 
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '1rem' }}>
-                {filteredSubjectsForAdd.map((subject) => (
-                  <label key={subject} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', background: formData.subjects.includes(subject) ? 'rgba(56, 189, 248, 0.1)' : 'transparent', padding: '0.5rem 1rem', borderRadius: '8px', border: '1px solid', borderColor: formData.subjects.includes(subject) ? 'var(--accent-primary)' : 'rgba(255,255,255,0.1)', transition: 'all 0.2s' }}>
-                    <input 
-                      type="checkbox" 
-                      checked={formData.subjects.includes(subject)} 
-                      onChange={() => handleSubjectChange(subject)}
-                      style={{ width: '16px', height: '16px' }}
-                    />
-                    <span style={{ fontSize: '0.9rem' }}>{subject}</span>
-                  </label>
-                ))}
-              </div>
+              {Object.keys(groupedSubjectsForAdd).map((groupName) => (
+                <div key={groupName} style={{ marginBottom: '1.5rem', width: '100%' }}>
+                  <h4 style={{ fontSize: '0.9rem', color: 'var(--accent-primary)', marginBottom: '0.8rem', fontWeight: 600, borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: '0.3rem' }}>
+                    {groupName}
+                  </h4>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.8rem' }}>
+                    {groupedSubjectsForAdd[groupName].map((subject) => (
+                      <label key={subject} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', background: formData.subjects.includes(subject) ? 'rgba(56, 189, 248, 0.1)' : 'transparent', padding: '0.5rem 1rem', borderRadius: '8px', border: '1px solid', borderColor: formData.subjects.includes(subject) ? 'var(--accent-primary)' : 'rgba(255,255,255,0.1)', transition: 'all 0.2s' }}>
+                        <input 
+                          type="checkbox" 
+                          checked={formData.subjects.includes(subject)} 
+                          onChange={() => handleSubjectChange(subject)}
+                          style={{ width: '16px', height: '16px' }}
+                        />
+                        <span style={{ fontSize: '0.9rem' }}>{subject}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              ))}
 
-              {filteredSubjectsForAdd.length === 0 && (
+              {Object.keys(groupedSubjectsForAdd).length === 0 && (
                 <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', fontStyle: 'italic', marginTop: '0.5rem' }}>
                   No matching subjects found.
                 </p>
@@ -629,21 +647,28 @@ export default function TeacherManager() {
                   />
                 </div>
 
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.8rem' }}>
-                  {filteredSubjectsForEdit.map(subject => (
-                    <label key={subject} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', background: (editFormData.subjects || []).includes(subject) ? 'rgba(56, 189, 248, 0.1)' : 'transparent', padding: '0.4rem 0.8rem', borderRadius: '8px', border: '1px solid', borderColor: (editFormData.subjects || []).includes(subject) ? 'var(--accent-primary)' : 'rgba(255,255,255,0.1)', transition: 'all 0.2s' }}>
-                      <input 
-                        type="checkbox" 
-                        checked={(editFormData.subjects || []).includes(subject)} 
-                        onChange={() => handleEditSubjectChange(subject)}
-                        style={{ width: '15px', height: '15px' }}
-                      />
-                      <span style={{ fontSize: '0.85rem' }}>{subject}</span>
-                    </label>
-                  ))}
-                </div>
+                {Object.keys(groupedSubjectsForEdit).map((groupName) => (
+                  <div key={groupName} style={{ marginBottom: '1.2rem', width: '100%' }}>
+                    <h4 style={{ fontSize: '0.85rem', color: 'var(--accent-primary)', marginBottom: '0.6rem', fontWeight: 600, borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: '0.2rem' }}>
+                      {groupName}
+                    </h4>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.6rem' }}>
+                      {groupedSubjectsForEdit[groupName].map((subject) => (
+                        <label key={subject} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', background: (editFormData.subjects || []).includes(subject) ? 'rgba(56, 189, 248, 0.1)' : 'transparent', padding: '0.4rem 0.8rem', borderRadius: '8px', border: '1px solid', borderColor: (editFormData.subjects || []).includes(subject) ? 'var(--accent-primary)' : 'rgba(255,255,255,0.1)', transition: 'all 0.2s' }}>
+                          <input 
+                            type="checkbox" 
+                            checked={(editFormData.subjects || []).includes(subject)} 
+                            onChange={() => handleEditSubjectChange(subject)}
+                            style={{ width: '15px', height: '15px' }}
+                          />
+                          <span style={{ fontSize: '0.85rem' }}>{subject}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                ))}
 
-                {filteredSubjectsForEdit.length === 0 && (
+                {Object.keys(groupedSubjectsForEdit).length === 0 && (
                   <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontStyle: 'italic', marginTop: '0.5rem' }}>
                     No matching subjects found.
                   </p>

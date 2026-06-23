@@ -18,6 +18,16 @@ export default function AdditionalOptions() {
     }
   };
 
+  const COURSE_TABS = [
+    { label: 'Online Filmmaking (Phase 1)', course: 'Online Filmmaking Course', phase: 1 },
+    { label: 'Online Filmmaking (Phase 2)', course: 'Online Filmmaking Course', phase: 2 },
+    { label: 'Film Appreciation Course', course: 'Film Appreciation Course', phase: null },
+    { label: 'Script Writing', course: 'Script Writing', phase: null },
+    { label: 'Cinematography', course: 'Cinematography', phase: null },
+    { label: 'Acting', course: 'Acting', phase: null }
+  ];
+
+  const [activeTab, setActiveTab] = useState(COURSE_TABS[0]);
   const [customSubjects, setCustomSubjects] = useState([]);
   const [newSubjectName, setNewSubjectName] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -28,6 +38,8 @@ export default function AdditionalOptions() {
   const [subjectSearchQuery, setSubjectSearchQuery] = useState('');
 
   const filteredCustomSubjects = customSubjects.filter(sub => 
+    sub.course_name === activeTab.course &&
+    sub.phase === activeTab.phase &&
     sub.name.toLowerCase().includes(subjectSearchQuery.toLowerCase())
   );
 
@@ -69,7 +81,11 @@ export default function AdditionalOptions() {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
         },
-        body: JSON.stringify({ name: newSubjectName })
+        body: JSON.stringify({ 
+          name: newSubjectName,
+          course_name: activeTab.course,
+          phase: activeTab.phase
+        })
       });
 
       const data = await response.json();
@@ -342,7 +358,63 @@ export default function AdditionalOptions() {
           </button>
 
           {currentView === 'subjects' && (
-            <div className="subjects-layout-grid">
+            <>
+              {/* Course Tabs Selector */}
+              <div style={{ 
+                display: 'flex', 
+                flexWrap: 'wrap', 
+                gap: '0.5rem', 
+                marginBottom: '2rem', 
+                padding: '0.4rem', 
+                background: 'rgba(255,255,255,0.01)', 
+                borderRadius: '12px', 
+                border: '1px solid rgba(255,255,255,0.05)' 
+              }}>
+                {COURSE_TABS.map((tab, idx) => {
+                  const isActive = activeTab.course === tab.course && activeTab.phase === tab.phase;
+                  return (
+                    <button
+                      key={idx}
+                      type="button"
+                      onClick={() => {
+                        setActiveTab(tab);
+                        setSuccessMsg('');
+                        setErrorMsg('');
+                      }}
+                      style={{
+                        padding: '0.6rem 1.2rem',
+                        borderRadius: '8px',
+                        border: 'none',
+                        background: isActive ? 'var(--accent-primary)' : 'transparent',
+                        color: isActive ? 'white' : 'var(--text-secondary)',
+                        fontSize: '0.85rem',
+                        fontWeight: 600,
+                        cursor: 'pointer',
+                        transition: 'all 0.2s',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '0.4rem'
+                      }}
+                      onMouseEnter={(e) => {
+                        if (!isActive) {
+                          e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)';
+                          e.currentTarget.style.color = 'white';
+                        }
+                      }}
+                      onMouseLeave={(e) => {
+                        if (!isActive) {
+                          e.currentTarget.style.background = 'transparent';
+                          e.currentTarget.style.color = 'var(--text-secondary)';
+                        }
+                      }}
+                    >
+                      {tab.label}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="subjects-layout-grid">
               {/* Left column: Add custom subject form */}
               <div>
                 <div className="glass-panel" style={{ padding: '2rem', display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
@@ -596,6 +668,7 @@ export default function AdditionalOptions() {
                 </div>
               </div>
             </div>
+            </>
           )}
 
           {currentView === 'batch-fees' && (

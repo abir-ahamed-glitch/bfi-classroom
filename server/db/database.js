@@ -502,11 +502,61 @@ export function initializeDatabase() {
     -- Custom subjects
     CREATE TABLE IF NOT EXISTS custom_subjects (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT UNIQUE NOT NULL,
+      name TEXT NOT NULL,
+      course_name TEXT NOT NULL,
+      phase INTEGER,
       sort_order INTEGER DEFAULT 0,
-      created_at TEXT DEFAULT (datetime('now'))
+      created_at TEXT DEFAULT (datetime('now')),
+      UNIQUE(name, course_name, phase)
     );
   `);
+
+  // Custom subjects course_name and phase migration
+  try {
+    const info = db.prepare("PRAGMA table_info(custom_subjects)").all();
+    const hasCourseName = info.some(col => col.name === 'course_name');
+    if (!hasCourseName) {
+      console.log('⏳ Migrating custom_subjects table to support course_name and phase...');
+      
+      // 1. Rename existing table
+      db.prepare("ALTER TABLE custom_subjects RENAME TO temp_custom_subjects").run();
+      
+      // 2. Create new table
+      db.prepare(`
+        CREATE TABLE custom_subjects (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          course_name TEXT NOT NULL,
+          phase INTEGER,
+          sort_order INTEGER DEFAULT 0,
+          created_at TEXT DEFAULT (datetime('now')),
+          UNIQUE(name, course_name, phase)
+        )
+      `).run();
+      
+      // 3. Copy existing data
+      const tempInfo = db.prepare("PRAGMA table_info(temp_custom_subjects)").all();
+      const hasSortOrder = tempInfo.some(col => col.name === 'sort_order');
+      if (hasSortOrder) {
+        db.prepare(`
+          INSERT INTO custom_subjects (id, name, course_name, phase, sort_order, created_at)
+          SELECT id, name, 'Online Filmmaking Course', 1, sort_order, created_at FROM temp_custom_subjects
+        `).run();
+      } else {
+        db.prepare(`
+          INSERT INTO custom_subjects (id, name, course_name, phase, sort_order, created_at)
+          SELECT id, name, 'Online Filmmaking Course', 1, 0, created_at FROM temp_custom_subjects
+        `).run();
+      }
+      
+      // 4. Drop temporary table
+      db.prepare("DROP TABLE temp_custom_subjects").run();
+      
+      console.log('✅ Migrated custom_subjects: added course_name and phase columns with unique constraint');
+    }
+  } catch (error) {
+    console.error('Failed to migrate custom_subjects table:', error);
+  }
 
   // Seed default admin if not exists
   const adminExists = db.prepare('SELECT id FROM users WHERE role = ?').get('admin');
@@ -527,14 +577,14 @@ export function initializeDatabase() {
     'Script', 'Shot Division', 'Documentary', 'Film Criticism', 'How to Read a Film', 
     'Film Production Design'
   ];
-  const checkSubject = db.prepare('SELECT id FROM custom_subjects WHERE lower(name) = lower(?)');
-  const insertSubject = db.prepare('INSERT INTO custom_subjects (name) VALUES (?)');
+  const checkSubject = db.prepare("SELECT id FROM custom_subjects WHERE lower(name) = lower(?) AND course_name = ? AND phase = ?");
+  const insertSubject = db.prepare("INSERT INTO custom_subjects (name, course_name, phase) VALUES (?, ?, ?)");
   
   let seededCount = 0;
   for (const subject of defaultCoreSubjects) {
-    const exists = checkSubject.get(subject);
+    const exists = checkSubject.get(subject, 'Online Filmmaking Course', 1);
     if (!exists) {
-      insertSubject.run(subject);
+      insertSubject.run(subject, 'Online Filmmaking Course', 1);
       seededCount++;
     }
   }
@@ -735,6 +785,7 @@ export function initializeDatabase() {
   } catch (error) {
     // Column probably already exists
   }
+
 
   const plainMessages = db.prepare(`
     SELECT id, content

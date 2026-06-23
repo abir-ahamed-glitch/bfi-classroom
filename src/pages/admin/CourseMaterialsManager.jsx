@@ -149,7 +149,15 @@ export default function CourseMaterialsManager() {
     { value: 'file', label: 'Other' },
   ];
 
-  const allCourseOptions = customSubjects.length > 0 ? customSubjects.map((s) => s.name) : COURSE_OPTIONS;
+  const allCourseOptions = customSubjects.length > 0
+    ? customSubjects.map((s) => ({
+        value: s.name,
+        label: `${s.name} (${s.course_name}${s.phase ? ` - Phase ${s.phase}` : ''})`
+      }))
+    : COURSE_OPTIONS.map((name) => ({
+        value: name,
+        label: `${name} (Online Filmmaking Course - Phase 1)`
+      }));
 
   const fetchCustomSubjects = async () => {
     try {

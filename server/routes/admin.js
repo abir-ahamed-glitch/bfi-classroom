@@ -1202,7 +1202,7 @@ router.get('/targeting-options', authenticateToken, requireRole('admin'), (req, 
 // Get all custom subjects
 router.get('/custom-subjects', authenticateToken, requireRole('admin'), (req, res) => {
   try {
-    const subjects = db.prepare('SELECT id, name, sort_order, created_at FROM custom_subjects ORDER BY sort_order ASC, name ASC').all();
+    const subjects = db.prepare('SELECT id, name, course_name, phase, sort_order, created_at FROM custom_subjects ORDER BY sort_order ASC, name ASC').all();
     res.json({ subjects });
   } catch (error) {
     console.error('Error fetching custom subjects:', error);
@@ -1213,27 +1213,48 @@ router.get('/custom-subjects', authenticateToken, requireRole('admin'), (req, re
 // Create a new custom subject
 router.post('/custom-subjects', authenticateToken, requireRole('admin'), sanitizeInput, (req, res) => {
   try {
-    const { name } = req.body;
+    const { name, course_name, phase } = req.body;
     if (!name || !name.trim()) {
       return res.status(400).json({ error: 'Subject name is required.' });
     }
-
-    const trimmedName = name.trim();
-
-    // Check if duplicate exists in custom_subjects
-    const existing = db.prepare('SELECT id FROM custom_subjects WHERE lower(name) = lower(?)').get(trimmedName);
-    if (existing) {
-      return res.status(400).json({ error: 'A custom subject with this name already exists.' });
+    if (!course_name || !course_name.trim()) {
+      return res.status(400).json({ error: 'Course name is required.' });
     }
 
-    const maxOrderRow = db.prepare('SELECT MAX(sort_order) as maxOrder FROM custom_subjects').get();
+    const trimmedName = name.trim();
+    const courseNameTrimmed = course_name.trim();
+    const phaseVal = phase !== undefined && phase !== null ? Number(phase) : null;
+
+    // Check if duplicate exists in custom_subjects for the same course and phase
+    const existing = db.prepare(`
+      SELECT id FROM custom_subjects 
+      WHERE lower(name) = lower(?) 
+        AND course_name = ? 
+        AND (phase = ? OR (? IS NULL AND phase IS NULL))
+    `).get(trimmedName, courseNameTrimmed, phaseVal, phaseVal);
+
+    if (existing) {
+      return res.status(400).json({ error: 'A custom subject with this name already exists for this course/phase.' });
+    }
+
+    const maxOrderRow = db.prepare(`
+      SELECT MAX(sort_order) as maxOrder FROM custom_subjects 
+      WHERE course_name = ? 
+        AND (phase = ? OR (? IS NULL AND phase IS NULL))
+    `).get(courseNameTrimmed, phaseVal, phaseVal);
     const nextOrder = maxOrderRow && maxOrderRow.maxOrder !== null ? maxOrderRow.maxOrder + 1 : 0;
 
-    const result = db.prepare('INSERT INTO custom_subjects (name, sort_order) VALUES (?, ?)').run(trimmedName, nextOrder);
+    const result = db.prepare(`
+      INSERT INTO custom_subjects (name, course_name, phase, sort_order) 
+      VALUES (?, ?, ?, ?)
+    `).run(trimmedName, courseNameTrimmed, phaseVal, nextOrder);
+
     res.status(201).json({ 
       subject: {
         id: result.lastInsertRowid,
         name: trimmedName,
+        course_name: courseNameTrimmed,
+        phase: phaseVal,
         sort_order: nextOrder
       }
     });
@@ -1279,15 +1300,22 @@ router.put('/custom-subjects/:id', authenticateToken, requireRole('admin'), sani
     const trimmedName = name.trim();
 
     // Check if custom subject exists
-    const subject = db.prepare('SELECT name FROM custom_subjects WHERE id = ?').get(id);
+    const subject = db.prepare('SELECT name, course_name, phase FROM custom_subjects WHERE id = ?').get(id);
     if (!subject) {
       return res.status(404).json({ error: 'Custom subject not found.' });
     }
 
-    // Check if duplicate exists in custom_subjects (but exclude the current subject's ID)
-    const existing = db.prepare('SELECT id FROM custom_subjects WHERE lower(name) = lower(?) AND id != ?').get(trimmedName, id);
+    // Check if duplicate exists in custom_subjects for the same course and phase (excluding current ID)
+    const existing = db.prepare(`
+      SELECT id FROM custom_subjects 
+      WHERE lower(name) = lower(?) 
+        AND course_name = ? 
+        AND (phase = ? OR (? IS NULL AND phase IS NULL))
+        AND id != ?
+    `).get(trimmedName, subject.course_name, subject.phase, subject.phase, id);
+
     if (existing) {
-      return res.status(400).json({ error: 'Another custom subject with this name already exists.' });
+      return res.status(400).json({ error: 'Another custom subject with this name already exists for this course/phase.' });
     }
 
     db.prepare('UPDATE custom_subjects SET name = ? WHERE id = ?').run(trimmedName, id);
