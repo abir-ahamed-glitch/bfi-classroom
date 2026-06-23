@@ -571,6 +571,8 @@ body::before {
   border: none;
   border-radius: 14px;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
+  transform: translateZ(0);
+  backface-visibility: hidden;
 }
 
 /* Apply the requested glowing outline globally to all major glass panels */

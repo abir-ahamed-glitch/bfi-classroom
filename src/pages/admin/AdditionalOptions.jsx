@@ -526,8 +526,8 @@ export default function AdditionalOptions() {
               {/* Left column: Add custom subject form */}
               <div>
                 <div className="glass-panel" style={{ padding: '2rem', display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-                  <h2 style={{ fontSize: '1.25rem', display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-primary)' }}>
-                    <Plus className="text-accent" size={20} /> Create Custom Subject
+                  <h2 style={{ fontSize: '1.25rem', display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap', color: 'var(--text-primary)' }}>
+                    <Plus className="text-accent" size={20} style={{ flexShrink: 0 }} /> Create Custom Subject
                   </h2>
 
                   <form onSubmit={handleAddSubject} style={{ display: 'flex', flexDirection: 'column', gap: '1.2rem' }}>
@@ -693,8 +693,8 @@ export default function AdditionalOptions() {
               <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
                 {/* Classroom Subjects List */}
                 <div className="glass-panel" style={{ padding: '2rem' }}>
-                  <h2 style={{ fontSize: '1.25rem', marginBottom: '1.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-primary)' }}>
-                    <Settings className="text-accent" size={20} /> Classroom Subjects
+                  <h2 style={{ fontSize: '1.25rem', marginBottom: '1.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap', color: 'var(--text-primary)' }}>
+                    <Settings className="text-accent" size={20} style={{ flexShrink: 0 }} /> Classroom Subjects
                   </h2>
 
                   {customSubjects.length > 0 && (
