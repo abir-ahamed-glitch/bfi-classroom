@@ -381,32 +381,7 @@ export default function AdditionalOptions() {
                         setSuccessMsg('');
                         setErrorMsg('');
                       }}
-                      style={{
-                        padding: '0.6rem 1.2rem',
-                        borderRadius: '8px',
-                        border: 'none',
-                        background: isActive ? 'var(--accent-primary)' : 'transparent',
-                        color: isActive ? 'white' : 'var(--text-secondary)',
-                        fontSize: '0.85rem',
-                        fontWeight: 600,
-                        cursor: 'pointer',
-                        transition: 'all 0.2s',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '0.4rem'
-                      }}
-                      onMouseEnter={(e) => {
-                        if (!isActive) {
-                          e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)';
-                          e.currentTarget.style.color = 'white';
-                        }
-                      }}
-                      onMouseLeave={(e) => {
-                        if (!isActive) {
-                          e.currentTarget.style.background = 'transparent';
-                          e.currentTarget.style.color = 'var(--text-secondary)';
-                        }
-                      }}
+                      className={`subject-tab ${isActive ? 'active' : ''}`}
                     >
                       {tab.label}
                     </button>

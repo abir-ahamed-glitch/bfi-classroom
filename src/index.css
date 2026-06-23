@@ -2293,3 +2293,36 @@ html {
   }
 }
 
+/* Subject tabs style for course-specific subjects options */
+.subject-tab {
+  padding: 0.6rem 1.2rem;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.subject-tab.active {
+  background: var(--accent-primary) !important;
+  color: white !important;
+}
+
+/* Hover for inactive tabs - Dark mode */
+.subject-tab:not(.active):hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-primary);
+}
+
+/* Hover for inactive tabs - Light mode overrides */
+[data-mode="light"] .subject-tab:not(.active):hover {
+  background: rgba(0, 0, 0, 0.05);
+  color: var(--text-primary);
+}
+
