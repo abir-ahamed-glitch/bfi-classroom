@@ -2302,7 +2302,7 @@ html {
   font-size: 0.85rem;
   font-weight: 600;
   cursor: pointer;
-  transition: all 0.2s;
+  transition: background 0.2s, color 0.2s;
   display: flex;
   align-items: center;
   gap: 0.4rem;

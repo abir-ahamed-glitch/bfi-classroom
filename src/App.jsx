@@ -103,11 +103,11 @@ const Layout = ({ children }) => {
     <CallProvider>
       <div style={{ display: 'flex', position: 'relative', minHeight: '100vh', zIndex: 1 }}>
         
-        {/* Global Cinematic Watermarks */}
-        <div style={{ position: 'fixed', top: '10%', right: '-5%', opacity: 0.02, transform: 'rotate(15deg)', pointerEvents: 'none', zIndex: 0, color: 'var(--text-primary)' }}>
+        {/* Global Cinematic Watermarks — rendered behind body bg (z-index: -1) to prevent bleed-through on glass panels */}
+        <div style={{ position: 'fixed', top: '10%', right: '-5%', opacity: 0.02, transform: 'rotate(15deg)', pointerEvents: 'none', zIndex: -1, color: 'var(--text-primary)' }}>
           <Film size={400} strokeWidth={1} />
         </div>
-        <div style={{ position: 'fixed', bottom: '-10%', left: '15%', opacity: 0.015, transform: 'rotate(-10deg)', pointerEvents: 'none', zIndex: 0, color: 'var(--accent-primary)' }}>
+        <div style={{ position: 'fixed', bottom: '-10%', left: '15%', opacity: 0.015, transform: 'rotate(-10deg)', pointerEvents: 'none', zIndex: -1, color: 'var(--accent-primary)' }}>
           <Aperture size={350} strokeWidth={1} />
         </div>
 
