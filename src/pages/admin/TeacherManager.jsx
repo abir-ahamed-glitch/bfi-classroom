@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { UserPlus, Search, Copy, CheckCircle2, User, UserCheck, Edit, X } from 'lucide-react';
+import { UserPlus, Search, Copy, CheckCircle2, User, UserCheck, Edit, X, ChevronUp, ChevronDown, GripVertical } from 'lucide-react';
 
 export default function TeacherManager() {
   const [teachers, setTeachers] = useState([]);
@@ -17,6 +17,10 @@ export default function TeacherManager() {
   });
   const [isEditing, setIsEditing] = useState(false);
   const [editError, setEditError] = useState('');
+  const [customSubjects, setCustomSubjects] = useState([]);
+  const [draggedIndex, setDraggedIndex] = useState(null);
+  const [subjectSearchAdd, setSubjectSearchAdd] = useState('');
+  const [subjectSearchEdit, setSubjectSearchEdit] = useState('');
 
   const SUBJECTS = [
     'History of World Cinema', 'Film Language', 'Film Aesthetics', 'Aesthetics of Sound', 
@@ -24,6 +28,33 @@ export default function TeacherManager() {
     'Script', 'Shot Division', 'Documentary', 'Film Criticism', 'How to Read a Film', 
     'Film Production Design'
   ];
+
+  const allSubjects = customSubjects.length > 0 ? customSubjects.map((s) => s.name) : SUBJECTS;
+
+  const filteredSubjectsForAdd = allSubjects.filter(sub =>
+    sub.toLowerCase().includes(subjectSearchAdd.toLowerCase())
+  );
+
+  const filteredSubjectsForEdit = allSubjects.filter(sub =>
+    sub.toLowerCase().includes(subjectSearchEdit.toLowerCase())
+  );
+
+  const fetchCustomSubjects = async () => {
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch('/api/admin/custom-subjects', {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setCustomSubjects(data.subjects || []);
+      }
+    } catch (error) {
+      console.error('Failed to fetch custom subjects:', error);
+    }
+  };
 
   // Form State
   const [formData, setFormData] = useState({
@@ -56,6 +87,7 @@ export default function TeacherManager() {
 
   useEffect(() => {
     fetchTeachers();
+    fetchCustomSubjects();
   }, []);
 
   const handleInputChange = (e) => {
@@ -82,6 +114,37 @@ export default function TeacherManager() {
         ? prev.subjects.filter((s) => s !== subject)
         : [...prev.subjects, subject]
     }));
+  };
+
+  const handleDragStart = (e, index) => {
+    setDraggedIndex(index);
+    e.dataTransfer.effectAllowed = 'move';
+  };
+
+  const handleDragOverAdd = (e, index) => {
+    e.preventDefault();
+    if (draggedIndex === null || draggedIndex === index) return;
+
+    setFormData((prev) => {
+      const newSubjects = [...(prev.subjects || [])];
+      const [draggedItem] = newSubjects.splice(draggedIndex, 1);
+      newSubjects.splice(index, 0, draggedItem);
+      setDraggedIndex(index);
+      return { ...prev, subjects: newSubjects };
+    });
+  };
+
+  const handleDragOverEdit = (e, index) => {
+    e.preventDefault();
+    if (draggedIndex === null || draggedIndex === index) return;
+
+    setEditFormData((prev) => {
+      const newSubjects = [...(prev.subjects || [])];
+      const [draggedItem] = newSubjects.splice(draggedIndex, 1);
+      newSubjects.splice(index, 0, draggedItem);
+      setDraggedIndex(index);
+      return { ...prev, subjects: newSubjects };
+    });
   };
 
   const handleSubmit = async (e) => {
@@ -139,12 +202,13 @@ export default function TeacherManager() {
       mobileNumber: teacher.mobile_number || '',
       subjects: teacher.subjects || []
     });
-    setIsEditing(true);
+    setIsEditing(false);
   };
 
   const saveEdit = async (e) => {
     if (e) e.preventDefault();
     setEditError('');
+    setIsEditing(true);
     try {
       const token = localStorage.getItem('token');
       const response = await fetch(`/api/admin/teachers/${editingTeacher.id}`, {
@@ -166,6 +230,7 @@ export default function TeacherManager() {
       fetchTeachers();
     } catch (err) {
       setEditError(err.message);
+      setIsEditing(false);
     }
   };
 
@@ -190,7 +255,7 @@ export default function TeacherManager() {
           </h2>
           
           <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+            <div className="responsive-two-column-grid">
               <div>
                 <label style={{ display: 'block', marginBottom: '0.4rem', color: 'var(--text-secondary)' }}>First Name</label>
                 <input type="text" name="firstName" value={formData.firstName} onChange={handleInputChange} className="input-glass" required style={{ width: '100%', paddingLeft: '1rem' }} />
@@ -201,7 +266,7 @@ export default function TeacherManager() {
               </div>
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+            <div className="responsive-two-column-grid">
               <div>
                 <label style={{ display: 'block', marginBottom: '0.4rem', color: 'var(--text-secondary)' }}>Email</label>
                 <input type="email" name="email" value={formData.email} onChange={handleInputChange} className="input-glass" required style={{ width: '100%', paddingLeft: '1rem' }} />
@@ -224,8 +289,36 @@ export default function TeacherManager() {
 
             <div style={{ padding: '1.5rem', background: 'rgba(255,255,255,0.02)', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.05)' }}>
               <h3 style={{ fontSize: '1rem', marginBottom: '1rem', color: 'var(--text-secondary)' }}>Select Subjects</h3>
+              
+              <div style={{ position: 'relative', marginBottom: '1.2rem' }}>
+                <Search 
+                  size={16} 
+                  style={{ 
+                    position: 'absolute', 
+                    left: '10px', 
+                    top: '50%', 
+                    transform: 'translateY(-50%)', 
+                    color: 'var(--text-muted)' 
+                  }} 
+                />
+                <input
+                  type="text"
+                  placeholder="Search subjects..."
+                  value={subjectSearchAdd}
+                  onChange={(e) => setSubjectSearchAdd(e.target.value)}
+                  className="input-glass"
+                  style={{ 
+                    width: '100%', 
+                    paddingLeft: '2.2rem', 
+                    paddingRight: '1rem',
+                    height: '36px',
+                    fontSize: '0.85rem'
+                  }}
+                />
+              </div>
+
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: '1rem' }}>
-                {SUBJECTS.map((subject) => (
+                {filteredSubjectsForAdd.map((subject) => (
                   <label key={subject} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', background: formData.subjects.includes(subject) ? 'rgba(56, 189, 248, 0.1)' : 'transparent', padding: '0.5rem 1rem', borderRadius: '8px', border: '1px solid', borderColor: formData.subjects.includes(subject) ? 'var(--accent-primary)' : 'rgba(255,255,255,0.1)', transition: 'all 0.2s' }}>
                     <input 
                       type="checkbox" 
@@ -237,13 +330,132 @@ export default function TeacherManager() {
                   </label>
                 ))}
               </div>
+
+              {filteredSubjectsForAdd.length === 0 && (
+                <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', fontStyle: 'italic', marginTop: '0.5rem' }}>
+                  No matching subjects found.
+                </p>
+              )}
+
+              {formData.subjects && formData.subjects.length > 0 && (
+                <div style={{ marginTop: '1.5rem', paddingTop: '1.2rem', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+                  <h4 style={{ fontSize: '0.95rem', marginBottom: '0.8rem', color: 'var(--text-secondary)', fontWeight: 600 }}>
+                    Arrange Subjects Lineup (drag to reorder)
+                  </h4>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                    {formData.subjects.map((subject, index) => (
+                      <div
+                        key={subject}
+                        draggable
+                        onDragStart={(e) => handleDragStart(e, index)}
+                        onDragOver={(e) => handleDragOverAdd(e, index)}
+                        onDragEnd={() => setDraggedIndex(null)}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          padding: '0.6rem 1rem',
+                          background: 'rgba(255,255,255,0.02)',
+                          border: '1px solid var(--glass-border)',
+                          borderRadius: '8px',
+                          fontSize: '0.85rem',
+                          cursor: 'grab',
+                          opacity: draggedIndex === index ? 0.4 : 1,
+                          transition: 'opacity 0.2s',
+                          userSelect: 'none'
+                        }}
+                        onDragEnter={(e) => e.preventDefault()}
+                      >
+                        <span style={{ color: 'var(--text-primary)', fontWeight: 500, display: 'flex', alignItems: 'center', gap: '0.8rem' }}>
+                          <GripVertical size={16} style={{ color: 'var(--text-muted)', cursor: 'grab', opacity: 0.5 }} />
+                          <span style={{ color: 'var(--text-muted)' }}>#{index + 1}</span>
+                          {subject}
+                        </span>
+                        
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.2rem' }}>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (index > 0) {
+                                setFormData(prev => {
+                                  const newSubjects = [...(prev.subjects || [])];
+                                  const [moved] = newSubjects.splice(index, 1);
+                                  newSubjects.splice(index - 1, 0, moved);
+                                  return { ...prev, subjects: newSubjects };
+                                });
+                              }
+                            }}
+                            disabled={index === 0}
+                            style={{
+                              background: 'none',
+                              border: 'none',
+                              color: index === 0 ? 'var(--text-muted)' : 'var(--text-secondary)',
+                              opacity: index === 0 ? 0.3 : 0.8,
+                              cursor: index === 0 ? 'not-allowed' : 'pointer',
+                              padding: '4px',
+                              display: 'flex',
+                              alignItems: 'center',
+                              borderRadius: '4px',
+                              transition: 'background 0.2s'
+                            }}
+                            onMouseEnter={(e) => {
+                              if (index > 0) e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)';
+                            }}
+                            onMouseLeave={(e) => {
+                              e.currentTarget.style.background = 'none';
+                            }}
+                            title="Move Up"
+                          >
+                            <ChevronUp size={16} />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (index < formData.subjects.length - 1) {
+                                setFormData(prev => {
+                                  const newSubjects = [...(prev.subjects || [])];
+                                  const [moved] = newSubjects.splice(index, 1);
+                                  newSubjects.splice(index + 1, 0, moved);
+                                  return { ...prev, subjects: newSubjects };
+                                });
+                              }
+                            }}
+                            disabled={index === formData.subjects.length - 1}
+                            style={{
+                              background: 'none',
+                              border: 'none',
+                              color: index === formData.subjects.length - 1 ? 'var(--text-muted)' : 'var(--text-secondary)',
+                              opacity: index === formData.subjects.length - 1 ? 0.3 : 0.8,
+                              cursor: index === formData.subjects.length - 1 ? 'not-allowed' : 'pointer',
+                              padding: '4px',
+                              display: 'flex',
+                              alignItems: 'center',
+                              borderRadius: '4px',
+                              transition: 'background 0.2s'
+                            }}
+                            onMouseEnter={(e) => {
+                              if (index < formData.subjects.length - 1) e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)';
+                            }}
+                            onMouseLeave={(e) => {
+                              e.currentTarget.style.background = 'none';
+                            }}
+                            title="Move Down"
+                          >
+                            <ChevronDown size={16} />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
 
             <div style={{ padding: '1.5rem', background: 'rgba(255,255,255,0.02)', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.05)' }}>
               <h3 style={{ fontSize: '1rem', marginBottom: '1rem', color: 'var(--text-secondary)' }}>Optional: Manual Credentials</h3>
               <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '1rem' }}>If left blank, secure credentials will be generated automatically.</p>
               
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+              <div className="responsive-two-column-grid">
                 <div>
                   <input type="text" name="manualUsername" value={formData.manualUsername} onChange={handleInputChange} className="input-glass" placeholder="Custom Username" style={{ width: '100%', paddingLeft: '1rem' }} />
                 </div>
@@ -269,7 +481,7 @@ export default function TeacherManager() {
                   {copied ? 'Copied!' : <><Copy size={16} /> Copy Details</>}
                 </button>
               </div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', fontSize: '0.95rem' }}>
+              <div className="responsive-two-column-grid" style={{ fontSize: '0.95rem' }}>
                 <p style={{ color: 'var(--text-primary)', margin: 0 }}><strong style={{ color: 'var(--text-secondary)' }}>Name:</strong> {successData.firstName} {successData.lastName}</p>
                 <p style={{ color: 'var(--text-primary)', margin: 0 }}><strong style={{ color: 'var(--text-secondary)' }}>Username:</strong>{' '}
                   <span style={{ fontFamily: 'monospace', fontWeight: 700, color: '#2563eb', background: 'rgba(37,99,235,0.1)', padding: '0.1rem 0.4rem', borderRadius: '4px' }}>{successData.username}</span>
@@ -358,7 +570,7 @@ export default function TeacherManager() {
             </div>
             
             <div className="modern-modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '1rem', maxHeight: '60vh', overflowY: 'auto' }}>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+              <div className="responsive-two-column-grid">
                 <div>
                   <label style={{ display: 'block', marginBottom: '0.4rem', color: 'var(--text-secondary)' }}>First Name</label>
                   <input type="text" name="firstName" value={editFormData.firstName} onChange={handleEditInputChange} className="input-glass" required style={{ width: '100%', paddingLeft: '1rem' }} />
@@ -369,7 +581,7 @@ export default function TeacherManager() {
                 </div>
               </div>
 
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+              <div className="responsive-two-column-grid">
                 <div>
                   <label style={{ display: 'block', marginBottom: '0.4rem', color: 'var(--text-secondary)' }}>Email</label>
                   <input type="email" name="email" value={editFormData.email} onChange={handleEditInputChange} className="input-glass" required style={{ width: '100%', paddingLeft: '1rem' }} />
@@ -389,8 +601,36 @@ export default function TeacherManager() {
 
               <div style={{ padding: '1rem', background: 'rgba(255,255,255,0.02)', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.05)', marginTop: '0.5rem' }}>
                 <h3 style={{ fontSize: '1rem', marginBottom: '1rem', color: 'var(--text-secondary)' }}>Subjects Taught</h3>
+                
+                <div style={{ position: 'relative', marginBottom: '1rem' }}>
+                  <Search 
+                    size={15} 
+                    style={{ 
+                      position: 'absolute', 
+                      left: '10px', 
+                      top: '50%', 
+                      transform: 'translateY(-50%)', 
+                      color: 'var(--text-muted)' 
+                    }} 
+                  />
+                  <input
+                    type="text"
+                    placeholder="Search subjects..."
+                    value={subjectSearchEdit}
+                    onChange={(e) => setSubjectSearchEdit(e.target.value)}
+                    className="input-glass"
+                    style={{ 
+                      width: '100%', 
+                      paddingLeft: '2.2rem', 
+                      paddingRight: '1rem',
+                      height: '34px',
+                      fontSize: '0.8rem'
+                    }}
+                  />
+                </div>
+
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.8rem' }}>
-                  {SUBJECTS.map(subject => (
+                  {filteredSubjectsForEdit.map(subject => (
                     <label key={subject} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', background: (editFormData.subjects || []).includes(subject) ? 'rgba(56, 189, 248, 0.1)' : 'transparent', padding: '0.4rem 0.8rem', borderRadius: '8px', border: '1px solid', borderColor: (editFormData.subjects || []).includes(subject) ? 'var(--accent-primary)' : 'rgba(255,255,255,0.1)', transition: 'all 0.2s' }}>
                       <input 
                         type="checkbox" 
@@ -402,6 +642,125 @@ export default function TeacherManager() {
                     </label>
                   ))}
                 </div>
+
+                {filteredSubjectsForEdit.length === 0 && (
+                  <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontStyle: 'italic', marginTop: '0.5rem' }}>
+                    No matching subjects found.
+                  </p>
+                )}
+
+                {editFormData.subjects && editFormData.subjects.length > 0 && (
+                  <div style={{ marginTop: '1.2rem', paddingTop: '1rem', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+                    <h4 style={{ fontSize: '0.9rem', marginBottom: '0.8rem', color: 'var(--text-secondary)', fontWeight: 600 }}>
+                      Arrange Subjects Lineup (drag to reorder)
+                    </h4>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                      {editFormData.subjects.map((subject, index) => (
+                        <div
+                          key={subject}
+                          draggable
+                          onDragStart={(e) => handleDragStart(e, index)}
+                          onDragOver={(e) => handleDragOverEdit(e, index)}
+                          onDragEnd={() => setDraggedIndex(null)}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            padding: '0.6rem 1rem',
+                            background: 'rgba(255,255,255,0.02)',
+                            border: '1px solid var(--glass-border)',
+                            borderRadius: '8px',
+                            fontSize: '0.85rem',
+                            cursor: 'grab',
+                            opacity: draggedIndex === index ? 0.4 : 1,
+                            transition: 'opacity 0.2s',
+                            userSelect: 'none'
+                          }}
+                          onDragEnter={(e) => e.preventDefault()}
+                        >
+                          <span style={{ color: 'var(--text-primary)', fontWeight: 500, display: 'flex', alignItems: 'center', gap: '0.8rem' }}>
+                            <GripVertical size={16} style={{ color: 'var(--text-muted)', cursor: 'grab', opacity: 0.5 }} />
+                            <span style={{ color: 'var(--text-muted)' }}>#{index + 1}</span>
+                            {subject}
+                          </span>
+
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.2rem' }}>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (index > 0) {
+                                  setEditFormData(prev => {
+                                    const newSubjects = [...(prev.subjects || [])];
+                                    const [moved] = newSubjects.splice(index, 1);
+                                    newSubjects.splice(index - 1, 0, moved);
+                                    return { ...prev, subjects: newSubjects };
+                                  });
+                                }
+                              }}
+                              disabled={index === 0}
+                              style={{
+                                background: 'none',
+                                border: 'none',
+                                color: index === 0 ? 'var(--text-muted)' : 'var(--text-secondary)',
+                                opacity: index === 0 ? 0.3 : 0.8,
+                                cursor: index === 0 ? 'not-allowed' : 'pointer',
+                                padding: '4px',
+                                display: 'flex',
+                                alignItems: 'center',
+                                borderRadius: '4px',
+                                transition: 'background 0.2s'
+                              }}
+                              onMouseEnter={(e) => {
+                                if (index > 0) e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)';
+                              }}
+                              onMouseLeave={(e) => {
+                                e.currentTarget.style.background = 'none';
+                              }}
+                              title="Move Up"
+                            >
+                              <ChevronUp size={16} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (index < editFormData.subjects.length - 1) {
+                                  setEditFormData(prev => {
+                                    const newSubjects = [...(prev.subjects || [])];
+                                    const [moved] = newSubjects.splice(index, 1);
+                                    newSubjects.splice(index + 1, 0, moved);
+                                    return { ...prev, subjects: newSubjects };
+                                  });
+                                }
+                              }}
+                              disabled={index === editFormData.subjects.length - 1}
+                              style={{
+                                background: 'none',
+                                border: 'none',
+                                color: index === editFormData.subjects.length - 1 ? 'var(--text-muted)' : 'var(--text-secondary)',
+                                opacity: index === editFormData.subjects.length - 1 ? 0.3 : 0.8,
+                                cursor: index === editFormData.subjects.length - 1 ? 'not-allowed' : 'pointer',
+                                padding: '4px',
+                                display: 'flex',
+                                alignItems: 'center',
+                                borderRadius: '4px',
+                                transition: 'background 0.2s'
+                              }}
+                              onMouseEnter={(e) => {
+                                if (index < editFormData.subjects.length - 1) e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)';
+                              }}
+                              onMouseLeave={(e) => {
+                                e.currentTarget.style.background = 'none';
+                              }}
+                              title="Move Down"
+                            >
+                              <ChevronDown size={16} />
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
 
               {editError && <div className="error-alert" style={{ marginTop: '0.5rem' }}>{editError}</div>}

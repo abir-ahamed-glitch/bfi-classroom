@@ -1199,6 +1199,173 @@ router.get('/targeting-options', authenticateToken, requireRole('admin'), (req, 
   }
 });
 
+// Get all custom subjects
+router.get('/custom-subjects', authenticateToken, requireRole('admin'), (req, res) => {
+  try {
+    const subjects = db.prepare('SELECT id, name, sort_order, created_at FROM custom_subjects ORDER BY sort_order ASC, name ASC').all();
+    res.json({ subjects });
+  } catch (error) {
+    console.error('Error fetching custom subjects:', error);
+    res.status(500).json({ error: 'Internal server error while fetching custom subjects.' });
+  }
+});
+
+// Create a new custom subject
+router.post('/custom-subjects', authenticateToken, requireRole('admin'), sanitizeInput, (req, res) => {
+  try {
+    const { name } = req.body;
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: 'Subject name is required.' });
+    }
+
+    const trimmedName = name.trim();
+
+    // Check if duplicate exists in custom_subjects
+    const existing = db.prepare('SELECT id FROM custom_subjects WHERE lower(name) = lower(?)').get(trimmedName);
+    if (existing) {
+      return res.status(400).json({ error: 'A custom subject with this name already exists.' });
+    }
+
+    const maxOrderRow = db.prepare('SELECT MAX(sort_order) as maxOrder FROM custom_subjects').get();
+    const nextOrder = maxOrderRow && maxOrderRow.maxOrder !== null ? maxOrderRow.maxOrder + 1 : 0;
+
+    const result = db.prepare('INSERT INTO custom_subjects (name, sort_order) VALUES (?, ?)').run(trimmedName, nextOrder);
+    res.status(201).json({ 
+      subject: {
+        id: result.lastInsertRowid,
+        name: trimmedName,
+        sort_order: nextOrder
+      }
+    });
+  } catch (error) {
+    console.error('Error creating custom subject:', error);
+    res.status(500).json({ error: 'Internal server error while creating custom subject.' });
+  }
+});
+
+// Reorder custom subjects
+router.put('/custom-subjects/reorder', authenticateToken, requireRole('admin'), (req, res) => {
+  try {
+    const { orders } = req.body; // Array of { id, sort_order }
+    if (!orders || !Array.isArray(orders)) {
+      return res.status(400).json({ error: 'Invalid payload. An array of orders is required.' });
+    }
+
+    const updateStmt = db.prepare('UPDATE custom_subjects SET sort_order = ? WHERE id = ?');
+    const updateTransaction = db.transaction((ordersList) => {
+      for (const item of ordersList) {
+        updateStmt.run(item.sort_order, item.id);
+      }
+    });
+
+    updateTransaction(orders);
+    res.json({ message: 'Subjects reordered successfully.' });
+  } catch (error) {
+    console.error('Error reordering custom subjects:', error);
+    res.status(500).json({ error: 'Internal server error while reordering custom subjects.' });
+  }
+});
+
+// Update a custom subject
+router.put('/custom-subjects/:id', authenticateToken, requireRole('admin'), sanitizeInput, (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name } = req.body;
+
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: 'Subject name is required.' });
+    }
+
+    const trimmedName = name.trim();
+
+    // Check if custom subject exists
+    const subject = db.prepare('SELECT name FROM custom_subjects WHERE id = ?').get(id);
+    if (!subject) {
+      return res.status(404).json({ error: 'Custom subject not found.' });
+    }
+
+    // Check if duplicate exists in custom_subjects (but exclude the current subject's ID)
+    const existing = db.prepare('SELECT id FROM custom_subjects WHERE lower(name) = lower(?) AND id != ?').get(trimmedName, id);
+    if (existing) {
+      return res.status(400).json({ error: 'Another custom subject with this name already exists.' });
+    }
+
+    db.prepare('UPDATE custom_subjects SET name = ? WHERE id = ?').run(trimmedName, id);
+
+    // Cascade rename to instructor profiles
+    try {
+      const profiles = db.prepare('SELECT user_id, subjects FROM instructor_profiles').all();
+      const updateStmt = db.prepare('UPDATE instructor_profiles SET subjects = ? WHERE user_id = ?');
+      for (const p of profiles) {
+        if (p.subjects) {
+          try {
+            let subjectsArr = JSON.parse(p.subjects);
+            if (Array.isArray(subjectsArr) && subjectsArr.includes(subject.name)) {
+              const updatedArr = subjectsArr.map(s => s === subject.name ? trimmedName : s);
+              updateStmt.run(JSON.stringify(updatedArr), p.user_id);
+            }
+          } catch (e) {
+            console.error(`Failed to cascade rename subjects for instructor ${p.user_id}:`, e);
+          }
+        }
+      }
+    } catch (e) {
+      console.error('Failed to update teacher profiles during subject rename cascade:', e);
+    }
+
+    res.json({ 
+      subject: {
+        id: Number(id),
+        name: trimmedName
+      }
+    });
+  } catch (error) {
+    console.error('Error update custom subject:', error);
+    res.status(500).json({ error: 'Internal server error while updating custom subject.' });
+  }
+});
+
+// Delete a custom subject
+router.delete('/custom-subjects/:id', authenticateToken, requireRole('admin'), (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    // Check if custom subject exists
+    const subject = db.prepare('SELECT name FROM custom_subjects WHERE id = ?').get(id);
+    if (!subject) {
+      return res.status(404).json({ error: 'Custom subject not found.' });
+    }
+
+    db.prepare('DELETE FROM custom_subjects WHERE id = ?').run(id);
+
+    // Cascade delete to instructor profiles
+    try {
+      const profiles = db.prepare('SELECT user_id, subjects FROM instructor_profiles').all();
+      const updateStmt = db.prepare('UPDATE instructor_profiles SET subjects = ? WHERE user_id = ?');
+      for (const p of profiles) {
+        if (p.subjects) {
+          try {
+            let subjectsArr = JSON.parse(p.subjects);
+            if (Array.isArray(subjectsArr) && subjectsArr.includes(subject.name)) {
+              const updatedArr = subjectsArr.filter(s => s !== subject.name);
+              updateStmt.run(JSON.stringify(updatedArr), p.user_id);
+            }
+          } catch (e) {
+            console.error(`Failed to cascade delete subjects for instructor ${p.user_id}:`, e);
+          }
+        }
+      }
+    } catch (e) {
+      console.error('Failed to update teacher profiles during subject delete cascade:', e);
+    }
+
+    res.json({ message: 'Custom subject deleted successfully.' });
+  } catch (error) {
+    console.error('Error deleting custom subject:', error);
+    res.status(500).json({ error: 'Internal server error while deleting custom subject.' });
+  }
+});
+
 export function startAnnouncementScheduler(io) {
   // Check every 10 seconds for scheduled announcements that are due to be published
   setInterval(() => {

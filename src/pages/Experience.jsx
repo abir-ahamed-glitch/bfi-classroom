@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
-import { Plus, Briefcase, Calendar, MapPin, Trash2, X, Edit2, Globe, Award, BookOpen, Film, Pencil } from 'lucide-react';
+import { Plus, Briefcase, Calendar, MapPin, Trash2, X, Edit2, Globe, Award, BookOpen, Film, Pencil, Scale, Users, GraduationCap, Clapperboard } from 'lucide-react';
 import { useModal } from '../components/BFIModal';
+
+const standardTypes = ['Film', 'Jury', 'Curator', 'Teaching', 'Writing', 'Distribution', 'Cultural', 'Workshop', 'Award', 'Education'];
 
 export default function Experience() {
   const [experiences, setExperiences] = useState([]);
@@ -98,9 +100,15 @@ export default function Experience() {
   const getExperienceIcon = (type) => {
     switch(type) {
       case 'Film': return <Film size={20} />;
+      case 'Jury': return <Scale size={20} />;
+      case 'Curator': return <Users size={20} />;
+      case 'Teaching': return <GraduationCap size={20} />;
+      case 'Writing': return <Pencil size={20} />;
+      case 'Distribution': return <Clapperboard size={20} />;
       case 'Cultural': return <Globe size={20} />;
       case 'Workshop': return <BookOpen size={20} />;
       case 'Award': return <Award size={20} />;
+      case 'Education': return <GraduationCap size={20} />;
       default: return <Briefcase size={20} />;
     }
   };
@@ -153,7 +161,7 @@ export default function Experience() {
                 
                 <div className="exp-dates">
                   <Calendar size={14} />
-                  <span>{exp.start_date || 'N/A'} — {exp.end_date || 'Present'}</span>
+                  <span>{exp.end_date ? `${exp.start_date || 'N/A'} — ${exp.end_date}` : (exp.start_date || 'N/A')}</span>
                 </div>
 
                 {exp.description && <p className="exp-desc">{exp.description}</p>}
@@ -201,19 +209,45 @@ export default function Experience() {
                   <div className="input-group">
                     <label>Experience Type</label>
                     <select 
-                      value={formData.experience_type} 
-                      onChange={e => setFormData({...formData, experience_type: e.target.value})} 
+                      value={standardTypes.includes(formData.experience_type) ? formData.experience_type : 'Other'} 
+                      onChange={e => {
+                        const val = e.target.value;
+                        if (val === 'Other') {
+                          setFormData({...formData, experience_type: ''});
+                        } else {
+                          setFormData({...formData, experience_type: val});
+                        }
+                      }} 
                       className="input-glass"
                       style={{ appearance: 'none' }}
                     >
                       <option value="Film">Film Production</option>
+                      <option value="Jury">Jury / Committee</option>
+                      <option value="Curator">Curator / Programmer</option>
+                      <option value="Teaching">Teaching / Mentorship</option>
+                      <option value="Writing">Screenwriting & Film Criticism</option>
+                      <option value="Distribution">Distribution & Exhibition</option>
                       <option value="Cultural">Cultural Activity</option>
                       <option value="Workshop">Workshop / Course</option>
                       <option value="Award">Achievement / Award</option>
                       <option value="Education">Education</option>
-                      <option value="Other">Other</option>
+                      <option value="Other">Other (Custom Type)</option>
                     </select>
                   </div>
+
+                  {!standardTypes.includes(formData.experience_type) && (
+                    <div className="input-group">
+                      <label>Custom Experience Type *</label>
+                      <input 
+                        type="text" 
+                        value={formData.experience_type} 
+                        onChange={e => setFormData({...formData, experience_type: e.target.value})} 
+                        className="input-glass" 
+                        placeholder="e.g. Costume Design, Voice Acting" 
+                        required 
+                      />
+                    </div>
+                  )}
                 </div>
 
                 <div className="grid-2">
@@ -224,17 +258,33 @@ export default function Experience() {
                       value={formData.start_date} 
                       onChange={e => setFormData({...formData, start_date: e.target.value})} 
                       className="input-glass" 
-                      placeholder="e.g. Jan 2023"
+                      placeholder="e.g. Jan 2023 or 2009"
                     />
                   </div>
                   <div className="input-group">
-                    <label>End Date</label>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <label>End Date</label>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', fontSize: '0.8rem', cursor: 'pointer', color: 'var(--text-secondary)' }}>
+                        <input 
+                          type="checkbox" 
+                          checked={formData.end_date === 'Present'} 
+                          onChange={e => {
+                            setFormData({
+                              ...formData, 
+                              end_date: e.target.checked ? 'Present' : ''
+                            });
+                          }} 
+                        />
+                        Ongoing
+                      </label>
+                    </div>
                     <input 
                       type="text" 
-                      value={formData.end_date} 
+                      value={formData.end_date === 'Present' ? '' : formData.end_date} 
                       onChange={e => setFormData({...formData, end_date: e.target.value})} 
                       className="input-glass" 
-                      placeholder="e.g. Dec 2023 or Present"
+                      placeholder="e.g. Dec 2023 (leave empty for single event)" 
+                      disabled={formData.end_date === 'Present'} 
                     />
                   </div>
                 </div>

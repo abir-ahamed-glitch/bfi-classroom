@@ -281,7 +281,7 @@ const FeeTracker = () => {
           <p>Monitor student payments, send reminders, and track outstanding fees.</p>
         </div>
         <div className="ft-header-actions">
-          <Link to="/admin/batch-fees" className="ft-btn ft-btn-secondary">
+          <Link to="/admin/additional-options?view=batch-fees" className="ft-btn ft-btn-secondary">
             ⚙️ Batch Fee Manager
           </Link>
           <button onClick={handleExport} className="ft-btn ft-btn-primary">

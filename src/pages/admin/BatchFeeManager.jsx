@@ -69,6 +69,10 @@ export default function BatchFeeManager() {
     return String(batch).toLowerCase().includes(form.batch_number.toLowerCase());
   });
 
+  const isBatchDefined = (batch) => {
+    return fees.some(fee => fee.course_name === form.course_name && String(fee.batch_number) === String(batch));
+  };
+
   const handleKeyDown = (e) => {
     if (!showSuggestions || filteredBatches.length === 0) return;
     if (e.key === 'ArrowDown') {
@@ -80,8 +84,14 @@ export default function BatchFeeManager() {
     } else if (e.key === 'Enter') {
       if (suggestionIndex >= 0 && suggestionIndex < filteredBatches.length) {
         e.preventDefault();
-        setForm(f => ({ ...f, batch_number: String(filteredBatches[suggestionIndex]) }));
-        setShowSuggestions(false);
+        const selectedBatch = filteredBatches[suggestionIndex];
+        const defined = isBatchDefined(selectedBatch);
+        if (defined) {
+          showToast(`The course fee for Batch ${selectedBatch} is already defined. To edit this course fee, please see Defined Batch Fees below.`, 'error');
+        } else {
+          setForm(f => ({ ...f, batch_number: String(selectedBatch) }));
+          setShowSuggestions(false);
+        }
       }
     } else if (e.key === 'Escape') {
       setShowSuggestions(false);
@@ -292,21 +302,33 @@ export default function BatchFeeManager() {
               )}
               {showSuggestions && filteredBatches.length > 0 && (
                 <div className="bfm-suggestions-dropdown">
-                  {filteredBatches.map((batch, index) => (
-                    <div
-                      key={batch}
-                      className={`bfm-suggestion-item ${index === suggestionIndex ? 'active' : ''}`}
-                      onMouseDown={(e) => {
-                        e.preventDefault();
-                      }}
-                      onClick={() => {
-                        setForm(f => ({ ...f, batch_number: String(batch) }));
-                        setShowSuggestions(false);
-                      }}
-                    >
-                      {batch}
-                    </div>
-                  ))}
+                  {filteredBatches.map((batch, index) => {
+                    const defined = isBatchDefined(batch);
+                    return (
+                      <div
+                        key={batch}
+                        className={`bfm-suggestion-item ${index === suggestionIndex ? 'active' : ''} ${defined ? 'defined' : ''}`}
+                        onMouseDown={(e) => {
+                          e.preventDefault();
+                        }}
+                        onClick={() => {
+                          if (defined) {
+                            showToast(`The course fee for Batch ${batch} is already defined. To edit this course fee, please see Defined Batch Fees below.`, 'error');
+                          } else {
+                            setForm(f => ({ ...f, batch_number: String(batch) }));
+                            setShowSuggestions(false);
+                          }
+                        }}
+                      >
+                        <span>{batch}</span>
+                        {defined && (
+                          <span style={{ fontSize: '0.75rem', fontWeight: 600, color: '#f87171', border: '1px solid rgba(239, 68, 68, 0.25)', padding: '2px 6px', borderRadius: '4px', background: 'rgba(239, 68, 68, 0.05)' }}>
+                            Already Defined
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </div>

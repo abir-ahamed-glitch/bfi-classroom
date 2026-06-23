@@ -37,8 +37,7 @@ import AnnouncementsManager from './pages/admin/AnnouncementsManager';
 import CourseMaterialsManager from './pages/admin/CourseMaterialsManager';
 import Analytics from './pages/admin/Analytics';
 import Reports from './pages/admin/Reports';
-import BatchFeeManager from './pages/admin/BatchFeeManager';
-import FeeTracker from './pages/admin/FeeTracker';
+import AdditionalOptions from './pages/admin/AdditionalOptions';
 import Certificates from './pages/Certificates';
 import StudentPortal from './pages/StudentPortal';
 import Sidebar from './components/Sidebar';
@@ -398,18 +397,13 @@ function App() {
             </ProtectedRoute>
           } />
 
-          <Route path="/admin/batch-fees" element={
-            <ProtectedRoute requiredRole={['admin']}>
-              <Layout>
-                <BatchFeeManager />
-              </Layout>
-            </ProtectedRoute>
-          } />
+          <Route path="/admin/batch-fees" element={<Navigate to="/admin/additional-options?view=batch-fees" replace />} />
+          <Route path="/admin/fee-tracker" element={<Navigate to="/admin/additional-options?view=fee-tracker" replace />} />
 
-          <Route path="/admin/fee-tracker" element={
+          <Route path="/admin/additional-options" element={
             <ProtectedRoute requiredRole={['admin']}>
               <Layout>
-                <FeeTracker />
+                <AdditionalOptions />
               </Layout>
             </ProtectedRoute>
           } />

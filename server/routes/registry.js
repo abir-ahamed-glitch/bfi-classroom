@@ -147,13 +147,24 @@ router.get('/teachers', authenticateToken, (req, res) => {
   try {
     const teachers = db.prepare(`
       SELECT 
-        u.id, u.first_name, u.last_name, u.profile_picture, u.email, u.role
+        u.id, u.first_name, u.last_name, u.profile_picture, u.email, u.role,
+        p.subjects
       FROM users u
+      LEFT JOIN instructor_profiles p ON u.id = p.user_id
       WHERE u.role = 'instructor' AND u.is_active = 1
       ORDER BY u.first_name ASC
     `).all();
 
-    res.json({ teachers });
+    // parse JSON subjects
+    const parsedTeachers = teachers.map(t => {
+      let subjects = [];
+      if (t.subjects) {
+        try { subjects = JSON.parse(t.subjects); } catch { /* ignore invalid JSON */ }
+      }
+      return { ...t, subjects };
+    });
+
+    res.json({ teachers: parsedTeachers });
   } catch (error) {
     console.error('Registry teachers error:', error);
     res.status(500).json({ error: 'Internal server error' });

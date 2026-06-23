@@ -538,7 +538,7 @@ export default function PublicProfile() {
                 <h4 style={{ margin: '0 0 0.25rem 0' }}>{exp.title}</h4>
                 {exp.organization && <div style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginBottom: '0.5rem' }}>{exp.organization}</div>}
                 <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                  {exp.start_date || 'N/A'} - {exp.end_date || 'Present'}
+                  {exp.end_date ? `${exp.start_date || 'N/A'} — ${exp.end_date}` : (exp.start_date || 'N/A')}
                 </div>
                 {exp.description && <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', marginTop: '0.5rem', marginBottom: 0 }}>{exp.description}</p>}
               </div>

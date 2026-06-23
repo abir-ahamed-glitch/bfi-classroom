@@ -8,7 +8,7 @@ import {
   User, Mail, Phone, MapPin, Calendar, CheckSquare, 
   Lock, AlertCircle, Save, CheckCircle2, Link2, Plus, X, ChevronDown,
   Award, BookOpen, Film, Download, CheckCircle, Briefcase, Camera, Image as ImageIcon, Move,
-  Pencil, ExternalLink, Video, Play, Trash2, Globe
+  Pencil, ExternalLink, Video, Play, Trash2, Globe, Scale, Users, GraduationCap, Clapperboard
 } from 'lucide-react';
 import {
   FaBehance, FaDiscord, FaDribbble, FaFacebookF, FaGithub, FaGlobe,
@@ -46,6 +46,8 @@ const validateSocialLink = (platform, url) => {
   if (!keywords) return true;
   return keywords.some(keyword => lowerUrl.includes(keyword));
 };
+const standardTypes = ['Film', 'Jury', 'Curator', 'Teaching', 'Writing', 'Distribution', 'Cultural', 'Workshop', 'Award', 'Education'];
+
 export default function Profile() {
   const { updateUser } = useAuth();
   const { showAlert, showConfirm } = useModal();
@@ -409,9 +411,15 @@ export default function Profile() {
   const getExperienceIcon = (type) => {
     switch(type) {
       case 'Film': return <Film size={20} />;
+      case 'Jury': return <Scale size={20} />;
+      case 'Curator': return <Users size={20} />;
+      case 'Teaching': return <GraduationCap size={20} />;
+      case 'Writing': return <Pencil size={20} />;
+      case 'Distribution': return <Clapperboard size={20} />;
       case 'Cultural': return <Globe size={20} />;
       case 'Workshop': return <BookOpen size={20} />;
       case 'Award': return <Award size={20} />;
+      case 'Education': return <GraduationCap size={20} />;
       default: return <Briefcase size={20} />;
     }
   };
@@ -1755,11 +1763,17 @@ export default function Profile() {
           </div>
         )}
 
-        {/* ── Experience Section ────────────────────────────────────── */}
+        {/* ── Work & Cultural Experience Section ────────────────────────────── */}
         <section className="glass-panel" style={{ padding: '2rem', marginBottom: '2rem' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
             <h3 className="font-display" style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <Briefcase size={20} className="text-secondary" /> Experience
+              <Briefcase size={20} className="text-secondary" /> Work & Cultural Experience
+              <PrivacySelector isTeacher={profile?.role === "instructor"}
+                fieldName="experiences"
+                currentValue={privacySettings.experiences}
+                onChange={handlePrivacyChange}
+                compact
+              />
             </h3>
             <button onClick={() => { setEditingExpId(null); setExpForm(expInitialForm); setShowExpModal(true); }} className="btn btn-glass" style={{ fontSize: '0.8rem', padding: '0.4rem 0.8rem' }}>
               <Plus size={14} /> Add Experience
@@ -1789,7 +1803,8 @@ export default function Profile() {
                       </div>
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.82rem', color: 'var(--text-muted)', marginBottom: exp.description ? '0.5rem' : 0 }}>
-                      <Calendar size={12} /> {exp.start_date || 'N/A'} — {exp.end_date || 'Present'}
+                      <Calendar size={12} />
+                      {exp.end_date ? `${exp.start_date || 'N/A'} — ${exp.end_date}` : (exp.start_date || 'N/A')}
                     </div>
                     {exp.description && <p style={{ margin: 0, fontSize: '0.85rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>{exp.description}</p>}
                   </div>
@@ -1820,24 +1835,77 @@ export default function Profile() {
                   <div className="grid-2">
                     <div className="input-group">
                       <label>Experience Type</label>
-                      <select value={expForm.experience_type} onChange={e => setExpForm({...expForm, experience_type: e.target.value})} className="input-glass" style={{ appearance: 'none' }}>
+                      <select 
+                        value={standardTypes.includes(expForm.experience_type) ? expForm.experience_type : 'Other'} 
+                        onChange={e => {
+                          const val = e.target.value;
+                          if (val === 'Other') {
+                            setExpForm({...expForm, experience_type: ''});
+                          } else {
+                            setExpForm({...expForm, experience_type: val});
+                          }
+                        }} 
+                        className="input-glass" 
+                        style={{ appearance: 'none' }}
+                      >
                         <option value="Film">Film Production</option>
+                        <option value="Jury">Jury / Committee</option>
+                        <option value="Curator">Curator / Programmer</option>
+                        <option value="Teaching">Teaching / Mentorship</option>
+                        <option value="Writing">Screenwriting & Film Criticism</option>
+                        <option value="Distribution">Distribution & Exhibition</option>
                         <option value="Cultural">Cultural Activity</option>
                         <option value="Workshop">Workshop / Course</option>
                         <option value="Award">Achievement / Award</option>
                         <option value="Education">Education</option>
-                        <option value="Other">Other</option>
+                        <option value="Other">Other (Custom Type)</option>
                       </select>
                     </div>
+                    
+                    {!standardTypes.includes(expForm.experience_type) && (
+                      <div className="input-group">
+                        <label>Custom Experience Type *</label>
+                        <input 
+                          type="text" 
+                          value={expForm.experience_type} 
+                          onChange={e => setExpForm({...expForm, experience_type: e.target.value})} 
+                          className="input-glass" 
+                          placeholder="e.g. Costume Design, Voice Acting" 
+                          required 
+                        />
+                      </div>
+                    )}
                   </div>
                   <div className="grid-2">
                     <div className="input-group">
                       <label>Start Date</label>
-                      <input type="text" value={expForm.start_date} onChange={e => setExpForm({...expForm, start_date: e.target.value})} className="input-glass" placeholder="e.g. Jan 2023" />
+                      <input type="text" value={expForm.start_date} onChange={e => setExpForm({...expForm, start_date: e.target.value})} className="input-glass" placeholder="e.g. Jan 2023 or 2009" />
                     </div>
                     <div className="input-group">
-                      <label>End Date</label>
-                      <input type="text" value={expForm.end_date} onChange={e => setExpForm({...expForm, end_date: e.target.value})} className="input-glass" placeholder="e.g. Dec 2023 or Present" />
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <label>End Date</label>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', fontSize: '0.8rem', cursor: 'pointer', color: 'var(--text-secondary)' }}>
+                          <input 
+                            type="checkbox" 
+                            checked={expForm.end_date === 'Present'} 
+                            onChange={e => {
+                              setExpForm({
+                                ...expForm, 
+                                end_date: e.target.checked ? 'Present' : ''
+                              });
+                            }} 
+                          />
+                          Ongoing
+                        </label>
+                      </div>
+                      <input 
+                        type="text" 
+                        value={expForm.end_date === 'Present' ? '' : expForm.end_date} 
+                        onChange={e => setExpForm({...expForm, end_date: e.target.value})} 
+                        className="input-glass" 
+                        placeholder="e.g. Dec 2023 (leave empty for single event)" 
+                        disabled={expForm.end_date === 'Present'} 
+                      />
                     </div>
                   </div>
                   <div className="input-group">
@@ -1853,40 +1921,6 @@ export default function Profile() {
             </div>
           </div>
         )}
-
-        {/* ── Work & Cultural Experience (read-only summary) ─────────── */}
-        <section className="glass-panel" style={{ padding: '2rem', marginBottom: '2rem' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
-            <h3 className="font-display" style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <Briefcase size={20} className="text-secondary" /> Work & Cultural Experience
-              <PrivacySelector isTeacher={profile?.role === "instructor"}
-                fieldName="experiences"
-                currentValue={privacySettings.experiences}
-                onChange={handlePrivacyChange}
-                compact
-              />
-            </h3>
-            <button type="button" onClick={() => { setEditingExpId(null); setExpForm(expInitialForm); setShowExpModal(true); }} className="btn btn-glass" style={{ fontSize: '0.8rem', padding: '0.4rem 0.8rem' }}>
-              Edit Experiences
-            </button>
-          </div>
-          
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-            {experiences.map((exp, idx) => (
-              <div key={idx} style={{ padding: '1rem', background: 'rgba(255,255,255,0.02)', borderRadius: '8px', borderLeft: '3px solid var(--accent-primary)' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <h4 style={{ margin: 0, fontSize: '1.1rem' }}>{exp.title}</h4>
-                  <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{exp.start_date} - {exp.end_date || 'Present'}</span>
-                </div>
-                <p style={{ margin: '0.2rem 0', color: 'var(--accent-primary)', fontSize: '0.9rem', fontWeight: 500 }}>{exp.organization}</p>
-                {exp.description && <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', margin: '0.5rem 0 0 0' }}>{exp.description}</p>}
-              </div>
-            ))}
-            {experiences.length === 0 && (
-              <p className="text-muted" style={{ fontStyle: 'italic', fontSize: '0.9rem' }}>No experiences added to profile yet.</p>
-            )}
-          </div>
-        </section>
     </div>
 
     {showCropModal && (

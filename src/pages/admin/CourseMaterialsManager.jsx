@@ -135,6 +135,7 @@ export default function CourseMaterialsManager() {
   const [search, setSearch] = useState('');
   const [filterBatch, setFilterBatch] = useState('All');
   const [deleteConfirm, setDeleteConfirm] = useState(null);
+  const [customSubjects, setCustomSubjects] = useState([]);
   const fileRef = useRef(null);
 
   const token = localStorage.getItem('token');
@@ -148,8 +149,23 @@ export default function CourseMaterialsManager() {
     { value: 'file', label: 'Other' },
   ];
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { fetchMaterials(); }, []);
+  const allCourseOptions = customSubjects.length > 0 ? customSubjects.map((s) => s.name) : COURSE_OPTIONS;
+
+  const fetchCustomSubjects = async () => {
+    try {
+      const res = await fetch('/api/admin/custom-subjects', { headers });
+      if (res.ok) {
+        const data = await res.json();
+        setCustomSubjects(data.subjects || []);
+      }
+    } catch { /* silently fail */ }
+  };
+
+  useEffect(() => { 
+    fetchMaterials();
+    fetchCustomSubjects();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const showToast = (msg, type = 'success') => {
     setToast({ msg, type });
@@ -390,7 +406,7 @@ export default function CourseMaterialsManager() {
                   <CustomSelect
                     value={form.course_name}
                     onChange={v => setForm({ ...form, course_name: v })}
-                    options={COURSE_OPTIONS}
+                    options={allCourseOptions}
                     placeholder="Select subject..."
                     required
                   />

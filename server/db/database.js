@@ -434,7 +434,7 @@ export function initializeDatabase() {
       user_id INTEGER NOT NULL,
       title TEXT NOT NULL,
       organization TEXT,
-      experience_type TEXT CHECK(experience_type IN ('Film', 'Cultural', 'Workshop', 'Award', 'Education', 'Other')),
+      experience_type TEXT,
       start_date TEXT,
       end_date TEXT,
       description TEXT,
@@ -498,6 +498,14 @@ export function initializeDatabase() {
     CREATE INDEX IF NOT EXISTS idx_password_reset_user_id ON password_reset_tokens(user_id);
     CREATE INDEX IF NOT EXISTS idx_password_reset_expires ON password_reset_tokens(expires_at);
     CREATE INDEX IF NOT EXISTS idx_profile_field_privacy_user ON profile_field_privacy(user_id);
+
+    -- Custom subjects
+    CREATE TABLE IF NOT EXISTS custom_subjects (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT UNIQUE NOT NULL,
+      sort_order INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
   `);
 
   // Seed default admin if not exists
@@ -510,6 +518,28 @@ export function initializeDatabase() {
     `).run('admin', 'admin@bfibd.org', hash, 'admin', 'BFI', 'Admin');
 
     console.log('✅ Database seeded with default admin');
+  }
+
+  // Seed default core subjects if missing
+  const defaultCoreSubjects = [
+    'History of World Cinema', 'Film Language', 'Film Aesthetics', 'Aesthetics of Sound', 
+    'Music', 'Cinematography', 'Light', 'Art Direction', 'Acting', 'Dress and Props', 
+    'Script', 'Shot Division', 'Documentary', 'Film Criticism', 'How to Read a Film', 
+    'Film Production Design'
+  ];
+  const checkSubject = db.prepare('SELECT id FROM custom_subjects WHERE lower(name) = lower(?)');
+  const insertSubject = db.prepare('INSERT INTO custom_subjects (name) VALUES (?)');
+  
+  let seededCount = 0;
+  for (const subject of defaultCoreSubjects) {
+    const exists = checkSubject.get(subject);
+    if (!exists) {
+      insertSubject.run(subject);
+      seededCount++;
+    }
+  }
+  if (seededCount > 0) {
+    console.log(`✅ Database seeded with ${seededCount} missing default core subjects`);
   }
 
   // Ensure admin profile exists for the seeded admin
@@ -694,6 +724,14 @@ export function initializeDatabase() {
   try {
     db.prepare("ALTER TABLE announcements ADD COLUMN visible_to_user_id INTEGER DEFAULT NULL").run();
     console.log('✅ Migrated announcements: added visible_to_user_id column');
+  } catch (error) {
+    // Column probably already exists
+  }
+
+  // Custom subjects sort_order migration
+  try {
+    db.prepare("ALTER TABLE custom_subjects ADD COLUMN sort_order INTEGER DEFAULT 0").run();
+    console.log('✅ Migrated custom_subjects: added sort_order column');
   } catch (error) {
     // Column probably already exists
   }
