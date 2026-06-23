@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Plus, Trash2, BookOpen, Settings, AlertCircle, CheckCircle, Edit2, Check, X, DollarSign, Wallet, ChevronUp, ChevronDown, Search } from 'lucide-react';
+import { Plus, Trash2, BookOpen, Settings, AlertCircle, CheckCircle, Edit2, Check, X, DollarSign, Wallet, ChevronUp, ChevronDown, Search, GripVertical } from 'lucide-react';
 import { useModal } from '../../components/BFIModal';
 import BatchFeeManager from './BatchFeeManager';
 import FeeTracker from './FeeTracker';
@@ -42,6 +42,77 @@ export default function AdditionalOptions() {
     (activeTab.hasPhases ? sub.phase === selectedPhase : true) &&
     sub.name.toLowerCase().includes(subjectSearchQuery.toLowerCase())
   );
+
+  const [draggedIndex, setDraggedIndex] = useState(null);
+
+  const updateSubjectsOrder = async (newFilteredList) => {
+    const updatedAll = [...customSubjects];
+    let filteredIdx = 0;
+    const finalAll = updatedAll.map(sub => {
+      const matchesFilter = sub.course_name === activeTab.course &&
+        (activeTab.hasPhases ? sub.phase === selectedPhase : true);
+      
+      if (matchesFilter && filteredIdx < newFilteredList.length) {
+        return newFilteredList[filteredIdx++];
+      }
+      return sub;
+    });
+
+    setCustomSubjects(finalAll);
+
+    const orders = finalAll.map((sub, idx) => ({ id: sub.id, sort_order: idx }));
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch('/api/admin/custom-subjects/reorder', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ orders })
+      });
+      if (!response.ok) {
+        throw new Error('Failed to save subjects order');
+      }
+    } catch (error) {
+      console.error('Error saving custom subjects order:', error);
+      setErrorMsg('Failed to save subjects lineup order.');
+    }
+  };
+
+  const handleDragStart = (e, index) => {
+    if (subjectSearchQuery.trim() !== '') return;
+    setDraggedIndex(index);
+    e.dataTransfer.effectAllowed = 'move';
+  };
+
+  const handleDragOver = (e, index) => {
+    e.preventDefault();
+    if (draggedIndex === null || draggedIndex === index) return;
+    if (subjectSearchQuery.trim() !== '') return;
+
+    const newFiltered = [...filteredCustomSubjects];
+    const [draggedItem] = newFiltered.splice(draggedIndex, 1);
+    newFiltered.splice(index, 0, draggedItem);
+    setDraggedIndex(index);
+    updateSubjectsOrder(newFiltered);
+  };
+
+  const moveSubjectUp = (index) => {
+    if (index === 0) return;
+    const newFiltered = [...filteredCustomSubjects];
+    const [moved] = newFiltered.splice(index, 1);
+    newFiltered.splice(index - 1, 0, moved);
+    updateSubjectsOrder(newFiltered);
+  };
+
+  const moveSubjectDown = (index) => {
+    if (index === filteredCustomSubjects.length - 1) return;
+    const newFiltered = [...filteredCustomSubjects];
+    const [moved] = newFiltered.splice(index, 1);
+    newFiltered.splice(index + 1, 0, moved);
+    updateSubjectsOrder(newFiltered);
+  };
 
 
   const fetchCustomSubjects = async () => {
@@ -521,11 +592,17 @@ export default function AdditionalOptions() {
                     </p>
                   ) : (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '0.8rem' }}>
-                      {filteredCustomSubjects.map((subject) => {
+                      {filteredCustomSubjects.map((subject, idx) => {
                         const isEditing = editingId === subject.id;
+                        const isSearchEmpty = subjectSearchQuery.trim() === '';
                         return (
                           <div
                             key={subject.id}
+                            draggable={isSearchEmpty}
+                            onDragStart={(e) => handleDragStart(e, idx)}
+                            onDragOver={(e) => handleDragOver(e, idx)}
+                            onDragEnd={() => setDraggedIndex(null)}
+                            onDragEnter={(e) => e.preventDefault()}
                             style={{
                               display: 'flex',
                               alignItems: 'center',
@@ -534,7 +611,10 @@ export default function AdditionalOptions() {
                               background: 'rgba(255,255,255,0.02)',
                               borderRadius: '8px',
                               border: '1px solid rgba(255,255,255,0.05)',
-                              transition: 'all 0.2s'
+                              transition: 'all 0.2s',
+                              opacity: draggedIndex === idx ? 0.4 : 1,
+                              cursor: isSearchEmpty ? 'grab' : 'default',
+                              userSelect: 'none'
                             }}
                           >
                             {isEditing ? (
@@ -606,10 +686,72 @@ export default function AdditionalOptions() {
                               </form>
                             ) : (
                               <>
-                                <span style={{ fontSize: '0.95rem', color: 'var(--text-primary)', fontWeight: 500 }}>
+                                <span style={{ fontSize: '0.95rem', color: 'var(--text-primary)', fontWeight: 500, display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                                  {isSearchEmpty && (
+                                    <>
+                                      <GripVertical size={16} style={{ color: 'var(--text-muted)', cursor: 'grab', opacity: 0.5 }} />
+                                      <span style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>#{idx + 1}</span>
+                                    </>
+                                  )}
                                   {subject.name}
                                 </span>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                  {isSearchEmpty && (
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.1rem', marginRight: '0.3rem' }}>
+                                      <button
+                                        type="button"
+                                        onClick={() => moveSubjectUp(idx)}
+                                        disabled={idx === 0}
+                                        style={{
+                                          background: 'none',
+                                          border: 'none',
+                                          color: idx === 0 ? 'var(--text-muted)' : 'var(--text-secondary)',
+                                          opacity: idx === 0 ? 0.3 : 0.8,
+                                          cursor: idx === 0 ? 'not-allowed' : 'pointer',
+                                          padding: '4px',
+                                          display: 'flex',
+                                          alignItems: 'center',
+                                          borderRadius: '4px',
+                                          transition: 'background 0.2s'
+                                        }}
+                                        onMouseEnter={(e) => {
+                                          if (idx > 0) e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)';
+                                        }}
+                                        onMouseLeave={(e) => {
+                                          e.currentTarget.style.background = 'none';
+                                        }}
+                                        title="Move Up"
+                                      >
+                                        <ChevronUp size={16} />
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => moveSubjectDown(idx)}
+                                        disabled={idx === filteredCustomSubjects.length - 1}
+                                        style={{
+                                          background: 'none',
+                                          border: 'none',
+                                          color: idx === filteredCustomSubjects.length - 1 ? 'var(--text-muted)' : 'var(--text-secondary)',
+                                          opacity: idx === filteredCustomSubjects.length - 1 ? 0.3 : 0.8,
+                                          cursor: idx === filteredCustomSubjects.length - 1 ? 'not-allowed' : 'pointer',
+                                          padding: '4px',
+                                          display: 'flex',
+                                          alignItems: 'center',
+                                          borderRadius: '4px',
+                                          transition: 'background 0.2s'
+                                        }}
+                                        onMouseEnter={(e) => {
+                                          if (idx < filteredCustomSubjects.length - 1) e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)';
+                                        }}
+                                        onMouseLeave={(e) => {
+                                          e.currentTarget.style.background = 'none';
+                                        }}
+                                        title="Move Down"
+                                      >
+                                        <ChevronDown size={16} />
+                                      </button>
+                                    </div>
+                                  )}
                                   <button
                                     type="button"
                                     onClick={() => {
