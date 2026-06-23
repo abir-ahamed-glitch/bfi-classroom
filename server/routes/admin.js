@@ -1202,7 +1202,7 @@ router.get('/targeting-options', authenticateToken, requireRole('admin'), (req, 
 // Get all custom subjects
 router.get('/custom-subjects', authenticateToken, requireRole('admin'), (req, res) => {
   try {
-    const subjects = db.prepare('SELECT id, name, course_name, phase, parts_count, sort_order, created_at FROM custom_subjects ORDER BY sort_order ASC, name ASC').all();
+    const subjects = db.prepare('SELECT id, name, course_name, phase, parts_count, class_type, sort_order, created_at FROM custom_subjects ORDER BY sort_order ASC, name ASC').all();
     res.json({ subjects });
   } catch (error) {
     console.error('Error fetching custom subjects:', error);
@@ -1213,7 +1213,7 @@ router.get('/custom-subjects', authenticateToken, requireRole('admin'), (req, re
 // Create a new custom subject
 router.post('/custom-subjects', authenticateToken, requireRole('admin'), sanitizeInput, (req, res) => {
   try {
-    const { name, course_name, phase, parts_count } = req.body;
+    const { name, course_name, phase, parts_count, class_type } = req.body;
     if (!name || !name.trim()) {
       return res.status(400).json({ error: 'Subject name is required.' });
     }
@@ -1225,6 +1225,7 @@ router.post('/custom-subjects', authenticateToken, requireRole('admin'), sanitiz
     const courseNameTrimmed = course_name.trim();
     const phaseVal = phase !== undefined && phase !== null ? Number(phase) : null;
     const partsCountVal = parts_count !== undefined && parts_count !== null ? Math.max(1, Number(parts_count)) : 1;
+    const classTypeVal = class_type === 'recorded' ? 'recorded' : 'live';
 
     // Check if duplicate exists in custom_subjects for the same course and phase
     const existing = db.prepare(`
@@ -1246,9 +1247,9 @@ router.post('/custom-subjects', authenticateToken, requireRole('admin'), sanitiz
     const nextOrder = maxOrderRow && maxOrderRow.maxOrder !== null ? maxOrderRow.maxOrder + 1 : 0;
 
     const result = db.prepare(`
-      INSERT INTO custom_subjects (name, course_name, phase, parts_count, sort_order) 
-      VALUES (?, ?, ?, ?, ?)
-    `).run(trimmedName, courseNameTrimmed, phaseVal, partsCountVal, nextOrder);
+      INSERT INTO custom_subjects (name, course_name, phase, parts_count, class_type, sort_order) 
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(trimmedName, courseNameTrimmed, phaseVal, partsCountVal, classTypeVal, nextOrder);
 
     res.status(201).json({ 
       subject: {
@@ -1257,6 +1258,7 @@ router.post('/custom-subjects', authenticateToken, requireRole('admin'), sanitiz
         course_name: courseNameTrimmed,
         phase: phaseVal,
         parts_count: partsCountVal,
+        class_type: classTypeVal,
         sort_order: nextOrder
       }
     });
@@ -1293,7 +1295,7 @@ router.put('/custom-subjects/reorder', authenticateToken, requireRole('admin'), 
 router.put('/custom-subjects/:id', authenticateToken, requireRole('admin'), sanitizeInput, (req, res) => {
   try {
     const { id } = req.params;
-    const { name, parts_count } = req.body;
+    const { name, parts_count, class_type } = req.body;
 
     if (!name || !name.trim()) {
       return res.status(400).json({ error: 'Subject name is required.' });
@@ -1301,6 +1303,7 @@ router.put('/custom-subjects/:id', authenticateToken, requireRole('admin'), sani
 
     const trimmedName = name.trim();
     const partsCountVal = parts_count !== undefined && parts_count !== null ? Math.max(1, Number(parts_count)) : 1;
+    const classTypeVal = class_type === 'recorded' ? 'recorded' : 'live';
 
     // Check if custom subject exists
     const subject = db.prepare('SELECT name, course_name, phase, parts_count FROM custom_subjects WHERE id = ?').get(id);
@@ -1321,7 +1324,7 @@ router.put('/custom-subjects/:id', authenticateToken, requireRole('admin'), sani
       return res.status(400).json({ error: 'Another custom subject with this name already exists for this course/phase.' });
     }
 
-    db.prepare('UPDATE custom_subjects SET name = ?, parts_count = ? WHERE id = ?').run(trimmedName, partsCountVal, id);
+    db.prepare('UPDATE custom_subjects SET name = ?, parts_count = ?, class_type = ? WHERE id = ?').run(trimmedName, partsCountVal, classTypeVal, id);
 
     // Cascade rename & parts_count cleanup to instructor profiles
     try {

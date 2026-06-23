@@ -36,7 +36,9 @@ export default function AdditionalOptions() {
   const [editingId, setEditingId] = useState(null);
   const [editingName, setEditingName] = useState('');
   const [editingPartsCount, setEditingPartsCount] = useState(1);
+  const [editingClassType, setEditingClassType] = useState('live');
   const [newSubjectPartsCount, setNewSubjectPartsCount] = useState(1);
+  const [newSubjectClassType, setNewSubjectClassType] = useState('live');
   const [subjectSearchQuery, setSubjectSearchQuery] = useState('');
 
   const filteredCustomSubjects = customSubjects.filter(sub => 
@@ -158,7 +160,8 @@ export default function AdditionalOptions() {
           name: newSubjectName,
           course_name: activeTab.course,
           phase: activeTab.hasPhases ? selectedPhase : null,
-          parts_count: newSubjectPartsCount
+          parts_count: newSubjectPartsCount,
+          class_type: newSubjectClassType
         })
       });
 
@@ -171,6 +174,7 @@ export default function AdditionalOptions() {
       setSuccessMsg(`Subject "${newSubjectName}" created successfully.`);
       setNewSubjectName('');
       setNewSubjectPartsCount(1);
+      setNewSubjectClassType('live');
       fetchCustomSubjects();
     } catch (error) {
       setErrorMsg(error.message);
@@ -194,7 +198,7 @@ export default function AdditionalOptions() {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
         },
-        body: JSON.stringify({ name: editingName, parts_count: editingPartsCount })
+        body: JSON.stringify({ name: editingName, parts_count: editingPartsCount, class_type: editingClassType })
       });
 
       const data = await response.json();
@@ -542,6 +546,42 @@ export default function AdditionalOptions() {
                       </p>
                     </div>
 
+                    <div>
+                      <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '0.4rem', fontWeight: 500 }}>
+                        Class Type
+                      </label>
+                      <div style={{ display: 'flex', gap: '0.5rem' }}>
+                        {['live', 'recorded'].map(type => (
+                          <button
+                            key={type}
+                            type="button"
+                            onClick={() => setNewSubjectClassType(type)}
+                            style={{
+                              flex: 1,
+                              padding: '0.5rem',
+                              borderRadius: '8px',
+                              border: newSubjectClassType === type
+                                ? (type === 'live' ? '1px solid #22c55e' : '1px solid #a78bfa')
+                                : '1px solid rgba(255,255,255,0.1)',
+                              background: newSubjectClassType === type
+                                ? (type === 'live' ? 'rgba(34,197,94,0.15)' : 'rgba(167,139,250,0.15)')
+                                : 'rgba(255,255,255,0.03)',
+                              color: newSubjectClassType === type
+                                ? (type === 'live' ? '#22c55e' : '#a78bfa')
+                                : 'var(--text-secondary)',
+                              cursor: 'pointer',
+                              fontWeight: 600,
+                              fontSize: '0.85rem',
+                              textTransform: 'capitalize',
+                              transition: 'all 0.2s'
+                            }}
+                          >
+                            {type === 'live' ? '🔴 Live' : '🎬 Recorded'}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
                     {errorMsg && (
                       <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--danger)', fontSize: '0.85rem', background: 'rgba(239, 68, 68, 0.1)', padding: '0.6rem 0.8rem', borderRadius: '6px' }}>
                         <AlertCircle size={16} />
@@ -666,6 +706,35 @@ export default function AdditionalOptions() {
                                     style={{ width: '50px', padding: '0.4rem 0.3rem', height: '36px', textAlign: 'center' }}
                                   />
                                 </div>
+                                <div style={{ display: 'flex', gap: '0.25rem', whiteSpace: 'nowrap' }}>
+                                  {['live', 'recorded'].map(type => (
+                                    <button
+                                      key={type}
+                                      type="button"
+                                      onClick={() => setEditingClassType(type)}
+                                      style={{
+                                        padding: '4px 10px',
+                                        borderRadius: '8px',
+                                        border: editingClassType === type
+                                          ? (type === 'live' ? '1px solid #22c55e' : '1px solid #a78bfa')
+                                          : '1px solid rgba(255,255,255,0.08)',
+                                        background: editingClassType === type
+                                          ? (type === 'live' ? 'rgba(34,197,94,0.15)' : 'rgba(167,139,250,0.15)')
+                                          : 'rgba(255,255,255,0.03)',
+                                        color: editingClassType === type
+                                          ? (type === 'live' ? '#22c55e' : '#a78bfa')
+                                          : 'var(--text-muted)',
+                                        cursor: 'pointer',
+                                        fontSize: '0.75rem',
+                                        fontWeight: 600,
+                                        height: '36px',
+                                        transition: 'all 0.2s'
+                                      }}
+                                    >
+                                      {type === 'live' ? '🔴' : '🎬'}
+                                    </button>
+                                  ))}
+                                </div>
                                 <button
                                   type="submit"
                                   style={{
@@ -743,6 +812,19 @@ export default function AdditionalOptions() {
                                       {subject.parts_count} parts
                                     </span>
                                   )}
+                                  <span style={{
+                                    fontSize: '0.72rem',
+                                    padding: '2px 8px',
+                                    borderRadius: '12px',
+                                    fontWeight: 600,
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    background: subject.class_type === 'recorded' ? 'rgba(167,139,250,0.15)' : 'rgba(34,197,94,0.15)',
+                                    color: subject.class_type === 'recorded' ? '#a78bfa' : '#22c55e',
+                                    border: subject.class_type === 'recorded' ? '1px solid rgba(167,139,250,0.3)' : '1px solid rgba(34,197,94,0.3)'
+                                  }}>
+                                    {subject.class_type === 'recorded' ? '🎬 Recorded' : '🔴 Live'}
+                                  </span>
                                 </span>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                                   {isSearchEmpty && (
@@ -807,6 +889,7 @@ export default function AdditionalOptions() {
                                       setEditingId(subject.id);
                                       setEditingName(subject.name);
                                       setEditingPartsCount(subject.parts_count || 1);
+                                      setEditingClassType(subject.class_type || 'live');
                                     }}
                                     style={{
                                       background: 'none',
