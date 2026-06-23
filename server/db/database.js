@@ -509,6 +509,7 @@ export function initializeDatabase() {
       class_type TEXT DEFAULT 'live',
       has_live_qa INTEGER DEFAULT 0,
       duration_minutes INTEGER DEFAULT NULL,
+      part_durations TEXT DEFAULT NULL,
       sort_order INTEGER DEFAULT 0,
       created_at TEXT DEFAULT (datetime('now')),
       UNIQUE(name, course_name, phase)
@@ -819,6 +820,14 @@ export function initializeDatabase() {
   try {
     db.prepare('ALTER TABLE custom_subjects ADD COLUMN duration_minutes INTEGER DEFAULT NULL').run();
     console.log('✅ Migrated custom_subjects: added duration_minutes column');
+  } catch (error) {
+    // Column probably already exists
+  }
+
+  // Custom subjects part_durations migration
+  try {
+    db.prepare('ALTER TABLE custom_subjects ADD COLUMN part_durations TEXT DEFAULT NULL').run();
+    console.log('✅ Migrated custom_subjects: added part_durations column');
   } catch (error) {
     // Column probably already exists
   }

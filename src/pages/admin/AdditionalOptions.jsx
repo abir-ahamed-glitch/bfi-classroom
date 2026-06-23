@@ -39,10 +39,12 @@ export default function AdditionalOptions() {
   const [editingClassType, setEditingClassType] = useState('live');
   const [editingHasLiveQa, setEditingHasLiveQa] = useState(false);
   const [editingDuration, setEditingDuration] = useState('');
+  const [editingPartDurations, setEditingPartDurations] = useState([]);
   const [newSubjectPartsCount, setNewSubjectPartsCount] = useState(1);
   const [newSubjectClassType, setNewSubjectClassType] = useState('live');
   const [newSubjectHasLiveQa, setNewSubjectHasLiveQa] = useState(false);
   const [newSubjectDuration, setNewSubjectDuration] = useState('');
+  const [newSubjectPartDurations, setNewSubjectPartDurations] = useState([]);
   const [subjectSearchQuery, setSubjectSearchQuery] = useState('');
 
   const filteredCustomSubjects = customSubjects.filter(sub => 
@@ -167,7 +169,8 @@ export default function AdditionalOptions() {
           parts_count: newSubjectPartsCount,
           class_type: newSubjectClassType,
           has_live_qa: newSubjectHasLiveQa,
-          duration_minutes: newSubjectClassType === 'recorded' ? (newSubjectDuration || null) : null
+          duration_minutes: newSubjectClassType === 'recorded' && newSubjectPartsCount === 1 ? (newSubjectDuration || null) : null,
+          part_durations: newSubjectClassType === 'recorded' && newSubjectPartsCount > 1 ? newSubjectPartDurations.slice(0, newSubjectPartsCount) : null
         })
       });
 
@@ -183,6 +186,7 @@ export default function AdditionalOptions() {
       setNewSubjectClassType('live');
       setNewSubjectHasLiveQa(false);
       setNewSubjectDuration('');
+      setNewSubjectPartDurations([]);
       fetchCustomSubjects();
     } catch (error) {
       setErrorMsg(error.message);
@@ -206,7 +210,14 @@ export default function AdditionalOptions() {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
         },
-        body: JSON.stringify({ name: editingName, parts_count: editingPartsCount, class_type: editingClassType, has_live_qa: editingHasLiveQa, duration_minutes: editingClassType === 'recorded' ? (editingDuration || null) : null })
+        body: JSON.stringify({ 
+          name: editingName, 
+          parts_count: editingPartsCount, 
+          class_type: editingClassType, 
+          has_live_qa: editingHasLiveQa, 
+          duration_minutes: editingClassType === 'recorded' && editingPartsCount === 1 ? (editingDuration || null) : null,
+          part_durations: editingClassType === 'recorded' && editingPartsCount > 1 ? editingPartDurations.slice(0, editingPartsCount) : null
+        })
       });
 
       const data = await response.json();
@@ -609,22 +620,46 @@ export default function AdditionalOptions() {
 
                     {newSubjectClassType === 'recorded' && (
                       <div>
-                        <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '0.4rem', fontWeight: 500 }}>
-                          ⏱ Class Duration (minutes)
+                        <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '0.5rem', fontWeight: 500 }}>
+                          ⏱ Class Duration
                         </label>
-                        <input
-                          type="number"
-                          min="1"
-                          max="600"
-                          value={newSubjectDuration}
-                          onChange={(e) => setNewSubjectDuration(e.target.value)}
-                          placeholder="e.g. 90"
-                          className="input-glass"
-                          style={{ width: '100%', paddingLeft: '1rem' }}
-                        />
-                        <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.3rem' }}>
-                          Total duration of the recorded class in minutes.
-                        </p>
+                        {newSubjectPartsCount <= 1 ? (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                            <input
+                              type="number"
+                              min="1"
+                              max="600"
+                              value={newSubjectDuration}
+                              onChange={(e) => setNewSubjectDuration(e.target.value)}
+                              placeholder="e.g. 90"
+                              className="input-glass"
+                              style={{ flex: 1, paddingLeft: '1rem' }}
+                            />
+                            <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>minutes</span>
+                          </div>
+                        ) : (
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(110px, 1fr))', gap: '0.5rem' }}>
+                            {Array.from({ length: newSubjectPartsCount }, (_, i) => (
+                              <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                                <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', flexShrink: 0 }}>P{i + 1}:</span>
+                                <input
+                                  type="number"
+                                  min="1"
+                                  max="600"
+                                  value={newSubjectPartDurations[i] || ''}
+                                  onChange={(e) => {
+                                    const updated = [...newSubjectPartDurations];
+                                    updated[i] = e.target.value;
+                                    setNewSubjectPartDurations(updated);
+                                  }}
+                                  placeholder="min"
+                                  className="input-glass"
+                                  style={{ width: '100%', minWidth: '40px', padding: '0.3rem 0.5rem', textAlign: 'center' }}
+                                />
+                              </div>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     )}
 
@@ -729,132 +764,177 @@ export default function AdditionalOptions() {
                             {isEditing ? (
                               <form
                                 onSubmit={(e) => handleEditSubject(e, subject.id)}
-                                style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', width: '100%' }}
+                                style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem', width: '100%' }}
                               >
-                                <input
-                                  type="text"
-                                  value={editingName}
-                                  onChange={(e) => setEditingName(e.target.value)}
-                                  className="input-glass"
-                                  required
-                                  style={{ flex: 2, padding: '0.4rem 0.8rem', height: '36px' }}
-                                  autoFocus
-                                />
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', whiteSpace: 'nowrap' }}>
-                                  <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Parts:</span>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', width: '100%', flexWrap: 'wrap' }}>
                                   <input
-                                    type="number"
-                                    min="1"
-                                    max="20"
-                                    value={editingPartsCount}
-                                    onChange={(e) => setEditingPartsCount(parseInt(e.target.value) || 1)}
+                                    type="text"
+                                    value={editingName}
+                                    onChange={(e) => setEditingName(e.target.value)}
                                     className="input-glass"
-                                    style={{ width: '50px', padding: '0.4rem 0.3rem', height: '36px', textAlign: 'center' }}
+                                    required
+                                    style={{ flex: 1, minWidth: '150px', padding: '0.4rem 0.8rem', height: '36px' }}
+                                    autoFocus
                                   />
-                                </div>
-                                <div style={{ display: 'flex', gap: '0.25rem', whiteSpace: 'nowrap' }}>
-                                  {['live', 'recorded'].map(type => (
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', whiteSpace: 'nowrap' }}>
+                                    <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Parts:</span>
+                                    <input
+                                      type="number"
+                                      min="1"
+                                      max="20"
+                                      value={editingPartsCount}
+                                      onChange={(e) => setEditingPartsCount(parseInt(e.target.value) || 1)}
+                                      className="input-glass"
+                                      style={{ width: '50px', padding: '0.4rem 0.3rem', height: '36px', textAlign: 'center' }}
+                                    />
+                                  </div>
+                                  <div style={{ display: 'flex', gap: '0.25rem', whiteSpace: 'nowrap' }}>
+                                    {['live', 'recorded'].map(type => (
+                                      <button
+                                        key={type}
+                                        type="button"
+                                        onClick={() => setEditingClassType(type)}
+                                        style={{
+                                          padding: '4px 10px',
+                                          borderRadius: '8px',
+                                          border: editingClassType === type
+                                            ? (type === 'live' ? '1px solid #22c55e' : '1px solid #a78bfa')
+                                            : '1px solid rgba(255,255,255,0.08)',
+                                          background: editingClassType === type
+                                            ? (type === 'live' ? 'rgba(34,197,94,0.15)' : 'rgba(167,139,250,0.15)')
+                                            : 'rgba(255,255,255,0.03)',
+                                          color: editingClassType === type
+                                            ? (type === 'live' ? '#22c55e' : '#a78bfa')
+                                            : 'var(--text-muted)',
+                                          cursor: 'pointer',
+                                          fontSize: '0.75rem',
+                                          fontWeight: 600,
+                                          height: '36px',
+                                          transition: 'all 0.2s'
+                                        }}
+                                      >
+                                        {type === 'live' ? '🔴 Live' : '🎬 Recorded'}
+                                      </button>
+                                    ))}
+                                  </div>
+                                  <label style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', cursor: 'pointer', whiteSpace: 'nowrap', padding: '4px 8px', borderRadius: '8px', border: editingHasLiveQa ? '1px solid rgba(251,191,36,0.4)' : '1px solid rgba(255,255,255,0.08)', background: editingHasLiveQa ? 'rgba(251,191,36,0.1)' : 'transparent', height: '36px', transition: 'all 0.2s' }}>
+                                    <input
+                                      type="checkbox"
+                                      checked={editingHasLiveQa}
+                                      onChange={(e) => setEditingHasLiveQa(e.target.checked)}
+                                      style={{ width: '14px', height: '14px', accentColor: '#fbbf24', cursor: 'pointer' }}
+                                    />
+                                    <span style={{ fontSize: '0.75rem', color: editingHasLiveQa ? '#fbbf24' : 'var(--text-muted)', fontWeight: 600 }}>💬 Live Q&amp;A</span>
+                                  </label>
+                                  <div style={{ display: 'flex', gap: '0.25rem', marginLeft: 'auto' }}>
                                     <button
-                                      key={type}
-                                      type="button"
-                                      onClick={() => setEditingClassType(type)}
+                                      type="submit"
                                       style={{
-                                        padding: '4px 10px',
-                                        borderRadius: '8px',
-                                        border: editingClassType === type
-                                          ? (type === 'live' ? '1px solid #22c55e' : '1px solid #a78bfa')
-                                          : '1px solid rgba(255,255,255,0.08)',
-                                        background: editingClassType === type
-                                          ? (type === 'live' ? 'rgba(34,197,94,0.15)' : 'rgba(167,139,250,0.15)')
-                                          : 'rgba(255,255,255,0.03)',
-                                        color: editingClassType === type
-                                          ? (type === 'live' ? '#22c55e' : '#a78bfa')
-                                          : 'var(--text-muted)',
+                                        background: 'none',
+                                        border: 'none',
+                                        color: 'var(--accent-primary)',
                                         cursor: 'pointer',
-                                        fontSize: '0.75rem',
-                                        fontWeight: 600,
-                                        height: '36px',
+                                        padding: '8px',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        justifyContent: 'center',
+                                        borderRadius: '4px',
                                         transition: 'all 0.2s'
                                       }}
+                                      onMouseEnter={(e) => {
+                                        e.currentTarget.style.background = 'rgba(56, 189, 248, 0.1)';
+                                      }}
+                                      onMouseLeave={(e) => {
+                                        e.currentTarget.style.background = 'none';
+                                      }}
+                                      title="Save changes"
                                     >
-                                      {type === 'live' ? '🔴' : '🎬'}
+                                      <Check size={16} />
                                     </button>
-                                  ))}
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setEditingId(null);
+                                        setEditingName('');
+                                      }}
+                                      style={{
+                                        background: 'none',
+                                        border: 'none',
+                                        color: 'var(--text-secondary)',
+                                        cursor: 'pointer',
+                                        padding: '8px',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        justifyContent: 'center',
+                                        borderRadius: '4px',
+                                        transition: 'all 0.2s'
+                                      }}
+                                      onMouseEnter={(e) => {
+                                        e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)';
+                                      }}
+                                      onMouseLeave={(e) => {
+                                        e.currentTarget.style.background = 'none';
+                                      }}
+                                      title="Cancel"
+                                    >
+                                      <X size={16} />
+                                    </button>
+                                  </div>
                                 </div>
-                                <label style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', cursor: 'pointer', whiteSpace: 'nowrap', padding: '4px 8px', borderRadius: '8px', border: editingHasLiveQa ? '1px solid rgba(251,191,36,0.4)' : '1px solid rgba(255,255,255,0.08)', background: editingHasLiveQa ? 'rgba(251,191,36,0.1)' : 'transparent', height: '36px', transition: 'all 0.2s' }}>
-                                  <input
-                                    type="checkbox"
-                                    checked={editingHasLiveQa}
-                                    onChange={(e) => setEditingHasLiveQa(e.target.checked)}
-                                    style={{ width: '14px', height: '14px', accentColor: '#fbbf24', cursor: 'pointer' }}
-                                  />
-                                  <span style={{ fontSize: '0.75rem', color: editingHasLiveQa ? '#fbbf24' : 'var(--text-muted)', fontWeight: 600 }}>💬</span>
-                                </label>
+
                                 {editingClassType === 'recorded' && (
-                                  <input
-                                    type="number"
-                                    min="1"
-                                    max="600"
-                                    value={editingDuration}
-                                    onChange={(e) => setEditingDuration(e.target.value)}
-                                    placeholder="min"
-                                    className="input-glass"
-                                    style={{ width: '58px', padding: '0.4rem 0.3rem', height: '36px', textAlign: 'center' }}
-                                    title="Duration in minutes"
-                                  />
+                                  <div style={{ 
+                                    display: 'flex', 
+                                    flexDirection: 'column', 
+                                    gap: '0.5rem', 
+                                    marginTop: '0.2rem',
+                                    padding: '0.6rem 0.8rem', 
+                                    background: 'rgba(255,255,255,0.015)', 
+                                    borderRadius: '8px', 
+                                    border: '1px solid rgba(255,255,255,0.04)' 
+                                  }}>
+                                    <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', fontWeight: 500 }}>
+                                      ⏱ Define durations for each part:
+                                    </span>
+                                    {editingPartsCount <= 1 ? (
+                                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                        <input
+                                          type="number"
+                                          min="1"
+                                          max="600"
+                                          value={editingDuration}
+                                          onChange={(e) => setEditingDuration(e.target.value)}
+                                          placeholder="e.g. 90"
+                                          className="input-glass"
+                                          style={{ width: '100px', padding: '0.4rem 0.8rem', height: '36px' }}
+                                        />
+                                        <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>minutes</span>
+                                      </div>
+                                    ) : (
+                                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(110px, 1fr))', gap: '0.5rem' }}>
+                                        {Array.from({ length: editingPartsCount }, (_, i) => (
+                                          <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                                            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', flexShrink: 0 }}>Part {i + 1}:</span>
+                                            <input
+                                              type="number"
+                                              min="1"
+                                              max="600"
+                                              value={editingPartDurations[i] || ''}
+                                              onChange={(e) => {
+                                                const updated = [...editingPartDurations];
+                                                updated[i] = e.target.value;
+                                                setEditingPartDurations(updated);
+                                              }}
+                                              placeholder="min"
+                                              className="input-glass"
+                                              style={{ width: '100%', minWidth: '45px', padding: '0.3rem 0.5rem', height: '32px', textAlign: 'center', fontSize: '0.8rem' }}
+                                            />
+                                          </div>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </div>
                                 )}
-                                <button
-                                  type="submit"
-                                  style={{
-                                    background: 'none',
-                                    border: 'none',
-                                    color: 'var(--accent-primary)',
-                                    cursor: 'pointer',
-                                    padding: '8px',
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    justifyContent: 'center',
-                                    borderRadius: '4px',
-                                    transition: 'all 0.2s'
-                                  }}
-                                  onMouseEnter={(e) => {
-                                    e.currentTarget.style.background = 'rgba(56, 189, 248, 0.1)';
-                                  }}
-                                  onMouseLeave={(e) => {
-                                    e.currentTarget.style.background = 'none';
-                                  }}
-                                  title="Save changes"
-                                >
-                                  <Check size={16} />
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setEditingId(null);
-                                    setEditingName('');
-                                  }}
-                                  style={{
-                                    background: 'none',
-                                    border: 'none',
-                                    color: 'var(--text-secondary)',
-                                    cursor: 'pointer',
-                                    padding: '8px',
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    justifyContent: 'center',
-                                    borderRadius: '4px',
-                                    transition: 'all 0.2s'
-                                  }}
-                                  onMouseEnter={(e) => {
-                                    e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)';
-                                  }}
-                                  onMouseLeave={(e) => {
-                                    e.currentTarget.style.background = 'none';
-                                  }}
-                                  title="Cancel"
-                                >
-                                  <X size={16} />
-                                </button>
                               </form>
                             ) : (
                               <>
@@ -916,11 +996,20 @@ export default function AdditionalOptions() {
                                       fontWeight: 600,
                                       display: 'inline-flex',
                                       alignItems: 'center',
+                                      gap: '3px',
                                       background: 'rgba(99,102,241,0.12)',
                                       color: '#818cf8',
                                       border: '1px solid rgba(99,102,241,0.3)'
                                     }}>
-                                      ⏱ {subject.duration_minutes}m
+                                      {subject.part_durations && subject.parts_count > 1
+                                        ? (() => {
+                                            try {
+                                              const parts = JSON.parse(subject.part_durations);
+                                              return <>⏱ {parts.map((d, i) => d ? `P${i+1}:${d}m` : null).filter(Boolean).join(' | ')}</>;
+                                            } catch { return <>⏱ {subject.duration_minutes}m total</>; }
+                                          })()
+                                        : <>⏱ {subject.duration_minutes}m</>
+                                      }
                                     </span>
                                   ) : null}
                                 </span>
@@ -990,6 +1079,9 @@ export default function AdditionalOptions() {
                                       setEditingClassType(subject.class_type || 'live');
                                       setEditingHasLiveQa(!!subject.has_live_qa);
                                       setEditingDuration(subject.duration_minutes ? String(subject.duration_minutes) : '');
+                                      try {
+                                        setEditingPartDurations(subject.part_durations ? JSON.parse(subject.part_durations).map(String) : []);
+                                      } catch { setEditingPartDurations([]); }
                                     }}
                                     style={{
                                       background: 'none',
