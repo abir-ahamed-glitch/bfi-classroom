@@ -35,6 +35,8 @@ export default function AdditionalOptions() {
   const [successMsg, setSuccessMsg] = useState('');
   const [editingId, setEditingId] = useState(null);
   const [editingName, setEditingName] = useState('');
+  const [editingPartsCount, setEditingPartsCount] = useState(1);
+  const [newSubjectPartsCount, setNewSubjectPartsCount] = useState(1);
   const [subjectSearchQuery, setSubjectSearchQuery] = useState('');
 
   const filteredCustomSubjects = customSubjects.filter(sub => 
@@ -155,7 +157,8 @@ export default function AdditionalOptions() {
         body: JSON.stringify({ 
           name: newSubjectName,
           course_name: activeTab.course,
-          phase: activeTab.hasPhases ? selectedPhase : null
+          phase: activeTab.hasPhases ? selectedPhase : null,
+          parts_count: newSubjectPartsCount
         })
       });
 
@@ -167,6 +170,7 @@ export default function AdditionalOptions() {
 
       setSuccessMsg(`Subject "${newSubjectName}" created successfully.`);
       setNewSubjectName('');
+      setNewSubjectPartsCount(1);
       fetchCustomSubjects();
     } catch (error) {
       setErrorMsg(error.message);
@@ -190,7 +194,7 @@ export default function AdditionalOptions() {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
         },
-        body: JSON.stringify({ name: editingName })
+        body: JSON.stringify({ name: editingName, parts_count: editingPartsCount })
       });
 
       const data = await response.json();
@@ -199,7 +203,7 @@ export default function AdditionalOptions() {
         throw new Error(data.error || 'Failed to update subject');
       }
 
-      setSuccessMsg(`Subject renamed to "${editingName}".`);
+      setSuccessMsg(`Subject updated successfully.`);
       setEditingId(null);
       setEditingName('');
       fetchCustomSubjects();
@@ -519,6 +523,25 @@ export default function AdditionalOptions() {
                       />
                     </div>
 
+                    <div>
+                      <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '0.4rem', fontWeight: 500 }}>
+                        Number of Parts
+                      </label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="20"
+                        value={newSubjectPartsCount}
+                        onChange={(e) => setNewSubjectPartsCount(parseInt(e.target.value) || 1)}
+                        className="input-glass"
+                        required
+                        style={{ width: '100%', paddingLeft: '1rem' }}
+                      />
+                      <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.3rem' }}>
+                        Define how many daily/session parts this subject has (e.g. 3 parts).
+                      </p>
+                    </div>
+
                     {errorMsg && (
                       <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--danger)', fontSize: '0.85rem', background: 'rgba(239, 68, 68, 0.1)', padding: '0.6rem 0.8rem', borderRadius: '6px' }}>
                         <AlertCircle size={16} />
@@ -628,9 +651,21 @@ export default function AdditionalOptions() {
                                   onChange={(e) => setEditingName(e.target.value)}
                                   className="input-glass"
                                   required
-                                  style={{ flex: 1, padding: '0.4rem 0.8rem', height: '36px' }}
+                                  style={{ flex: 2, padding: '0.4rem 0.8rem', height: '36px' }}
                                   autoFocus
                                 />
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', whiteSpace: 'nowrap' }}>
+                                  <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Parts:</span>
+                                  <input
+                                    type="number"
+                                    min="1"
+                                    max="20"
+                                    value={editingPartsCount}
+                                    onChange={(e) => setEditingPartsCount(parseInt(e.target.value) || 1)}
+                                    className="input-glass"
+                                    style={{ width: '50px', padding: '0.4rem 0.3rem', height: '36px', textAlign: 'center' }}
+                                  />
+                                </div>
                                 <button
                                   type="submit"
                                   style={{
@@ -686,14 +721,28 @@ export default function AdditionalOptions() {
                               </form>
                             ) : (
                               <>
-                                <span style={{ fontSize: '0.95rem', color: 'var(--text-primary)', fontWeight: 500, display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                                <span style={{ fontSize: '0.95rem', color: 'var(--text-primary)', fontWeight: 500, display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap' }}>
                                   {isSearchEmpty && (
                                     <>
                                       <GripVertical size={16} style={{ color: 'var(--text-muted)', cursor: 'grab', opacity: 0.5 }} />
                                       <span style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>#{idx + 1}</span>
                                     </>
                                   )}
-                                  {subject.name}
+                                  <span>{subject.name}</span>
+                                  {subject.parts_count > 1 && (
+                                    <span style={{ 
+                                      fontSize: '0.75rem', 
+                                      background: 'rgba(225, 29, 72, 0.15)', 
+                                      color: 'var(--accent-primary)', 
+                                      padding: '2px 8px', 
+                                      borderRadius: '12px', 
+                                      fontWeight: 500,
+                                      display: 'inline-flex',
+                                      alignItems: 'center'
+                                    }}>
+                                      {subject.parts_count} parts
+                                    </span>
+                                  )}
                                 </span>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                                   {isSearchEmpty && (
@@ -757,6 +806,7 @@ export default function AdditionalOptions() {
                                     onClick={() => {
                                       setEditingId(subject.id);
                                       setEditingName(subject.name);
+                                      setEditingPartsCount(subject.parts_count || 1);
                                     }}
                                     style={{
                                       background: 'none',

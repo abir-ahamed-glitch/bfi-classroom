@@ -150,10 +150,23 @@ export default function CourseMaterialsManager() {
   ];
 
   const allCourseOptions = customSubjects.length > 0
-    ? customSubjects.map((s) => ({
-        value: s.name,
-        label: `${s.name} (${s.course_name}${s.phase ? ` - Phase ${s.phase}` : ''})`
-      }))
+    ? customSubjects.flatMap((s) => {
+        const partsCount = s.parts_count || 1;
+        if (partsCount > 1) {
+          const parts = [];
+          for (let i = 1; i <= partsCount; i++) {
+            parts.push({
+              value: `${s.name} - Part ${i}`,
+              label: `${s.name} - Part ${i} (${s.course_name}${s.phase ? ` - Phase ${s.phase}` : ''})`
+            });
+          }
+          return parts;
+        }
+        return {
+          value: s.name,
+          label: `${s.name} (${s.course_name}${s.phase ? ` - Phase ${s.phase}` : ''})`
+        };
+      })
     : COURSE_OPTIONS.map((name) => ({
         value: name,
         label: `${name} (Online Filmmaking Course - Phase 1)`

@@ -1202,7 +1202,7 @@ router.get('/targeting-options', authenticateToken, requireRole('admin'), (req, 
 // Get all custom subjects
 router.get('/custom-subjects', authenticateToken, requireRole('admin'), (req, res) => {
   try {
-    const subjects = db.prepare('SELECT id, name, course_name, phase, sort_order, created_at FROM custom_subjects ORDER BY sort_order ASC, name ASC').all();
+    const subjects = db.prepare('SELECT id, name, course_name, phase, parts_count, sort_order, created_at FROM custom_subjects ORDER BY sort_order ASC, name ASC').all();
     res.json({ subjects });
   } catch (error) {
     console.error('Error fetching custom subjects:', error);
@@ -1213,7 +1213,7 @@ router.get('/custom-subjects', authenticateToken, requireRole('admin'), (req, re
 // Create a new custom subject
 router.post('/custom-subjects', authenticateToken, requireRole('admin'), sanitizeInput, (req, res) => {
   try {
-    const { name, course_name, phase } = req.body;
+    const { name, course_name, phase, parts_count } = req.body;
     if (!name || !name.trim()) {
       return res.status(400).json({ error: 'Subject name is required.' });
     }
@@ -1224,6 +1224,7 @@ router.post('/custom-subjects', authenticateToken, requireRole('admin'), sanitiz
     const trimmedName = name.trim();
     const courseNameTrimmed = course_name.trim();
     const phaseVal = phase !== undefined && phase !== null ? Number(phase) : null;
+    const partsCountVal = parts_count !== undefined && parts_count !== null ? Math.max(1, Number(parts_count)) : 1;
 
     // Check if duplicate exists in custom_subjects for the same course and phase
     const existing = db.prepare(`
@@ -1245,9 +1246,9 @@ router.post('/custom-subjects', authenticateToken, requireRole('admin'), sanitiz
     const nextOrder = maxOrderRow && maxOrderRow.maxOrder !== null ? maxOrderRow.maxOrder + 1 : 0;
 
     const result = db.prepare(`
-      INSERT INTO custom_subjects (name, course_name, phase, sort_order) 
-      VALUES (?, ?, ?, ?)
-    `).run(trimmedName, courseNameTrimmed, phaseVal, nextOrder);
+      INSERT INTO custom_subjects (name, course_name, phase, parts_count, sort_order) 
+      VALUES (?, ?, ?, ?, ?)
+    `).run(trimmedName, courseNameTrimmed, phaseVal, partsCountVal, nextOrder);
 
     res.status(201).json({ 
       subject: {
@@ -1255,6 +1256,7 @@ router.post('/custom-subjects', authenticateToken, requireRole('admin'), sanitiz
         name: trimmedName,
         course_name: courseNameTrimmed,
         phase: phaseVal,
+        parts_count: partsCountVal,
         sort_order: nextOrder
       }
     });
@@ -1291,16 +1293,17 @@ router.put('/custom-subjects/reorder', authenticateToken, requireRole('admin'), 
 router.put('/custom-subjects/:id', authenticateToken, requireRole('admin'), sanitizeInput, (req, res) => {
   try {
     const { id } = req.params;
-    const { name } = req.body;
+    const { name, parts_count } = req.body;
 
     if (!name || !name.trim()) {
       return res.status(400).json({ error: 'Subject name is required.' });
     }
 
     const trimmedName = name.trim();
+    const partsCountVal = parts_count !== undefined && parts_count !== null ? Math.max(1, Number(parts_count)) : 1;
 
     // Check if custom subject exists
-    const subject = db.prepare('SELECT name, course_name, phase FROM custom_subjects WHERE id = ?').get(id);
+    const subject = db.prepare('SELECT name, course_name, phase, parts_count FROM custom_subjects WHERE id = ?').get(id);
     if (!subject) {
       return res.status(404).json({ error: 'Custom subject not found.' });
     }
@@ -1318,9 +1321,9 @@ router.put('/custom-subjects/:id', authenticateToken, requireRole('admin'), sani
       return res.status(400).json({ error: 'Another custom subject with this name already exists for this course/phase.' });
     }
 
-    db.prepare('UPDATE custom_subjects SET name = ? WHERE id = ?').run(trimmedName, id);
+    db.prepare('UPDATE custom_subjects SET name = ?, parts_count = ? WHERE id = ?').run(trimmedName, partsCountVal, id);
 
-    // Cascade rename to instructor profiles
+    // Cascade rename & parts_count cleanup to instructor profiles
     try {
       const profiles = db.prepare('SELECT user_id, subjects FROM instructor_profiles').all();
       const updateStmt = db.prepare('UPDATE instructor_profiles SET subjects = ? WHERE user_id = ?');
@@ -1328,9 +1331,39 @@ router.put('/custom-subjects/:id', authenticateToken, requireRole('admin'), sani
         if (p.subjects) {
           try {
             let subjectsArr = JSON.parse(p.subjects);
-            if (Array.isArray(subjectsArr) && subjectsArr.includes(subject.name)) {
-              const updatedArr = subjectsArr.map(s => s === subject.name ? trimmedName : s);
-              updateStmt.run(JSON.stringify(updatedArr), p.user_id);
+            if (Array.isArray(subjectsArr)) {
+              let updated = false;
+              let updatedArr = subjectsArr.map(s => {
+                if (s === subject.name) {
+                  updated = true;
+                  return trimmedName;
+                }
+                if (s.startsWith(subject.name + ' - Part ')) {
+                  updated = true;
+                  return s.replace(subject.name + ' - Part ', trimmedName + ' - Part ');
+                }
+                return s;
+              });
+
+              // If parts_count decreased, filter out orphaned parts
+              if (partsCountVal < subject.parts_count) {
+                const prefix = trimmedName + ' - Part ';
+                const filteredArr = updatedArr.filter(s => {
+                  if (s.startsWith(prefix)) {
+                    const partNum = parseInt(s.replace(prefix, '')) || 0;
+                    if (partNum > partsCountVal) {
+                      updated = true;
+                      return false; // drop
+                    }
+                  }
+                  return true;
+                });
+                updatedArr = filteredArr;
+              }
+
+              if (updated) {
+                updateStmt.run(JSON.stringify(updatedArr), p.user_id);
+              }
             }
           } catch (e) {
             console.error(`Failed to cascade rename subjects for instructor ${p.user_id}:`, e);
@@ -1344,7 +1377,8 @@ router.put('/custom-subjects/:id', authenticateToken, requireRole('admin'), sani
     res.json({ 
       subject: {
         id: Number(id),
-        name: trimmedName
+        name: trimmedName,
+        parts_count: partsCountVal
       }
     });
   } catch (error) {
@@ -1374,9 +1408,11 @@ router.delete('/custom-subjects/:id', authenticateToken, requireRole('admin'), (
         if (p.subjects) {
           try {
             let subjectsArr = JSON.parse(p.subjects);
-            if (Array.isArray(subjectsArr) && subjectsArr.includes(subject.name)) {
-              const updatedArr = subjectsArr.filter(s => s !== subject.name);
-              updateStmt.run(JSON.stringify(updatedArr), p.user_id);
+            if (Array.isArray(subjectsArr)) {
+              const updatedArr = subjectsArr.filter(s => s !== subject.name && !s.startsWith(subject.name + ' - Part '));
+              if (updatedArr.length !== subjectsArr.length) {
+                updateStmt.run(JSON.stringify(updatedArr), p.user_id);
+              }
             }
           } catch (e) {
             console.error(`Failed to cascade delete subjects for instructor ${p.user_id}:`, e);

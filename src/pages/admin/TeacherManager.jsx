@@ -29,12 +29,28 @@ export default function TeacherManager() {
     'Film Production Design'
   ];
 
-  const allSubjects = customSubjects.length > 0 ? customSubjects : SUBJECTS.map(name => ({
+  const allSubjects = (customSubjects.length > 0 ? customSubjects : SUBJECTS.map(name => ({
     id: name,
     name,
     course_name: 'Online Filmmaking Course',
-    phase: 1
-  }));
+    phase: 1,
+    parts_count: 1
+  }))).flatMap(s => {
+    const partsCount = s.parts_count || 1;
+    if (partsCount > 1) {
+      const parts = [];
+      for (let i = 1; i <= partsCount; i++) {
+        parts.push({
+          id: `${s.id}-part${i}`,
+          name: `${s.name} - Part ${i}`,
+          course_name: s.course_name,
+          phase: s.phase
+        });
+      }
+      return parts;
+    }
+    return s;
+  });
 
   const getGroupedSubjects = (searchQuery) => {
     const groups = {};

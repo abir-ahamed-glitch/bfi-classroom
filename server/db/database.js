@@ -505,6 +505,7 @@ export function initializeDatabase() {
       name TEXT NOT NULL,
       course_name TEXT NOT NULL,
       phase INTEGER,
+      parts_count INTEGER DEFAULT 1,
       sort_order INTEGER DEFAULT 0,
       created_at TEXT DEFAULT (datetime('now')),
       UNIQUE(name, course_name, phase)
@@ -528,6 +529,7 @@ export function initializeDatabase() {
           name TEXT NOT NULL,
           course_name TEXT NOT NULL,
           phase INTEGER,
+          parts_count INTEGER DEFAULT 1,
           sort_order INTEGER DEFAULT 0,
           created_at TEXT DEFAULT (datetime('now')),
           UNIQUE(name, course_name, phase)
@@ -782,6 +784,14 @@ export function initializeDatabase() {
   try {
     db.prepare("ALTER TABLE custom_subjects ADD COLUMN sort_order INTEGER DEFAULT 0").run();
     console.log('✅ Migrated custom_subjects: added sort_order column');
+  } catch (error) {
+    // Column probably already exists
+  }
+
+  // Custom subjects parts_count migration
+  try {
+    db.prepare("ALTER TABLE custom_subjects ADD COLUMN parts_count INTEGER DEFAULT 1").run();
+    console.log('✅ Migrated custom_subjects: added parts_count column');
   } catch (error) {
     // Column probably already exists
   }
