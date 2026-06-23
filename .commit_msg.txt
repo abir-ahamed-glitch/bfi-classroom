@@ -1,1 +1,1 @@
-feat: add has_live_qa flag to custom subjects
+feat: add duration_minutes field for recorded classes

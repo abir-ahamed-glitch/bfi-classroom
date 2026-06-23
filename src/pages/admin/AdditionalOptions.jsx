@@ -38,9 +38,11 @@ export default function AdditionalOptions() {
   const [editingPartsCount, setEditingPartsCount] = useState(1);
   const [editingClassType, setEditingClassType] = useState('live');
   const [editingHasLiveQa, setEditingHasLiveQa] = useState(false);
+  const [editingDuration, setEditingDuration] = useState('');
   const [newSubjectPartsCount, setNewSubjectPartsCount] = useState(1);
   const [newSubjectClassType, setNewSubjectClassType] = useState('live');
   const [newSubjectHasLiveQa, setNewSubjectHasLiveQa] = useState(false);
+  const [newSubjectDuration, setNewSubjectDuration] = useState('');
   const [subjectSearchQuery, setSubjectSearchQuery] = useState('');
 
   const filteredCustomSubjects = customSubjects.filter(sub => 
@@ -164,7 +166,8 @@ export default function AdditionalOptions() {
           phase: activeTab.hasPhases ? selectedPhase : null,
           parts_count: newSubjectPartsCount,
           class_type: newSubjectClassType,
-          has_live_qa: newSubjectHasLiveQa
+          has_live_qa: newSubjectHasLiveQa,
+          duration_minutes: newSubjectClassType === 'recorded' ? (newSubjectDuration || null) : null
         })
       });
 
@@ -179,6 +182,7 @@ export default function AdditionalOptions() {
       setNewSubjectPartsCount(1);
       setNewSubjectClassType('live');
       setNewSubjectHasLiveQa(false);
+      setNewSubjectDuration('');
       fetchCustomSubjects();
     } catch (error) {
       setErrorMsg(error.message);
@@ -202,7 +206,7 @@ export default function AdditionalOptions() {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
         },
-        body: JSON.stringify({ name: editingName, parts_count: editingPartsCount, class_type: editingClassType, has_live_qa: editingHasLiveQa })
+        body: JSON.stringify({ name: editingName, parts_count: editingPartsCount, class_type: editingClassType, has_live_qa: editingHasLiveQa, duration_minutes: editingClassType === 'recorded' ? (editingDuration || null) : null })
       });
 
       const data = await response.json();
@@ -603,6 +607,27 @@ export default function AdditionalOptions() {
                       </label>
                     </div>
 
+                    {newSubjectClassType === 'recorded' && (
+                      <div>
+                        <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '0.4rem', fontWeight: 500 }}>
+                          ⏱ Class Duration (minutes)
+                        </label>
+                        <input
+                          type="number"
+                          min="1"
+                          max="600"
+                          value={newSubjectDuration}
+                          onChange={(e) => setNewSubjectDuration(e.target.value)}
+                          placeholder="e.g. 90"
+                          className="input-glass"
+                          style={{ width: '100%', paddingLeft: '1rem' }}
+                        />
+                        <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.3rem' }}>
+                          Total duration of the recorded class in minutes.
+                        </p>
+                      </div>
+                    )}
+
                     {errorMsg && (
                       <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--danger)', fontSize: '0.85rem', background: 'rgba(239, 68, 68, 0.1)', padding: '0.6rem 0.8rem', borderRadius: '6px' }}>
                         <AlertCircle size={16} />
@@ -765,6 +790,19 @@ export default function AdditionalOptions() {
                                   />
                                   <span style={{ fontSize: '0.75rem', color: editingHasLiveQa ? '#fbbf24' : 'var(--text-muted)', fontWeight: 600 }}>💬</span>
                                 </label>
+                                {editingClassType === 'recorded' && (
+                                  <input
+                                    type="number"
+                                    min="1"
+                                    max="600"
+                                    value={editingDuration}
+                                    onChange={(e) => setEditingDuration(e.target.value)}
+                                    placeholder="min"
+                                    className="input-glass"
+                                    style={{ width: '58px', padding: '0.4rem 0.3rem', height: '36px', textAlign: 'center' }}
+                                    title="Duration in minutes"
+                                  />
+                                )}
                                 <button
                                   type="submit"
                                   style={{
@@ -870,6 +908,21 @@ export default function AdditionalOptions() {
                                       💬 Live Q&amp;A
                                     </span>
                                   ) : null}
+                                  {subject.class_type === 'recorded' && subject.duration_minutes ? (
+                                    <span style={{
+                                      fontSize: '0.72rem',
+                                      padding: '2px 8px',
+                                      borderRadius: '12px',
+                                      fontWeight: 600,
+                                      display: 'inline-flex',
+                                      alignItems: 'center',
+                                      background: 'rgba(99,102,241,0.12)',
+                                      color: '#818cf8',
+                                      border: '1px solid rgba(99,102,241,0.3)'
+                                    }}>
+                                      ⏱ {subject.duration_minutes}m
+                                    </span>
+                                  ) : null}
                                 </span>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                                   {isSearchEmpty && (
@@ -936,6 +989,7 @@ export default function AdditionalOptions() {
                                       setEditingPartsCount(subject.parts_count || 1);
                                       setEditingClassType(subject.class_type || 'live');
                                       setEditingHasLiveQa(!!subject.has_live_qa);
+                                      setEditingDuration(subject.duration_minutes ? String(subject.duration_minutes) : '');
                                     }}
                                     style={{
                                       background: 'none',
