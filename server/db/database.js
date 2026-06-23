@@ -507,6 +507,7 @@ export function initializeDatabase() {
       phase INTEGER,
       parts_count INTEGER DEFAULT 1,
       class_type TEXT DEFAULT 'live',
+      has_live_qa INTEGER DEFAULT 0,
       sort_order INTEGER DEFAULT 0,
       created_at TEXT DEFAULT (datetime('now')),
       UNIQUE(name, course_name, phase)
@@ -801,6 +802,14 @@ export function initializeDatabase() {
   try {
     db.prepare("ALTER TABLE custom_subjects ADD COLUMN class_type TEXT DEFAULT 'live'").run();
     console.log('✅ Migrated custom_subjects: added class_type column');
+  } catch (error) {
+    // Column probably already exists
+  }
+
+  // Custom subjects has_live_qa migration
+  try {
+    db.prepare('ALTER TABLE custom_subjects ADD COLUMN has_live_qa INTEGER DEFAULT 0').run();
+    console.log('✅ Migrated custom_subjects: added has_live_qa column');
   } catch (error) {
     // Column probably already exists
   }

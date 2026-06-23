@@ -37,8 +37,10 @@ export default function AdditionalOptions() {
   const [editingName, setEditingName] = useState('');
   const [editingPartsCount, setEditingPartsCount] = useState(1);
   const [editingClassType, setEditingClassType] = useState('live');
+  const [editingHasLiveQa, setEditingHasLiveQa] = useState(false);
   const [newSubjectPartsCount, setNewSubjectPartsCount] = useState(1);
   const [newSubjectClassType, setNewSubjectClassType] = useState('live');
+  const [newSubjectHasLiveQa, setNewSubjectHasLiveQa] = useState(false);
   const [subjectSearchQuery, setSubjectSearchQuery] = useState('');
 
   const filteredCustomSubjects = customSubjects.filter(sub => 
@@ -161,7 +163,8 @@ export default function AdditionalOptions() {
           course_name: activeTab.course,
           phase: activeTab.hasPhases ? selectedPhase : null,
           parts_count: newSubjectPartsCount,
-          class_type: newSubjectClassType
+          class_type: newSubjectClassType,
+          has_live_qa: newSubjectHasLiveQa
         })
       });
 
@@ -175,6 +178,7 @@ export default function AdditionalOptions() {
       setNewSubjectName('');
       setNewSubjectPartsCount(1);
       setNewSubjectClassType('live');
+      setNewSubjectHasLiveQa(false);
       fetchCustomSubjects();
     } catch (error) {
       setErrorMsg(error.message);
@@ -198,7 +202,7 @@ export default function AdditionalOptions() {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
         },
-        body: JSON.stringify({ name: editingName, parts_count: editingPartsCount, class_type: editingClassType })
+        body: JSON.stringify({ name: editingName, parts_count: editingPartsCount, class_type: editingClassType, has_live_qa: editingHasLiveQa })
       });
 
       const data = await response.json();
@@ -582,6 +586,23 @@ export default function AdditionalOptions() {
                       </div>
                     </div>
 
+                    <div>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', cursor: 'pointer', padding: '0.6rem 0.8rem', borderRadius: '8px', border: newSubjectHasLiveQa ? '1px solid rgba(251,191,36,0.4)' : '1px solid rgba(255,255,255,0.08)', background: newSubjectHasLiveQa ? 'rgba(251,191,36,0.08)' : 'rgba(255,255,255,0.02)', transition: 'all 0.2s' }}>
+                        <input
+                          type="checkbox"
+                          checked={newSubjectHasLiveQa}
+                          onChange={(e) => setNewSubjectHasLiveQa(e.target.checked)}
+                          style={{ width: '16px', height: '16px', accentColor: '#fbbf24', cursor: 'pointer' }}
+                        />
+                        <span style={{ fontSize: '0.85rem', color: newSubjectHasLiveQa ? '#fbbf24' : 'var(--text-secondary)', fontWeight: 500 }}>
+                          💬 Has Live Q&amp;A Session
+                        </span>
+                        <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginLeft: 'auto' }}>
+                          After class
+                        </span>
+                      </label>
+                    </div>
+
                     {errorMsg && (
                       <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--danger)', fontSize: '0.85rem', background: 'rgba(239, 68, 68, 0.1)', padding: '0.6rem 0.8rem', borderRadius: '6px' }}>
                         <AlertCircle size={16} />
@@ -735,6 +756,15 @@ export default function AdditionalOptions() {
                                     </button>
                                   ))}
                                 </div>
+                                <label style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', cursor: 'pointer', whiteSpace: 'nowrap', padding: '4px 8px', borderRadius: '8px', border: editingHasLiveQa ? '1px solid rgba(251,191,36,0.4)' : '1px solid rgba(255,255,255,0.08)', background: editingHasLiveQa ? 'rgba(251,191,36,0.1)' : 'transparent', height: '36px', transition: 'all 0.2s' }}>
+                                  <input
+                                    type="checkbox"
+                                    checked={editingHasLiveQa}
+                                    onChange={(e) => setEditingHasLiveQa(e.target.checked)}
+                                    style={{ width: '14px', height: '14px', accentColor: '#fbbf24', cursor: 'pointer' }}
+                                  />
+                                  <span style={{ fontSize: '0.75rem', color: editingHasLiveQa ? '#fbbf24' : 'var(--text-muted)', fontWeight: 600 }}>💬</span>
+                                </label>
                                 <button
                                   type="submit"
                                   style={{
@@ -825,6 +855,21 @@ export default function AdditionalOptions() {
                                   }}>
                                     {subject.class_type === 'recorded' ? '🎬 Recorded' : '🔴 Live'}
                                   </span>
+                                  {subject.has_live_qa ? (
+                                    <span style={{
+                                      fontSize: '0.72rem',
+                                      padding: '2px 8px',
+                                      borderRadius: '12px',
+                                      fontWeight: 600,
+                                      display: 'inline-flex',
+                                      alignItems: 'center',
+                                      background: 'rgba(251,191,36,0.12)',
+                                      color: '#fbbf24',
+                                      border: '1px solid rgba(251,191,36,0.3)'
+                                    }}>
+                                      💬 Live Q&amp;A
+                                    </span>
+                                  ) : null}
                                 </span>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                                   {isSearchEmpty && (
@@ -890,6 +935,7 @@ export default function AdditionalOptions() {
                                       setEditingName(subject.name);
                                       setEditingPartsCount(subject.parts_count || 1);
                                       setEditingClassType(subject.class_type || 'live');
+                                      setEditingHasLiveQa(!!subject.has_live_qa);
                                     }}
                                     style={{
                                       background: 'none',
