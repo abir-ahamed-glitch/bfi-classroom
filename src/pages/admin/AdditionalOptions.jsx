@@ -19,15 +19,15 @@ export default function AdditionalOptions() {
   };
 
   const COURSE_TABS = [
-    { label: 'Online Filmmaking (Phase 1)', course: 'Online Filmmaking Course', phase: 1 },
-    { label: 'Online Filmmaking (Phase 2)', course: 'Online Filmmaking Course', phase: 2 },
-    { label: 'Film Appreciation Course', course: 'Film Appreciation Course', phase: null },
-    { label: 'Script Writing', course: 'Script Writing', phase: null },
-    { label: 'Cinematography', course: 'Cinematography', phase: null },
-    { label: 'Acting', course: 'Acting', phase: null }
+    { label: 'Online Filmmaking Course', course: 'Online Filmmaking Course', hasPhases: true },
+    { label: 'Film Appreciation Course', course: 'Film Appreciation Course', hasPhases: false },
+    { label: 'Script Writing', course: 'Script Writing', hasPhases: false },
+    { label: 'Cinematography', course: 'Cinematography', hasPhases: false },
+    { label: 'Acting', course: 'Acting', hasPhases: false }
   ];
 
   const [activeTab, setActiveTab] = useState(COURSE_TABS[0]);
+  const [selectedPhase, setSelectedPhase] = useState(1);
   const [customSubjects, setCustomSubjects] = useState([]);
   const [newSubjectName, setNewSubjectName] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -39,7 +39,7 @@ export default function AdditionalOptions() {
 
   const filteredCustomSubjects = customSubjects.filter(sub => 
     sub.course_name === activeTab.course &&
-    sub.phase === activeTab.phase &&
+    (activeTab.hasPhases ? sub.phase === selectedPhase : true) &&
     sub.name.toLowerCase().includes(subjectSearchQuery.toLowerCase())
   );
 
@@ -84,7 +84,7 @@ export default function AdditionalOptions() {
         body: JSON.stringify({ 
           name: newSubjectName,
           course_name: activeTab.course,
-          phase: activeTab.phase
+          phase: activeTab.hasPhases ? selectedPhase : null
         })
       });
 
@@ -364,14 +364,14 @@ export default function AdditionalOptions() {
                 display: 'flex', 
                 flexWrap: 'wrap', 
                 gap: '0.5rem', 
-                marginBottom: '2rem', 
+                marginBottom: '1.5rem', 
                 padding: '0.4rem', 
                 background: 'rgba(255,255,255,0.01)', 
                 borderRadius: '12px', 
                 border: '1px solid rgba(255,255,255,0.05)' 
               }}>
                 {COURSE_TABS.map((tab, idx) => {
-                  const isActive = activeTab.course === tab.course && activeTab.phase === tab.phase;
+                  const isActive = activeTab.course === tab.course;
                   return (
                     <button
                       key={idx}
@@ -388,6 +388,41 @@ export default function AdditionalOptions() {
                   );
                 })}
               </div>
+
+              {/* Sub-selector for Phases if course has phases */}
+              {activeTab.hasPhases && (
+                <div style={{ 
+                  display: 'flex', 
+                  alignItems: 'center',
+                  gap: '0.6rem', 
+                  marginBottom: '2rem',
+                  paddingLeft: '0.5rem'
+                }}>
+                  <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', fontWeight: 600 }}>Phase:</span>
+                  {[1, 2].map((p) => {
+                    const isPhaseActive = selectedPhase === p;
+                    return (
+                      <button
+                        key={p}
+                        type="button"
+                        onClick={() => {
+                          setSelectedPhase(p);
+                          setSuccessMsg('');
+                          setErrorMsg('');
+                        }}
+                        className={`subject-tab ${isPhaseActive ? 'active' : ''}`}
+                        style={{
+                          padding: '0.4rem 1rem',
+                          fontSize: '0.8rem',
+                          borderRadius: '6px'
+                        }}
+                      >
+                        Phase {p}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
 
               <div className="subjects-layout-grid">
               {/* Left column: Add custom subject form */}
