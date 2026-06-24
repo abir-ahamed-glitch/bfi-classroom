@@ -29,6 +29,13 @@
   box-shadow: inset -22px 0 38px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 
+@media (min-width: 1025px) {
+  .sidebar.glass-panel {
+    transform: none !important;
+    backface-visibility: visible !important;
+  }
+}
+
 [data-mode="light"] .sidebar.glass-panel {
   background-image:
     url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='grain'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='1.35' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23grain)' opacity='0.05'/%3E%3C/svg%3E"),

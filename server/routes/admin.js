@@ -707,7 +707,7 @@ router.get('/teachers', authenticateToken, requireRole('admin'), (req, res) => {
   try {
     const teachers = db.prepare(`
       SELECT 
-        u.id, u.username, u.email, u.first_name, u.last_name, u.mobile_number, u.is_active, u.created_at,
+        u.id, u.username, u.email, u.first_name, u.last_name, u.mobile_number, u.is_active, u.created_at, u.profile_picture,
         p.full_name, p.whatsapp_number, p.subjects, p.gender
       FROM users u
       LEFT JOIN instructor_profiles p ON u.id = p.user_id
@@ -1202,7 +1202,17 @@ router.get('/targeting-options', authenticateToken, requireRole('admin'), (req, 
 // Get all custom subjects
 router.get('/custom-subjects', authenticateToken, requireRole('admin'), (req, res) => {
   try {
-    const subjects = db.prepare('SELECT id, name, course_name, phase, parts_count, class_type, has_live_qa, duration_minutes, part_durations, sort_order, created_at FROM custom_subjects ORDER BY sort_order ASC, name ASC').all();
+    const subjects = db.prepare(`
+      SELECT 
+        s.id, s.name, s.course_name, s.phase, s.parts_count, s.class_type, s.has_live_qa, 
+        s.duration_minutes, s.part_durations, s.sort_order, s.created_at, s.teacher_id,
+        COALESCE(p.full_name, u.first_name || ' ' || u.last_name) AS teacher_name,
+        u.profile_picture AS teacher_avatar
+      FROM custom_subjects s
+      LEFT JOIN users u ON s.teacher_id = u.id
+      LEFT JOIN instructor_profiles p ON u.id = p.user_id
+      ORDER BY s.sort_order ASC, s.name ASC
+    `).all();
     res.json({ subjects });
   } catch (error) {
     console.error('Error fetching custom subjects:', error);
@@ -1213,7 +1223,7 @@ router.get('/custom-subjects', authenticateToken, requireRole('admin'), (req, re
 // Create a new custom subject
 router.post('/custom-subjects', authenticateToken, requireRole('admin'), sanitizeInput, (req, res) => {
   try {
-    const { name, course_name, phase, parts_count, class_type, has_live_qa, duration_minutes, part_durations } = req.body;
+    const { name, course_name, phase, parts_count, class_type, has_live_qa, duration_minutes, part_durations, teacher_id } = req.body;
     if (!name || !name.trim()) {
       return res.status(400).json({ error: 'Subject name is required.' });
     }
@@ -1227,6 +1237,7 @@ router.post('/custom-subjects', authenticateToken, requireRole('admin'), sanitiz
     const partsCountVal = parts_count !== undefined && parts_count !== null ? Math.max(1, Number(parts_count)) : 1;
     const classTypeVal = class_type === 'recorded' ? 'recorded' : 'live';
     const hasLiveQaVal = has_live_qa ? 1 : 0;
+    const teacherIdVal = teacher_id !== undefined && teacher_id !== null && teacher_id !== '' ? Number(teacher_id) : null;
 
     let durationVal = null;
     let partDurationsVal = null;
@@ -1261,9 +1272,34 @@ router.post('/custom-subjects', authenticateToken, requireRole('admin'), sanitiz
     const nextOrder = maxOrderRow && maxOrderRow.maxOrder !== null ? maxOrderRow.maxOrder + 1 : 0;
 
     const result = db.prepare(`
-      INSERT INTO custom_subjects (name, course_name, phase, parts_count, class_type, has_live_qa, duration_minutes, part_durations, sort_order) 
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(trimmedName, courseNameTrimmed, phaseVal, partsCountVal, classTypeVal, hasLiveQaVal, durationVal, partDurationsVal, nextOrder);
+      INSERT INTO custom_subjects (name, course_name, phase, parts_count, class_type, has_live_qa, duration_minutes, part_durations, sort_order, teacher_id) 
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(trimmedName, courseNameTrimmed, phaseVal, partsCountVal, classTypeVal, hasLiveQaVal, durationVal, partDurationsVal, nextOrder, teacherIdVal);
+
+    // If a teacher is assigned, add this subject to the teacher's instructor_profiles.subjects list
+    if (teacherIdVal) {
+      try {
+        const profile = db.prepare('SELECT subjects FROM instructor_profiles WHERE user_id = ?').get(teacherIdVal);
+        let subjectsArr = [];
+        if (profile && profile.subjects) {
+          try { subjectsArr = JSON.parse(profile.subjects); } catch { subjectsArr = []; }
+        }
+        if (!Array.isArray(subjectsArr)) subjectsArr = [];
+        const subjectEntry = partsCountVal > 1
+          ? Array.from({ length: partsCountVal }, (_, i) => `${trimmedName} - Part ${i + 1}`)
+          : [trimmedName];
+        for (const entry of subjectEntry) {
+          if (!subjectsArr.includes(entry)) subjectsArr.push(entry);
+        }
+        const updateStmt = db.prepare('UPDATE instructor_profiles SET subjects = ? WHERE user_id = ?');
+        const updateResult = updateStmt.run(JSON.stringify(subjectsArr), teacherIdVal);
+        if (updateResult.changes === 0) {
+          db.prepare('INSERT INTO instructor_profiles (user_id, subjects) VALUES (?, ?)').run(teacherIdVal, JSON.stringify(subjectsArr));
+        }
+      } catch (e) {
+        console.error('Failed to update teacher profile after subject creation:', e);
+      }
+    }
 
     res.status(201).json({ 
       subject: {
@@ -1276,7 +1312,8 @@ router.post('/custom-subjects', authenticateToken, requireRole('admin'), sanitiz
         has_live_qa: hasLiveQaVal,
         duration_minutes: durationVal,
         part_durations: partDurationsVal,
-        sort_order: nextOrder
+        sort_order: nextOrder,
+        teacher_id: teacherIdVal
       }
     });
   } catch (error) {
@@ -1312,7 +1349,7 @@ router.put('/custom-subjects/reorder', authenticateToken, requireRole('admin'), 
 router.put('/custom-subjects/:id', authenticateToken, requireRole('admin'), sanitizeInput, (req, res) => {
   try {
     const { id } = req.params;
-    const { name, parts_count, class_type, has_live_qa, duration_minutes, part_durations } = req.body;
+    const { name, parts_count, class_type, has_live_qa, duration_minutes, part_durations, teacher_id } = req.body;
 
     if (!name || !name.trim()) {
       return res.status(400).json({ error: 'Subject name is required.' });
@@ -1322,6 +1359,7 @@ router.put('/custom-subjects/:id', authenticateToken, requireRole('admin'), sani
     const partsCountVal = parts_count !== undefined && parts_count !== null ? Math.max(1, Number(parts_count)) : 1;
     const classTypeVal = class_type === 'recorded' ? 'recorded' : 'live';
     const hasLiveQaVal = has_live_qa ? 1 : 0;
+    const teacherIdVal = teacher_id !== undefined && teacher_id !== null && teacher_id !== '' ? Number(teacher_id) : null;
 
     let durationVal = null;
     let partDurationsVal = null;
@@ -1337,7 +1375,7 @@ router.put('/custom-subjects/:id', authenticateToken, requireRole('admin'), sani
     }
 
     // Check if custom subject exists
-    const subject = db.prepare('SELECT name, course_name, phase, parts_count FROM custom_subjects WHERE id = ?').get(id);
+    const subject = db.prepare('SELECT name, course_name, phase, parts_count, teacher_id AS old_teacher_id FROM custom_subjects WHERE id = ?').get(id);
     if (!subject) {
       return res.status(404).json({ error: 'Custom subject not found.' });
     }
@@ -1355,7 +1393,27 @@ router.put('/custom-subjects/:id', authenticateToken, requireRole('admin'), sani
       return res.status(400).json({ error: 'Another custom subject with this name already exists for this course/phase.' });
     }
 
-    db.prepare('UPDATE custom_subjects SET name = ?, parts_count = ?, class_type = ?, has_live_qa = ?, duration_minutes = ?, part_durations = ? WHERE id = ?').run(trimmedName, partsCountVal, classTypeVal, hasLiveQaVal, durationVal, partDurationsVal, id);
+    db.prepare('UPDATE custom_subjects SET name = ?, parts_count = ?, class_type = ?, has_live_qa = ?, duration_minutes = ?, part_durations = ?, teacher_id = ? WHERE id = ?').run(trimmedName, partsCountVal, classTypeVal, hasLiveQaVal, durationVal, partDurationsVal, teacherIdVal, id);
+
+    const oldTeacherId = subject.old_teacher_id ? Number(subject.old_teacher_id) : null;
+    const teacherChanged = oldTeacherId !== teacherIdVal;
+
+    // Helper to get & parse a teacher's subjects list
+    const getSubjectsArr = (userId) => {
+      const p = db.prepare('SELECT subjects FROM instructor_profiles WHERE user_id = ?').get(userId);
+      if (p && p.subjects) {
+        try { return JSON.parse(p.subjects); } catch { return []; }
+      }
+      return [];
+    };
+
+    // Helper to upsert instructor_profiles subjects
+    const saveSubjectsArr = (userId, arr) => {
+      const r = db.prepare('UPDATE instructor_profiles SET subjects = ? WHERE user_id = ?').run(JSON.stringify(arr), userId);
+      if (r.changes === 0) {
+        db.prepare('INSERT INTO instructor_profiles (user_id, subjects) VALUES (?, ?)').run(userId, JSON.stringify(arr));
+      }
+    };
 
     // Cascade rename & parts_count cleanup to instructor profiles
     try {
@@ -1408,11 +1466,60 @@ router.put('/custom-subjects/:id', authenticateToken, requireRole('admin'), sani
       console.error('Failed to update teacher profiles during subject rename cascade:', e);
     }
 
+    // Handle teacher assignment changes
+    if (teacherChanged) {
+      try {
+        // Remove subject entries from old teacher's list
+        if (oldTeacherId) {
+          let oldArr = getSubjectsArr(oldTeacherId);
+          const oldName = subject.name;
+          oldArr = oldArr.filter(s => s !== oldName && !s.startsWith(oldName + ' - Part ') && s !== trimmedName && !s.startsWith(trimmedName + ' - Part '));
+          saveSubjectsArr(oldTeacherId, oldArr);
+        }
+        // Add subject entries to new teacher's list
+        if (teacherIdVal) {
+          let newArr = getSubjectsArr(teacherIdVal);
+          const entries = partsCountVal > 1
+            ? Array.from({ length: partsCountVal }, (_, i) => `${trimmedName} - Part ${i + 1}`)
+            : [trimmedName];
+          for (const entry of entries) {
+            if (!newArr.includes(entry)) newArr.push(entry);
+          }
+          saveSubjectsArr(teacherIdVal, newArr);
+        }
+      } catch (e) {
+        console.error('Failed to update teacher profiles during subject teacher reassignment:', e);
+      }
+    } else if (teacherIdVal) {
+      // Same teacher, but parts_count or name might have changed
+      try {
+        let currentArr = getSubjectsArr(teacherIdVal);
+        const oldName = subject.name;
+        
+        // Remove ALL old and new references to this subject to start fresh
+        currentArr = currentArr.filter(s => s !== oldName && !s.startsWith(oldName + ' - Part ') && s !== trimmedName && !s.startsWith(trimmedName + ' - Part '));
+        
+        // Re-add the correct entries based on current parts_count
+        const entries = partsCountVal > 1
+          ? Array.from({ length: partsCountVal }, (_, i) => `${trimmedName} - Part ${i + 1}`)
+          : [trimmedName];
+          
+        for (const entry of entries) {
+          if (!currentArr.includes(entry)) currentArr.push(entry);
+        }
+        
+        saveSubjectsArr(teacherIdVal, currentArr);
+      } catch (e) {
+        console.error('Failed to sync teacher profiles during subject update:', e);
+      }
+    }
+
     res.json({ 
       subject: {
         id: Number(id),
         name: trimmedName,
-        parts_count: partsCountVal
+        parts_count: partsCountVal,
+        teacher_id: teacherIdVal
       }
     });
   } catch (error) {

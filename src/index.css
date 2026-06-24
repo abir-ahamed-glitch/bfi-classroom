@@ -2270,6 +2270,23 @@ html {
   display: grid;
   grid-template-columns: minmax(300px, 1fr) 2fr;
   gap: 2rem;
+  align-items: start;
+}
+
+.subjects-layout-grid .glass-panel {
+  transform: translateZ(0) !important;
+  backface-visibility: hidden !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  background: rgba(8, 18, 33, 0.96) !important;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.05) !important;
+  border: 1px solid rgba(255,255,255,0.05) !important;
+}
+
+[data-mode="light"] .subjects-layout-grid .glass-panel {
+  background: rgba(255, 255, 255, 0.96) !important;
+  border: 1px solid rgba(15, 23, 42, 0.08) !important;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.05) !important;
 }
 
 @media (max-width: 768px) {

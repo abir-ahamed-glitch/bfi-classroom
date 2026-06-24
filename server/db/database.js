@@ -511,8 +511,10 @@ export function initializeDatabase() {
       duration_minutes INTEGER DEFAULT NULL,
       part_durations TEXT DEFAULT NULL,
       sort_order INTEGER DEFAULT 0,
+      teacher_id INTEGER DEFAULT NULL,
       created_at TEXT DEFAULT (datetime('now')),
-      UNIQUE(name, course_name, phase)
+      UNIQUE(name, course_name, phase),
+      FOREIGN KEY (teacher_id) REFERENCES users(id) ON DELETE SET NULL
     );
   `);
 
@@ -828,6 +830,14 @@ export function initializeDatabase() {
   try {
     db.prepare('ALTER TABLE custom_subjects ADD COLUMN part_durations TEXT DEFAULT NULL').run();
     console.log('✅ Migrated custom_subjects: added part_durations column');
+  } catch (error) {
+    // Column probably already exists
+  }
+
+  // Custom subjects teacher_id migration
+  try {
+    db.prepare('ALTER TABLE custom_subjects ADD COLUMN teacher_id INTEGER DEFAULT NULL REFERENCES users(id) ON DELETE SET NULL').run();
+    console.log('✅ Migrated custom_subjects: added teacher_id column');
   } catch (error) {
     // Column probably already exists
   }

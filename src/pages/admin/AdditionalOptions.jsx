@@ -1,9 +1,10 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Plus, Trash2, BookOpen, Settings, AlertCircle, CheckCircle, Edit2, Check, X, DollarSign, Wallet, ChevronUp, ChevronDown, Search, GripVertical } from 'lucide-react';
 import { useModal } from '../../components/BFIModal';
 import BatchFeeManager from './BatchFeeManager';
 import FeeTracker from './FeeTracker';
+import { resolveMediaUrl } from '../../utils/mediaUtils';
 
 export default function AdditionalOptions() {
   const { showConfirm } = useModal();
@@ -45,6 +46,9 @@ export default function AdditionalOptions() {
   const [newSubjectHasLiveQa, setNewSubjectHasLiveQa] = useState(false);
   const [newSubjectDuration, setNewSubjectDuration] = useState('');
   const [newSubjectPartDurations, setNewSubjectPartDurations] = useState([]);
+  const [teachers, setTeachers] = useState([]);
+  const [newSubjectTeacherId, setNewSubjectTeacherId] = useState('');
+  const [editingTeacherId, setEditingTeacherId] = useState('');
   const [subjectSearchQuery, setSubjectSearchQuery] = useState('');
 
   const filteredCustomSubjects = customSubjects.filter(sub => 
@@ -142,8 +146,26 @@ export default function AdditionalOptions() {
     }
   };
 
+  const fetchTeachers = async () => {
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch('/api/admin/teachers', {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setTeachers(data.teachers || []);
+      }
+    } catch (error) {
+      console.error('Failed to fetch teachers:', error);
+    }
+  };
+
   useEffect(() => {
     fetchCustomSubjects();
+    fetchTeachers();
   }, []);
 
   const handleAddSubject = async (e) => {
@@ -170,7 +192,8 @@ export default function AdditionalOptions() {
           class_type: newSubjectClassType,
           has_live_qa: newSubjectHasLiveQa,
           duration_minutes: newSubjectClassType === 'recorded' && newSubjectPartsCount === 1 ? (newSubjectDuration || null) : null,
-          part_durations: newSubjectClassType === 'recorded' && newSubjectPartsCount > 1 ? newSubjectPartDurations.slice(0, newSubjectPartsCount) : null
+          part_durations: newSubjectClassType === 'recorded' && newSubjectPartsCount > 1 ? newSubjectPartDurations.slice(0, newSubjectPartsCount) : null,
+          teacher_id: newSubjectTeacherId || null
         })
       });
 
@@ -187,6 +210,7 @@ export default function AdditionalOptions() {
       setNewSubjectHasLiveQa(false);
       setNewSubjectDuration('');
       setNewSubjectPartDurations([]);
+      setNewSubjectTeacherId('');
       fetchCustomSubjects();
     } catch (error) {
       setErrorMsg(error.message);
@@ -216,7 +240,8 @@ export default function AdditionalOptions() {
           class_type: editingClassType, 
           has_live_qa: editingHasLiveQa, 
           duration_minutes: editingClassType === 'recorded' && editingPartsCount === 1 ? (editingDuration || null) : null,
-          part_durations: editingClassType === 'recorded' && editingPartsCount > 1 ? editingPartDurations.slice(0, editingPartsCount) : null
+          part_durations: editingClassType === 'recorded' && editingPartsCount > 1 ? editingPartDurations.slice(0, editingPartsCount) : null,
+          teacher_id: editingTeacherId || null
         })
       });
 
@@ -229,6 +254,7 @@ export default function AdditionalOptions() {
       setSuccessMsg(`Subject updated successfully.`);
       setEditingId(null);
       setEditingName('');
+      setEditingTeacherId('');
       fetchCustomSubjects();
     } catch (error) {
       setErrorMsg(error.message);
@@ -602,6 +628,18 @@ export default function AdditionalOptions() {
                     </div>
 
                     <div>
+                      <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '0.4rem', fontWeight: 500 }}>
+                        Assigned Teacher (Optional)
+                      </label>
+                      <TeacherSearchSelect
+                        teachers={teachers}
+                        selectedId={newSubjectTeacherId}
+                        onChange={setNewSubjectTeacherId}
+                        placeholder="Search or select teacher..."
+                      />
+                    </div>
+
+                    <div>
                       <label style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', cursor: 'pointer', padding: '0.6rem 0.8rem', borderRadius: '8px', border: newSubjectHasLiveQa ? '1px solid rgba(251,191,36,0.4)' : '1px solid rgba(255,255,255,0.08)', background: newSubjectHasLiveQa ? 'rgba(251,191,36,0.08)' : 'rgba(255,255,255,0.02)', transition: 'all 0.2s' }}>
                         <input
                           type="checkbox"
@@ -824,8 +862,15 @@ export default function AdditionalOptions() {
                                       onChange={(e) => setEditingHasLiveQa(e.target.checked)}
                                       style={{ width: '14px', height: '14px', accentColor: '#fbbf24', cursor: 'pointer' }}
                                     />
-                                    <span style={{ fontSize: '0.75rem', color: editingHasLiveQa ? '#fbbf24' : 'var(--text-muted)', fontWeight: 600 }}>💬 Live Q&amp;A</span>
                                   </label>
+                                  <div style={{ minWidth: '160px', flex: 1 }}>
+                                    <TeacherSearchSelect
+                                      teachers={teachers}
+                                      selectedId={editingTeacherId}
+                                      onChange={setEditingTeacherId}
+                                      placeholder="Select teacher..."
+                                    />
+                                  </div>
                                   <div style={{ display: 'flex', gap: '0.25rem', marginLeft: 'auto' }}>
                                     <button
                                       type="submit"
@@ -988,31 +1033,60 @@ export default function AdditionalOptions() {
                                       💬 Live Q&amp;A
                                     </span>
                                   ) : null}
-                                  {subject.class_type === 'recorded' && subject.duration_minutes ? (
-                                    <span style={{
-                                      fontSize: '0.72rem',
-                                      padding: '2px 8px',
-                                      borderRadius: '12px',
-                                      fontWeight: 600,
-                                      display: 'inline-flex',
-                                      alignItems: 'center',
-                                      gap: '3px',
-                                      background: 'rgba(99,102,241,0.12)',
-                                      color: '#818cf8',
-                                      border: '1px solid rgba(99,102,241,0.3)'
-                                    }}>
-                                      {subject.part_durations && subject.parts_count > 1
-                                        ? (() => {
-                                            try {
-                                              const parts = JSON.parse(subject.part_durations);
-                                              return <>⏱ {parts.map((d, i) => d ? `P${i+1}:${d}m` : null).filter(Boolean).join(' | ')}</>;
-                                            } catch { return <>⏱ {subject.duration_minutes}m total</>; }
-                                          })()
-                                        : <>⏱ {subject.duration_minutes}m</>
-                                      }
+                                      {subject.class_type === 'recorded' && subject.duration_minutes ? (
+                                        <span style={{
+                                          fontSize: '0.72rem',
+                                          padding: '2px 8px',
+                                          borderRadius: '12px',
+                                          fontWeight: 600,
+                                          display: 'inline-flex',
+                                          alignItems: 'center',
+                                          gap: '3px',
+                                          background: 'rgba(99,102,241,0.12)',
+                                          color: '#818cf8',
+                                          border: '1px solid rgba(99,102,241,0.3)'
+                                        }}>
+                                          {subject.part_durations && subject.parts_count > 1
+                                            ? (() => {
+                                                try {
+                                                  const parts = JSON.parse(subject.part_durations);
+                                                  return <>⏱ {parts.map((d, i) => d ? `P${i+1}:${d}m` : null).filter(Boolean).join(' | ')}</>;
+                                                } catch { return <>⏱ {subject.duration_minutes}m total</>; }
+                                              })()
+                                            : <>⏱ {subject.duration_minutes}m</>
+                                          }
+                                        </span>
+                                      ) : null}
+                                      {subject.teacher_name ? (
+                                        <span style={{
+                                          fontSize: '0.72rem',
+                                          padding: '2px 8px',
+                                          paddingLeft: subject.teacher_avatar ? '2px' : '8px',
+                                          borderRadius: '12px',
+                                          fontWeight: 600,
+                                          display: 'inline-flex',
+                                          alignItems: 'center',
+                                          gap: '4px',
+                                          background: 'rgba(56, 189, 248, 0.12)',
+                                          color: '#38bdf8',
+                                          border: '1px solid rgba(56, 189, 248, 0.3)'
+                                        }}>
+                                          {subject.teacher_avatar ? (
+                                            <img 
+                                              src={resolveMediaUrl(subject.teacher_avatar)} 
+                                              alt={subject.teacher_name} 
+                                              style={{ width: '24px', height: '24px', borderRadius: '50%', objectFit: 'cover' }} 
+                                              onError={(e) => {
+                                                e.target.style.display = 'none';
+                                                e.target.nextSibling.style.display = 'inline-block';
+                                              }}
+                                            />
+                                          ) : null}
+                                          <span style={{ display: subject.teacher_avatar ? 'none' : 'inline-block', fontSize: '1.2rem' }}>👨‍🏫</span>
+                                          <span style={{ paddingRight: '4px' }}>{subject.teacher_name}</span>
+                                        </span>
+                                      ) : null}
                                     </span>
-                                  ) : null}
-                                </span>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                                   {isSearchEmpty && (
                                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.1rem', marginRight: '0.3rem' }}>
@@ -1079,6 +1153,7 @@ export default function AdditionalOptions() {
                                       setEditingClassType(subject.class_type || 'live');
                                       setEditingHasLiveQa(!!subject.has_live_qa);
                                       setEditingDuration(subject.duration_minutes ? String(subject.duration_minutes) : '');
+                                      setEditingTeacherId(subject.teacher_id || '');
                                       try {
                                         setEditingPartDurations(subject.part_durations ? JSON.parse(subject.part_durations).map(String) : []);
                                       } catch { setEditingPartDurations([]); }
@@ -1160,3 +1235,172 @@ export default function AdditionalOptions() {
     </div>
   );
 }
+
+// Sleek, reusable custom searchable dropdown for selecting registered teachers
+function TeacherSearchSelect({ teachers, selectedId, onChange, placeholder }) {
+  const [search, setSearch] = useState('');
+  const [isOpen, setIsOpen] = useState(false);
+  const containerRef = useRef(null);
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (containerRef.current && !containerRef.current.contains(e.target)) {
+        setIsOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const selectedTeacher = teachers.find(t => t.id === Number(selectedId));
+  
+  // Update search input when selected teacher changes
+  useEffect(() => {
+    if (selectedTeacher) {
+      setSearch(selectedTeacher.full_name || `${selectedTeacher.first_name} ${selectedTeacher.last_name}`);
+    } else {
+      setSearch('');
+    }
+  }, [selectedId, selectedTeacher]);
+
+  const filtered = teachers.filter(t => {
+    const name = (t.full_name || `${t.first_name} ${t.last_name}`).toLowerCase();
+    return name.includes(search.toLowerCase());
+  });
+
+  return (
+    <div ref={containerRef} style={{ position: 'relative', width: '100%' }}>
+      <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+        <input
+          type="text"
+          value={search}
+          onChange={(e) => {
+            setSearch(e.target.value);
+            setIsOpen(true);
+            if (!e.target.value) {
+              onChange('');
+            }
+          }}
+          onFocus={() => setIsOpen(true)}
+          placeholder={placeholder}
+          className="input-glass"
+          style={{ width: '100%', paddingLeft: '1rem', paddingRight: '2.5rem', height: '38px', fontSize: '0.85rem' }}
+        />
+        {selectedId ? (
+          <button
+            type="button"
+            onClick={() => {
+              onChange('');
+              setSearch('');
+              setIsOpen(false);
+            }}
+            style={{
+              position: 'absolute',
+              right: '10px',
+              background: 'none',
+              border: 'none',
+              color: 'var(--text-muted)',
+              cursor: 'pointer',
+              fontSize: '1rem',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: '4px'
+            }}
+          >
+            ✕
+          </button>
+        ) : (
+          <span style={{ position: 'absolute', right: '12px', color: 'var(--text-muted)', pointerEvents: 'none', fontSize: '0.8rem' }}>
+            🔍
+          </span>
+        )}
+      </div>
+
+      {isOpen && (
+        <div style={{
+          position: 'absolute',
+          top: '100%',
+          left: 0,
+          right: 0,
+          marginTop: '4px',
+          background: 'var(--bg-secondary, #071221)',
+          border: '1px solid var(--glass-border, rgba(255,255,255,0.08))',
+          borderRadius: '8px',
+          maxHeight: '200px',
+          overflowY: 'auto',
+          zIndex: 1000,
+          boxShadow: '0 10px 25px rgba(0,0,0,0.5)',
+          scrollbarWidth: 'thin'
+        }}>
+          {filtered.length === 0 ? (
+            <div style={{ padding: '0.75rem 1rem', color: 'var(--text-muted)', fontSize: '0.85rem', fontStyle: 'italic' }}>
+              No teachers found
+            </div>
+          ) : (
+            filtered.map(t => {
+              const name = t.full_name || `${t.first_name} ${t.last_name}`;
+              const isSelected = t.id === Number(selectedId);
+              return (
+                <div
+                  key={t.id}
+                  onClick={() => {
+                    onChange(t.id);
+                    setSearch(name);
+                    setIsOpen(false);
+                  }}
+                  style={{
+                    padding: '0.6rem 1rem',
+                    cursor: 'pointer',
+                    fontSize: '0.85rem',
+                    color: isSelected ? 'var(--accent-primary)' : 'var(--text-primary)',
+                    background: isSelected ? 'rgba(96, 165, 250, 0.1)' : 'transparent',
+                    transition: 'background 0.15s',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.75rem',
+                    textAlign: 'left'
+                  }}
+                  onMouseEnter={(e) => {
+                    if (!isSelected) e.currentTarget.style.background = 'rgba(255,255,255,0.03)';
+                  }}
+                  onMouseLeave={(e) => {
+                    if (!isSelected) e.currentTarget.style.background = 'transparent';
+                  }}
+                >
+                  {t.profile_picture ? (
+                    <img 
+                      src={resolveMediaUrl(t.profile_picture)} 
+                      alt={name}
+                      style={{
+                        width: '24px',
+                        height: '24px',
+                        borderRadius: '50%',
+                        objectFit: 'cover',
+                        flexShrink: 0,
+                        border: '1px solid rgba(255,255,255,0.1)'
+                      }}
+                      onError={(e) => {
+                        e.target.style.display = 'none';
+                        e.target.nextSibling.style.display = 'flex';
+                      }}
+                    />
+                  ) : null}
+                  <div style={{ display: t.profile_picture ? 'none' : 'flex', width: '24px', height: '24px', borderRadius: '50%', background: 'rgba(255,255,255,0.1)', alignItems: 'center', justifyContent: 'center', fontSize: '12px', flexShrink: 0 }}>
+                    👨‍🏫
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                    <span style={{ fontWeight: 600 }}>{name}</span>
+                    {t.email && <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{t.email}</span>}
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
