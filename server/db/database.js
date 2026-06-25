@@ -516,7 +516,104 @@ export function initializeDatabase() {
       UNIQUE(name, course_name, phase),
       FOREIGN KEY (teacher_id) REFERENCES users(id) ON DELETE SET NULL
     );
+
+    -- Batches table
+    CREATE TABLE IF NOT EXISTS batches (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      batch_name TEXT NOT NULL,
+      batch_number TEXT NOT NULL UNIQUE,
+      course_name TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'upcoming',
+      start_date DATE,
+      end_date DATE,
+      description TEXT,
+      created_by INTEGER,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- Batch students association table
+    CREATE TABLE IF NOT EXISTS batch_students (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      batch_id INTEGER NOT NULL REFERENCES batches(id) ON DELETE CASCADE,
+      student_id INTEGER NOT NULL REFERENCES users(id),
+      assigned_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      assigned_by INTEGER,
+      UNIQUE(batch_id, student_id)
+    );
   `);
+
+  // One-time migration for batches and batch_students
+  try {
+    const distinctBatches = db.prepare(`
+      SELECT DISTINCT batch_number 
+      FROM student_profiles 
+      WHERE batch_number IS NOT NULL AND batch_number != ''
+    `).all();
+
+    let syncedBatches = 0;
+    let syncedStudents = 0;
+    let alreadySynced = true;
+
+    const runMigration = db.transaction(() => {
+      for (const row of distinctBatches) {
+        const batchNum = row.batch_number;
+        const existingBatch = db.prepare('SELECT id FROM batches WHERE batch_number = ?').get(batchNum);
+        if (!existingBatch) {
+          const batchName = `${batchNum}th Batch`;
+          db.prepare(`
+            INSERT INTO batches (batch_name, batch_number, course_name, status)
+            VALUES (?, ?, ?, ?)
+          `).run(batchName, batchNum, 'Online Filmmaking Course', 'completed');
+          
+          syncedBatches++;
+          alreadySynced = false;
+        }
+      }
+
+      const studentsWithBatch = db.prepare(`
+        SELECT user_id, batch_number 
+        FROM student_profiles 
+        WHERE batch_number IS NOT NULL AND batch_number != ''
+      `).all();
+
+      for (const student of studentsWithBatch) {
+        const batch = db.prepare('SELECT id FROM batches WHERE batch_number = ?').get(student.batch_number);
+        if (batch) {
+          const existingAssignment = db.prepare(`
+            SELECT id FROM batch_students 
+            WHERE batch_id = ? AND student_id = ?
+          `).get(batch.id, student.user_id);
+          
+          if (!existingAssignment) {
+            db.prepare(`
+              INSERT INTO batch_students (batch_id, student_id)
+              VALUES (?, ?)
+            `).run(batch.id, student.user_id);
+            syncedStudents++;
+            alreadySynced = false;
+          }
+        }
+      }
+    });
+
+    runMigration();
+
+    if (alreadySynced) {
+      console.log("[Batch Migration] Already up to date, nothing to sync");
+    } else {
+      console.log(`[Batch Migration] Synced ${syncedBatches} batches, ${syncedStudents} student assignments from existing data`);
+    }
+
+    // Temporary verification check as requested
+    const tablesCreated = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('batches', 'batch_students')").all();
+    console.log("[Batch Verification] Created tables:", tablesCreated.map(t => t.name));
+    const batchCount = db.prepare("SELECT COUNT(*) as count FROM batches").get().count;
+    const studentCount = db.prepare("SELECT COUNT(*) as count FROM batch_students").get().count;
+    console.log(`[Batch Verification] Current count in batches: ${batchCount}, batch_students: ${studentCount}`);
+  } catch (error) {
+    console.error('[Batch Migration] Error during migration:', error);
+  }
 
   // Custom subjects course_name and phase migration
   try {

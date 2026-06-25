@@ -34,6 +34,7 @@ import analyticsRoutes from './routes/analytics.js';
 import reportsRoutes from './routes/reports.js';
 import feesRoutes from './routes/fees.js';
 import feeTrackerRoutes from './routes/fee-tracker.js';
+import batchRoutes from './routes/batches.js';
 import { getJwtRefreshSecret, getJwtSecret } from './config/security.js';
 import { authenticateToken } from './middleware/auth.js';
 
@@ -391,6 +392,7 @@ app.use('/api/registry', registryRoutes);
 app.use('/api/notifications', notificationsRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/reports', reportsRoutes);
+app.use('/api/admin/batches', batchRoutes);
 
 app.use('/api', (req, res) => {
   res.status(404).json({ error: `API route not found: ${req.method} ${req.originalUrl}` });

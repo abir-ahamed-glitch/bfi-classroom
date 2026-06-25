@@ -352,6 +352,9 @@ export default function Sidebar({ isNotifOpen, setIsNotifOpen }) {
               <NavLink to="/admin/students" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
                 <Settings size={20} /> Student Manager
               </NavLink>
+              <NavLink to="/admin/batches" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
+                <Users size={20} /> Batch Manager
+              </NavLink>
               <NavLink to="/admin/teachers" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
                 <Settings size={20} /> Teacher Manager
               </NavLink>

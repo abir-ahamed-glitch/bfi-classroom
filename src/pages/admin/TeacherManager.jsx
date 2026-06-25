@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { UserPlus, Search, Copy, CheckCircle2, User, UserCheck, Edit, X, ChevronUp, ChevronDown, GripVertical } from 'lucide-react';
+import { UserPlus, Search, Copy, CheckCircle2, User, UserCheck, Edit, X, ChevronUp, ChevronDown, GripVertical, Trash2 } from 'lucide-react';
 
 export default function TeacherManager() {
   const [teachers, setTeachers] = useState([]);
@@ -9,6 +9,7 @@ export default function TeacherManager() {
   const [errorMsg, setErrorMsg] = useState('');
   const [copied, setCopied] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [confirmConfig, setConfirmConfig] = useState(null);
 
   // Edit Modal State
   const [editingTeacher, setEditingTeacher] = useState(null);
@@ -106,6 +107,44 @@ export default function TeacherManager() {
       }
     } catch (error) {
       console.error('Failed to fetch teachers:', error);
+    }
+  };
+
+  const confirmDeleteTeacher = (teacherId, teacherName) => {
+    const messageNode = (
+      <span>
+        You are about to permanently remove the profile and account for{' '}
+        <strong style={{ fontWeight: 700, color: '#f43f5e' }}>{teacherName}</strong>
+        {' '}from the institutional database. This action is irreversible and will delete all associated data.
+      </span>
+    );
+    setConfirmConfig({
+      title: 'Delete Teacher Account',
+      message: messageNode,
+      confirmText: 'Delete',
+      type: 'danger',
+      onConfirm: () => performDelete(teacherId)
+    });
+  };
+
+  const performDelete = async (teacherId) => {
+    try {
+      const res = await fetch(`/api/admin/teachers/${teacherId}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
+        }
+      });
+      
+      if (res.ok) {
+        fetchTeachers();
+      } else {
+        const data = await res.json();
+        setConfirmConfig({ title: 'Deletion Failed', message: data.error || 'Failed to delete teacher.', confirmText: 'OK', isAlert: true, onConfirm: () => {} });
+      }
+    } catch (err) {
+      console.error('Teacher deletion error', err);
+      setConfirmConfig({ title: 'Error', message: 'An error occurred while deleting the teacher.', confirmText: 'OK', isAlert: true, onConfirm: () => {} });
     }
   };
 
@@ -573,9 +612,34 @@ export default function TeacherManager() {
                     </td>
                     <td style={{ padding: '1rem', color: 'var(--text-muted)' }}>{new Date(t.created_at).toLocaleDateString()}</td>
                     <td style={{ padding: '1rem' }}>
-                      <button onClick={() => startEdit(t)} className="btn" style={{ padding: '0.4rem', background: 'rgba(56, 189, 248, 0.1)', color: '#38bdf8', border: '1px solid rgba(56, 189, 248, 0.2)' }}>
-                        <Edit size={16} />
-                      </button>
+                      <div style={{ display: 'flex', gap: '0.5rem' }}>
+                        <button onClick={() => startEdit(t)} className="btn" style={{ padding: '0.4rem', background: 'rgba(56, 189, 248, 0.1)', color: '#38bdf8', border: '1px solid rgba(56, 189, 248, 0.2)' }} title="Edit Teacher">
+                          <Edit size={16} />
+                        </button>
+                        <button 
+                          onClick={() => confirmDeleteTeacher(t.id, `${t.first_name} ${t.last_name}`)} 
+                          className="btn" 
+                          style={{ 
+                            padding: '0.4rem', 
+                            background: 'rgba(239, 68, 68, 0.1)', 
+                            color: '#ef4444', 
+                            border: '1px solid rgba(239, 68, 68, 0.2)',
+                            borderRadius: '4px',
+                            transition: 'all 0.2s'
+                          }} 
+                          onMouseEnter={(e) => { 
+                            e.currentTarget.style.background = 'rgba(239, 68, 68, 0.2)'; 
+                            e.currentTarget.style.transform = 'scale(1.05)'; 
+                          }} 
+                          onMouseLeave={(e) => { 
+                            e.currentTarget.style.background = 'rgba(239, 68, 68, 0.1)'; 
+                            e.currentTarget.style.transform = 'scale(1)'; 
+                          }} 
+                          title="Delete Teacher"
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -814,6 +878,38 @@ export default function TeacherManager() {
               </button>
             </div>
           </form>
+        </div>,
+        document.body
+      )}
+
+      {/* Confirmation Modal */}
+      {confirmConfig && typeof document !== 'undefined' && createPortal(
+        <div className="modern-modal-overlay" onClick={() => setConfirmConfig(null)}>
+          <div className="modern-modal-content glass-panel" style={{ width: '100%', maxWidth: '450px', margin: 'auto' }} onClick={e => e.stopPropagation()}>
+            <div className="modern-modal-header">
+              <h3 className="font-display">{confirmConfig.title}</h3>
+              <button type="button" className="icon-btn-ghost" onClick={() => setConfirmConfig(null)} aria-label="Close"><X size={20} /></button>
+            </div>
+            <div className="modern-modal-body" style={{ color: 'var(--text-secondary)' }}>
+              <p style={{ lineHeight: 1.6 }}>{confirmConfig.message}</p>
+            </div>
+            <div className="modern-modal-footer" style={{ justifyContent: confirmConfig.isAlert ? 'center' : 'flex-end', gap: '0.8rem', display: 'flex', marginTop: '1.5rem' }}>
+              {!confirmConfig.isAlert && (
+                <button type="button" className="modern-btn modern-btn--secondary" onClick={() => setConfirmConfig(null)}>Cancel</button>
+              )}
+              <button 
+                type="button"
+                className={`modern-btn ${confirmConfig.type === 'danger' ? 'modern-btn--danger' : 'modern-btn--primary'}`}
+                style={confirmConfig.isAlert ? { width: '100%', maxWidth: '200px', margin: '0 auto' } : {}}
+                onClick={() => {
+                  confirmConfig.onConfirm();
+                  setConfirmConfig(null);
+                }}
+              >
+                {confirmConfig.confirmText || 'Confirm'}
+              </button>
+            </div>
+          </div>
         </div>,
         document.body
       )}

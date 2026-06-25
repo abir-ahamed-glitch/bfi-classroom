@@ -687,12 +687,17 @@ h1.text-gradient,
 .input-glass:focus,
 .input-glass:focus-within {
   outline: none;
-  border-color: var(--accent-primary);
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
+  border-color: rgba(37, 99, 235, 0.3);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+}
+
+[data-mode='light'] .input-glass::placeholder {
+  color: rgba(100, 116, 139, 0.4);
 }
 
 .input-glass::placeholder {
-  color: var(--text-muted);
+  color: rgba(148, 163, 184, 0.4);
+  font-style: italic;
 }
 
 /* Smooth Scrolling & Loaders */

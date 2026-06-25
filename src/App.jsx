@@ -31,6 +31,8 @@ import Directory from './pages/Directory';
 import Registry from './pages/Registry';
 import InstructorDirectory from './pages/InstructorDirectory';
 import StudentManager from './pages/admin/StudentManager';
+import BatchManager from './pages/admin/BatchManager';
+import BatchDetail from './pages/admin/BatchDetail';
 import TeacherManager from './pages/admin/TeacherManager';
 import CertificateDesigner from './pages/admin/CertificateDesigner';
 import AnnouncementsManager from './pages/admin/AnnouncementsManager';
@@ -353,6 +355,16 @@ function App() {
           <Route path="/admin/students" element={
             <ProtectedRoute requiredRole={['admin']}>
               <Layout><StudentManager /></Layout>
+            </ProtectedRoute>
+          } />
+          <Route path="/admin/batches" element={
+            <ProtectedRoute requiredRole={['admin']}>
+              <Layout><BatchManager /></Layout>
+            </ProtectedRoute>
+          } />
+          <Route path="/admin/batches/:id" element={
+            <ProtectedRoute requiredRole={['admin']}>
+              <Layout><BatchDetail /></Layout>
             </ProtectedRoute>
           } />
           <Route path="/admin/teachers" element={

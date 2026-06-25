@@ -824,6 +824,48 @@ router.put('/teachers/:id', authenticateToken, requireRole('admin'), sanitizeInp
   }
 });
 
+// Route to delete a teacher account
+router.delete('/teachers/:id', authenticateToken, requireRole('admin'), (req, res) => {
+  try {
+    const teacherIdNum = parseInt(req.params.id, 10);
+
+    // Verify it's actually a teacher
+    const teacher = db.prepare("SELECT id FROM users WHERE id = ? AND role = 'instructor'").get(teacherIdNum);
+    if (!teacher) {
+      return res.status(404).json({ error: 'Teacher not found.' });
+    }
+
+    // Manually clean up all related records in a transaction to prevent orphaned rows.
+    const deleteTeacher = db.transaction((id) => {
+      db.prepare('DELETE FROM sessions WHERE user_id = ?').run(id);
+      db.prepare('DELETE FROM password_reset_tokens WHERE user_id = ?').run(id);
+      db.prepare('DELETE FROM notifications WHERE user_id = ?').run(id);
+      db.prepare('DELETE FROM post_likes WHERE user_id = ?').run(id);
+      db.prepare('DELETE FROM post_comments WHERE user_id = ?').run(id);
+      db.prepare('DELETE FROM friendships WHERE requester_id = ? OR addressee_id = ?').run(id, id);
+      db.prepare('DELETE FROM message_reactions WHERE user_id = ?').run(id);
+      db.prepare('DELETE FROM message_reports WHERE reporter_id = ? OR reported_user_id = ?').run(id, id);
+      db.prepare('DELETE FROM message_hidden_for_users WHERE user_id = ?').run(id);
+      db.prepare('DELETE FROM messages WHERE sender_id = ? OR receiver_id = ?').run(id, id);
+      db.prepare('DELETE FROM social_links WHERE user_id = ?').run(id);
+      db.prepare('DELETE FROM awards WHERE user_id = ?').run(id);
+      db.prepare('DELETE FROM project_credits WHERE project_id IN (SELECT id FROM projects WHERE user_id = ?)').run(id);
+      db.prepare('DELETE FROM projects WHERE user_id = ?').run(id);
+      db.prepare('DELETE FROM community_posts WHERE user_id = ?').run(id);
+      db.prepare('DELETE FROM course_materials WHERE uploaded_by = ?').run(id);
+      db.prepare('DELETE FROM instructor_profiles WHERE user_id = ?').run(id);
+      db.prepare('DELETE FROM users WHERE id = ?').run(id);
+    });
+
+    deleteTeacher(teacherIdNum);
+
+    res.json({ message: 'Teacher account deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting teacher:', error);
+    res.status(500).json({ error: 'Internal server error while deleting teacher account.' });
+  }
+});
+
 // Route to update a student's course progression (checkmarks)
 router.patch('/students/:id/progress', authenticateToken, requireRole('admin'), (req, res) => {
   try {

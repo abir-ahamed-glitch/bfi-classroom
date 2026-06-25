@@ -50,7 +50,6 @@
 }
 
 .registry-card:hover {
-  transform: translateY(-1px);
   background: rgba(255, 255, 255, 0.015);
   border-color: rgba(255, 255, 255, 0.1);
   box-shadow: 0 8px 20px rgba(0, 0, 0, 0.15);
@@ -81,7 +80,6 @@
 
 .registry-card:hover .card-icon::after {
   opacity: 0.25;
-  transform: scale(1.1);
 }
 
 .card-icon svg {
@@ -95,7 +93,6 @@
 
 .registry-card:hover .card-icon svg {
   color: var(--accent-primary);
-  transform: scale(1.02);
 }
 
 .card-details {
