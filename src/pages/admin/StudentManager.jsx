@@ -673,7 +673,7 @@ export default function StudentManager() {
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '1rem' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
               <h2 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', margin: 0 }}>
-                <UserCheck className="text-secondary" /> Registered Students
+                <UserCheck className="text-secondary" /> Admitted Students
               </h2>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
                 <span style={{
@@ -688,7 +688,7 @@ export default function StudentManager() {
                   alignItems: 'center',
                   gap: '0.25rem'
                 }}>
-                  Total Registered: <span style={{ color: 'var(--text-primary)', fontWeight: '700' }}>{students.length}</span>
+                  Total Admitted: <span style={{ color: 'var(--text-primary)', fontWeight: '700' }}>{students.length}</span>
                 </span>
                 <span style={{
                   background: 'rgba(16, 185, 129, 0.12)',
@@ -702,7 +702,7 @@ export default function StudentManager() {
                   alignItems: 'center',
                   gap: '0.25rem'
                 }}>
-                  Total Admitted: <span style={{ color: 'var(--text-primary)', fontWeight: '700' }}>{students.filter(s => s.enrollments && s.enrollments.some(e => e.step1_completed === 1)).length}</span>
+                  Step 1 Completed: <span style={{ color: 'var(--text-primary)', fontWeight: '700' }}>{students.filter(s => s.enrollments && s.enrollments.some(e => e.step1_completed === 1)).length}</span>
                 </span>
                 <span style={{
                   background: 'rgba(201, 168, 76, 0.12)',
@@ -716,7 +716,7 @@ export default function StudentManager() {
                   alignItems: 'center',
                   gap: '0.25rem'
                 }}>
-                  Total Completed: <span style={{ color: 'var(--text-primary)', fontWeight: '700' }}>{students.filter(s => s.enrollments && s.enrollments.some(e => e.step4_completed === 1)).length}</span>
+                  Step 4 Completed: <span style={{ color: 'var(--text-primary)', fontWeight: '700' }}>{students.filter(s => s.enrollments && s.enrollments.some(e => e.step4_completed === 1)).length}</span>
                 </span>
               </div>
             </div>
@@ -879,7 +879,7 @@ export default function StudentManager() {
                         <div style={{ width: '48px', height: '48px', background: 'var(--glass-bg)', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                           <UserCheck size={24} style={{ color: 'var(--text-muted)' }} />
                         </div>
-                        <span>No students registered yet.</span>
+                        <span>No students admitted yet.</span>
                       </div>
                     </td>
                   </tr>

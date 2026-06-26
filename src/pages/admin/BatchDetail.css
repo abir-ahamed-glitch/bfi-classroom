@@ -159,6 +159,110 @@
   margin-bottom: 1.5rem;
 }
 
+/* Timeline section */
+.batch-timeline-section {
+  margin-top: 40px;
+  padding-top: 32px;
+  border-top: 1px solid rgba(255,255,255,0.08);
+}
+.batch-timeline-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 24px;
+}
+
+/* Vertical timeline */
+.batch-timeline {
+  position: relative;
+  padding-left: 32px;
+}
+.batch-timeline::before {
+  content: '';
+  position: absolute;
+  left: 8px;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: rgba(255,255,255,0.1);
+}
+.batch-timeline-item {
+  position: relative;
+  margin-bottom: 28px;
+}
+.batch-timeline-dot {
+  position: absolute;
+  left: -28px;
+  top: 4px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  background: #01040d; /* matches page background */
+}
+
+.batch-timeline-item-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 4px;
+}
+.batch-timeline-transition {
+  font-weight: 600;
+  font-size: 14px;
+  color: white;
+}
+.batch-timeline-timestamp {
+  font-size: 12px;
+  color: rgba(255,255,255,0.4);
+  cursor: default; /* tooltip on hover shows full date */
+  white-space: nowrap;
+}
+.batch-timeline-reason {
+  font-size: 13px;
+  color: rgba(255,255,255,0.6);
+  margin-bottom: 2px;
+}
+.batch-timeline-trigger {
+  font-size: 12px;
+  color: rgba(255,255,255,0.35);
+  font-style: italic;
+}
+.batch-timeline-synthetic {
+  /* slightly more muted than real transitions */
+  opacity: 0.7;
+}
+
+/* Header flash animation */
+@keyframes headerFlash {
+  0% { box-shadow: 0 0 0 0px rgba(245, 158, 11, 0.4); }
+  50% { box-shadow: 0 0 20px 10px rgba(245, 158, 11, 0.6); }
+  100% { box-shadow: 0 0 0 0px rgba(245, 158, 11, 0); }
+}
+.header-flash {
+  animation: headerFlash 1.5s ease-out;
+}
+
+/* Spinner rotation */
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+.animate-spin {
+  animation: spin 1s linear infinite;
+}
+
+.batch-phase2-section {
+  overflow: hidden;
+  max-height: 0;
+  opacity: 0;
+  transition: max-height 0.4s ease, opacity 0.3s ease;
+}
+.batch-phase2-section.visible {
+  max-height: 600px;
+  opacity: 1;
+}
+
 @media (max-width: 640px) {
   .batch-students-header {
     flex-direction: column;

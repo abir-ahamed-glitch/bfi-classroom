@@ -190,6 +190,10 @@ router.post('/students/bulk', authenticateToken, requireRole('admin'), sanitizeI
       
       const existingUser = db.prepare('SELECT id FROM users WHERE lower(email) = lower(?)').get(email);
       if (existingUser) {
+        if (req.query.skipExisting === 'true') {
+          results.push({ ...studentData, status: 'success', error: 'Already registered (Skipped)', username: 'Existing User', password: 'N/A', studentId: 'N/A' });
+          continue;
+        }
         results.push({ ...studentData, status: 'error', error: 'Email already exists' });
         continue;
       }
@@ -197,14 +201,17 @@ router.post('/students/bulk', authenticateToken, requireRole('admin'), sanitizeI
       // Generate credentials
       const baseUsername = `${firstName.toLowerCase()}.${lastName.toLowerCase()}`.replace(/[^a-z0-9]/g, '');
       const randomSuffix = Math.random().toString(36).substring(2, 6);
-      const username = `${baseUsername}.${randomSuffix}`;
+      const username = req.query.isRegisteredOnly === 'true' ? `lead_${Date.now()}_${randomSuffix}` : `${baseUsername}.${randomSuffix}`;
       
       // Password: bfi@ + last 6 digits of mobile, or random
-      let rawPassword = `bfi@${Math.random().toString().substring(2,8)}`;
-      if (mobileNumber && mobileNumber.length >= 6) {
-        rawPassword = `bfi@${mobileNumber.slice(-6)}`;
-      } else if (mobileNumber) {
-        rawPassword = `bfi@${mobileNumber}`;
+      let rawPassword = req.query.isRegisteredOnly === 'true' ? `DISABLED_${Date.now()}` : `bfi@${Math.random().toString().substring(2,8)}`;
+      
+      if (req.query.isRegisteredOnly !== 'true') {
+        if (mobileNumber && mobileNumber.length >= 6) {
+          rawPassword = `bfi@${mobileNumber.slice(-6)}`;
+        } else if (mobileNumber) {
+          rawPassword = `bfi@${mobileNumber}`;
+        }
       }
 
       const passwordHash = bcrypt.hashSync(rawPassword, 12);
@@ -299,6 +306,146 @@ router.post('/students/bulk', authenticateToken, requireRole('admin'), sanitizeI
   } catch (error) {
     console.error('Error in bulk import:', error);
     res.status(500).json({ error: 'Internal server error during bulk import.' });
+  }
+});
+
+// Get all registered leads (not admitted)
+router.get('/students/leads', authenticateToken, requireRole('admin'), (req, res) => {
+  try {
+    const leads = db.prepare(`
+      SELECT 
+        u.id as user_id, 
+        u.email, 
+        u.mobile_number, 
+        u.created_at,
+        p.full_name, 
+        p.gender, 
+        p.birthday, 
+        p.present_address, 
+        p.educational_qualification, 
+        p.profession,
+        p.whatsapp_number,
+        p.batch_number,
+        p.student_id
+      FROM users u
+      LEFT JOIN student_profiles p ON u.id = p.user_id
+      WHERE u.role = 'student'
+        AND (u.username IS NULL OR u.username = '')
+        AND (p.batch_number IS NULL OR p.batch_number = '')
+      ORDER BY u.created_at DESC
+    `).all();
+
+    res.status(200).json(leads);
+  } catch (error) {
+    console.error('Error fetching leads:', error);
+    res.status(500).json({ error: 'Internal server error fetching leads' });
+  }
+});
+
+
+// Admit a lead student
+router.post('/students/leads/:id/admit', authenticateToken, requireRole('admin'), sanitizeInput, (req, res) => {
+  try {
+    const userId = req.params.id;
+    const { batchNumber, snNo, month, year, course = 'Online Filmmaking Course' } = req.body;
+
+    if (!batchNumber || !snNo || !year) {
+      return res.status(400).json({ error: 'Batch Number, SN No, and Year are required.' });
+    }
+
+    const user = db.prepare("SELECT * FROM users WHERE id = ? AND role = 'student'").get(userId);
+    if (!user) {
+      return res.status(404).json({ error: 'Student not found.' });
+    }
+    
+    const profile = db.prepare('SELECT * FROM student_profiles WHERE user_id = ?').get(userId);
+    if (!profile) {
+      return res.status(404).json({ error: 'Student profile not found.' });
+    }
+
+    // Extract first and last name from full name
+    const nameParts = profile.full_name.split(' ');
+    const firstName = nameParts[0];
+    const lastName = nameParts.length > 1 ? nameParts.slice(1).join(' ') : 'Student';
+
+    // Generate Username
+    let baseUsername = `${firstName.toLowerCase()}.${lastName.toLowerCase()}`.replace(/[^a-z0-9]/g, '');
+    let username = `${baseUsername}.${Math.random().toString(36).substring(2, 6)}`;
+    // Ensure unique username
+    while (db.prepare('SELECT id FROM users WHERE username = ?').get(username)) {
+      username = `${baseUsername}.${Math.random().toString(36).substring(2, 6)}`;
+    }
+
+    // Generate Password: bfi@ + last 6 digits of mobile (or random if mobile is invalid)
+    let rawPassword = '';
+    const mobileDigits = (user.mobile_number || '').replace(/\D/g, '');
+    if (mobileDigits.length >= 6) {
+      rawPassword = `bfi@${mobileDigits.slice(-6)}`;
+    } else {
+      rawPassword = `bfi@${Math.floor(100000 + Math.random() * 900000)}`;
+    }
+    const passwordHash = bcrypt.hashSync(rawPassword, 12);
+
+    // Generate Student ID
+    const parsedSn = parseInt(snNo, 10);
+    const cleanSn = isNaN(parsedSn) ? '00' : String(parsedSn).padStart(2, '0');
+    const parsedBatch = parseInt(batchNumber, 10);
+    const cleanBatch = isNaN(parsedBatch) ? '00' : String(parsedBatch);
+    const parsedYear = parseInt(year, 10);
+    const cleanYear = isNaN(parsedYear) ? new Date().getFullYear().toString() : String(parsedYear);
+    
+    let cleanMonth = '';
+    if (month && String(month).trim() !== '') {
+      const parsedMonth = parseInt(month, 10);
+      cleanMonth = isNaN(parsedMonth) ? '' : String(parsedMonth).padStart(2, '0');
+    }
+
+    const studentId = `BFI${cleanSn}${cleanBatch}${cleanMonth}${cleanYear}`;
+
+    // Execute updates
+    const transaction = db.transaction(() => {
+      // 1. Update user
+      db.prepare(`UPDATE users SET username = ?, password_hash = ? WHERE id = ?`).run(username, passwordHash, userId);
+      
+      // 2. Ensure a profile row exists (some leads may not have one)
+      db.prepare(`INSERT OR IGNORE INTO student_profiles (user_id, full_name) VALUES (?, ?)`).
+        run(userId, profile ? profile.full_name : (user.email || String(userId)));
+      
+      // 3. Update profile with student_id and batch_number
+      db.prepare(`UPDATE student_profiles SET student_id = ?, batch_number = ? WHERE user_id = ?`).run(studentId, cleanBatch, userId);
+      
+      // 4. Enroll in course (if not already)
+      const existingEnrollment = db.prepare('SELECT * FROM student_course_enrollments WHERE user_id = ? AND course_name = ?').get(userId, course);
+      if (!existingEnrollment) {
+        db.prepare('INSERT INTO student_course_enrollments (user_id, course_name, course_type) VALUES (?, ?, ?)').run(userId, course, 'filmmaking');
+      }
+
+      // 5. Link to batch roster (if batch exists)
+      const batchRecord = db.prepare('SELECT id FROM batches WHERE batch_number = ?').get(cleanBatch);
+      if (batchRecord) {
+        const existsInBatch = db.prepare('SELECT id FROM batch_students WHERE batch_id = ? AND student_id = ?').get(batchRecord.id, userId);
+        if (!existsInBatch) {
+          db.prepare('INSERT INTO batch_students (batch_id, student_id) VALUES (?, ?)').run(batchRecord.id, userId);
+        }
+      }
+    });
+
+
+    transaction();
+
+    res.status(200).json({
+      message: 'Student admitted successfully.',
+      credentials: {
+        username,
+        password: rawPassword,
+        studentId,
+        mobileNumber: user.mobile_number
+      }
+    });
+
+  } catch (error) {
+    console.error('Error admitting student:', error);
+    res.status(500).json({ error: error.message || 'Internal server error admitting student.' });
   }
 });
 
@@ -659,7 +806,7 @@ router.get('/students', authenticateToken, requireRole('admin'), (req, res) => {
         p.phase1_fee, p.phase2_fee
       FROM users u
       LEFT JOIN student_profiles p ON u.id = p.user_id
-      WHERE u.role = 'student'
+      WHERE u.role = 'student' AND p.batch_number IS NOT NULL AND p.batch_number != ''
       ORDER BY u.created_at DESC
     `).all();
 

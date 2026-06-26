@@ -1,8 +1,37 @@
 import express from 'express';
 import db from '../db/database.js';
 import { authenticateToken, requireRole } from '../middleware/auth.js';
+import { runBatchStatusAutomation } from '../utils/batchStatusAutomation.js';
 
 const router = express.Router();
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Endpoint 0A — POST /api/admin/batches/run-automation
+// Purpose: Manually trigger the batch status automation engine
+// NOTE: This route MUST appear before /:id routes or Express will treat
+//       'run-automation' as an :id parameter and never reach this handler.
+// ─────────────────────────────────────────────────────────────────────────────
+router.post('/run-automation', authenticateToken, requireRole('admin'), (req, res) => {
+  try {
+    console.log(`[BatchAutomation] Manual trigger by admin ${req.user.id}`);
+
+    const result = runBatchStatusAutomation(db, req.user.id);
+
+    return res.json({
+      success: true,
+      message: result.transitions.length > 0
+        ? `${result.transitions.length} batch(es) updated`
+        : 'All batches are up to date — no changes needed',
+      batches_checked: result.batches_checked,
+      transitions: result.transitions,
+      errors: result.errors
+    });
+  } catch (error) {
+    console.error('[BatchAutomation] Manual trigger error:', error);
+    return res.status(500).json({ error: 'Automation run failed' });
+  }
+});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Endpoint 1 — GET /api/admin/batches
@@ -17,9 +46,8 @@ router.get('/', authenticateToken, requireRole('admin'), (req, res) => {
     const batches = db.prepare(`
       SELECT 
         b.*,
-        COUNT(bs.id) as student_count
+        (SELECT COUNT(*) FROM batch_students WHERE batch_id = b.id) as student_count
       FROM batches b
-      LEFT JOIN batch_students bs ON bs.batch_id = b.id
       WHERE 
         (:status IS NULL OR b.status = :status)
         AND (:course IS NULL OR b.course_name = :course)
@@ -28,9 +56,21 @@ router.get('/', authenticateToken, requireRole('admin'), (req, res) => {
           b.batch_name LIKE :search OR 
           b.batch_number LIKE :search
         )
-      GROUP BY b.id
       ORDER BY CAST(b.batch_number AS INTEGER) DESC
     `).all({ status, course, search });
+
+    for (const batch of batches) {
+      const p1Count = db.prepare(`
+        SELECT COUNT(*) as count
+        FROM batch_students bs
+        JOIN student_course_enrollments sce
+          ON sce.user_id = bs.student_id
+          AND sce.course_name = ?
+        WHERE bs.batch_id = ? AND sce.step2_completed = 1
+      `).get(batch.course_name, batch.id).count || 0;
+
+      batch.phase1_completed_count = p1Count;
+    }
 
     res.json(batches);
   } catch (error) {
@@ -38,6 +78,7 @@ router.get('/', authenticateToken, requireRole('admin'), (req, res) => {
     res.status(500).json({ error: 'Internal server error while listing batches.' });
   }
 });
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Endpoint 2 — GET /api/admin/batches/:id
@@ -694,6 +735,40 @@ router.get('/:id/progress', authenticateToken, requireRole('admin'), (req, res) 
   } catch (error) {
     console.error('[Batches] GET /:id/progress error:', error);
     res.status(500).json({ error: 'Internal server error while fetching batch progress metrics.' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Endpoint 11 — GET /api/admin/batches/:id/transitions
+// Purpose: Retrieve the status transition history for a specific batch
+//          Returns transitions ordered newest-first for timeline display
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/:id/transitions', authenticateToken, requireRole('admin'), (req, res) => {
+  try {
+    const batchId = parseInt(req.params.id, 10);
+    if (isNaN(batchId)) {
+      return res.status(400).json({ error: 'Invalid batch ID' });
+    }
+
+    const batch = db.prepare('SELECT id, batch_name FROM batches WHERE id = ?').get(batchId);
+    if (!batch) {
+      return res.status(404).json({ error: 'Batch not found' });
+    }
+
+    const transitions = db.prepare(`
+      SELECT
+        bst.*,
+        u.first_name || ' ' || u.last_name AS triggered_by_name
+      FROM batch_status_transitions bst
+      LEFT JOIN users u ON u.id = bst.triggered_by
+      WHERE bst.batch_id = ?
+      ORDER BY bst.transitioned_at DESC
+    `).all(batchId);
+
+    res.json(transitions);
+  } catch (error) {
+    console.error('[Batches] GET /:id/transitions error:', error);
+    res.status(500).json({ error: 'Internal server error while fetching transition history.' });
   }
 });
 

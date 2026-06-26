@@ -1,9 +1,11 @@
 import { useState, useEffect, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Plus, Trash2, BookOpen, Settings, AlertCircle, CheckCircle, Edit2, Check, X, DollarSign, Wallet, ChevronUp, ChevronDown, Search, GripVertical } from 'lucide-react';
+import { Plus, Trash2, BookOpen, Settings, AlertCircle, CheckCircle, Edit2, Check, X, DollarSign, Wallet, ChevronUp, ChevronDown, Search, GripVertical, UploadCloud } from 'lucide-react';
 import { useModal } from '../../components/BFIModal';
 import BatchFeeManager from './BatchFeeManager';
 import FeeTracker from './FeeTracker';
+import BulkRegisteredStudentImport from '../../components/admin/BulkRegisteredStudentImport';
+import LeadsTable from '../../components/admin/LeadsTable';
 import { resolveMediaUrl } from '../../utils/mediaUtils';
 
 export default function AdditionalOptions() {
@@ -38,6 +40,7 @@ export default function AdditionalOptions() {
   const [editingName, setEditingName] = useState('');
   const [editingPartsCount, setEditingPartsCount] = useState(1);
   const [editingClassType, setEditingClassType] = useState('live');
+  const [refreshLeads, setRefreshLeads] = useState(0);
   const [editingHasLiveQa, setEditingHasLiveQa] = useState(false);
   const [editingDuration, setEditingDuration] = useState('');
   const [editingPartDurations, setEditingPartDurations] = useState([]);
@@ -446,42 +449,100 @@ export default function AdditionalOptions() {
               </p>
             </div>
           </button>
-        </div>
-      ) : (
-        <>
+
           <button
-            onClick={() => {
-              setCurrentView('dashboard', { replace: true });
-              setErrorMsg('');
-              setSuccessMsg('');
-            }}
+            onClick={() => setCurrentView('bulk-register')}
             style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.5rem',
-              background: 'none',
-              border: 'none',
-              color: 'var(--text-secondary)',
+              background: 'rgba(255, 255, 255, 0.02)',
+              border: '1px solid var(--glass-border)',
+              borderRadius: '16px',
+              padding: '2rem',
+              textAlign: 'left',
               cursor: 'pointer',
-              fontSize: '0.95rem',
-              marginBottom: '1.5rem',
-              padding: '0.5rem 0.8rem',
-              borderRadius: '8px',
-              transition: 'all 0.2s'
+              transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '1rem',
+              position: 'relative',
+              overflow: 'hidden',
+              color: 'inherit'
             }}
             onMouseEnter={(e) => {
-              e.currentTarget.style.color = 'white';
-              e.currentTarget.style.background = 'rgba(255,255,255,0.05)';
+              e.currentTarget.style.background = 'rgba(255, 255, 255, 0.04)';
+              e.currentTarget.style.borderColor = 'var(--accent-primary)';
+              e.currentTarget.style.boxShadow = '0 12px 30px rgba(0, 0, 0, 0.4)';
             }}
             onMouseLeave={(e) => {
-              e.currentTarget.style.color = 'var(--text-secondary)';
-              e.currentTarget.style.background = 'none';
+              e.currentTarget.style.background = 'rgba(255, 255, 255, 0.02)';
+              e.currentTarget.style.borderColor = 'var(--glass-border)';
+              e.currentTarget.style.boxShadow = 'none';
             }}
           >
-            &larr; Back to Additional Options
+            <div style={{
+              background: 'rgba(14, 165, 233, 0.1)',
+              color: 'var(--accent-primary)',
+              width: '48px',
+              height: '48px',
+              borderRadius: '12px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center'
+            }}>
+              <UploadCloud size={24} />
+            </div>
+            <div>
+              <h3 style={{ fontSize: '1.2rem', fontWeight: 600, marginBottom: '0.4rem', color: 'var(--text-primary)' }}>
+                Bulk Import Registrations
+              </h3>
+              <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', lineHeight: '1.4' }}>
+                Smartly upload unregistered students to keep track of leads and prospects without batching them immediately.
+              </p>
+            </div>
           </button>
-
-          {currentView === 'subjects' && (
+        </div>
+      ) : (
+        <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid var(--glass-border)', borderRadius: '16px', minHeight: '600px', display: 'flex', flexDirection: 'column' }}>
+          <div style={{ padding: '1rem 1.5rem', borderBottom: '1px solid var(--glass-border)', display: 'flex', alignItems: 'center', gap: '1rem' }}>
+            <button
+              onClick={() => {
+                setCurrentView('dashboard', { replace: true });
+                setErrorMsg('');
+                setSuccessMsg('');
+              }}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.5rem',
+                background: 'none',
+                border: 'none',
+                color: 'var(--text-secondary)',
+                cursor: 'pointer',
+                fontSize: '0.95rem',
+                padding: '0.5rem 0.8rem',
+                borderRadius: '8px',
+                transition: 'all 0.2s'
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.color = 'white';
+                e.currentTarget.style.background = 'rgba(255,255,255,0.05)';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.color = 'var(--text-secondary)';
+                e.currentTarget.style.background = 'none';
+              }}
+            >
+              &larr; Back
+            </button>
+            <h2 style={{ fontSize: '1.25rem', fontWeight: 600, margin: 0, color: 'var(--text-primary)' }}>
+              {currentView === 'custom-subjects' ? 'Custom Subjects' :
+               currentView === 'settings' ? 'Global Settings' : 
+               currentView === 'certificates' ? 'Certificate Generator' :
+               currentView === 'bulk-register' ? 'Bulk Import Registrations' : 'Option'}
+            </h2>
+          </div>
+          
+          <div style={{ flex: 1, position: 'relative' }}>
+            {currentView === 'custom-subjects' && (
             <>
               {/* Course Tabs Selector */}
               <div style={{ 
@@ -1223,6 +1284,17 @@ export default function AdditionalOptions() {
             </>
           )}
 
+          {currentView === 'bulk-register' && (
+              <div style={{ padding: '1rem', display: 'flex', flexDirection: 'column' }}>
+                <div style={{ textAlign: 'center', marginBottom: '1.5rem' }}>
+                  <BulkRegisteredStudentImport onImportComplete={() => setRefreshLeads(prev => prev + 1)} />
+                  <p style={{ marginTop: '1rem', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Upload Excel or CSV spreadsheet</p>
+                </div>
+                
+                <LeadsTable refreshTrigger={refreshLeads} />
+              </div>
+            )}
+
           {currentView === 'batch-fees' && (
             <BatchFeeManager />
           )}
@@ -1230,14 +1302,15 @@ export default function AdditionalOptions() {
           {currentView === 'fee-tracker' && (
             <FeeTracker />
           )}
-        </>
+          </div>
+        </div>
       )}
     </div>
   );
 }
 
 // Sleek, reusable custom searchable dropdown for selecting registered teachers
-function TeacherSearchSelect({ teachers, selectedId, onChange, placeholder }) {
+function TeacherSearchSelect({ teachers, selectedId, onChange, placeholder = "Search teachers..." }) {
   const [search, setSearch] = useState('');
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef(null);

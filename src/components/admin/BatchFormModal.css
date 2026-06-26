@@ -1,0 +1,393 @@
+/* BatchFormModal.css */
+
+.batch-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 1rem;
+}
+
+.batch-modal-container {
+  background: var(--bg-surface, rgba(30, 41, 59, 0.95));
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+  border-radius: 16px;
+  width: 100%;
+  max-width: 600px;
+  display: flex;
+  flex-direction: column;
+  max-height: 90vh;
+  overflow: hidden;
+  animation: fadeInUp 0.2s ease forwards;
+}
+
+.batch-modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1.5rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.batch-modal-header-title {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: var(--text-primary, #f8fafc);
+}
+
+.batch-modal-header-subtitle {
+  margin: 0.25rem 0 0 2.25rem;
+  font-size: 0.85rem;
+  color: var(--text-muted, #94a3b8);
+}
+
+.batch-modal-body {
+  padding: 1.5rem;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.batch-form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.batch-form-field label {
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--text-secondary, #cbd5e1);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.batch-form-field input,
+.batch-form-field select,
+.batch-form-field textarea {
+  width: 100%;
+  padding: 0.75rem 1rem;
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  color: var(--text-primary, #f8fafc);
+  font-size: 0.95rem;
+  transition: all 0.2s ease;
+}
+
+.batch-form-field input:focus,
+.batch-form-field select:focus,
+.batch-form-field textarea:focus {
+  outline: none;
+  border-color: var(--accent-primary, #6366f1);
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.2);
+}
+
+.batch-form-field input:disabled,
+.batch-form-field select:disabled,
+.batch-form-field textarea:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+  background: rgba(15, 23, 42, 0.3);
+}
+
+/* Course Toggle Group */
+.batch-course-toggle {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.course-toggle-btn {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--text-secondary, #cbd5e1);
+  padding: 0.75rem 1.25rem;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-size: 0.9rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex: 1;
+  min-width: 200px;
+  justify-content: center;
+}
+
+.course-toggle-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.course-toggle-btn.selected {
+  background: var(--accent-primary, #3b82f6);
+  border-color: var(--accent-primary, #3b82f6);
+  color: white;
+  font-weight: 500;
+}
+
+.course-toggle-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Status Select */
+.status-select-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.status-dot {
+  position: absolute;
+  left: 1rem;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  pointer-events: none;
+}
+.status-dot.upcoming { background-color: #38bdf8; }
+.status-dot.active { background-color: #10b981; }
+.status-dot.completed { background-color: #a855f7; }
+.status-dot.archived { background-color: #64748b; }
+
+.batch-status-select {
+  padding-left: 2.25rem !important;
+}
+
+.batch-status-select option {
+  background: #1e293b;
+  color: #f8fafc;
+}
+
+/* Footer & Buttons */
+.batch-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 1rem;
+  padding: 1.25rem 1.5rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  background: rgba(0, 0, 0, 0.1);
+}
+
+.batch-modal-footer .btn {
+  padding: 0.6rem 1.25rem;
+  border-radius: 8px;
+  font-size: 0.95rem;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn-cancel {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--text-secondary, #cbd5e1);
+}
+
+.btn-cancel:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: white;
+}
+
+.btn-submit {
+  background: var(--accent-primary, #3b82f6);
+  border: 1px solid var(--accent-primary, #3b82f6);
+  color: white;
+}
+
+.btn-submit:hover:not(:disabled) {
+  opacity: 0.9;
+  transform: translateY(-1px);
+}
+
+.btn-submit:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Validation Errors */
+.batch-field-error {
+  color: #ef4444;
+  font-size: 0.8rem;
+  margin-top: 0.25rem;
+  animation: fadeIn 0.2s ease forwards;
+}
+
+.batch-modal-error-banner {
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  color: #fca5a5;
+  padding: 0.75rem 1rem;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+}
+
+/* Helpers */
+.input-with-icon {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.input-with-icon input {
+  padding-right: 2.5rem;
+}
+.input-icon-right {
+  position: absolute;
+  right: 1rem;
+  color: var(--text-muted, #94a3b8);
+  pointer-events: none;
+}
+
+.field-helper {
+  font-size: 0.8rem;
+  color: var(--text-muted, #94a3b8);
+  margin-top: 0.25rem;
+}
+
+.char-counter {
+  font-size: 0.75rem;
+  color: var(--text-muted, #94a3b8);
+  text-align: right;
+  margin-top: 0.25rem;
+}
+.char-counter.error {
+  color: #ef4444;
+}
+
+.form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+}
+
+@media (max-width: 640px) {
+  .form-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.spin {
+  animation: spin 1s linear infinite;
+}
+
+/* Light Mode Overrides */
+[data-mode='light'] .batch-modal-overlay {
+  background: rgba(0, 0, 0, 0.4);
+}
+
+[data-mode='light'] .batch-modal-container {
+  background: var(--bg-surface, #ffffff);
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.15);
+}
+
+[data-mode='light'] .batch-modal-header {
+  border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+}
+
+[data-mode='light'] .batch-modal-header-title {
+  color: var(--text-primary, #1e293b);
+}
+
+[data-mode='light'] .batch-modal-header-subtitle {
+  color: var(--text-muted, #64748b);
+}
+
+[data-mode='light'] .batch-form-field label {
+  color: var(--text-secondary, #475569);
+}
+
+[data-mode='light'] .batch-form-field input,
+[data-mode='light'] .batch-form-field select,
+[data-mode='light'] .batch-form-field textarea {
+  background: var(--bg-surface-alt, #f1f5f9);
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  color: var(--text-primary, #1e293b);
+}
+
+[data-mode='light'] .batch-form-field input:focus,
+[data-mode='light'] .batch-form-field select:focus,
+[data-mode='light'] .batch-form-field textarea:focus {
+  border-color: var(--accent-primary, #4f46e5);
+  box-shadow: 0 0 0 2px rgba(79, 70, 229, 0.2);
+  background: #ffffff;
+}
+
+[data-mode='light'] .batch-form-field input:disabled,
+[data-mode='light'] .batch-form-field select:disabled,
+[data-mode='light'] .batch-form-field textarea:disabled {
+  background: rgba(0, 0, 0, 0.05);
+  color: #64748b;
+}
+
+[data-mode='light'] .course-toggle-btn {
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  color: var(--text-secondary, #475569);
+}
+
+[data-mode='light'] .course-toggle-btn:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.03);
+}
+
+[data-mode='light'] .course-toggle-btn.selected {
+  background: var(--accent-primary, #3b82f6);
+  border-color: var(--accent-primary, #3b82f6);
+  color: white;
+}
+
+[data-mode='light'] .batch-status-select option {
+  background: #ffffff;
+  color: #1e293b;
+}
+
+[data-mode='light'] .batch-modal-footer {
+  border-top: 1px solid rgba(0, 0, 0, 0.05);
+  background: rgba(0, 0, 0, 0.02);
+}
+
+[data-mode='light'] .btn-cancel {
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  color: var(--text-secondary, #475569);
+}
+
+[data-mode='light'] .btn-cancel:hover {
+  background: rgba(0, 0, 0, 0.05);
+  color: #1e293b;
+}
+
+[data-mode='light'] .input-icon-right,
+[data-mode='light'] .field-helper,
+[data-mode='light'] .char-counter {
+  color: var(--text-muted, #64748b);
+}

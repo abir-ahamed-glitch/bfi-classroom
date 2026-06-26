@@ -961,6 +961,32 @@ export function initializeDatabase() {
     encryptExistingMessages();
     console.log(`Encrypted ${plainMessages.length} existing inbox messages.`);
   }
+  // Batch status transition audit log — append-only, never delete rows
+  try {
+    db.prepare(`
+      CREATE TABLE IF NOT EXISTS batch_status_transitions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        batch_id INTEGER NOT NULL REFERENCES batches(id) ON DELETE CASCADE,
+        batch_name TEXT NOT NULL,
+        from_status TEXT NOT NULL,
+        to_status TEXT NOT NULL,
+        trigger_type TEXT NOT NULL DEFAULT 'automatic',
+        triggered_by INTEGER,
+        reason TEXT,
+        transitioned_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `).run();
+
+    // Index for fast per-batch history lookups
+    db.prepare(`
+      CREATE INDEX IF NOT EXISTS idx_batch_status_transitions_batch_id
+      ON batch_status_transitions(batch_id, transitioned_at DESC)
+    `).run();
+
+    console.log('✅ Ensured batch_status_transitions table and index exist');
+  } catch (error) {
+    // Table probably already exists — safe to ignore
+  }
 }
 
 export default db;

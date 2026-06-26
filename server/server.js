@@ -9,6 +9,8 @@ import { createServer } from 'http';
 import { Server } from 'socket.io';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import { initializeDatabase } from './db/database.js';
+import db from './db/database.js';
+
 import jwt from 'jsonwebtoken';
 
 // Setup env
@@ -35,6 +37,8 @@ import reportsRoutes from './routes/reports.js';
 import feesRoutes from './routes/fees.js';
 import feeTrackerRoutes from './routes/fee-tracker.js';
 import batchRoutes from './routes/batches.js';
+import { runBatchStatusAutomation } from './utils/batchStatusAutomation.js';
+
 import { getJwtRefreshSecret, getJwtSecret } from './config/security.js';
 import { authenticateToken } from './middleware/auth.js';
 
@@ -561,4 +565,39 @@ startCommunityScheduler(io);
 startAnnouncementScheduler(io);
 httpServer.listen(PORT, () => {
   console.log(`🚀 BFI Classroom API Gateway running on port ${PORT}`);
+
+  // ── Batch Status Automation Scheduler ─────────────────────────────────────
+  // Run once on startup (catches any missed transitions while server was down)
+  setTimeout(() => {
+    console.log('[BatchAutomation] Running initial check on server start...');
+    try {
+      const result = runBatchStatusAutomation(db);
+      console.log(
+        `[BatchAutomation] Initial check complete. ` +
+        `Checked: ${result.batches_checked}, Transitions: ${result.transitions.length}`
+      );
+    } catch (err) {
+      console.error('[BatchAutomation] Initial check failed:', err.message);
+    }
+  }, 5000); // 5-second delay to let all init complete
+
+  // Then run every 24 hours
+  const TWENTY_FOUR_HOURS = 24 * 60 * 60 * 1000;
+  setInterval(() => {
+    console.log('[BatchAutomation] Running scheduled 24-hour check...');
+    try {
+      const result = runBatchStatusAutomation(db);
+      console.log(
+        `[BatchAutomation] Scheduled check complete. ` +
+        `Checked: ${result.batches_checked}, Transitions: ${result.transitions.length}`
+      );
+      if (result.errors.length > 0) {
+        console.error('[BatchAutomation] Errors during scheduled run:', result.errors);
+      }
+    } catch (err) {
+      console.error('[BatchAutomation] Scheduled check failed:', err.message);
+    }
+  }, TWENTY_FOUR_HOURS);
+  // ── End Batch Automation Scheduler ────────────────────────────────────────
 });
+

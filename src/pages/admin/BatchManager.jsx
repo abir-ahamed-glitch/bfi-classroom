@@ -1,11 +1,13 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import { 
   Users, Plus, Search, Calendar, UserCheck, MoreVertical, 
   Archive, Trash2, ChevronRight, BookOpen, Clock, CheckCircle2, Award, 
-  AlertTriangle, ArrowLeft, X, Check, CreditCard, ShieldAlert, Edit3
+  AlertTriangle, ArrowLeft, X, Check, CreditCard, ShieldAlert, Edit3,
+  Zap, Loader2
 } from 'lucide-react';
 import './BatchManager.css';
+import BatchFormModal from '../../components/admin/BatchFormModal';
 
 // Helpers
 const formatNumber = (n) => {
@@ -32,6 +34,11 @@ const formatDateRange = (startDate, endDate) => {
   if (endDate) {
     return `Until ${formatDate(endDate)}`;
   }
+};
+
+const generateSlug = (name) => {
+  if (!name) return '';
+  return name.toLowerCase().replace(/[^a-z0-9]/g, '');
 };
 
 // Reusable Stat Card
@@ -64,10 +71,36 @@ export default function BatchManager() {
   const [selectedCourse, setSelectedCourse] = useState('all');
   const [activeStatusTab, setActiveStatusTab] = useState('all');
   const [activeDropdownId, setActiveDropdownId] = useState(null);
+  const [popoverAction, setPopoverAction] = useState(null); // { type: 'archive'|'delete', batchId }
+  const [actionLoading, setActionLoading] = useState(false);
+  const [leavingBatches, setLeavingBatches] = useState([]);
+  const [enteringBatches, setEnteringBatches] = useState([]);
   const [toastMsg, setToastMsg] = useState('');
 
   // Details view states
-  const [selectedBatchId, setSelectedBatchId] = useState(null);
+  const { id: urlBatchId } = useParams();
+  
+  const selectedBatchId = useMemo(() => {
+    if (!urlBatchId) return null;
+    
+    // First try exact ID match (just in case they have old links)
+    if (/^\d+$/.test(urlBatchId)) {
+      const exactMatch = allBatches.find(b => b.id.toString() === urlBatchId);
+      if (exactMatch) return exactMatch.id;
+    }
+    
+    // Fallback: match by generated slug of batch_name
+    const slugMatch = allBatches.find(b => generateSlug(b.batch_name) === urlBatchId);
+    if (slugMatch) return slugMatch.id;
+
+    // Optimistic fallback for purely numeric IDs when allBatches isn't loaded yet
+    if (allBatches.length === 0 && /^\d+$/.test(urlBatchId)) {
+      return parseInt(urlBatchId, 10);
+    }
+    
+    return null;
+  }, [allBatches, urlBatchId]);
+  
   const [batchDetails, setBatchDetails] = useState(null);
   const [batchStudents, setBatchStudents] = useState([]);
   const [batchProgress, setBatchProgress] = useState(null);
@@ -77,10 +110,7 @@ export default function BatchManager() {
 
   // Modals
   const [showBatchModal, setShowBatchModal] = useState(false);
-  const [batchModalMode, setBatchModalMode] = useState('create'); // 'create' | 'edit'
-  const [batchForm, setBatchForm] = useState(DEFAULT_BATCH_FORM);
-  const [modalSubmitting, setModalSubmitting] = useState(false);
-  const [formError, setFormError] = useState('');
+  const [editingBatch, setEditingBatch] = useState(null);
 
   // Student Assignment Modal
   const [showAssignModal, setShowAssignModal] = useState(false);
@@ -98,6 +128,67 @@ export default function BatchManager() {
 
   const dropdownRef = useRef(null);
   const navigate = useNavigate();
+
+  // Automation States
+  const [automationRunning, setAutomationRunning] = useState(false);
+  const [automationResult, setAutomationResult] = useState(null);
+  const [showAutomationPanel, setShowAutomationPanel] = useState(false);
+  const [lastRunAt, setLastRunAt] = useState(null);
+  const [timerTicks, setTimerTicks] = useState(0);
+
+  const getRelativeTime = (date) => {
+    if (!date) return 'never';
+    const seconds = Math.floor((new Date() - date) / 1000);
+    if (seconds < 60) return 'just now';
+    if (seconds < 3600) return `${Math.floor(seconds / 60)} minutes ago`;
+    if (seconds < 86400) return `${Math.floor(seconds / 3600)} hours ago`;
+    return `${Math.floor(seconds / 86400)} days ago`;
+  };
+
+  useEffect(() => {
+    if (!showAutomationPanel || !lastRunAt) return;
+    const interval = setInterval(() => {
+      setTimerTicks(t => t + 1);
+    }, 30000);
+    return () => clearInterval(interval);
+  }, [showAutomationPanel, lastRunAt]);
+
+  const handleRunAutomation = async () => {
+    setAutomationRunning(true);
+    setAutomationResult(null);
+
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch('/api/admin/batches/run-automation', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        }
+      });
+
+      const data = await response.json();
+
+      setAutomationResult(data);
+      setShowAutomationPanel(true);
+      setLastRunAt(new Date());
+
+      // If any transitions happened, refresh the batch list
+      if (data.transitions && data.transitions.length > 0) {
+        await fetchBatches(); // re-fetch the full list to show updated statuses
+      }
+
+    } catch (error) {
+      console.error('[BatchAutomation] Client trigger error:', error);
+      setAutomationResult({ 
+        success: false, 
+        error: 'Failed to connect to server. Please try again.' 
+      });
+      setShowAutomationPanel(true);
+    } finally {
+      setAutomationRunning(false);
+    }
+  };
 
   // Fetch all batches
   const fetchBatches = async () => {
@@ -126,16 +217,29 @@ export default function BatchManager() {
     fetchBatches();
   }, []);
 
-  // Close dropdowns on outside clicks
+  // Close dropdowns on outside clicks and escape
   useEffect(() => {
     const handleOutsideClick = (e) => {
       if (activeDropdownId !== null && dropdownRef.current && !dropdownRef.current.contains(e.target)) {
         setActiveDropdownId(null);
       }
+      if (popoverAction !== null && dropdownRef.current && !dropdownRef.current.contains(e.target)) {
+        setPopoverAction(null);
+      }
+    };
+    const handleEscape = (e) => {
+      if (e.key === 'Escape') {
+        setActiveDropdownId(null);
+        setPopoverAction(null);
+      }
     };
     document.addEventListener('mousedown', handleOutsideClick);
-    return () => document.removeEventListener('mousedown', handleOutsideClick);
-  }, [activeDropdownId]);
+    document.addEventListener('keydown', handleEscape);
+    return () => {
+      document.removeEventListener('mousedown', handleOutsideClick);
+      document.removeEventListener('keydown', handleEscape);
+    };
+  }, [activeDropdownId, popoverAction]);
 
   // Show temporary feedback toast
   const showToast = (msg) => {
@@ -194,141 +298,116 @@ export default function BatchManager() {
     if (selectedBatchId) {
       fetchBatchDetailsData(selectedBatchId);
     }
-  }, [selectedBatchId]);
+  // Also re-fire when allBatches loads so slug-based URLs resolve correctly
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedBatchId, allBatches.length]);
+
 
   // Open Create Modal
   const handleCreateNewBatchClick = () => {
-    setBatchForm(DEFAULT_BATCH_FORM);
-    setBatchModalMode('create');
-    setFormError('');
+    setEditingBatch(null);
     setShowBatchModal(true);
   };
 
   // Open Edit Modal
   const handleEditClick = (batch) => {
-    setBatchForm({
-      id: batch.id,
-      batch_name: batch.batch_name || '',
-      batch_number: batch.batch_number || '',
-      course_name: batch.course_name || 'Online Filmmaking Course',
-      status: batch.status || 'upcoming',
-      start_date: batch.start_date ? batch.start_date.substring(0, 10) : '',
-      end_date: batch.end_date ? batch.end_date.substring(0, 10) : '',
-      description: batch.description || ''
-    });
-    setBatchModalMode('edit');
+    setEditingBatch(batch);
     setActiveDropdownId(null);
-    setFormError('');
     setShowBatchModal(true);
-  };
-
-  // Submit Create/Edit Form
-  const handleBatchFormSubmit = async (e) => {
-    e.preventDefault();
-    setModalSubmitting(true);
-    setFormError('');
-    try {
-      // Frontend duplicate check removed, handled by backend.
-
-      const token = localStorage.getItem('token');
-      const url = batchModalMode === 'create' 
-        ? '/api/admin/batches' 
-        : `/api/admin/batches/${batchForm.id}`;
-      
-      const method = batchModalMode === 'create' ? 'POST' : 'PATCH';
-
-      const response = await fetch(url, {
-        method,
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify(batchForm)
-      });
-
-      if (response.ok) {
-        showToast(batchModalMode === 'create' ? 'Batch created successfully' : 'Batch updated successfully');
-        setShowBatchModal(false);
-        fetchBatches();
-        if (selectedBatchId) {
-          fetchBatchDetailsData(selectedBatchId);
-        }
-      } else {
-        const err = await response.json();
-        setFormError(err.error || 'Failed to save batch');
-      }
-    } catch (err) {
-      console.error('Error saving batch:', err);
-      setFormError('Connection error while saving batch.');
-    } finally {
-      setModalSubmitting(false);
-    }
   };
 
   // Toggle batch status directly (e.g. from archive)
   const handleArchiveBatch = (batchId) => {
-    requestConfirm(
-      'Archive Batch',
-      'Archive this batch? This will mark it as inactive.',
-      async () => {
-        try {
-          const token = localStorage.getItem('token');
-          const response = await fetch(`/api/admin/batches/${batchId}`, {
-            method: 'PATCH',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${token}`
-            },
-            body: JSON.stringify({ status: 'archived' })
-          });
-          if (response.ok) {
-            showToast('Batch archived successfully');
-            fetchBatches();
-            if (selectedBatchId === batchId) {
-              fetchBatchDetailsData(batchId);
-            }
-          } else {
-            const err = await response.json();
-            showToast(err.error || 'Failed to archive batch');
-          }
-        } catch (error) {
-          console.error('Error archiving batch:', error);
+    setActiveDropdownId(null);
+    setPopoverAction({ type: 'archive', batchId });
+  };
+
+  const confirmArchive = async (batchId) => {
+    try {
+      setActionLoading(true);
+      const token = localStorage.getItem('token');
+      const response = await fetch(`/api/admin/batches/${batchId}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ status: 'archived' })
+      });
+      if (response.ok) {
+        const batchName = allBatches.find(b => b.id === batchId)?.batch_name || 'Batch';
+        showToast(`'${batchName}' has been archived`);
+        
+        // Update in place
+        setAllBatches(prev => prev.map(b => b.id === batchId ? { ...b, status: 'archived' } : b));
+        
+        // If the active filter tab is NOT "All" or "Archived", animate out
+        if (activeStatusTab !== 'all' && activeStatusTab !== 'archived') {
+          setLeavingBatches(prev => [...prev, batchId]);
+          setTimeout(() => {
+            setAllBatches(prev => prev.filter(b => b.id !== batchId));
+            setLeavingBatches(prev => prev.filter(x => x !== batchId));
+          }, 300);
         }
-        setActiveDropdownId(null);
+
+        if (selectedBatchId === batchId) {
+          fetchBatchDetailsData(batchId);
+        }
+      } else {
+        showToast('Failed to archive batch. Please try again.');
       }
-    );
+    } catch (error) {
+      console.error('Error archiving batch:', error);
+      showToast('Failed to archive batch. Please try again.');
+    } finally {
+      setActionLoading(false);
+      setPopoverAction(null);
+    }
   };
 
   // Delete batch
   const handleDeleteBatch = (batchId) => {
-    requestConfirm(
-      'Delete Batch',
-      'Permanently delete this batch? This action is irreversible.',
-      async () => {
-        try {
-          const token = localStorage.getItem('token');
-          const response = await fetch(`/api/admin/batches/${batchId}`, {
-            method: 'DELETE',
-            headers: {
-              'Authorization': `Bearer ${token}`
-            }
-          });
-          if (response.ok) {
-            showToast('Batch deleted successfully');
-            if (selectedBatchId === batchId) {
-              setSelectedBatchId(null);
-            }
-            fetchBatches();
-          } else {
-            const err = await response.json();
-            showToast(err.error || 'Failed to delete batch');
-          }
-        } catch (error) {
-          console.error('Error deleting batch:', error);
+    setActiveDropdownId(null);
+    setPopoverAction({ type: 'delete', batchId });
+  };
+
+  const confirmDelete = async (batchId) => {
+    try {
+      setActionLoading(true);
+      const token = localStorage.getItem('token');
+      const response = await fetch(`/api/admin/batches/${batchId}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${token}`
         }
-        setActiveDropdownId(null);
+      });
+      if (response.ok) {
+        showToast('Batch permanently deleted');
+        
+        // Animate out
+        setLeavingBatches(prev => [...prev, batchId]);
+        setTimeout(() => {
+          setAllBatches(prev => prev.filter(b => b.id !== batchId));
+          setLeavingBatches(prev => prev.filter(x => x !== batchId));
+          if (selectedBatchId === batchId) {
+            navigate('/admin/batches');
+          }
+        }, 300);
+      } else {
+        const err = await response.json();
+        if (response.status === 400) {
+          showToast('Cannot delete: batch still has students or is not archived');
+        } else {
+          showToast(err.error || 'Failed to delete batch');
+        }
       }
-    );
+    } catch (error) {
+      console.error('Error deleting batch:', error);
+      showToast('Failed to delete batch');
+    } finally {
+      setActionLoading(false);
+      setPopoverAction(null);
+    }
   };
 
   // Student Allocation handlers
@@ -381,19 +460,26 @@ export default function BatchManager() {
   };
 
   const handleRemoveStudent = (studentId, studentName) => {
+    // Use batchDetails.id (the real numeric DB id) as a reliable source of truth
+    // rather than selectedBatchId which may still be resolving from a slug.
+    const resolvedBatchId = batchDetails?.id || selectedBatchId;
+    if (!resolvedBatchId) {
+      showToast('Cannot remove: batch not loaded yet. Please wait a moment and try again.');
+      return;
+    }
     requestConfirm(
       'Remove Student',
       `Remove ${studentName} from this batch?`,
       async () => {
         try {
           const token = localStorage.getItem('token');
-          const res = await fetch(`/api/admin/batches/${selectedBatchId}/students/${studentId}`, {
+          const res = await fetch(`/api/admin/batches/${resolvedBatchId}/students/${studentId}`, {
             method: 'DELETE',
             headers: { 'Authorization': `Bearer ${token}` }
           });
           if (res.ok) {
-            showToast('Student removed successfully');
-            fetchBatchDetailsData(selectedBatchId);
+            showToast(`${studentName} removed from batch`);
+            fetchBatchDetailsData(resolvedBatchId);
             fetchBatches();
           } else {
             const err = await res.json();
@@ -406,6 +492,7 @@ export default function BatchManager() {
       }
     );
   };
+
 
   // Toggle selection inside multiselect list
   const toggleStudentSelection = (id) => {
@@ -529,7 +616,7 @@ export default function BatchManager() {
           {/* Header Row */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '1.5rem' }}>
             <button 
-              onClick={() => { setSelectedBatchId(null); setBatchDetails(null); }} 
+              onClick={() => { navigate('/admin/batches'); setBatchDetails(null); }} 
               className="modern-btn modern-btn--secondary" 
               style={{ padding: '0.5rem 0.75rem', display: 'flex', alignItems: 'center', gap: '0.25rem', borderRadius: '8px' }}
             >
@@ -729,7 +816,11 @@ export default function BatchManager() {
                                   {batchDetails.status !== 'archived' && (
                                     <td style={{ textAlign: 'right' }}>
                                       <button 
-                                        onClick={() => handleRemoveStudent(s.user_id, `${s.first_name} ${s.last_name}`)}
+                                        onClick={(e) => {
+                                          e.preventDefault();
+                                          e.stopPropagation();
+                                          handleRemoveStudent(s.user_id, `${s.first_name} ${s.last_name}`);
+                                        }}
                                         className="modern-btn modern-btn--danger"
                                         style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem', padding: '0.35rem 0.6rem', fontSize: '0.75rem', borderRadius: '6px' }}
                                         title="Remove from batch"
@@ -931,10 +1022,129 @@ export default function BatchManager() {
                 Create and manage student batches by course
               </p>
             </div>
-            <button onClick={handleCreateNewBatchClick} className="modern-btn modern-btn--primary" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.75rem 1.25rem', borderRadius: '8px' }}>
-              <Plus size={18} /> Create New Batch
-            </button>
+            <div style={{ display: 'flex', gap: '0.75rem' }}>
+              <button 
+                onClick={handleRunAutomation} 
+                disabled={automationRunning}
+                className="modern-btn btn-automation" 
+                style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.75rem 1.25rem', borderRadius: '8px' }}
+                title={lastRunAt ? `Last run: ${getRelativeTime(lastRunAt)}` : 'Never run this session'}
+              >
+                {automationRunning ? (
+                  <Loader2 size={18} className="animate-spin" />
+                ) : (
+                  <Zap size={18} />
+                )}
+                {automationRunning ? 'Checking...' : '⚡ Run Status Check'}
+              </button>
+              <button onClick={handleCreateNewBatchClick} className="modern-btn modern-btn--primary" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.75rem 1.25rem', borderRadius: '8px' }}>
+                <Plus size={18} /> Create New Batch
+              </button>
+            </div>
           </div>
+
+          {/* Automation Result Panel */}
+          {showAutomationPanel && automationResult && (
+            <div className="automation-result-panel glass-panel animate-down">
+              <div className="panel-header">
+                <h3 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '1.2rem', fontWeight: 700, color: 'white' }}>
+                  <Zap size={18} style={{ color: '#F59E0B' }} /> Automation Run Complete
+                </h3>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                  <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                    Last run: {getRelativeTime(lastRunAt)}
+                  </span>
+                  <button 
+                    onClick={() => setShowAutomationPanel(false)}
+                    style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: '1.1rem', padding: '0.2rem' }}
+                    title="Close Panel"
+                  >
+                    ✕
+                  </button>
+                </div>
+              </div>
+
+              {automationResult.success === false ? (
+                <div style={{ color: '#ef4444', fontSize: '0.95rem' }}>
+                  ⚠️ Error: {automationResult.error || 'Automation run failed'}
+                </div>
+              ) : (
+                <div>
+                  <div className="automation-summary-stats">
+                    <span style={{ 
+                      fontSize: '0.9rem', 
+                      fontWeight: 600,
+                      color: (automationResult.transitions && automationResult.transitions.length > 0) ? '#22C55E' : 'var(--text-muted)' 
+                    }}>
+                      ✅ {automationResult.transitions?.length || 0} batches updated
+                    </span>
+                    <span style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>
+                      📋 {automationResult.batches_checked || 0} batches checked
+                    </span>
+                    <span style={{ 
+                      fontSize: '0.9rem', 
+                      fontWeight: 600,
+                      color: (automationResult.errors && automationResult.errors.length > 0) ? '#ef4444' : 'var(--text-muted)' 
+                    }}>
+                      ⚠️ {automationResult.errors?.length || 0} errors
+                    </span>
+                  </div>
+
+                  {(!automationResult.transitions || automationResult.transitions.length === 0) ? (
+                    <div className="automation-no-changes">
+                      ✓ All batches are up to date — no changes needed
+                    </div>
+                  ) : (
+                    <div className="automation-transition-list">
+                      {automationResult.transitions.map((t, idx) => (
+                        <div key={idx} className="automation-transition-row">
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                              <span style={{ fontSize: '1.1rem' }}>
+                                {t.to_status === 'active' ? '🟢' : '✅'}
+                              </span>
+                              <strong style={{ color: 'white' }}>{t.batch_name}</strong>
+                              <span style={{ color: 'var(--text-muted)' }}>
+                                {t.from_status} → 
+                              </span>
+                              <span className={`batch-status-badge ${t.to_status}`}>
+                                {t.to_status}
+                              </span>
+                            </div>
+                            <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                              {t.reason}
+                            </span>
+                          </div>
+                          <button
+                            onClick={() => navigate(`/admin/batches/${generateSlug(t.batch_name)}`)}
+                            className="modern-btn modern-btn--secondary"
+                            style={{ padding: '0.35rem 0.75rem', fontSize: '0.8rem' }}
+                          >
+                            View →
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {automationResult.errors && automationResult.errors.length > 0 && (
+                    <div className="automation-errors">
+                      <div style={{ fontWeight: 600, color: '#ef4444', marginBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                        <AlertTriangle size={16} /> Errors ({automationResult.errors.length})
+                      </div>
+                      <ul style={{ paddingLeft: '1.25rem', margin: 0, display: 'flex', flexDirection: 'column', gap: '0.25rem', color: '#fca5a5', fontSize: '0.85rem' }}>
+                        {automationResult.errors.map((err, idx) => (
+                          <li key={idx}>
+                            • Batch &ldquo;{err.batch_name}&rdquo; &mdash; {err.error}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Summary Stats Row */}
           <div className="batch-stats-row">
@@ -1050,7 +1260,7 @@ export default function BatchManager() {
                 }
 
                 return (
-                  <div key={b.id} className="batch-card">
+                  <div key={b.id} className={`batch-card ${leavingBatches.includes(b.id) ? 'batch-card-leaving' : ''} ${enteringBatches.includes(b.id) ? 'batch-card-entering' : ''}`}>
                     {/* Header Row */}
                     <div className="batch-card-header">
                       <span className={`batch-status-badge ${b.status}`}>{b.status}</span>
@@ -1079,21 +1289,27 @@ export default function BatchManager() {
                       </div>
                     </div>
 
-                    {/* Progress Bar Placeholder */}
-                    <div className="batch-progress-wrapper">
-                      <div className="batch-progress-info">
-                        <span>Progress</span>
-                        <span>View details for progress</span>
+                    {/* Progress Bar */}
+                    {hasStudents && (
+                      <div className="batch-progress-wrapper" style={{ marginTop: '0.5rem' }}>
+                        <div className="batch-progress-bar-track">
+                          <div 
+                            className="batch-progress-bar-fill" 
+                            style={{ width: `${b.phase1_completed_count != null ? (b.phase1_completed_count / b.student_count) * 100 : 0}%` }} 
+                          />
+                        </div>
+                        <div className="batch-progress-label">
+                          {b.phase1_completed_count != null 
+                            ? `${b.phase1_completed_count} of ${b.student_count} completed Phase 1`
+                            : 'No progress data yet'}
+                        </div>
                       </div>
-                      <div className="batch-progress-bar">
-                        <div className="batch-progress-fill" />
-                      </div>
-                    </div>
+                    )}
 
                     {/* Bottom Actions Row */}
                     <div className="batch-card-actions">
                       <button 
-                        onClick={() => setSelectedBatchId(b.id)}
+                        onClick={() => navigate(`/admin/batches/${generateSlug(b.batch_name)}`)}
                         className="modern-btn modern-btn--secondary"
                         style={{ flex: 1, padding: '0.45rem', fontSize: '0.85rem', whiteSpace: 'nowrap' }}
                       >
@@ -1108,9 +1324,17 @@ export default function BatchManager() {
                       </button>
                       
                       {/* Three Dots custom popover menu */}
-                      <div className="three-dots-wrapper" ref={activeDropdownId === b.id ? dropdownRef : null}>
+                      <div className="three-dots-wrapper" ref={activeDropdownId === b.id || popoverAction?.batchId === b.id ? dropdownRef : null}>
                         <button 
-                          onClick={() => setActiveDropdownId(activeDropdownId === b.id ? null : b.id)}
+                          onClick={() => {
+                            if (activeDropdownId === b.id || popoverAction?.batchId === b.id) {
+                              setActiveDropdownId(null);
+                              setPopoverAction(null);
+                            } else {
+                              setPopoverAction(null);
+                              setActiveDropdownId(b.id);
+                            }
+                          }}
                           className="modern-btn modern-btn--secondary"
                           style={{ padding: '0.45rem 0.55rem', fontSize: '0.85rem', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
                           title="More Options"
@@ -1118,7 +1342,7 @@ export default function BatchManager() {
                           <MoreVertical size={16} />
                         </button>
 
-                        {activeDropdownId === b.id && (
+                        {activeDropdownId === b.id && !popoverAction && (
                           <div className="dropdown-menu-custom">
                             {b.status !== 'archived' && (
                               <button 
@@ -1128,17 +1352,70 @@ export default function BatchManager() {
                                 <Archive size={14} /> Archive Batch
                               </button>
                             )}
-                            {b.student_count === 0 ? (
+                            {b.student_count === 0 && b.status === 'archived' ? (
                               <button 
                                 onClick={() => handleDeleteBatch(b.id)}
                                 className="dropdown-item-custom danger"
                               >
                                 <Trash2 size={14} /> Delete Batch
                               </button>
+                            ) : null}
+                          </div>
+                        )}
+
+                        {/* Inline Confirm Popover */}
+                        {popoverAction?.batchId === b.id && (
+                          <div className="batch-confirm-popover" style={{ bottom: '120%', right: 0 }}>
+                            {popoverAction.type === 'archive' ? (
+                              <>
+                                <Archive size={24} color="#f59e0b" className="batch-confirm-popover-icon" />
+                                <h4 className="batch-confirm-popover-title">Archive '{b.batch_name}'?</h4>
+                                <p className="batch-confirm-popover-subtitle">
+                                  Archived batches are hidden from the active view. Students remain assigned.
+                                </p>
+                                <div className="batch-confirm-popover-actions">
+                                  <button 
+                                    className="btn btn-cancel" 
+                                    onClick={() => setPopoverAction(null)}
+                                    disabled={actionLoading}
+                                  >
+                                    Cancel
+                                  </button>
+                                  <button 
+                                    className="btn btn-submit" 
+                                    style={{ background: '#f59e0b', borderColor: '#f59e0b' }}
+                                    onClick={() => confirmArchive(b.id)}
+                                    disabled={actionLoading}
+                                  >
+                                    {actionLoading ? <span className="spin" style={{ display: 'inline-block', width: '16px', height: '16px', border: '2px solid white', borderTopColor: 'transparent', borderRadius: '50%' }}></span> : 'Archive'}
+                                  </button>
+                                </div>
+                              </>
                             ) : (
-                              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', padding: '0.5rem 0.75rem', fontStyle: 'italic' }}>
-                                Has active students
-                              </div>
+                              <>
+                                <Trash2 size={24} color="#ef4444" className="batch-confirm-popover-icon" />
+                                <h4 className="batch-confirm-popover-title">Permanently delete '{b.batch_name}'?</h4>
+                                <p className="batch-confirm-popover-subtitle" style={{ color: '#ef4444' }}>
+                                  This action cannot be undone. All batch data will be permanently removed.
+                                </p>
+                                <div className="batch-confirm-popover-actions">
+                                  <button 
+                                    className="btn btn-cancel" 
+                                    onClick={() => setPopoverAction(null)}
+                                    disabled={actionLoading}
+                                  >
+                                    Cancel
+                                  </button>
+                                  <button 
+                                    className="btn btn-submit" 
+                                    style={{ background: '#ef4444', borderColor: '#ef4444' }}
+                                    onClick={() => confirmDelete(b.id)}
+                                    disabled={actionLoading}
+                                  >
+                                    {actionLoading ? <span className="spin" style={{ display: 'inline-block', width: '16px', height: '16px', border: '2px solid white', borderTopColor: 'transparent', borderRadius: '50%' }}></span> : 'Delete Forever'}
+                                  </button>
+                                </div>
+                              </>
                             )}
                           </div>
                         )}
@@ -1155,147 +1432,41 @@ export default function BatchManager() {
       {/* ───────────────────────────────────────────────────────────────────
          CREATE/EDIT BATCH MODAL
          ─────────────────────────────────────────────────────────────────── */}
-      {showBatchModal && (
-        <div className="modern-modal-overlay">
-          <div className="modern-modal-content glass-panel shadow-2xl" style={{ maxWidth: '600px', width: '90%' }} onClick={e => e.stopPropagation()}>
-            <div className="modern-modal-header">
-              <h3 className="text-gradient" style={{ margin: 0, fontSize: '1.4rem' }}>
-                {batchModalMode === 'create' ? 'Create New Batch' : 'Edit Batch Info'}
-              </h3>
-              <button className="icon-btn-ghost" onClick={() => setShowBatchModal(false)}>
-                <X size={20} />
-              </button>
-            </div>
-            
-            <form onSubmit={handleBatchFormSubmit}>
-              <div className="modern-modal-body" style={{ maxHeight: '70vh', overflowY: 'auto', padding: '1.5rem' }}>
-                
-                {/* Form Error Message */}
-                {formError && (
-                  <div style={{ 
-                    backgroundColor: 'rgba(239, 68, 68, 0.1)', 
-                    border: '1px solid rgba(239, 68, 68, 0.3)', 
-                    color: '#fca5a5', 
-                    padding: '0.75rem 1rem', 
-                    borderRadius: '8px', 
-                    marginBottom: '1.5rem',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '0.5rem',
-                    fontSize: '0.9rem'
-                  }}>
-                    <AlertTriangle size={16} />
-                    {formError}
-                  </div>
-                )}
-
-                {/* Batch Name */}
-                <div className="modal-form-group">
-                  <label>Batch Name</label>
-                  <input 
-                    type="text" 
-                    required 
-                    className="input-glass"
-                    placeholder="Enter batch name..."
-                    value={batchForm.batch_name}
-                    onChange={e => setBatchForm({...batchForm, batch_name: e.target.value})}
-                  />
-                </div>
-
-                {/* Batch Number & Course Select */}
-                <div className="modal-form-row-2">
-                  <div className="modal-form-group">
-                    <label>Batch Number (Unique identifier)</label>
-                    <input 
-                      type="text" 
-                      required 
-                      className="input-glass"
-                      placeholder="Enter batch number..."
-                      value={batchForm.batch_number}
-                      onChange={e => setBatchForm({...batchForm, batch_number: e.target.value})}
-                      disabled={batchModalMode === 'edit'} // Lock unique ID on edit
-                    />
-                  </div>
-
-                  <div className="modal-form-group">
-                    <label>Course Program</label>
-                    <select 
-                      className="input-glass"
-                      value={batchForm.course_name}
-                      onChange={e => setBatchForm({...batchForm, course_name: e.target.value})}
-                    >
-                      {courseOptions.map((c, i) => (
-                        <option key={i} value={c}>{c}</option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-
-                {/* Status, Start Date, End Date */}
-                <div className="modal-form-row-2">
-                  <div className="modal-form-group">
-                    <label>Status</label>
-                    <select 
-                      className="input-glass"
-                      value={batchForm.status}
-                      onChange={e => setBatchForm({...batchForm, status: e.target.value})}
-                    >
-                      <option value="upcoming">Upcoming</option>
-                      <option value="active">Active</option>
-                      <option value="completed">Completed</option>
-                      <option value="archived">Archived</option>
-                    </select>
-                  </div>
-
-                  <div className="modal-form-group">
-                    <label>Start Date</label>
-                    <input 
-                      type="date" 
-                      className="input-glass"
-                      value={batchForm.start_date}
-                      onChange={e => setBatchForm({...batchForm, start_date: e.target.value})}
-                    />
-                  </div>
-                </div>
-
-                <div className="modal-form-row-2">
-                  <div className="modal-form-group">
-                    <label>End Date</label>
-                    <input 
-                      type="date" 
-                      className="input-glass"
-                      value={batchForm.end_date}
-                      onChange={e => setBatchForm({...batchForm, end_date: e.target.value})}
-                    />
-                  </div>
-                </div>
-
-                {/* Description */}
-                <div className="modal-form-group">
-                  <label>Description / Notes</label>
-                  <textarea 
-                    className="input-glass"
-                    rows={3}
-                    placeholder="Enter batch schedule, venue, orientation information or other details..."
-                    value={batchForm.description}
-                    onChange={e => setBatchForm({...batchForm, description: e.target.value})}
-                  />
-                </div>
-
-              </div>
-
-              <div className="modern-modal-footer" style={{ display: 'flex', gap: '1rem', padding: '1rem 1.5rem' }}>
-                <button type="button" onClick={() => setShowBatchModal(false)} className="modern-btn modern-btn--secondary" style={{ flex: 1 }}>
-                  Cancel
-                </button>
-                <button type="submit" disabled={modalSubmitting} className="modern-btn modern-btn--primary" style={{ flex: 1 }}>
-                  {modalSubmitting ? 'Saving...' : 'Save Batch'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
+      <BatchFormModal
+        mode={editingBatch ? "edit" : "create"}
+        batch={editingBatch}
+        isOpen={showBatchModal}
+        onClose={() => {
+          setShowBatchModal(false);
+          setEditingBatch(null);
+        }}
+        onSuccess={(savedBatch) => {
+          showToast(`Batch ${editingBatch ? 'updated' : 'created'} successfully`);
+          setShowBatchModal(false);
+          
+          if (editingBatch) {
+            setAllBatches(prev => prev.map(b => b.id === savedBatch.id ? { ...b, ...savedBatch } : b));
+            if (activeStatusTab !== 'all' && activeStatusTab !== savedBatch.status) {
+              setLeavingBatches(prev => [...prev, savedBatch.id]);
+              setTimeout(() => {
+                setAllBatches(prev => prev.filter(b => b.id !== savedBatch.id));
+                setLeavingBatches(prev => prev.filter(x => x !== savedBatch.id));
+              }, 300);
+            }
+          } else {
+            setEnteringBatches(prev => [...prev, savedBatch.id]);
+            setAllBatches(prev => [savedBatch, ...prev]);
+            setTimeout(() => {
+              setEnteringBatches(prev => prev.filter(x => x !== savedBatch.id));
+            }, 400);
+          }
+          
+          setEditingBatch(null);
+          if (selectedBatchId && editingBatch) {
+            fetchBatchDetailsData(selectedBatchId);
+          }
+        }}
+      />
 
       {/* ───────────────────────────────────────────────────────────────────
          ASSIGN STUDENTS MODAL

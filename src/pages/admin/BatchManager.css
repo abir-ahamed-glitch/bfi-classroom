@@ -377,6 +377,12 @@
   z-index: 10;
 }
 
+[data-mode='light'] .batch-filter-bar {
+  background: rgba(255, 255, 255, 0.85);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.05);
+}
+
 @media (min-width: 1024px) {
   .batch-filter-bar {
     flex-direction: row;
@@ -399,6 +405,11 @@
   width: 100%;
   -webkit-overflow-scrolling: touch;
   scrollbar-width: none;
+}
+
+[data-mode='light'] .filter-left-tabs {
+  background: rgba(0, 0, 0, 0.04);
+  border: 1px solid rgba(0, 0, 0, 0.06);
 }
 
 .filter-left-tabs::-webkit-scrollbar {
@@ -712,4 +723,182 @@
   .batch-manager-container h1.text-gradient {
     font-size: 2.5rem !important;
   }
+}
+
+/* Step 6 Interactive UI Styles */
+
+/* Confirmation Popover */
+.batch-confirm-popover {
+  position: absolute;
+  z-index: 1000;
+  min-width: 260px;
+  padding: 16px;
+  border-radius: 10px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+  background: var(--bg-surface, rgba(30, 41, 59, 0.95));
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+[data-mode='light'] .batch-confirm-popover {
+  background: var(--bg-surface, #ffffff);
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  box-shadow: 0 8px 32px rgba(0,0,0,0.15);
+}
+
+.batch-confirm-popover-icon {
+  margin-bottom: 0.25rem;
+}
+
+.batch-confirm-popover-title {
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.batch-confirm-popover-subtitle {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  line-height: 1.4;
+  margin: 0;
+}
+
+.batch-confirm-popover-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.batch-confirm-popover-actions .btn {
+  flex: 1;
+  padding: 0.4rem 0.75rem;
+  font-size: 0.85rem;
+  border-radius: 6px;
+  font-weight: 500;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  transition: all 0.2s ease;
+}
+
+/* Card Animations */
+@keyframes batchCardFadeIn {
+  from { opacity: 0; transform: translateY(-8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes batchCardFadeOut {
+  from { opacity: 1; transform: scale(1); }
+  to   { opacity: 0; transform: scale(0.96); }
+}
+
+.batch-card-entering { animation: batchCardFadeIn 0.4s ease forwards; }
+.batch-card-leaving  { animation: batchCardFadeOut 0.3s ease forwards; }
+
+/* Progress Bar */
+.batch-progress-bar-track {
+  width: 100%;
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(255,255,255,0.08);
+  overflow: hidden;
+  margin-bottom: 4px;
+}
+
+[data-mode='light'] .batch-progress-bar-track {
+  background: rgba(0,0,0,0.08);
+}
+
+.batch-progress-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: #2563EB;
+  transition: width 0.6s ease;
+}
+
+.batch-progress-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+
+/* Automation button */
+.btn-automation {
+  border: 1px solid #F59E0B;
+  color: #F59E0B;
+  background: transparent;
+  transition: all 0.2s ease;
+}
+.btn-automation:hover {
+  background: rgba(245, 158, 11, 0.1);
+}
+.btn-automation:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Result panel */
+@keyframes automationPanelSlideDown {
+  from { opacity: 0; max-height: 0; transform: translateY(-8px); }
+  to   { opacity: 1; max-height: 500px; transform: translateY(0); }
+}
+.automation-result-panel {
+  border-left: 3px solid #F59E0B;
+  background: rgba(245, 158, 11, 0.05);
+  border-radius: 10px;
+  padding: 20px;
+  margin-bottom: 24px;
+  animation: automationPanelSlideDown 0.35s ease forwards;
+  overflow: hidden;
+}
+.automation-result-panel .panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+.automation-summary-stats {
+  display: flex;
+  gap: 24px;
+  margin-bottom: 16px;
+}
+.automation-transition-list {
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.automation-transition-row {
+  padding: 12px 16px;
+  border-bottom: 1px solid rgba(255,255,255,0.05);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.automation-transition-row:last-child {
+  border-bottom: none;
+}
+.automation-no-changes {
+  color: #22C55E;
+  font-size: 14px;
+}
+.automation-errors {
+  margin-top: 12px;
+  border: 1px solid rgba(239,68,68,0.3);
+  border-radius: 8px;
+  padding: 12px 16px;
+  background: rgba(239,68,68,0.05);
+}
+
+/* Keyframes for spinning loader */
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+.animate-spin {
+  animation: spin 1s linear infinite;
 }

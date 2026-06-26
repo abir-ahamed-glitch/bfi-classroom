@@ -201,6 +201,14 @@ const FeeTracker = () => {
   };
 
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const batchParam = params.get('batch');
+    if (batchParam) {
+      setBatchFilter(batchParam);
+    }
+  }, []);
+
+  useEffect(() => {
     // Debounce search slightly
     const timer = setTimeout(() => {
       fetchFeeData();

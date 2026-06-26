@@ -1,14 +1,17 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { 
   ArrowLeft, Calendar, Users, Clock, CheckCircle2, XCircle, 
   FileText, Film, Award, UserCheck, Camera, Video, Wallet,
-  Search, ExternalLink, Trash2, UserPlus, Pencil, CheckSquare
+  Search, ExternalLink, Trash2, UserPlus, Pencil, CheckSquare,
+  History, RefreshCw, Zap, Loader2
 } from 'lucide-react';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell 
 } from 'recharts';
 import './BatchDetail.css';
+import BatchFormModal from '../../components/admin/BatchFormModal';
+import AddStudentsModal from '../../components/admin/AddStudentsModal';
 
 // Reusable Stat Card
 function StatCard({ icon, value, label, colorVariant }) {
@@ -82,9 +85,132 @@ export default function BatchDetail() {
   // Remove student popover state
   const [removePopoverId, setRemovePopoverId] = useState(null);
 
+  // Edit Modal State
+  const [showEditModal, setShowEditModal] = useState(false);
+
+  // Timeline and Automation States
+  const [transitionsData, setTransitionsData] = useState([]);
+  const [refreshingTransitions, setRefreshingTransitions] = useState(false);
+  const [showUpdatedText, setShowUpdatedText] = useState(false);
+  const [automationRunning, setAutomationRunning] = useState(false);
+  const [flashHeader, setFlashHeader] = useState(false);
+  const [showAddStudentsModal, setShowAddStudentsModal] = useState(false);
+
+  const timelineEvents = useMemo(() => {
+    if (!batchData) return [];
+    
+    // Synthesize "Batch created" event
+    const creatorName = 'Admin'; 
+    const initialStatus = 'upcoming'; 
+    const createdEvent = {
+      id: 'created',
+      from_status: null,
+      to_status: 'upcoming',
+      reason: `Batch created with status: ${initialStatus}`,
+      trigger_type: 'manual',
+      triggered_by_name: creatorName,
+      transitioned_at: batchData.created_at,
+      is_synthetic: true
+    };
+
+    return [...transitionsData, createdEvent];
+  }, [transitionsData, batchData]);
+
   const showToast = (msg) => {
     setToastMsg(msg);
     setTimeout(() => setToastMsg(''), 3000);
+  };
+
+  const fetchTransitions = async (resolvedId) => {
+    try {
+      const token = localStorage.getItem('token');
+      const headers = { 'Authorization': `Bearer ${token}` };
+      const res = await fetch(`/api/admin/batches/${resolvedId}/transitions`, { headers });
+      if (res.ok) {
+        const data = await res.json();
+        setTransitionsData(data || []);
+      }
+    } catch (e) {
+      console.error('Error fetching transitions:', e);
+    }
+  };
+
+  const handleRefreshTransitions = async () => {
+    if (!batchData) return;
+    setRefreshingTransitions(true);
+    await fetchTransitions(batchData.id);
+    setRefreshingTransitions(false);
+    setShowUpdatedText(true);
+    setTimeout(() => setShowUpdatedText(false), 2000);
+  };
+
+  const handleRunDetailAutomation = async () => {
+    if (!batchData) return;
+    setAutomationRunning(true);
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch('/api/admin/batches/run-automation', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        }
+      });
+
+      const data = await response.json();
+
+      if (data.transitions && data.transitions.length > 0) {
+        // Find if this batch was updated
+        const thisTransition = data.transitions.find(t => t.batch_id === batchData.id);
+        if (thisTransition) {
+          setBatchData(prev => ({ ...prev, status: thisTransition.to_status }));
+          showToast(`Status check complete — ${batchData.batch_name} is now ${thisTransition.to_status}`);
+          setFlashHeader(true);
+          setTimeout(() => setFlashHeader(false), 1500);
+        } else {
+          showToast('Status check complete — no changes needed');
+        }
+      } else {
+        showToast('Status check complete — no changes needed');
+      }
+
+      // Auto-refresh the timeline
+      await fetchTransitions(batchData.id);
+
+    } catch (error) {
+      console.error('[BatchAutomation] Detail trigger error:', error);
+      showToast('Automation run failed');
+    } finally {
+      setAutomationRunning(false);
+    }
+  };
+
+  const fetchStudents = async (resolvedId) => {
+    try {
+      const token = localStorage.getItem('token');
+      const headers = { 'Authorization': `Bearer ${token}` };
+      const res = await fetch(`/api/admin/batches/${resolvedId}/students`, { headers });
+      if (res.ok) {
+        const data = await res.json();
+        setStudentsData(data || []);
+      }
+    } catch (e) {
+      console.error('Error fetching students:', e);
+    }
+  };
+
+  const fetchProgress = async (resolvedId) => {
+    try {
+      const token = localStorage.getItem('token');
+      const headers = { 'Authorization': `Bearer ${token}` };
+      const res = await fetch(`/api/admin/batches/${resolvedId}/progress`, { headers });
+      if (res.ok) {
+        const data = await res.json();
+        setProgressData(data);
+      }
+    } catch (e) {
+      console.error('Error fetching progress:', e);
+    }
   };
 
   useEffect(() => {
@@ -95,10 +221,32 @@ export default function BatchDetail() {
         const token = localStorage.getItem('token');
         const headers = { 'Authorization': `Bearer ${token}` };
 
-        const [batchRes, progressRes, studentsRes] = await Promise.all([
-          fetch(`/api/admin/batches/${id}`, { headers }),
-          fetch(`/api/admin/batches/${id}/progress`, { headers }),
-          fetch(`/api/admin/batches/${id}/students`, { headers })
+        let resolvedId = id;
+
+        // Slug resolution logic
+        if (id && !/^\d+$/.test(id)) {
+          const res = await fetch('/api/admin/batches', { headers });
+          if (res.ok) {
+            const batches = await res.json();
+            const generateSlug = (name) => name.toLowerCase().replace(/[^a-z0-9]/g, '');
+            const match = batches.find(b => generateSlug(b.batch_name) === id);
+            if (match) {
+              resolvedId = match.id;
+            } else {
+              setError('Batch not found');
+              setLoading(false);
+              return;
+            }
+          } else {
+            throw new Error('Failed to fetch batches for slug resolution');
+          }
+        }
+
+        const [batchRes, progressRes, studentsRes, transitionsRes] = await Promise.all([
+          fetch(`/api/admin/batches/${resolvedId}`, { headers }),
+          fetch(`/api/admin/batches/${resolvedId}/progress`, { headers }),
+          fetch(`/api/admin/batches/${resolvedId}/students`, { headers }),
+          fetch(`/api/admin/batches/${resolvedId}/transitions`, { headers })
         ]);
 
         if (batchRes.status === 404) {
@@ -113,10 +261,12 @@ export default function BatchDetail() {
         const bData = await batchRes.json();
         const pData = await progressRes.json();
         const sData = await studentsRes.json();
+        const tData = transitionsRes.ok ? await transitionsRes.json() : [];
 
         setBatchData(bData);
         setProgressData(pData);
         setStudentsData(sData || []);
+        setTransitionsData(tData || []);
       } catch (err) {
         console.error('Error fetching batch detail:', err);
         setError('Error loading batch details');
@@ -141,7 +291,7 @@ export default function BatchDetail() {
   const confirmRemoveStudent = async (studentId, studentName) => {
     try {
       const token = localStorage.getItem('token');
-      const res = await fetch(`/api/admin/batches/${id}/students/${studentId}`, {
+      const res = await fetch(`/api/admin/batches/${batchData.id}/students/${studentId}`, {
         method: 'DELETE',
         headers: { 'Authorization': `Bearer ${token}` }
       });
@@ -165,13 +315,11 @@ export default function BatchDetail() {
   };
 
   const handleEditClick = () => {
-    console.log('Edit modal — coming in Step 5');
-    showToast('Edit modal coming soon');
+    setShowEditModal(true);
   };
 
   const handleAddStudentsClick = () => {
-    console.log('Add students modal — coming in Step 10');
-    showToast('Add students modal coming soon');
+    setShowAddStudentsModal(true);
   };
 
   // Format dates
@@ -251,6 +399,18 @@ export default function BatchDetail() {
     }
   }
 
+  const getTimelineRelativeTime = (dateInput) => {
+    if (!dateInput) return '';
+    const date = new Date(dateInput);
+    const seconds = Math.floor((new Date() - date) / 1000);
+    if (seconds < 60) return 'just now';
+    if (seconds < 3600) return `${Math.floor(seconds / 60)} minutes ago`;
+    if (seconds < 86400) return `${Math.floor(seconds / 3600)} hours ago`;
+    return `${Math.floor(seconds / 86400)} days ago`;
+  };
+
+
+
   const isBatchLocked = batchData.status === 'completed' || batchData.status === 'archived';
 
   // Fee calculation (fallback logic if no specific totals exist yet)
@@ -273,7 +433,7 @@ export default function BatchDetail() {
       )}
 
       {/* SECTION 1: Batch Header */}
-      <div className="batch-detail-header glass-panel">
+      <div className={`batch-detail-header glass-panel ${flashHeader ? 'header-flash' : ''}`}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '1rem' }}>
           <div>
             <button 
@@ -301,7 +461,20 @@ export default function BatchDetail() {
             </div>
           </div>
 
-          <div style={{ display: 'flex', gap: '0.75rem' }}>
+          <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
+            <button 
+              onClick={handleRunDetailAutomation} 
+              disabled={automationRunning}
+              className="modern-btn btn-automation" 
+              style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.6rem 1rem', borderRadius: '8px' }}
+            >
+              {automationRunning ? (
+                <Loader2 size={16} className="animate-spin" />
+              ) : (
+                <Zap size={16} />
+              )}
+              {automationRunning ? 'Checking...' : '⚡ Run Status Check'}
+            </button>
             <button onClick={handleEditClick} className="modern-btn modern-btn--secondary" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
               <Pencil size={16} /> Edit Batch
             </button>
@@ -345,7 +518,7 @@ export default function BatchDetail() {
               </div>
               
               {progressData.phase2?.admitted > 0 ? (
-                <div style={{ marginTop: '1rem' }}>
+                <div style={{ marginTop: '1rem' }} className="batch-phase2-section visible">
                   <div className="batch-phase-label purple">Phase 2</div>
                   <div className="batch-metrics-grid">
                     <StatCard icon={<UserCheck size={20} />} value={progressData.phase2?.admitted} label="Phase 2 Admitted" colorVariant="Blue" />
@@ -355,7 +528,7 @@ export default function BatchDetail() {
                   </div>
                 </div>
               ) : (
-                <div style={{ marginTop: '1rem' }}>
+                <div style={{ marginTop: '1rem' }} className="batch-phase2-section">
                   <div className="batch-phase-label purple">Phase 2</div>
                   <div style={{ background: 'rgba(255,255,255,0.01)', border: '1px dashed rgba(255,255,255,0.05)', borderRadius: '12px', padding: '2rem', textAlign: 'center', color: 'var(--text-muted)' }}>
                     Phase 2 data will appear once students advance from Phase 1.
@@ -591,6 +764,139 @@ export default function BatchDetail() {
           </div>
         )}
       </div>
+
+      {/* SECTION 4: Status History Timeline */}
+      <div className="batch-timeline-section glass-panel" style={{ padding: '2rem', borderRadius: '16px', marginTop: '2.5rem', marginBottom: '2.5rem' }}>
+        <div className="batch-timeline-header">
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+            <History size={20} color="var(--primary)" />
+            <h2 style={{ margin: 0, fontSize: '1.25rem', fontFamily: 'Outfit, sans-serif', color: 'var(--text-primary)', letterSpacing: '0.1em' }}>STATUS HISTORY</h2>
+            <span className="batch-status-badge upcoming" style={{ fontSize: '0.75rem', padding: '0.2rem 0.5rem', textTransform: 'lowercase' }}>
+              {transitionsData.length} transitions
+            </span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            {showUpdatedText && <span style={{ fontSize: '0.8rem', color: '#34d399' }}>Updated just now</span>}
+            <button 
+              onClick={handleRefreshTransitions} 
+              disabled={refreshingTransitions}
+              className="icon-btn-ghost" 
+              style={{ padding: '0.4rem', borderRadius: '6px', color: 'var(--text-secondary)' }}
+              title="Refresh History"
+            >
+              <RefreshCw size={16} className={refreshingTransitions ? 'animate-spin' : ''} />
+            </button>
+          </div>
+        </div>
+
+        <div className="batch-timeline">
+          {timelineEvents.map((t) => {
+            // Determine dot color
+            let dotColor = '#2563EB'; // blue for manual change (default)
+            if (t.is_synthetic) {
+              dotColor = '#38BDF8'; // sky dot for created
+            } else if (t.from_status === 'upcoming' && t.to_status === 'active') {
+              dotColor = '#22C55E'; // green dot
+            } else if (t.from_status === 'active' && t.to_status === 'completed') {
+              dotColor = '#A855F7'; // purple dot
+            }
+
+            // Simple helper to format date for tooltip
+            const fullDateTooltip = t.transitioned_at 
+              ? new Date(t.transitioned_at).toLocaleString('en-US', { 
+                  day: 'numeric', 
+                  month: 'short', 
+                  year: 'numeric', 
+                  hour: '2-digit', 
+                  minute: '2-digit' 
+                }) 
+              : '';
+
+            return (
+              <div 
+                key={t.id} 
+                className={`batch-timeline-item ${t.is_synthetic ? 'batch-timeline-synthetic' : ''}`}
+              >
+                <div 
+                  className="batch-timeline-dot" 
+                  style={{ color: dotColor }}
+                />
+                
+                <div className="batch-timeline-item-header">
+                  <div className="batch-timeline-transition">
+                    {t.is_synthetic ? (
+                      <span>📝 created</span>
+                    ) : (
+                      <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                        <span className={`batch-status-badge ${t.from_status}`}>{t.from_status}</span>
+                        <span style={{ color: 'rgba(255,255,255,0.4)' }}>→</span>
+                        <span className={`batch-status-badge ${t.to_status}`}>{t.to_status}</span>
+                      </span>
+                    )}
+                  </div>
+                  <span 
+                    className="batch-timeline-timestamp" 
+                    title={fullDateTooltip}
+                  >
+                    {t.transitioned_at ? getTimelineRelativeTime(t.transitioned_at) : ''}
+                  </span>
+                </div>
+
+                <div className="batch-timeline-reason">
+                  {t.reason}
+                </div>
+
+                <div className="batch-timeline-trigger">
+                  {t.is_synthetic ? (
+                    `By: ${t.triggered_by_name}`
+                  ) : (
+                    t.trigger_type === 'automatic' 
+                      ? 'Triggered automatically by the system' 
+                      : `Triggered manually by ${t.triggered_by_name || 'Admin'}`
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+      
+      {/* CREATE/EDIT BATCH MODAL */}
+      <BatchFormModal
+        mode="edit"
+        batch={batchData}
+        isOpen={showEditModal}
+        onClose={() => setShowEditModal(false)}
+        onSuccess={(updatedBatch) => {
+          showToast('Batch updated successfully');
+          setShowEditModal(false);
+          // Optimistically update the UI without reloading all data
+          setBatchData(prev => ({
+            ...prev,
+            ...updatedBatch
+          }));
+        }}
+      />
+
+      {/* ADD STUDENTS MODAL */}
+      <AddStudentsModal
+        batchId={batchData.id}
+        batchName={batchData.batch_name}
+        batchNumber={batchData.batch_number}
+        courseName={batchData.course_name}
+        isOpen={showAddStudentsModal}
+        onClose={() => setShowAddStudentsModal(false)}
+        onSuccess={(assignedCount) => {
+          setShowAddStudentsModal(false);
+          showToast(`${assignedCount} student(s) added to ${batchData.batch_name}`);
+          fetchStudents(batchData.id);
+          fetchProgress(batchData.id);
+          setBatchData(prev => ({
+            ...prev,
+            student_count: (prev.student_count || 0) + assignedCount
+          }));
+        }}
+      />
     </div>
   );
 }
