@@ -1045,12 +1045,8 @@ export default function BatchManager() {
                 let badgeLabel = b.course_name || 'COURSE';
                 if (isFilmmaking) {
                   badgeClass = 'filmmaking';
-                  badgeLabel = 'FILMMAKING';
                 } else if (isWorkshop) {
                   badgeClass = 'workshop';
-                  badgeLabel = 'WORKSHOP';
-                } else if (badgeLabel.length > 12) {
-                  badgeLabel = badgeLabel.substring(0, 11) + '…';
                 }
 
                 return (
