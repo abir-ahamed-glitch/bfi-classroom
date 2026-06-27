@@ -28,10 +28,16 @@ export default function BatchFormModal({ mode, batch, isOpen, onClose, onSuccess
   // Available courses
   const courseOptions = ['Online Filmmaking Course', 'Film Appreciation Course'];
 
+  const [isCustom, setIsCustom] = useState(false);
+  const [customCourseName, setCustomCourseName] = useState('');
+
   // Initialize form when modal opens or batch changes
   useEffect(() => {
     if (isOpen) {
       if (mode === 'edit' && batch) {
+        const isPred = courseOptions.includes(batch.course_name);
+        setIsCustom(!isPred);
+        setCustomCourseName(!isPred ? batch.course_name : '');
         setForm({
           batch_name: batch.batch_name || '',
           batch_number: batch.batch_number || '',
@@ -42,6 +48,8 @@ export default function BatchFormModal({ mode, batch, isOpen, onClose, onSuccess
           description: batch.description || ''
         });
       } else {
+        setIsCustom(false);
+        setCustomCourseName('');
         setForm({
           batch_name: '',
           batch_number: '',
@@ -258,15 +266,46 @@ export default function BatchFormModal({ mode, batch, isOpen, onClose, onSuccess
                   <button
                     key={course}
                     type="button"
-                    className={`course-toggle-btn ${form.course_name === course ? 'selected' : ''}`}
-                    onClick={() => handleChange('course_name', course)}
+                    className={`course-toggle-btn ${!isCustom && form.course_name === course ? 'selected' : ''}`}
+                    onClick={() => {
+                      setIsCustom(false);
+                      handleChange('course_name', course);
+                    }}
                     disabled={mode === 'edit'}
                     title={mode === 'edit' ? "Course cannot be changed after creation" : ""}
                   >
                     {course === 'Online Filmmaking Course' ? '🎬' : '🎞'} {course}
                   </button>
                 ))}
+                <button
+                  type="button"
+                  className={`course-toggle-btn ${isCustom ? 'selected' : ''}`}
+                  onClick={() => {
+                    setIsCustom(true);
+                    handleChange('course_name', customCourseName);
+                  }}
+                  disabled={mode === 'edit'}
+                  title={mode === 'edit' ? "Course cannot be changed after creation" : ""}
+                >
+                  ⚙️ Custom Program
+                </button>
               </div>
+              {isCustom && (
+                <div className="batch-form-field" style={{ marginTop: '0.5rem' }}>
+                  <input
+                    type="text"
+                    placeholder="Enter custom course name (e.g. Screenplay Workshop)"
+                    value={customCourseName}
+                    onChange={e => {
+                      const val = e.target.value;
+                      setCustomCourseName(val);
+                      handleChange('course_name', val);
+                    }}
+                    onBlur={() => handleBlur('course_name')}
+                    disabled={mode === 'edit'}
+                  />
+                </div>
+              )}
               {errors.course_name && <div className="batch-field-error">{errors.course_name}</div>}
             </div>
 

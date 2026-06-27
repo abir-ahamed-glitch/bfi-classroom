@@ -132,11 +132,9 @@ router.post('/', authenticateToken, requireRole('admin'), (req, res) => {
       return res.status(409).json({ error: 'A batch with this name or number already exists' });
     }
 
-    // Validate course name against known list
-    const knownCourses = db.prepare('SELECT DISTINCT course_name FROM student_course_enrollments').all().map(r => r.course_name);
-    const validCourses = new Set([...knownCourses, 'Online Filmmaking Course', 'Film Appreciation Course']);
-    if (!validCourses.has(course_name)) {
-      return res.status(400).json({ error: 'Invalid course name.' });
+    // Validate course name
+    if (typeof course_name !== 'string' || course_name.trim() === '') {
+      return res.status(400).json({ error: 'Course name is required.' });
     }
 
     // Validate status
@@ -198,10 +196,8 @@ router.patch('/:id', authenticateToken, requireRole('admin'), (req, res) => {
     }
 
     if (req.body.course_name !== undefined) {
-      const knownCourses = db.prepare('SELECT DISTINCT course_name FROM student_course_enrollments').all().map(r => r.course_name);
-      const validCourses = new Set([...knownCourses, 'Online Filmmaking Course', 'Film Appreciation Course']);
-      if (!validCourses.has(req.body.course_name)) {
-        return res.status(400).json({ error: 'Invalid course name.' });
+      if (typeof req.body.course_name !== 'string' || req.body.course_name.trim() === '') {
+        return res.status(400).json({ error: 'Course name is required.' });
       }
       updates.push('course_name = :course_name');
       params.course_name = req.body.course_name;
