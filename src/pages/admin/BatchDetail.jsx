@@ -212,6 +212,30 @@ export default function BatchDetail() {
       console.error('Error fetching progress:', e);
     }
   };
+  const handleAdmitPhase2 = async (studentId, studentName) => {
+    if (!batchData) return;
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch(`/api/admin/batches/${batchData.id}/students/${studentId}/admit-phase2`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        }
+      });
+      if (res.ok) {
+        showToast(`Successfully admitted ${studentName} to Phase 2`);
+        await fetchStudents(batchData.id);
+        await fetchProgress(batchData.id);
+      } else {
+        const err = await res.json();
+        showToast(err.error || 'Failed to admit student to Phase 2');
+      }
+    } catch (e) {
+      console.error('Error admitting student to Phase 2:', e);
+      showToast('Failed to admit student to Phase 2');
+    }
+  };
 
   useEffect(() => {
     const fetchAllData = async () => {
@@ -726,6 +750,16 @@ export default function BatchDetail() {
                         >
                           <ExternalLink size={14} /> Profile
                         </Link>
+                        
+                        {isFilmmaking && s.phase1_completed && !s.phase2_admitted && (
+                          <button 
+                            onClick={() => handleAdmitPhase2(s.user_id, `${s.first_name} ${s.last_name}`)}
+                            className="modern-btn modern-btn--primary"
+                            style={{ padding: '0.35rem 0.6rem', fontSize: '0.75rem', borderRadius: '6px', display: 'flex', alignItems: 'center', gap: '0.35rem' }}
+                          >
+                            <UserCheck size={14} /> Admit to Phase 2
+                          </button>
+                        )}
                         
                         {!isBatchLocked && (
                           <button 

@@ -957,3 +957,14 @@
 .animate-spin {
   animation: spin 1s linear infinite;
 }
+
+@media (max-width: 768px) {
+  .details-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+  .details-sidebar {
+    order: -1;
+  }
+}

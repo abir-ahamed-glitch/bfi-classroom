@@ -263,10 +263,18 @@
   opacity: 1;
 }
 
-@media (max-width: 640px) {
+@media (max-width: 768px) {
   .batch-students-header {
     flex-direction: column;
     align-items: stretch;
     gap: 1rem;
+  }
+  .details-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+  .details-sidebar {
+    order: -1;
   }
 }

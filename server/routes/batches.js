@@ -352,6 +352,7 @@ router.get('/:id/students', authenticateToken, requireRole('admin'), (req, res) 
         assigned_at: s.assigned_at,
         phase1_completed: s.step2_completed === 1,
         exam_passed: s.step2_completed === 1,
+        phase2_admitted: s.step3_completed === 1,
         phase2_completed: s.step4_completed === 1,
         fee_status
       };
@@ -504,6 +505,50 @@ router.delete('/:id/students/:studentId', authenticateToken, requireRole('admin'
   } catch (error) {
     console.error('[Batches] DELETE /:id/students/:studentId error:', error);
     res.status(500).json({ error: 'Internal server error while removing student from batch.' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Endpoint 9B — POST /api/admin/batches/:id/students/:studentId/admit-phase2
+// Purpose: Admit a student to Phase 2 of a batch's course
+// ─────────────────────────────────────────────────────────────────────────────
+router.post('/:id/students/:studentId/admit-phase2', authenticateToken, requireRole('admin'), (req, res) => {
+  try {
+    const batchId = parseInt(req.params.id, 10);
+    const studentId = parseInt(req.params.studentId, 10);
+
+    const batch = db.prepare('SELECT * FROM batches WHERE id = ?').get(batchId);
+    if (!batch) {
+      return res.status(404).json({ error: 'Batch not found' });
+    }
+
+    const association = db.prepare('SELECT id FROM batch_students WHERE batch_id = ? AND student_id = ?').get(batchId, studentId);
+    if (!association) {
+      return res.status(404).json({ error: 'Student not found in this batch' });
+    }
+
+    const admitTransaction = db.transaction(() => {
+      // Update student_course_enrollments
+      db.prepare(`
+        UPDATE student_course_enrollments
+        SET step3_completed = 1, updated_at = datetime('now')
+        WHERE user_id = ? AND course_name = ?
+      `).run(studentId, batch.course_name);
+
+      // Update student_profiles
+      db.prepare(`
+        UPDATE student_profiles
+        SET phase2_admitted = 1, updated_at = datetime('now')
+        WHERE user_id = ?
+      `).run(studentId);
+    });
+
+    admitTransaction();
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('[Batches] POST /:id/students/:studentId/admit-phase2 error:', error);
+    res.status(500).json({ error: 'Internal server error while admitting student to Phase 2.' });
   }
 });
 
