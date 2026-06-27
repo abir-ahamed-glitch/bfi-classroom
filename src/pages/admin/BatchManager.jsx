@@ -390,7 +390,7 @@ export default function BatchManager() {
           setAllBatches(prev => prev.filter(b => b.id !== batchId));
           setLeavingBatches(prev => prev.filter(x => x !== batchId));
           if (selectedBatchId === batchId) {
-            navigate('/admin/batches');
+            navigate('/admin/batchmanager');
           }
         }, 300);
       } else {
@@ -616,7 +616,7 @@ export default function BatchManager() {
           {/* Header Row */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '1.5rem' }}>
             <button 
-              onClick={() => { navigate('/admin/batches'); setBatchDetails(null); }} 
+              onClick={() => { navigate('/admin/batchmanager'); setBatchDetails(null); }} 
               className="modern-btn modern-btn--secondary" 
               style={{ padding: '0.5rem 0.75rem', display: 'flex', alignItems: 'center', gap: '0.25rem', borderRadius: '8px' }}
             >
@@ -1116,7 +1116,7 @@ export default function BatchManager() {
                             </span>
                           </div>
                           <button
-                            onClick={() => navigate(`/admin/batches/${generateSlug(t.batch_name)}`)}
+                            onClick={() => navigate(`/admin/batchmanager/${generateSlug(t.batch_name)}`)}
                             className="modern-btn modern-btn--secondary"
                             style={{ padding: '0.35rem 0.75rem', fontSize: '0.8rem' }}
                           >
@@ -1309,7 +1309,7 @@ export default function BatchManager() {
                     {/* Bottom Actions Row */}
                     <div className="batch-card-actions">
                       <button 
-                        onClick={() => navigate(`/admin/batches/${generateSlug(b.batch_name)}`)}
+                        onClick={() => navigate(`/admin/batchmanager/${generateSlug(b.batch_name)}`)}
                         className="modern-btn modern-btn--secondary"
                         style={{ flex: 1, padding: '0.45rem', fontSize: '0.85rem', whiteSpace: 'nowrap' }}
                       >

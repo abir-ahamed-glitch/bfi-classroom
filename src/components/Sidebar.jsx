@@ -349,10 +349,10 @@ export default function Sidebar({ isNotifOpen, setIsNotifOpen }) {
                 <Flag size={20} /> Reports
                 {unreadReportCount > 0 && <span className="nav-badge">{unreadReportCount > 99 ? '99+' : unreadReportCount}</span>}
               </NavLink>
-              <NavLink to="/admin/students" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
+              <NavLink to="/admin/studentsmanager" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
                 <Settings size={20} /> Student Manager
               </NavLink>
-              <NavLink to="/admin/batches" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
+              <NavLink to="/admin/batchmanager" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
                 <Users size={20} /> Batch Manager
               </NavLink>
               <NavLink to="/admin/teachers" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>

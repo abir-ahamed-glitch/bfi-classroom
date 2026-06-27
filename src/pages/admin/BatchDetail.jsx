@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { 
   ArrowLeft, Calendar, Users, Clock, CheckCircle2, XCircle, 
   FileText, Film, Award, UserCheck, Camera, Video, Wallet,
   Search, ExternalLink, Trash2, UserPlus, Pencil, CheckSquare,
-  History, RefreshCw, Zap, Loader2
+  History, RefreshCw, Zap, Loader2, GraduationCap, Clapperboard, Edit, Square, X, Lock
 } from 'lucide-react';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell 
@@ -12,6 +13,58 @@ import {
 import './BatchDetail.css';
 import BatchFormModal from '../../components/admin/BatchFormModal';
 import AddStudentsModal from '../../components/admin/AddStudentsModal';
+import EditStudentModal from '../../components/admin/EditStudentModal';
+
+const hasPendingDueOrPartialPayment = (course) => {
+  if (!course || !course.fee_details) return false;
+  
+  let feeDetails = {};
+  try {
+    feeDetails = typeof course.fee_details === 'string' 
+      ? JSON.parse(course.fee_details) 
+      : course.fee_details;
+  } catch (e) {
+    console.error('Error parsing course fee details:', e);
+    return false;
+  }
+
+  if (!feeDetails) return false;
+  
+  const isUnpaid = (phase) => {
+    if (!phase) return false;
+    
+    // If installments exist, they are the source of truth
+    if (phase.installments && phase.installments.length > 0) {
+      return phase.installments.some(inst => inst.status === 'Pending' || inst.status === 'Due');
+    }
+
+    // Status checks (when no installments)
+    const status = phase.status;
+    if (status === 'Paid Full' || status === 'Waived') {
+      return false;
+    }
+    if (status === 'Partial' || status === 'Pending' || status === 'Due') {
+      return true;
+    }
+    
+    // Fallback numerical check
+    const fullFee = parseFloat((phase.full_fee || '').toString().replace(/[^\d.]/g, '')) || 0;
+    if (fullFee === 0) return false;
+    
+    const amountPaid = parseFloat((phase.amount_paid || '').toString().replace(/[^\d.]/g, '')) || 0;
+    const discount = parseFloat((phase.discount || '').toString().replace(/[^\d.]/g, '')) || 0;
+    const remainingDue = Math.max(0, fullFee - discount - amountPaid);
+    
+    return remainingDue > 0;
+  };
+
+  if (course.course_name === 'Online Filmmaking Course') {
+    return isUnpaid(feeDetails.phase1) || isUnpaid(feeDetails.phase2);
+  } else {
+    return isUnpaid(feeDetails);
+  }
+};
+import { getOrdinalSuffix } from '../../utils/formatUtils';
 
 // Reusable Stat Card
 function StatCard({ icon, value, label, colorVariant }) {
@@ -88,6 +141,32 @@ export default function BatchDetail() {
   // Edit Modal State
   const [showEditModal, setShowEditModal] = useState(false);
 
+  // Edit Student Modal State
+  const [editingStudent, setEditingStudent] = useState(null);
+
+  // Academic Records Modal State
+  const [academicStudent, setAcademicStudent] = useState(null);
+  const [academicCourseId, setAcademicCourseId] = useState(null);
+  const [academicFormData, setAcademicFormData] = useState({
+    attendance_classes: '', attendance_total: '', exam_written: '',
+    assignment_screenplay: '', assignment_shooting_script: ''
+  });
+  const [isAcademicSaving, setIsAcademicSaving] = useState(false);
+  const [academicError, setAcademicError] = useState('');
+
+  // Phase 2 Completion Modal State
+  const [phase2Student, setPhase2Student] = useState(null);
+  const [phase2CourseId, setPhase2CourseId] = useState(null);
+  const [phase2FormData, setPhase2FormData] = useState({
+    phase2_shooting_attended: false, phase2_editing_attended: false
+  });
+  const [isPhase2Saving, setIsPhase2Saving] = useState(false);
+  const [phase2Error, setPhase2Error] = useState('');
+
+  // Confirmation Modal State
+  const [deleteConfirmId, setDeleteConfirmId] = useState(null);
+  const [confirmConfig, setConfirmConfig] = useState(null);
+
   // Timeline and Automation States
   const [transitionsData, setTransitionsData] = useState([]);
   const [refreshingTransitions, setRefreshingTransitions] = useState(false);
@@ -119,6 +198,286 @@ export default function BatchDetail() {
   const showToast = (msg) => {
     setToastMsg(msg);
     setTimeout(() => setToastMsg(''), 3000);
+  };
+
+  const openEditModal = (student) => {
+    setEditingStudent(student);
+  };
+
+  const openAcademicModal = (student, enrollmentId) => {
+    const enrollment = student.enrollments?.find(e => e.id === enrollmentId);
+    setAcademicStudent({ ...student, enrollment });
+    setAcademicCourseId(enrollmentId);
+    setAcademicFormData({
+      attendance_classes: enrollment?.attendance_classes || '',
+      attendance_total: enrollment?.attendance_total || '',
+      exam_written: enrollment?.exam_written || '',
+      assignment_screenplay: enrollment?.assignment_screenplay || '',
+      assignment_shooting_script: enrollment?.assignment_shooting_script || ''
+    });
+  };
+
+  const openPhase2Modal = (student, enrollmentId) => {
+    const enrollment = student.enrollments?.find(e => e.id === enrollmentId);
+    setPhase2Student({ ...student, enrollment });
+    setPhase2CourseId(enrollmentId);
+    setPhase2FormData({
+      phase2_shooting_attended: !!(enrollment?.phase2_shooting_attended),
+      phase2_editing_attended: !!(enrollment?.phase2_editing_attended)
+    });
+  };
+
+  const toggleProgress = async (studentId, enrollmentId, stepField, currentValue, courseName) => {
+    if (courseName === 'Online Filmmaking Course') {
+      const student = filteredStudents.find(s => s.id === studentId);
+      const e = student?.enrollments?.find(env => env.id === enrollmentId);
+      const willBeChecked = !currentValue;
+
+      let feeDetails = {};
+      if (e?.fee_details) {
+        try {
+          feeDetails = typeof e.fee_details === 'string' ? JSON.parse(e.fee_details) : e.fee_details;
+        } catch (err) {
+          console.error(err);
+        }
+      }
+      const phase1 = feeDetails?.phase1 || {};
+      const fullFeeNum = parseFloat((phase1.full_fee || '').replace(/[^\d.]/g, '')) || 0;
+      const amountPaidNum = parseFloat((phase1.amount_paid || '').replace(/[^\d.]/g, '')) || 0;
+      const discountNum = parseFloat((phase1.discount || '').replace(/[^\d.]/g, '')) || 0;
+      const rawRemainingDue = Math.max(0, fullFeeNum - discountNum - amountPaidNum);
+      
+      const phase1Installments = phase1.installments || [];
+      const remainingDue = phase1Installments.length > 0
+        ? phase1Installments.filter(inst => (inst.status || '').toLowerCase() !== 'paid').reduce((sum, inst) => sum + (parseFloat((inst.amount || '').toString().replace(/[^\d.]/g, '')) || 0), 0)
+        : rawRemainingDue;
+      
+      const phase1PaidAny = amountPaidNum > 0 || phase1Installments.some(inst => inst.status === 'Paid' && parseFloat((inst.amount || '').replace(/[^\d.]/g, '')) > 0);
+      const phase1FullyPaid = (fullFeeNum > 0 && amountPaidNum + discountNum >= fullFeeNum) ||
+        (fullFeeNum > 0 && rawRemainingDue > 0 && phase1Installments.length > 0 && phase1Installments.every(inst => inst.status === 'Paid')) ||
+        (fullFeeNum > 0 && remainingDue === 0);
+
+      const phase2 = feeDetails?.phase2 || {};
+      const phase2PaidAny = (parseFloat((phase2.amount_paid || '').replace(/[^\d.]/g, '')) || 0) > 0 ||
+        (phase2.installments || []).some(inst => inst.status === 'Paid' && parseFloat((inst.amount || '').replace(/[^\d.]/g, '')) > 0);
+
+      if (stepField === 'step2_completed') {
+        openAcademicModal(student, enrollmentId);
+        return;
+      }
+
+      if (stepField === 'step4_completed') {
+        if (!e?.step1_completed || !e?.step2_completed || !e?.step3_completed) {
+          setConfirmConfig({ title: 'Action Restricted', message: 'Cannot update "Phase 2: Completed Course". All previous phases must be completed first.', confirmText: 'OK', isAlert: true, onConfirm: () => {} });
+          return;
+        }
+        openPhase2Modal(student, enrollmentId);
+        return;
+      }
+
+      if (willBeChecked) {
+        if (stepField === 'step1_completed') {
+          openEditModal(student);
+          return;
+        }
+        if (stepField === 'step3_completed' && (!e?.step1_completed || !e?.step2_completed)) {
+          setConfirmConfig({ title: 'Action Restricted', message: 'Cannot check "Phase 2: Admitted". "Phase 1: Admitted" and "Phase 1: Passed Exam" must be checked first.', confirmText: 'OK', isAlert: true, onConfirm: () => {} });
+          return;
+        }
+        if (stepField === 'step3_completed' && !phase1FullyPaid) {
+          setConfirmConfig({ title: 'Action Restricted', message: 'Cannot check "Phase 2: Admitted" because Phase 1 is not fully paid.', confirmText: 'OK', isAlert: true, onConfirm: () => {} });
+          return;
+        }
+        if (stepField === 'step3_completed') {
+          openEditModal(student);
+          return;
+        }
+      } else {
+        if (stepField === 'step3_completed' && e?.step4_completed) {
+          setConfirmConfig({ title: 'Action Restricted', message: 'Cannot uncheck "Phase 2: Admitted" while "Phase 2: Completed" is checked.', confirmText: 'OK', isAlert: true, onConfirm: () => {} });
+          return;
+        }
+        if (stepField === 'step3_completed' && phase2PaidAny) {
+          setConfirmConfig({ title: 'Action Restricted', message: 'Cannot uncheck "Phase 2: Admitted" because a payment has already been made for this phase.', confirmText: 'OK', isAlert: true, onConfirm: () => {} });
+          return;
+        }
+        if (stepField === 'step1_completed' && (e?.step2_completed || e?.step3_completed || e?.step4_completed)) {
+          setConfirmConfig({ title: 'Action Restricted', message: 'Cannot uncheck "Phase 1: Admitted" while subsequent phases are checked.', confirmText: 'OK', isAlert: true, onConfirm: () => {} });
+          return;
+        }
+        if (stepField === 'step1_completed' && phase1PaidAny) {
+          setConfirmConfig({ title: 'Action Restricted', message: 'Cannot uncheck "Phase 1: Admitted" because a payment has already been made for this phase.', confirmText: 'OK', isAlert: true, onConfirm: () => {} });
+          return;
+        }
+      }
+    }
+
+    if (courseName !== 'Online Filmmaking Course') {
+      const student = filteredStudents.find(s => s.id === studentId);
+      const e = student?.enrollments?.find(env => env.id === enrollmentId);
+      const willBeChecked = !currentValue;
+
+      if (stepField === 'step4_completed') {
+        if (!e?.step1_completed) {
+          setConfirmConfig({ title: 'Action Restricted', message: 'Cannot update "Completed Course" because "Admission Confirmed" is not yet completed.', confirmText: 'OK', isAlert: true, onConfirm: () => {} });
+          return;
+        }
+        openAcademicModal(student, enrollmentId);
+        return;
+      }
+
+      if (willBeChecked) {
+        if (stepField === 'step1_completed') {
+          openEditModal(student);
+          return;
+        }
+      } else {
+        if (stepField === 'step1_completed' && e?.step4_completed) {
+          setConfirmConfig({ title: 'Action Restricted', message: 'Cannot uncheck "Admission Confirmed" while "Completed Course" is checked.', confirmText: 'OK', isAlert: true, onConfirm: () => {} });
+          return;
+        }
+      }
+    }
+
+    try {
+      const res = await fetch(`/api/admin/students/${studentId}/progress`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
+        },
+        body: JSON.stringify({ 
+          course_id: enrollmentId, 
+          [stepField]: currentValue ? 0 : 1 
+        })
+      });
+      if (res.ok) {
+        fetchStudents(batchData.id);
+      } else {
+        const data = await res.json();
+        setConfirmConfig({ title: 'Update Failed', message: data.error || 'Failed to update progress.', confirmText: 'OK', isAlert: true, onConfirm: () => {} });
+      }
+    } catch (err) {
+      console.error('Progress update error', err);
+    }
+  };
+
+  const closeAcademicModal = () => {
+    setAcademicStudent(null);
+    setAcademicCourseId(null);
+  };
+
+  const handleAcademicChange = (e) => {
+    setAcademicFormData({ ...academicFormData, [e.target.name]: e.target.value });
+  };
+
+  const submitAcademic = async (e) => {
+    e.preventDefault();
+    setIsAcademicSaving(true);
+    setAcademicError('');
+
+    try {
+      const res = await fetch(`/api/admin/students/${academicStudent.id}/academic-records/${academicCourseId}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
+        },
+        body: JSON.stringify(academicFormData)
+      });
+
+      if (res.ok) {
+        fetchStudents(batchData.id); // refresh list in batch detail
+        closeAcademicModal();
+      } else {
+        const data = await res.json();
+        throw new Error(data.error || 'Failed to save academic records');
+      }
+    } catch (err) {
+      setAcademicError(err.message);
+    } finally {
+      setIsAcademicSaving(false);
+    }
+  };
+
+  const closePhase2Modal = () => {
+    setPhase2Student(null);
+    setPhase2CourseId(null);
+  };
+
+  const handlePhase2Change = (e) => {
+    setPhase2FormData({ ...phase2FormData, [e.target.name]: e.target.checked });
+  };
+
+  const submitPhase2 = async (e) => {
+    e.preventDefault();
+    setIsPhase2Saving(true);
+    setPhase2Error('');
+
+    try {
+      const res = await fetch(`/api/admin/students/${phase2Student.id}/phase2-attendance/${phase2CourseId}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
+        },
+        body: JSON.stringify(phase2FormData)
+      });
+
+      if (res.ok) {
+        fetchStudents(batchData.id); // refresh list in batch detail
+        closePhase2Modal();
+      } else {
+        const data = await res.json();
+        throw new Error(data.error || 'Failed to save Phase 2 completion');
+      }
+    } catch (err) {
+      setPhase2Error(err.message);
+    } finally {
+      setIsPhase2Saving(false);
+    }
+  };
+
+  const confirmDeleteStudent = (studentId, studentName, batchNumber) => {
+    const batchLabel = batchNumber ? `${getOrdinalSuffix(batchNumber)} Batch` : null;
+    const messageNode = (
+      <span>
+        You are about to permanently remove the academic record and account for{' '}
+        <strong style={{ fontWeight: 700, color: '#f43f5e' }}>{studentName}</strong>
+        {batchLabel && (
+          <span style={{ fontWeight: 400, color: '#8b5cf6' }}>{' '}({batchLabel})</span>
+        )}
+        {' '}from the institutional database. This action is irreversible and will delete all associated data.
+      </span>
+    );
+    setConfirmConfig({
+      title: 'Delete Student Account',
+      message: messageNode,
+      confirmText: 'Permanently Delete',
+      type: 'danger',
+      onConfirm: () => handleDeleteStudent(studentId)
+    });
+  };
+
+  const handleDeleteStudent = async (studentId) => {
+    setConfirmConfig(null);
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch(`/api/admin/students/${studentId}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) {
+        showToast('Student deleted successfully');
+        fetchStudents(batchData.id);
+      } else {
+        const data = await res.json();
+        setConfirmConfig({ title: 'Deletion Failed', message: data.error || 'Failed to delete student.', confirmText: 'OK', isAlert: true, onConfirm: () => {} });
+      }
+    } catch (err) {
+      console.error(err);
+      setConfirmConfig({ title: 'Error', message: 'An error occurred while deleting the student.', confirmText: 'OK', isAlert: true, onConfirm: () => {} });
+    }
   };
 
   const fetchTransitions = async (resolvedId) => {
@@ -381,7 +740,7 @@ export default function BatchDetail() {
     return (
       <div className="page-container container" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '60vh' }}>
         <div style={{ fontSize: '1.5rem', color: 'var(--text-secondary)', marginBottom: '1rem' }}>{error}</div>
-        <button onClick={() => navigate('/admin/batches')} className="modern-btn modern-btn--secondary">
+        <button onClick={() => navigate('/admin/batchmanager')} className="modern-btn modern-btn--secondary">
           <ArrowLeft size={16} /> Back to Batches
         </button>
       </div>
@@ -461,7 +820,7 @@ export default function BatchDetail() {
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '1rem' }}>
           <div>
             <button 
-              onClick={() => navigate('/admin/batches')} 
+              onClick={() => navigate('/admin/batchmanager')} 
               style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', padding: 0, marginBottom: '1rem' }}
             >
               <ArrowLeft size={16} /> Back to Batches
@@ -695,10 +1054,9 @@ export default function BatchDetail() {
                   <th>#</th>
                   <th>Student Name</th>
                   <th>BFI ID</th>
-                  <th>Phase 1</th>
-                  <th>Exam</th>
-                  <th>Phase 2</th>
+                  <th>Course Progressions</th>
                   <th>Fee Status</th>
+                  <th>Joined</th>
                   <th style={{ textAlign: 'right' }}>Actions</th>
                 </tr>
               </thead>
@@ -719,18 +1077,47 @@ export default function BatchDetail() {
                       </div>
                     </td>
                     <td style={{ fontFamily: 'monospace', color: 'var(--text-secondary)' }}>{s.bfi_id || '—'}</td>
-                    <td>
-                      {s.phase1_completed ? <span style={{ color: '#34d399' }}>✅</span> : (s.phase1_completed === false ? '❌' : '—')}
-                    </td>
-                    <td>
-                      {s.exam_passed ? <span style={{ color: '#34d399' }}>✅</span> : (s.exam_passed === false ? '❌' : '—')}
-                    </td>
-                    <td>
-                      {isFilmmaking ? (
-                        s.phase2_completed ? <span style={{ color: '#34d399' }}>✅</span> : (s.phase2_completed === false ? '❌' : '—')
-                      ) : (
-                        <span style={{ color: 'var(--text-muted)' }}>—</span>
-                      )}
+                    <td style={{ minWidth: '250px' }}>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                        {s.enrollments && s.enrollments.map(e => (
+                          <div key={e.id} className="student-table-course-card" style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', background: 'rgba(0,0,0,0.01)', padding: '0.5rem', borderRadius: '8px', border: '1px solid var(--glass-border)' }}>
+                            <div style={{ fontSize: '0.75rem', fontWeight: '600', color: 'var(--text-secondary)' }}>
+                              {e.course_name}
+                            </div>
+                            <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
+                              {e.course_type === 'filmmaking' || e.course_name === 'Online Filmmaking Course' ? (
+                                <>
+                                  <button onClick={() => toggleProgress(s.id, e.id, 'step1_completed', e.step1_completed, e.course_name)} title="Phase 1: Admitted" style={{ background: 'none', border: 'none', cursor: 'pointer', color: e.step1_completed ? '#10b981' : 'var(--text-muted)' }}>
+                                    {e.step1_completed ? <CheckSquare size={18} /> : <Square size={18} />}
+                                  </button>
+                                  <button onClick={() => toggleProgress(s.id, e.id, 'step2_completed', e.step2_completed, e.course_name)} title="Phase 1: Passed Exam" style={{ background: 'none', border: 'none', cursor: 'pointer', color: e.step2_completed ? '#10b981' : 'var(--text-muted)' }}>
+                                    {e.step2_completed ? <CheckSquare size={18} /> : <Square size={18} />}
+                                  </button>
+                                  <div style={{ width: '1px', height: '14px', background: 'var(--glass-border)', margin: '0 0.2rem' }}></div>
+                                  <button onClick={() => toggleProgress(s.id, e.id, 'step3_completed', e.step3_completed, e.course_name)} title="Phase 2: Admitted" style={{ background: 'none', border: 'none', cursor: 'pointer', color: e.step3_completed ? '#10b981' : 'var(--text-muted)' }}>
+                                    {e.step3_completed ? <CheckSquare size={18} /> : <Square size={18} />}
+                                  </button>
+                                  <button onClick={() => toggleProgress(s.id, e.id, 'step4_completed', e.step4_completed, e.course_name)} title="Phase 2: Completed Course" style={{ background: 'none', border: 'none', cursor: 'pointer', color: e.step4_completed ? '#10b981' : 'var(--text-muted)' }}>
+                                    {e.step4_completed ? <CheckSquare size={18} /> : <Square size={18} />}
+                                  </button>
+                                </>
+                              ) : (
+                                <>
+                                  <button onClick={() => toggleProgress(s.id, e.id, 'step1_completed', e.step1_completed, e.course_name)} title="Admitted" style={{ background: 'none', border: 'none', cursor: 'pointer', color: e.step1_completed ? '#10b981' : 'var(--text-muted)' }}>
+                                    {e.step1_completed ? <CheckSquare size={18} /> : <Square size={18} />}
+                                  </button>
+                                  <button onClick={() => toggleProgress(s.id, e.id, 'step4_completed', e.step4_completed, e.course_name)} title="Completed Course" style={{ background: 'none', border: 'none', cursor: 'pointer', color: e.step4_completed ? '#10b981' : 'var(--text-muted)' }}>
+                                    {e.step4_completed ? <CheckSquare size={18} /> : <Square size={18} />}
+                                  </button>
+                                </>
+                              )}
+                              {e.step4_completed === 1 && hasPendingDueOrPartialPayment(e) && (
+                                <Lock size={14} style={{ color: '#f87171', display: 'inline-block' }} title="Certificate Locked (Pending/Due/Partial Payment)" />
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
                     </td>
                     <td>
                       {s.fee_status ? (
@@ -741,25 +1128,64 @@ export default function BatchDetail() {
                         <span style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>—</span>
                       )}
                     </td>
+                    <td style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                      {s.created_at ? new Date(s.created_at).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) : '—'}
+                    </td>
                     <td style={{ textAlign: 'right' }}>
                       <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem', position: 'relative' }}>
-                        <Link 
-                          to={`/admin/students/${s.user_id}`}
-                          className="modern-btn modern-btn--secondary"
-                          style={{ padding: '0.35rem 0.6rem', fontSize: '0.75rem', borderRadius: '6px', display: 'flex', alignItems: 'center', gap: '0.35rem', textDecoration: 'none' }}
+                        {(() => {
+                          const e = s.enrollments?.find(x => x.course_name === batchData.course_name);
+                          if (!e) return null;
+                          const isAppreciation = e.course_name !== 'Online Filmmaking Course';
+                          return (
+                            <button 
+                              onClick={() => openAcademicModal(s, e.id)}
+                              className="btn" 
+                              style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0.5rem', background: 'rgba(16, 185, 129, 0.1)', color: '#10b981', border: '1px solid rgba(16, 185, 129, 0.2)', borderRadius: '8px', transition: 'all 0.2s' }} 
+                              onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(16, 185, 129, 0.2)'; e.currentTarget.style.transform = 'scale(1.05)'; }} 
+                              onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(16, 185, 129, 0.1)'; e.currentTarget.style.transform = 'scale(1)'; }} 
+                              title={isAppreciation ? 'Exam Result' : 'Academic Records'}
+                            >
+                              <GraduationCap size={16} />
+                            </button>
+                          );
+                        })()}
+                        {(() => {
+                          const e = s.enrollments?.find(x => x.course_name === 'Online Filmmaking Course');
+                          if (!e || batchData.course_name !== 'Online Filmmaking Course') return null;
+                          return (
+                            <button
+                              onClick={() => openPhase2Modal(s, e.id)}
+                              className="btn"
+                              style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0.5rem', background: 'rgba(139, 92, 246, 0.1)', color: '#8b5cf6', border: '1px solid rgba(139, 92, 246, 0.2)', borderRadius: '8px', transition: 'all 0.2s' }}
+                              onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(139, 92, 246, 0.2)'; e.currentTarget.style.transform = 'scale(1.05)'; }}
+                              onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(139, 92, 246, 0.1)'; e.currentTarget.style.transform = 'scale(1)'; }}
+                              title="Phase 2: Shooting & Editing Attendance"
+                            >
+                              <Clapperboard size={16} />
+                            </button>
+                          );
+                        })()}
+                        <button 
+                          onClick={() => openEditModal(s)}
+                          className="btn" 
+                          style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0.5rem', background: 'rgba(56, 189, 248, 0.1)', color: '#0284c7', border: '1px solid rgba(56, 189, 248, 0.2)', borderRadius: '8px', transition: 'all 0.2s' }} 
+                          onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(56, 189, 248, 0.2)'; e.currentTarget.style.transform = 'scale(1.05)'; }} 
+                          onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(56, 189, 248, 0.1)'; e.currentTarget.style.transform = 'scale(1)'; }} 
+                          title="Edit Student"
                         >
-                          <ExternalLink size={14} /> Profile
-                        </Link>
-                        
-                        {isFilmmaking && s.phase1_completed && !s.phase2_admitted && (
-                          <button 
-                            onClick={() => handleAdmitPhase2(s.user_id, `${s.first_name} ${s.last_name}`)}
-                            className="modern-btn modern-btn--primary"
-                            style={{ padding: '0.35rem 0.6rem', fontSize: '0.75rem', borderRadius: '6px', display: 'flex', alignItems: 'center', gap: '0.35rem' }}
-                          >
-                            <UserCheck size={14} /> Admit to Phase 2
-                          </button>
-                        )}
+                          <Edit size={16} />
+                        </button>
+                        <button 
+                          onClick={() => confirmDeleteStudent(s.id, s.full_name, s.batch_number)}
+                          className="btn" 
+                          style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0.5rem', background: 'rgba(239, 68, 68, 0.1)', color: '#ef4444', border: '1px solid rgba(239, 68, 68, 0.2)', borderRadius: '8px', transition: 'all 0.2s' }} 
+                          onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(239, 68, 68, 0.2)'; e.currentTarget.style.transform = 'scale(1.05)'; }} 
+                          onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(239, 68, 68, 0.1)'; e.currentTarget.style.transform = 'scale(1)'; }} 
+                          title="Delete Student"
+                        >
+                          <Trash2 size={16} />
+                        </button>
                         
                         {!isBatchLocked && (
                           <button 
@@ -913,6 +1339,292 @@ export default function BatchDetail() {
       />
 
       {/* ADD STUDENTS MODAL */}
+      {confirmConfig && typeof document !== 'undefined' && createPortal(
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999 }}>
+          <div style={{ background: 'var(--glass-bg)', border: '1px solid var(--glass-border)', borderRadius: '16px', width: '100%', maxWidth: '400px', overflow: 'hidden', boxShadow: '0 25px 50px -12px rgba(0,0,0,0.5)', animation: 'modalFadeIn 0.3s cubic-bezier(0.16, 1, 0.3, 1)' }}>
+            <div style={{ padding: '1.5rem', borderBottom: '1px solid rgba(255,255,255,0.05)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <h3 className="font-display">{confirmConfig.title}</h3>
+              <button className="icon-btn-ghost" onClick={() => setConfirmConfig(null)} aria-label="Close"><X size={20} /></button>
+            </div>
+            <div style={{ padding: '2rem 1.5rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+              <p>{confirmConfig.message}</p>
+            </div>
+            <div style={{ padding: '1.25rem 1.5rem', background: 'rgba(0,0,0,0.2)', display: 'flex', justifyContent: confirmConfig.isAlert ? 'center' : 'flex-end', gap: '1rem' }}>
+              {!confirmConfig.isAlert && (
+                <button className="modern-btn modern-btn--secondary" onClick={() => setConfirmConfig(null)}>Cancel</button>
+              )}
+              <button 
+                className={`modern-btn ${confirmConfig.type === 'danger' ? 'modern-btn--danger' : 'modern-btn--primary'}`}
+                style={confirmConfig.isAlert ? { width: '100%', maxWidth: '200px', margin: '0 auto' } : {}}
+                onClick={() => {
+                  confirmConfig.onConfirm();
+                  setConfirmConfig(null);
+                }}
+              >
+                {confirmConfig.confirmText || 'Confirm'}
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* Edit Modal Overlay */}
+      {editingStudent && (
+        <EditStudentModal 
+          student={editingStudent} 
+          onClose={() => setEditingStudent(null)} 
+          onSaveSuccess={() => fetchStudents(batchData.id)} 
+        />
+      )}
+
+      {/* Academic Records Modal */}
+      {academicStudent && typeof document !== 'undefined' && createPortal(
+        <div className="modern-modal-overlay">
+          <form onSubmit={submitAcademic} className="modern-modal-content glass-panel shadow-2xl" style={{ width: '100%', maxWidth: '500px', margin: 'auto' }} onClick={e => e.stopPropagation()}>
+            <div className="modern-modal-header">
+              <div>
+                <h3 className="font-display" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <GraduationCap size={24} style={{ color: '#10b981' }} /> {academicStudent.enrollment?.course_name !== 'Online Filmmaking Course' ? 'Exam Result' : 'Academic Records'}
+                </h3>
+                <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginTop: '0.2rem' }}>
+                  {academicStudent.full_name} <span style={{ opacity: 0.7 }}>({academicStudent.batch_number ? `${getOrdinalSuffix(academicStudent.batch_number)} Batch` : 'No Batch'})</span>
+                </p>
+                <p style={{ color: 'var(--text-primary)', fontSize: '0.85rem', marginTop: '0.4rem', fontWeight: '500', background: 'rgba(16, 185, 129, 0.1)', border: '1px solid rgba(16, 185, 129, 0.2)', padding: '0.2rem 0.6rem', borderRadius: '6px', display: 'inline-block' }}>
+                  {academicStudent.enrollment?.course_name || 'Course'}
+                </p>
+              </div>
+              <button type="button" className="icon-btn-ghost" onClick={closeAcademicModal} aria-label="Close"><X size={20} /></button>
+            </div>
+
+            <div className="modern-modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem', maxHeight: '60vh', overflowY: 'auto' }}>
+              {academicStudent.enrollment?.course_name !== 'Online Filmmaking Course' ? (
+                /* Film Appreciation Course: single Exam Result out of 100, no attendance */
+                <div style={{ padding: '1rem', background: 'rgba(255,255,255,0.02)', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.05)' }}>
+                  <h3 style={{ fontSize: '1rem', marginBottom: '1rem', color: 'var(--text-primary)' }}>Exam Result (Total: 100)</h3>
+                  <div>
+                    <label style={{ display: 'block', marginBottom: '0.4rem', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Written Exam Score (Max: 100)</label>
+                    <input type="number" name="exam_written" value={academicFormData.exam_written} onChange={handleAcademicChange} min="0" max="100" className="input-glass" style={{ paddingLeft: '1rem' }} required />
+                  </div>
+                  {(() => {
+                    const totalGained = parseInt(academicFormData.exam_written) || 0;
+                    const isPassed = totalGained >= 33;
+                    return (
+                      <p style={{ 
+                        fontSize: '0.75rem', 
+                        color: 'var(--text-muted)', 
+                        marginTop: '1.25rem',
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        flexWrap: 'wrap',
+                        gap: '0.5rem'
+                      }}>
+                        <span>Requires 33+ marks to pass.</span>
+                        <span style={{ 
+                          fontSize: '0.85rem', 
+                          fontWeight: '700', 
+                          color: isPassed ? '#34d399' : '#f87171',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '0.3rem'
+                        }}>
+                          <span>Total Gained:</span>
+                          <strong style={{ fontSize: '0.98rem' }}>{totalGained}</strong>
+                          <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 'normal' }}>/ 100</span>
+                          <span style={{ 
+                            fontSize: '0.68rem', 
+                            fontWeight: '600', 
+                            padding: '0.05rem 0.35rem', 
+                            borderRadius: '4px',
+                            marginLeft: '0.25rem',
+                            background: isPassed ? 'rgba(52, 211, 153, 0.12)' : 'rgba(239, 68, 68, 0.12)',
+                            color: isPassed ? '#34d399' : '#f87171',
+                            border: isPassed ? '1px solid rgba(52, 211, 153, 0.2)' : '1px solid rgba(239, 68, 68, 0.2)'
+                          }}>
+                            {isPassed ? 'Passed' : 'Failed'}
+                          </span>
+                        </span>
+                      </p>
+                    );
+                  })()}
+                </div>
+              ) : (
+                /* Online Filmmaking Course: attendance & full breakdown */
+                <>
+                  <div style={{ padding: '1rem', background: 'rgba(255,255,255,0.02)', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.05)' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+                      <h3 style={{ fontSize: '1rem', color: 'var(--text-primary)', margin: 0 }}>Attendance</h3>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        <label style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', whiteSpace: 'nowrap' }}>Total classes:</label>
+                        <input type="number" name="attendance_total" value={academicFormData.attendance_total} onChange={handleAcademicChange} min="1" className="input-glass" style={{ width: '100px', paddingLeft: '0.5rem', fontSize: '0.9rem' }} required />
+                      </div>
+                    </div>
+                    <div>
+                      <label style={{ display: 'block', marginBottom: '0.4rem', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Classes Attended</label>
+                      <input type="number" name="attendance_classes" value={academicFormData.attendance_classes} onChange={handleAcademicChange} min="0" max={academicFormData.attendance_total || 22} className="input-glass" style={{ paddingLeft: '1rem' }} required />
+                      <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.3rem' }}>Requires {Math.ceil((academicFormData.attendance_total || 22) * 0.8)}+ (80%) to qualify for exam.</p>
+                    </div>
+                  </div>
+
+                  <div style={{ padding: '1rem', background: 'rgba(255,255,255,0.02)', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.05)' }}>
+                    <h3 style={{ fontSize: '1rem', marginBottom: '1rem', color: 'var(--text-primary)' }}>Exam Results (Total: 100)</h3>
+                    
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                      <div>
+                        <label style={{ display: 'block', marginBottom: '0.4rem', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Written Exam (Max: 80)</label>
+                        <input type="number" name="exam_written" value={academicFormData.exam_written} onChange={handleAcademicChange} min="0" max="80" className="input-glass" style={{ paddingLeft: '1rem' }} required />
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+                        <div>
+                          <label style={{ display: 'block', marginBottom: '0.4rem', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Screenplay (Max: 10)</label>
+                          <input type="number" name="assignment_screenplay" value={academicFormData.assignment_screenplay} onChange={handleAcademicChange} min="0" max="10" className="input-glass" style={{ paddingLeft: '1rem' }} required />
+                        </div>
+                        <div>
+                          <label style={{ display: 'block', marginBottom: '0.4rem', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Shooting Script (Max: 10)</label>
+                          <input type="number" name="assignment_shooting_script" value={academicFormData.assignment_shooting_script} onChange={handleAcademicChange} min="0" max="10" className="input-glass" style={{ paddingLeft: '1rem' }} required />
+                        </div>
+                      </div>
+                    </div>
+                    {(() => {
+                      const totalGained = (parseInt(academicFormData.exam_written) || 0) + 
+                                          (parseInt(academicFormData.assignment_screenplay) || 0) + 
+                                          (parseInt(academicFormData.assignment_shooting_script) || 0);
+                      const isPassed = totalGained >= 33;
+                      return (
+                        <p style={{ 
+                          fontSize: '0.75rem', 
+                          color: 'var(--text-muted)', 
+                          marginTop: '1.25rem',
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
+                          flexWrap: 'wrap',
+                          gap: '0.5rem'
+                        }}>
+                          <span>Requires 33+ total marks to pass.</span>
+                          <span style={{ 
+                            fontSize: '0.85rem', 
+                            fontWeight: '700', 
+                            color: isPassed ? '#34d399' : '#f87171',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '0.3rem'
+                          }}>
+                            <span>Total Gained:</span>
+                            <strong style={{ fontSize: '0.98rem' }}>{totalGained}</strong>
+                            <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 'normal' }}>/ 100</span>
+                            <span style={{ 
+                              fontSize: '0.68rem', 
+                              fontWeight: '600', 
+                              padding: '0.05rem 0.35rem', 
+                              borderRadius: '4px',
+                              marginLeft: '0.25rem',
+                              background: isPassed ? 'rgba(52, 211, 153, 0.12)' : 'rgba(239, 68, 68, 0.12)',
+                              color: isPassed ? '#34d399' : '#f87171',
+                              border: isPassed ? '1px solid rgba(52, 211, 153, 0.2)' : '1px solid rgba(239, 68, 68, 0.2)'
+                            }}>
+                              {isPassed ? 'Passed' : 'Failed'}
+                            </span>
+                          </span>
+                        </p>
+                      );
+                    })()}
+                  </div>
+                </>
+              )}
+
+              {academicError && <div className="error-alert" style={{ marginTop: '0.5rem' }}>{academicError}</div>}
+            </div>
+
+            <div className="modern-modal-footer" style={{ display: 'flex', gap: '1rem' }}>
+              <button type="button" onClick={closeAcademicModal} className="modern-btn modern-btn--secondary" style={{ flex: 1 }}>Cancel</button>
+              <button type="submit" className="modern-btn modern-btn--primary" disabled={isAcademicSaving} style={{ flex: 1, background: '#10b981', borderColor: '#10b981' }}>
+                {isAcademicSaving ? 'Saving...' : (academicStudent.enrollment?.course_name !== 'Online Filmmaking Course' ? 'Save Result' : 'Save Records')}
+              </button>
+            </div>
+          </form>
+        </div>,
+        document.body
+      )}
+
+      {/* Phase 2 Completion Modal */}
+      {phase2Student && typeof document !== 'undefined' && createPortal(
+        <div className="modern-modal-overlay">
+          <form onSubmit={submitPhase2} className="modern-modal-content glass-panel shadow-2xl" style={{ width: '100%', maxWidth: '480px', margin: 'auto' }} onClick={e => e.stopPropagation()}>
+            <div className="modern-modal-header">
+              <div>
+                <h3 className="font-display" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <GraduationCap size={24} style={{ color: '#8b5cf6' }} /> Phase 2: Completed Course
+                </h3>
+                <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginTop: '0.2rem' }}>
+                  {phase2Student.full_name} <span style={{ opacity: 0.7 }}>({phase2Student.batch_number ? `${getOrdinalSuffix(phase2Student.batch_number)} Batch` : 'No Batch'})</span>
+                </p>
+                <p style={{ color: 'var(--text-primary)', fontSize: '0.85rem', marginTop: '0.4rem', fontWeight: '500', background: 'rgba(139, 92, 246, 0.1)', border: '1px solid rgba(139, 92, 246, 0.2)', padding: '0.2rem 0.6rem', borderRadius: '6px', display: 'inline-block' }}>
+                  Online Filmmaking Course
+                </p>
+              </div>
+              <button type="button" className="icon-btn-ghost" onClick={closePhase2Modal} aria-label="Close"><X size={20} /></button>
+            </div>
+
+            <div className="modern-modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+              <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', margin: 0 }}>
+                Mark the parts the student has participated in. Step 4 (Phase 2: Completed Course) will be automatically checked once <strong style={{ color: 'var(--text-primary)' }}>both</strong> Shooting and Editing are attended.
+              </p>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', padding: '1rem', background: 'rgba(255,255,255,0.02)', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.05)' }}>
+                {/* Shooting */}
+                <label style={{ display: 'flex', alignItems: 'center', gap: '1rem', cursor: 'pointer', padding: '1rem', borderRadius: '10px', border: '1px solid', borderColor: phase2FormData.phase2_shooting_attended ? '#8b5cf6' : 'rgba(255,255,255,0.1)', background: phase2FormData.phase2_shooting_attended ? 'rgba(139,92,246,0.08)' : 'transparent', transition: 'all 0.2s' }}>
+                  <input
+                    type="checkbox"
+                    checked={phase2FormData.phase2_shooting_attended}
+                    onChange={(e) => setPhase2FormData({ ...phase2FormData, phase2_shooting_attended: e.target.checked })}
+                    style={{ width: '20px', height: '20px', accentColor: '#8b5cf6', flexShrink: 0 }}
+                  />
+                  <div>
+                    <div style={{ fontWeight: '600', color: 'var(--text-primary)', fontSize: '1rem' }}>🎬 Shooting</div>
+                    <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>Student participated in the Shooting part of Phase 2</div>
+                  </div>
+                </label>
+
+                {/* Editing */}
+                <label style={{ display: 'flex', alignItems: 'center', gap: '1rem', cursor: 'pointer', padding: '1rem', borderRadius: '10px', border: '1px solid', borderColor: phase2FormData.phase2_editing_attended ? '#8b5cf6' : 'rgba(255,255,255,0.1)', background: phase2FormData.phase2_editing_attended ? 'rgba(139,92,246,0.08)' : 'transparent', transition: 'all 0.2s' }}>
+                  <input
+                    type="checkbox"
+                    checked={phase2FormData.phase2_editing_attended}
+                    onChange={(e) => setPhase2FormData({ ...phase2FormData, phase2_editing_attended: e.target.checked })}
+                    style={{ width: '20px', height: '20px', accentColor: '#8b5cf6', flexShrink: 0 }}
+                  />
+                  <div>
+                    <div style={{ fontWeight: '600', color: 'var(--text-primary)', fontSize: '1rem' }}>✂️ Editing</div>
+                    <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>Student participated in the Editing part of Phase 2</div>
+                  </div>
+                </label>
+              </div>
+
+              {/* Auto-complete status indicator */}
+              <div style={{ padding: '0.75rem 1rem', borderRadius: '8px', background: (phase2FormData.phase2_shooting_attended && phase2FormData.phase2_editing_attended) ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.06)', border: '1px solid', borderColor: (phase2FormData.phase2_shooting_attended && phase2FormData.phase2_editing_attended) ? 'rgba(16,185,129,0.3)' : 'rgba(239,68,68,0.15)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                {(phase2FormData.phase2_shooting_attended && phase2FormData.phase2_editing_attended) ? (
+                  <><CheckSquare size={16} style={{ color: '#10b981', flexShrink: 0 }} /><span style={{ fontSize: '0.85rem', color: '#10b981', fontWeight: '600' }}>Both parts attended — Phase 2: Completed Course will be marked ✓</span></>
+                ) : (
+                  <><Square size={16} style={{ color: '#ef4444', flexShrink: 0 }} /><span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Both Shooting and Editing must be attended to complete Phase 2.</span></>
+                )}
+              </div>
+
+              {phase2Error && <div className="error-alert" style={{ marginTop: '0.5rem' }}>{phase2Error}</div>}
+            </div>
+
+            <div className="modern-modal-footer" style={{ display: 'flex', gap: '1rem' }}>
+              <button type="button" onClick={closePhase2Modal} className="modern-btn modern-btn--secondary" style={{ flex: 1 }}>Cancel</button>
+              <button type="submit" className="modern-btn modern-btn--primary" disabled={isPhase2Saving} style={{ flex: 1, background: '#8b5cf6', borderColor: '#8b5cf6' }}>
+                {isPhase2Saving ? 'Saving...' : 'Save Attendance'}
+              </button>
+            </div>
+          </form>
+        </div>,
+        document.body
+      )}
+
       <AddStudentsModal
         batchId={batchData.id}
         batchName={batchData.batch_name}

@@ -309,9 +309,12 @@ router.get('/:id/students', authenticateToken, requireRole('admin'), (req, res) 
         u.first_name,
         u.last_name,
         u.profile_picture as avatar,
+        u.created_at,
         sp.student_id as bfi_id,
         sp.batch_number,
         bs.assigned_at,
+        sce.id as enrollment_id,
+        sce.course_name,
         sce.step1_completed,
         sce.step2_completed,
         sce.step3_completed,
@@ -319,8 +322,9 @@ router.get('/:id/students', authenticateToken, requireRole('admin'), (req, res) 
         sce.fee_details
       FROM batch_students bs
       JOIN users u ON u.id = bs.student_id
+      JOIN batches b ON b.id = bs.batch_id
       LEFT JOIN student_profiles sp ON sp.user_id = u.id  
-      LEFT JOIN student_course_enrollments sce ON sce.user_id = u.id
+      LEFT JOIN student_course_enrollments sce ON sce.user_id = u.id AND sce.course_name = b.course_name
       WHERE bs.batch_id = :batchId
         AND (
           :search IS NULL OR
@@ -343,20 +347,48 @@ router.get('/:id/students', authenticateToken, requireRole('admin'), (req, res) 
       }
 
       return {
+        id: s.user_id, // Map user_id to id for parity with StudentManager
         user_id: s.user_id,
         first_name: s.first_name,
         last_name: s.last_name,
+        full_name: `${s.first_name || ''} ${s.last_name || ''}`.trim(),
         avatar: s.avatar,
         bfi_id: s.bfi_id,
         batch_number: s.batch_number,
         assigned_at: s.assigned_at,
+        created_at: s.created_at,
         phase1_completed: s.step2_completed === 1,
         exam_passed: s.step2_completed === 1,
         phase2_admitted: s.step3_completed === 1,
         phase2_completed: s.step4_completed === 1,
-        fee_status
+        fee_status,
+        enrollment_id: s.enrollment_id,
+        course_name: s.course_name
       };
     });
+
+    // Fetch and attach enrollments like StudentManager
+    if (students.length > 0) {
+      // Ensure all students assigned to this batch have an enrollment record for the batch's course
+      const batchRecord = db.prepare('SELECT course_name FROM batches WHERE id = ?').get(batchId);
+      if (batchRecord && batchRecord.course_name) {
+        const courseType = batchRecord.course_name === 'Online Filmmaking Course' ? 'filmmaking' : 'workshop';
+        const enrollStmt = db.prepare('INSERT OR IGNORE INTO student_course_enrollments (user_id, course_name, course_type) VALUES (?, ?, ?)');
+        db.transaction(() => {
+          for (const s of students) {
+            enrollStmt.run(s.user_id, batchRecord.course_name, courseType);
+          }
+        })();
+      }
+
+      const allEnrollments = db.prepare('SELECT * FROM student_course_enrollments WHERE user_id IN (' + students.map(s => s.user_id).join(',') + ')').all();
+      
+      students.forEach(s => {
+        s.enrollments = allEnrollments.filter(e => e.user_id === s.user_id);
+      });
+    } else {
+      students.forEach(s => s.enrollments = []);
+    }
 
     res.json(students);
   } catch (error) {
@@ -454,6 +486,13 @@ router.post('/:id/students', authenticateToken, requireRole('admin'), (req, res)
           SET batch_number = ? 
           WHERE user_id = ?
         `).run(batch.batch_number, studentId);
+
+        // Enroll student in the batch's course if not already enrolled
+        const courseType = batch.course_name === 'Online Filmmaking Course' ? 'filmmaking' : 'workshop';
+        const existingEnrollment = db.prepare('SELECT id FROM student_course_enrollments WHERE user_id = ? AND course_name = ?').get(studentId, batch.course_name);
+        if (!existingEnrollment) {
+          db.prepare('INSERT INTO student_course_enrollments (user_id, course_name, course_type) VALUES (?, ?, ?)').run(studentId, batch.course_name, courseType);
+        }
 
         assignedCount++;
       }

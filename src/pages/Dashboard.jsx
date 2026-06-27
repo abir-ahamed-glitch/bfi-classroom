@@ -903,7 +903,7 @@ export default function Dashboard() {
         {/* Action Buttons */}
         <div className="action-buttons" style={{ display: 'flex', gap: '1rem' }}>
           {currentUser?.role === 'admin' && (
-            <button className="btn btn-glass" onClick={() => navigate('/admin/students')}>
+            <button className="btn btn-glass" onClick={() => navigate('/admin/studentsmanager')}>
               <Users size={18} /> Student Management
             </button>
           )}

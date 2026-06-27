@@ -611,6 +611,31 @@ export function initializeDatabase() {
     const batchCount = db.prepare("SELECT COUNT(*) as count FROM batches").get().count;
     const studentCount = db.prepare("SELECT COUNT(*) as count FROM batch_students").get().count;
     console.log(`[Batch Verification] Current count in batches: ${batchCount}, batch_students: ${studentCount}`);
+
+    // Ensure all batch_students are enrolled in their batch's course
+    try {
+      const pendingEnrollments = db.prepare(`
+        SELECT bs.student_id, b.course_name 
+        FROM batch_students bs
+        JOIN batches b ON b.id = bs.batch_id
+        LEFT JOIN student_course_enrollments sce ON sce.user_id = bs.student_id AND sce.course_name = b.course_name
+        WHERE sce.id IS NULL
+      `).all();
+
+      if (pendingEnrollments.length > 0) {
+        console.log(`[Batch Migration] Backfilling ${pendingEnrollments.length} missing course enrollments for batch students...`);
+        const enrollStmt = db.prepare('INSERT INTO student_course_enrollments (user_id, course_name, course_type) VALUES (?, ?, ?)');
+        db.transaction(() => {
+          for (const pe of pendingEnrollments) {
+            const courseType = pe.course_name === 'Online Filmmaking Course' ? 'filmmaking' : 'workshop';
+            enrollStmt.run(pe.student_id, pe.course_name, courseType);
+          }
+        })();
+        console.log(`[Batch Migration] Successfully enrolled batch students.`);
+      }
+    } catch (e) {
+      console.error('[Batch Migration] Error backfilling enrollments:', e);
+    }
   } catch (error) {
     console.error('[Batch Migration] Error during migration:', error);
   }

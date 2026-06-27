@@ -1,0 +1,160 @@
+/* Export button */
+.btn-export {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 7px;
+  background: transparent;
+  color: rgba(255,255,255,0.8);
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.btn-export:hover {
+  border-color: rgba(255,255,255,0.3);
+  background: rgba(255,255,255,0.05);
+  color: white;
+}
+
+/* Scope radio options */
+.export-scope-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  cursor: pointer;
+  border: 1px solid rgba(255,255,255,0.06);
+  margin-bottom: 8px;
+  transition: background 0.15s;
+}
+.export-scope-option:hover {
+  background: rgba(255,255,255,0.04);
+}
+.export-scope-option.disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.export-scope-count {
+  margin-left: auto;
+  font-size: 12px;
+  color: rgba(255,255,255,0.4);
+  background: rgba(255,255,255,0.06);
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+
+/* Format cards */
+.export-format-cards {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  margin: 4px 0;
+}
+.export-format-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 20px 12px;
+  border-radius: 10px;
+  border: 2px solid rgba(255,255,255,0.08);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  background: rgba(255,255,255,0.02);
+}
+.export-format-card:hover {
+  border-color: rgba(37,99,235,0.4);
+  background: rgba(37,99,235,0.05);
+}
+.export-format-card.selected {
+  border-color: #2563EB;
+  background: rgba(37,99,235,0.1);
+}
+.export-format-icon {
+  font-size: 28px;
+  line-height: 1;
+}
+.export-format-name {
+  font-weight: 600;
+  font-size: 14px;
+  color: white;
+}
+.export-format-ext {
+  font-size: 11px;
+  color: rgba(255,255,255,0.4);
+  font-family: monospace;
+}
+
+/* What's included info box */
+.export-included-box {
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.07);
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 12px;
+  color: rgba(255,255,255,0.5);
+  line-height: 1.6;
+}
+
+/* Selection bar above table */
+.student-selection-bar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 16px;
+  background: rgba(37,99,235,0.08);
+  border: 1px solid rgba(37,99,235,0.2);
+  border-radius: 8px;
+  margin-bottom: 12px;
+  font-size: 13px;
+  color: white;
+  animation: slideDown 0.2s ease;
+}
+.selection-bar-count {
+  color: #60A5FA;
+  font-weight: 600;
+}
+.selection-bar-clear {
+  color: rgba(255,255,255,0.4);
+  cursor: pointer;
+  text-decoration: underline;
+  font-size: 12px;
+}
+.selection-bar-clear:hover { color: white; }
+.selection-bar-export {
+  margin-left: auto;
+  padding: 5px 12px;
+  background: #2563EB;
+  border-radius: 6px;
+  color: white;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  border: none;
+}
+
+/* Row checkbox column */
+.student-checkbox-col {
+  width: 36px;
+  text-align: center;
+}
+input[type="checkbox"].student-row-check {
+  accent-color: #2563EB;
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+}
+
+/* Mobile */
+@media (max-width: 768px) {
+  .export-format-cards {
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+  }
+  .export-format-card {
+    padding: 14px 8px;
+  }
+}

@@ -646,8 +646,8 @@ router.put('/students/:id', authenticateToken, requireRole('admin'), sanitizeInp
 
       // 4. Update fee details for all currently enrolled courses
       const updateFeeStmt = db.prepare('UPDATE student_course_enrollments SET fee_details = ? WHERE user_id = ? AND course_name = ?');
-      const forceStep1Stmt = db.prepare('UPDATE student_course_enrollments SET step1_completed = 1 WHERE user_id = ? AND course_name = ?');
-      const forceStep3Stmt = db.prepare('UPDATE student_course_enrollments SET step3_completed = 1 WHERE user_id = ? AND course_name = ?');
+      const forceStep1Stmt = db.prepare('UPDATE student_course_enrollments SET step1_completed = ? WHERE user_id = ? AND course_name = ?');
+      const forceStep3Stmt = db.prepare('UPDATE student_course_enrollments SET step3_completed = ? WHERE user_id = ? AND course_name = ?');
       for (const course of newCourses) {
         const feeInfo = course_fees?.[course] ? JSON.stringify(course_fees[course]) : null;
         updateFeeStmt.run(feeInfo, id, course);
@@ -660,24 +660,21 @@ router.put('/students/:id', authenticateToken, requireRole('admin'), sanitizeInp
             const phase1 = cfee.phase1 || {};
             const amountPaidNum = parseFloat((phase1.amount_paid || '').replace(/[^\d.]/g, '')) || 0;
             const hasPaidInst = (phase1.installments || []).some(inst => inst.status === 'Paid' && parseFloat((inst.amount || '').replace(/[^\d.]/g, '')) > 0);
-            if (amountPaidNum > 0 || hasPaidInst) {
-              forceStep1Stmt.run(id, course);
-            }
+            const isPhase1Paid = amountPaidNum > 0 || hasPaidInst ? 1 : 0;
+            forceStep1Stmt.run(isPhase1Paid, id, course);
 
             // Phase 2 payment check
             const phase2 = cfee.phase2 || {};
             const phase2PaidNum = parseFloat((phase2.amount_paid || '').replace(/[^\d.]/g, '')) || 0;
             const phase2HasPaidInst = (phase2.installments || []).some(inst => inst.status === 'Paid' && parseFloat((inst.amount || '').replace(/[^\d.]/g, '')) > 0);
-            if (phase2PaidNum > 0 || phase2HasPaidInst) {
-              forceStep3Stmt.run(id, course);
-            }
+            const isPhase2Paid = phase2PaidNum > 0 || phase2HasPaidInst ? 1 : 0;
+            forceStep3Stmt.run(isPhase2Paid, id, course);
           } else {
             // Other courses (Workshops) payment check
             const amountPaidNum = parseFloat((cfee.amount_paid || '').replace(/[^\d.]/g, '')) || 0;
             const hasPaidInst = (cfee.installments || []).some(inst => inst.status === 'Paid' && parseFloat((inst.amount || '').replace(/[^\d.]/g, '')) > 0);
-            if (amountPaidNum > 0 || hasPaidInst) {
-              forceStep1Stmt.run(id, course);
-            }
+            const isPaid = amountPaidNum > 0 || hasPaidInst ? 1 : 0;
+            forceStep1Stmt.run(isPaid, id, course);
           }
         }
       }

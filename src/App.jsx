@@ -352,17 +352,18 @@ function App() {
               </Layout>
             </ProtectedRoute>
           } />
-          <Route path="/admin/students" element={
+           <Route path="/admin/studentsmanager" element={
             <ProtectedRoute requiredRole={['admin']}>
               <Layout><StudentManager /></Layout>
             </ProtectedRoute>
           } />
-          <Route path="/admin/batches" element={
+          <Route path="/admin/students" element={<Navigate to="/admin/studentsmanager" replace />} />
+          <Route path="/admin/batchmanager" element={
             <ProtectedRoute requiredRole={['admin']}>
               <Layout><BatchManager /></Layout>
             </ProtectedRoute>
           } />
-          <Route path="/admin/batches/:id" element={
+          <Route path="/admin/batchmanager/:id" element={
             <ProtectedRoute requiredRole={['admin']}>
               <Layout><BatchDetail /></Layout>
             </ProtectedRoute>

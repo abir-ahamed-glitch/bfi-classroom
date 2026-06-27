@@ -5,10 +5,39 @@ import { Edit, X, Lock } from 'lucide-react';
 // Helper function to dynamically sync installments and payment status based on fees
 const syncInstallmentsAndStatus = (target, forceAutoAdjust = false) => {
   if (!target) return;
-  const fullFeeNum = parseFloat(String(target.full_fee || '').replace(/[^\d.]/g, '')) || 0;
+  const fullFeeNum    = parseFloat(String(target.full_fee    || '').replace(/[^\d.]/g, '')) || 0;
   const amountPaidNum = parseFloat(String(target.amount_paid || '').replace(/[^\d.]/g, '')) || 0;
-  const discountNum = parseFloat(String(target.discount || '').replace(/[^\d.]/g, '')) || 0;
-  const remainingDue = Math.max(0, fullFeeNum - discountNum - amountPaidNum);
+  const discountNum   = parseFloat(String(target.discount    || '').replace(/[^\d.]/g, '')) || 0;
+  const remainingDue  = Math.max(0, fullFeeNum - discountNum - amountPaidNum);
+
+  // ── SMART ZERO-PAYMENT DETECTION ─────────────────────────────────────────
+  // If amount_paid is 0 AND no discount, reset all installment statuses to
+  // Pending and redistribute amounts evenly to sum to the full fee.
+  const effectivePayment = amountPaidNum + discountNum;
+  if (effectivePayment === 0 && (target.installments || []).length > 0) {
+    const count = target.installments.length;
+    if (forceAutoAdjust && fullFeeNum > 0 && count > 0) {
+      // Redistribute amounts evenly (remainder goes into first installment)
+      const baseAmount = Math.floor(fullFeeNum / count);
+      const remainder  = fullFeeNum - baseAmount * count;
+      target.installments = target.installments.map((inst, i) => ({
+        ...inst,
+        amount: String(i === 0 ? baseAmount + remainder : baseAmount),
+        status: 'Pending'
+      }));
+    } else {
+      // Just reset statuses, keep amounts
+      target.installments = target.installments.map(inst => ({
+        ...inst,
+        status: 'Pending'
+      }));
+    }
+    // Payment status → Due (no money received at all)
+    if (fullFeeNum > 0) target.status = 'Due';
+    return;
+  }
+  // ─────────────────────────────────────────────────────────────────────────
+
 
   // 1. Auto-detect payment status
   if (fullFeeNum > 0) {
@@ -51,33 +80,24 @@ const syncInstallmentsAndStatus = (target, forceAutoAdjust = false) => {
         
         if (runningSum + amountVal >= remainingDue) {
           const leftover = remainingDue - runningSum;
-          updatedInst.push({
-            ...inst,
-            amount: String(leftover)
-          });
+          updatedInst.push({ ...inst, amount: String(leftover) });
           runningSum = remainingDue;
           break;
         } else {
-          updatedInst.push({
-            ...inst,
-            amount: String(amountVal)
-          });
+          updatedInst.push({ ...inst, amount: String(amountVal) });
           runningSum += amountVal;
         }
       }
       
       if (runningSum < remainingDue) {
         const leftover = remainingDue - runningSum;
-        updatedInst.push({
-          amount: String(leftover),
-          dueDate: '',
-          status: 'Pending'
-        });
+        updatedInst.push({ amount: String(leftover), dueDate: '', status: 'Pending' });
       }
       target.installments = updatedInst;
     }
   }
 };
+
 
 // Helper subcomponent for rendering fee fields and installment details
 function FeeRow({ 
@@ -993,9 +1013,66 @@ export default function EditStudentModal({ student, onClose, onSaveSuccess }) {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to update student profile');
-      
+
+      // ── Auto-uncheck step1_completed when payment amount becomes zero ────────
+      // Rule: any payment made → admitted; payment amount zero → not admitted.
+      const studentIdForProgress = student.id || student.user_id;
+      const enrollmentsToCheck = fullStudent?.enrollments || student?.enrollments || [];
+
+      const uncheckPromises = enrollmentsToCheck
+        .filter(enr => enr.step1_completed === 1)
+        .map(async (enr) => {
+          const cn = enr.course_name;
+          const courseFees = editFormData.course_fees?.[cn];
+          if (!courseFees) return;
+
+          let effectiveAmountPaid = 0;
+
+          if (cn === 'Online Filmmaking Course') {
+            const ph1 = courseFees.phase1 || {};
+            const installments = ph1.installments || [];
+            if (installments.length > 0) {
+              // Sum all installments that are "Paid"
+              effectiveAmountPaid = installments
+                .filter(inst => (inst.status || '').toLowerCase() === 'paid')
+                .reduce((sum, inst) => sum + (parseFloat((inst.amount || '').toString().replace(/[^\d.]/g, '')) || 0), 0);
+            } else {
+              effectiveAmountPaid = parseFloat((ph1.amount_paid || '').toString().replace(/[^\d.]/g, '')) || 0;
+            }
+          } else {
+            const installments = courseFees.installments || [];
+            if (installments.length > 0) {
+              effectiveAmountPaid = installments
+                .filter(inst => (inst.status || '').toLowerCase() === 'paid')
+                .reduce((sum, inst) => sum + (parseFloat((inst.amount || '').toString().replace(/[^\d.]/g, '')) || 0), 0);
+            } else {
+              effectiveAmountPaid = parseFloat((courseFees.amount_paid || '').toString().replace(/[^\d.]/g, '')) || 0;
+            }
+          }
+
+          if (effectiveAmountPaid === 0) {
+            // Uncheck step1_completed for this enrollment
+            try {
+              await fetch(`/api/admin/students/${studentIdForProgress}/progress`, {
+                method: 'PATCH',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': `Bearer ${localStorage.getItem('token')}`
+                },
+                body: JSON.stringify({ course_id: enr.id, step1_completed: 0 })
+              });
+            } catch (progErr) {
+              console.warn('Could not uncheck step1_completed for enrollment', enr.id, progErr);
+            }
+          }
+        });
+
+      await Promise.all(uncheckPromises);
+      // ─────────────────────────────────────────────────────────────────────────
+
       onSaveSuccess();
       onClose();
+
     } catch (err) {
       setEditError(err.message);
     } finally {
