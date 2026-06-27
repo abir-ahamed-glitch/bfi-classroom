@@ -350,6 +350,26 @@
   flex: 0 0 240px; /* Fixed width on mobile to enforce scroll */
 }
 
+.batch-manager-container .stat-card-label {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  line-height: 1.25;
+}
+
+@media (max-width: 767px) {
+  .batch-stats-row {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    overflow-x: visible;
+    gap: 0.75rem;
+  }
+  .batch-stats-row > * {
+    flex: none;
+    min-width: 0;
+  }
+}
+
 @media (min-width: 1024px) {
   .batch-stats-row {
     display: grid;
@@ -416,7 +436,29 @@
   display: none;
 }
 
-@media (max-width: 1023px) {
+@media (max-width: 767px) {
+  .filter-left-tabs {
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    background: transparent;
+    border: none;
+    padding: 0;
+    overflow-x: visible;
+  }
+  .filter-tab-btn {
+    flex: 1 1 calc(33.333% - 0.5rem);
+    min-width: 80px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 6px;
+    text-align: center;
+    padding: 0.5rem 0.25rem;
+  }
+  [data-mode='light'] .filter-tab-btn {
+    border: 1px solid rgba(0, 0, 0, 0.08);
+  }
+}
+
+@media (min-width: 768px) and (max-width: 1023px) {
   .filter-tab-btn {
     flex: 0 0 auto;
     white-space: nowrap;
@@ -603,6 +645,19 @@
   color: #818cf8;
   background: rgba(99, 102, 241, 0.08);
   border-color: rgba(99, 102, 241, 0.2);
+}
+
+@media (max-width: 767px) {
+  .details-tabs-bar {
+    flex-wrap: wrap;
+    gap: 0.25rem;
+  }
+  .details-tab-btn {
+    flex: 1 1 auto;
+    padding: 0.5rem 0.75rem;
+    font-size: 0.8rem;
+    text-align: center;
+  }
 }
 
 /* Student Table List */
