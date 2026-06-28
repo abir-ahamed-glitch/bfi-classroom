@@ -256,6 +256,33 @@ router.post('/students/bulk', authenticateToken, requireRole('admin'), sanitizeI
             }
           }
 
+          // Link student to batch, creating batch record if missing
+          if (studentBatch && Array.isArray(courses) && courses.length > 0) {
+            const getOrdinal = (n) => {
+              const num = parseInt(n, 10);
+              if (isNaN(num)) return n;
+              const s = ['th','st','nd','rd'];
+              const v = num % 100;
+              return num + (s[(v-20) % 10] || s[v] || s[0]);
+            };
+
+            for (const course of courses) {
+              let batchId;
+              const existingBatch = db.prepare('SELECT id FROM batches WHERE batch_number = ? AND course_name = ?').get(studentBatch, course);
+              if (existingBatch) {
+                batchId = existingBatch.id;
+              } else {
+                const batchName = `${getOrdinal(studentBatch)} Batch`;
+                const resultBatch = db.prepare(`
+                  INSERT INTO batches (batch_name, batch_number, course_name, status, created_by)
+                  VALUES (?, ?, ?, 'completed', ?)
+                `).run(batchName, studentBatch, course, req.user.userId || req.user.id);
+                batchId = resultBatch.lastInsertRowid;
+              }
+              db.prepare('INSERT OR IGNORE INTO batch_students (batch_id, student_id) VALUES (?, ?)').run(batchId, userId);
+            }
+          }
+
           return { studentId };
         });
 
@@ -420,8 +447,8 @@ router.post('/students/leads/:id/admit', authenticateToken, requireRole('admin')
         db.prepare('INSERT INTO student_course_enrollments (user_id, course_name, course_type) VALUES (?, ?, ?)').run(userId, course, 'filmmaking');
       }
 
-      // 5. Link to batch roster (if batch exists)
-      const batchRecord = db.prepare('SELECT id FROM batches WHERE batch_number = ?').get(cleanBatch);
+      // 5. Link to batch roster (if batch exists for this course)
+      const batchRecord = db.prepare('SELECT id FROM batches WHERE batch_number = ? AND course_name = ?').get(cleanBatch, course);
       if (batchRecord) {
         const existsInBatch = db.prepare('SELECT id FROM batch_students WHERE batch_id = ? AND student_id = ?').get(batchRecord.id, userId);
         if (!existsInBatch) {

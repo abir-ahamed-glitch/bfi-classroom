@@ -126,10 +126,13 @@ router.post('/', authenticateToken, requireRole('admin'), (req, res) => {
       return res.status(400).json({ error: 'Course name is required.' });
     }
 
-    // Validate unique batch number and name
-    const existingBatch = db.prepare('SELECT id FROM batches WHERE batch_number = ? OR LOWER(batch_name) = ?').get(batch_number, batch_name.toLowerCase());
+    // Validate unique batch number and name within the same course
+    const existingBatch = db.prepare(`
+      SELECT id FROM batches 
+      WHERE ((batch_number = ? AND course_name = ?) OR (LOWER(batch_name) = ? AND course_name = ?))
+    `).get(batch_number, course_name, batch_name.toLowerCase(), course_name);
     if (existingBatch) {
-      return res.status(409).json({ error: 'A batch with this name or number already exists' });
+      return res.status(409).json({ error: 'A batch with this name or number already exists for this course' });
     }
 
     // Validate course name
