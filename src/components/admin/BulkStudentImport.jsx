@@ -602,7 +602,9 @@ export default function BulkStudentImport({ onImportComplete }) {
 
               /* Animation keyframes */
               @keyframes spin-reel { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-              .film-reel-spinner { animation: spin-reel 2s linear infinite; display: flex; }
+              @keyframes counter-spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(-360deg); } }
+              .film-reel-spinner { display: flex; align-items: center; justify-content: center; animation: spin-reel 3s linear infinite, pulse-glow 3s ease-in-out infinite; }
+              .bfi-logo-inner { animation: counter-spin 3s linear infinite; }
               @keyframes projector-flicker { 0%, 10%, 100% { opacity: 1; } 5% { opacity: 0.5; } 8% { opacity: 0.8; } }
               
               /* Dark Mode Theme (Classic Film Vibe - Cinematic Blue) */
@@ -610,7 +612,7 @@ export default function BulkStudentImport({ onImportComplete }) {
               .processing-overlay::before { content: ''; position: absolute; top: 0; left: 0; width: 100%; height: 100%; background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E"); opacity: 0.04; pointer-events: none; z-index: 1; }
               
               .projector-text { animation: projector-flicker 2s infinite; background: linear-gradient(135deg, #7dd3fc, #0284c7); -webkit-background-clip: text; -webkit-text-fill-color: transparent; font-family: 'Playfair Display', serif; letter-spacing: 4px !important; }
-              .film-reel-bg { background: linear-gradient(135deg, #0c4a6e, #082f49); border: 2px solid #0369a1; color: #38bdf8; animation: spin-reel 2s linear infinite, pulse-glow 3s ease-in-out infinite; }
+              .film-reel-bg { background: conic-gradient(from 0deg, #0369a1, #38bdf8, #0369a1); border: none; padding: 4px; }
               .projector-beam { background: linear-gradient(90deg, rgba(56, 189, 248, 0.1) 0%, transparent 100%); }
               .processing-subtitle { color: #bae6fd; font-style: italic; }
               
@@ -618,7 +620,7 @@ export default function BulkStudentImport({ onImportComplete }) {
               [data-mode="light"] .processing-overlay { background: radial-gradient(circle at center, rgba(255, 255, 255, 0.92) 0%, rgba(241, 245, 249, 0.98) 100%); }
               [data-mode="light"] .processing-overlay::before { display: none; }
               [data-mode="light"] .projector-text { font-family: var(--font-sans); letter-spacing: 2px !important; background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-              [data-mode="light"] .film-reel-bg { background: linear-gradient(135deg, #ffffff, #f8fafc); border: 2px solid rgba(192, 39, 74, 0.3); color: var(--accent-primary); animation: spin-reel 2s linear infinite, pulse-glow-light 3s ease-in-out infinite; }
+              [data-mode="light"] .film-reel-bg { background: conic-gradient(from 0deg, rgba(192,39,74,0.8), rgba(192,39,74,0.2), rgba(192,39,74,0.8)); border: none; padding: 4px; animation: spin-reel 3s linear infinite, pulse-glow-light 3s ease-in-out infinite; }
               [data-mode="light"] .projector-beam { background: linear-gradient(90deg, rgba(192, 39, 74, 0.08) 0%, transparent 100%); }
               [data-mode="light"] .processing-subtitle { color: var(--text-muted); font-style: normal; }
               
@@ -637,8 +639,15 @@ export default function BulkStudentImport({ onImportComplete }) {
                 <div className="projector-beam" style={{ position: 'absolute', top: '50%', left: '-10%', width: '150%', height: '150px', animation: 'light-beam 3s ease-in-out infinite', pointerEvents: 'none', transformOrigin: 'left center', zIndex: 0, filter: 'blur(8px)' }}></div>
                 
                 <div style={{ position: 'relative', zIndex: 10, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-                  <div className="film-reel-spinner film-reel-bg" style={{ padding: '1.25rem', borderRadius: '50%' }}>
-                    <Film size={64} strokeWidth={1.5} />
+                  {/* Spinning conic-gradient ring with counter-spinning BFI logo inside */}
+                  <div className="film-reel-spinner film-reel-bg" style={{ width: '110px', height: '110px', borderRadius: '50%' }}>
+                    <div className="bfi-logo-inner" style={{ width: '100%', height: '100%', borderRadius: '50%', overflow: 'hidden', background: '#ffffff', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '10px' }}>
+                      <img
+                        src={`${import.meta.env.BASE_URL}bfi-logo.jpg`}
+                        alt="BFI"
+                        style={{ width: '100%', height: '100%', objectFit: 'contain', borderRadius: '50%' }}
+                      />
+                    </div>
                   </div>
                   <h2 className="processing-title" style={{ marginTop: '1.5rem', marginBottom: '0.5rem', fontSize: '1.25rem' }}>Generating Credentials...</h2>
                   <p className="processing-subtitle" style={{ fontSize: '0.9rem' }}>
