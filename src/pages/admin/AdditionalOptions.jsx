@@ -1290,7 +1290,10 @@ export default function AdditionalOptions() {
                   <BulkRegisteredStudentImport onImportComplete={() => setRefreshLeads(prev => prev + 1)} />
                   <p style={{ marginTop: '1rem', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Upload Excel or CSV spreadsheet</p>
                 </div>
-                
+
+                {/* ── Custom SMS Panel ──────────────────────────────────── */}
+                <CustomSmsSender />
+
                 <LeadsTable refreshTrigger={refreshLeads} />
               </div>
             )}
@@ -1302,6 +1305,300 @@ export default function AdditionalOptions() {
           {currentView === 'fee-tracker' && (
             <FeeTracker />
           )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Custom SMS Sender Panel ──────────────────────────────────────────────────
+// Standalone panel that lets admin send SMS to any phone numbers they type in.
+function CustomSmsSender() {
+  const [expanded,    setExpanded]    = useState(false);
+  const [numbers,     setNumbers]     = useState('');
+  const [message,     setMessage]     = useState('');
+  const [senderId,    setSenderId]    = useState('BFICLS');
+  const [sending,     setSending]     = useState(false);
+  const [progress,    setProgress]    = useState(0);
+  const [results,     setResults]     = useState(null);
+  const [error,       setError]       = useState('');
+  const taRef = useRef(null);
+
+  const SMS_LIMIT = 160;
+  const len       = message.length;
+  const parts     = len === 0 ? 1 : Math.ceil(len / SMS_LIMIT);
+  const remaining = (parts * SMS_LIMIT) - len;
+
+  // Parse the raw textarea into {name, phone} pairs
+  // Supports: one per line, comma-separated, "Name: 017xxxx", "017xxxx - Name"
+  const parseNumbers = (raw) => {
+    const lines = raw.split(/[\n,]+/).map(l => l.trim()).filter(Boolean);
+    return lines.map(line => {
+      // Try "Name: 01xxx" or "01xxx - Name" or plain number
+      const colonMatch = line.match(/^(.+?):\s*([\d\s+]+)$/);
+      const dashMatch  = line.match(/^([\d\s+]+)\s*[-–]\s*(.+)$/);
+      if (colonMatch) return { name: colonMatch[1].trim(), phone: colonMatch[2].replace(/\s/g,'') };
+      if (dashMatch)  return { name: dashMatch[2].trim(),  phone: dashMatch[1].replace(/\s/g,'') };
+      return { name: '', phone: line.replace(/\s/g,'') };
+    }).filter(r => r.phone.length >= 7);
+  };
+
+  const parsed     = parseNumbers(numbers);
+  const validCount = parsed.length;
+
+  const insertTag = () => {
+    const ta = taRef.current;
+    if (!ta) return;
+    const s = ta.selectionStart, e = ta.selectionEnd;
+    setMessage(message.slice(0, s) + '{name}' + message.slice(e));
+    setTimeout(() => { ta.selectionStart = ta.selectionEnd = s + 6; ta.focus(); }, 0);
+  };
+
+  const handleSend = async () => {
+    if (!numbers.trim()) { setError('Please enter at least one phone number.'); return; }
+    if (!message.trim()) { setError('Please enter a message.'); return; }
+    if (validCount === 0) { setError('No valid phone numbers found.'); return; }
+    setError(''); setSending(true); setProgress(0); setResults(null);
+
+    try {
+      let fake = 0;
+      const ticker = setInterval(() => {
+        fake = Math.min(fake + (100 / validCount) * 0.5, 88);
+        setProgress(Math.round(fake));
+      }, Math.max(60, (validCount * 70) / 20));
+
+      const res = await fetch('/api/admin/sms/bulk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` },
+        body: JSON.stringify({ recipients: parsed, message: message.trim(), senderId: senderId.trim() })
+      });
+      clearInterval(ticker);
+      setProgress(100);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to send.');
+      setResults(data);
+    } catch(err) {
+      setError(err.message);
+      setProgress(0);
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const reset = () => { setResults(null); setProgress(0); setError(''); };
+
+  return (
+    <div style={{
+      marginBottom: '1.5rem',
+      border: '1px solid rgba(99,102,241,0.25)',
+      borderRadius: '14px',
+      overflow: 'hidden',
+      background: 'rgba(99,102,241,0.04)'
+    }}>
+      {/* ── Header / Toggle ─────────────────────────────────────────── */}
+      <button
+        type="button"
+        onClick={() => setExpanded(v => !v)}
+        style={{
+          width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          padding: '1rem 1.25rem', background: 'transparent', border: 'none', cursor: 'pointer',
+          color: 'var(--text-primary)'
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+          <div style={{
+            background: 'linear-gradient(135deg, #6366f1, #8b5cf6)',
+            borderRadius: '9px', padding: '0.45rem',
+            display: 'flex', alignItems: 'center', justifyContent: 'center'
+          }}>
+            {/* inline SMS icon */}
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+            </svg>
+          </div>
+          <div style={{ textAlign: 'left' }}>
+            <div style={{ fontWeight: 700, fontSize: '0.95rem' }}>Send Custom SMS</div>
+            <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+              Type any phone numbers &amp; send SMS directly
+            </div>
+          </div>
+        </div>
+        <svg
+          width="18" height="18" viewBox="0 0 24 24" fill="none"
+          stroke="var(--text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+          style={{ transform: expanded ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.2s' }}
+        >
+          <polyline points="6 9 12 15 18 9"/>
+        </svg>
+      </button>
+
+      {/* ── Body ────────────────────────────────────────────────────── */}
+      {expanded && (
+        <div style={{ padding: '0 1.25rem 1.25rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+          <div style={{ height: '1px', background: 'rgba(99,102,241,0.15)', marginBottom: '0.25rem' }} />
+
+          {/* Phone numbers input */}
+          <div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem' }}>
+              <label style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-secondary)' }}>
+                Phone Numbers
+              </label>
+              {validCount > 0 && (
+                <span style={{
+                  background: 'rgba(99,102,241,0.15)', color: '#818cf8',
+                  borderRadius: '20px', padding: '0.15rem 0.65rem',
+                  fontSize: '0.75rem', fontWeight: 700
+                }}>
+                  {validCount} valid number{validCount !== 1 ? 's' : ''}
+                </span>
+              )}
+            </div>
+            <textarea
+              className="input-glass"
+              value={numbers}
+              onChange={e => setNumbers(e.target.value)}
+              placeholder={"Enter numbers (one per line or comma-separated):\n01712345678\n01812345679, 01912345670\n\nWith names:\nRahim: 01712345678\n01812345679 - Karim"}
+              rows={5}
+              disabled={sending}
+              style={{ width: '100%', resize: 'vertical', padding: '0.85rem 1rem', fontFamily: 'monospace', fontSize: '0.85rem', lineHeight: 1.6, borderRadius: '10px', boxSizing: 'border-box' }}
+            />
+            <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.3rem' }}>
+              Tip: Use <code style={{ background: 'rgba(99,102,241,0.1)', borderRadius: '4px', padding: '0.1rem 0.35rem', color: '#818cf8' }}>Name: 017xxx</code> format to personalize messages with <code style={{ background: 'rgba(99,102,241,0.1)', borderRadius: '4px', padding: '0.1rem 0.35rem', color: '#818cf8' }}>{'{name}'}</code>
+            </p>
+          </div>
+
+          {/* Sender ID */}
+          <div>
+            <label style={{ display: 'block', marginBottom: '0.4rem', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-secondary)' }}>
+              Sender ID <span style={{ fontWeight: 400, color: 'var(--text-muted)' }}>(max 11 chars)</span>
+            </label>
+            <input
+              type="text"
+              className="input-glass"
+              value={senderId}
+              maxLength={11}
+              onChange={e => setSenderId(e.target.value.replace(/\s/g, ''))}
+              placeholder="e.g. BFICLS"
+              disabled={sending}
+              style={{ paddingLeft: '1rem', fontFamily: 'monospace', letterSpacing: '0.05em', maxWidth: '220px' }}
+            />
+          </div>
+
+          {/* Message */}
+          <div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem' }}>
+              <label style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-secondary)' }}>Message</label>
+              <button
+                type="button"
+                onClick={insertTag}
+                disabled={sending}
+                style={{
+                  background: 'rgba(99,102,241,0.12)', border: '1px solid rgba(99,102,241,0.25)',
+                  color: '#818cf8', borderRadius: '6px', padding: '0.25rem 0.7rem',
+                  fontSize: '0.78rem', cursor: 'pointer', fontWeight: 600, fontFamily: 'monospace'
+                }}
+              >
+                + Insert {'{name}'}
+              </button>
+            </div>
+            <textarea
+              ref={taRef}
+              className="input-glass"
+              value={message}
+              onChange={e => setMessage(e.target.value)}
+              placeholder={'Type your SMS message... Use {name} to personalize per recipient.'}
+              rows={4}
+              disabled={sending}
+              style={{ width: '100%', resize: 'vertical', padding: '0.85rem 1rem', fontFamily: 'inherit', lineHeight: 1.6, borderRadius: '10px', boxSizing: 'border-box' }}
+            />
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '0.3rem', fontSize: '0.75rem', color: remaining < 20 ? '#f59e0b' : 'var(--text-muted)' }}>
+              {parts > 1 && <span style={{ marginRight: '0.5rem', color: parts > 5 ? '#ef4444' : '#f59e0b' }}>⚠ {parts} SMS parts ·&nbsp;</span>}
+              {remaining} chars remaining · {len} total
+            </div>
+          </div>
+
+          {/* Error */}
+          {error && (
+            <div style={{
+              background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)',
+              borderRadius: '8px', padding: '0.75rem 1rem', color: '#f87171', fontSize: '0.85rem',
+              display: 'flex', alignItems: 'center', gap: '0.5rem'
+            }}>
+              ⚠ {error}
+            </div>
+          )}
+
+          {/* Progress */}
+          {(sending || progress > 0) && !results && (
+            <div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '0.35rem' }}>
+                <span>{sending ? `Sending to ${validCount} number${validCount !== 1 ? 's' : ''}…` : 'Done!'}</span>
+                <span>{progress}%</span>
+              </div>
+              <div style={{ height: '6px', background: 'rgba(255,255,255,0.07)', borderRadius: '9999px', overflow: 'hidden' }}>
+                <div style={{ height: '100%', width: `${progress}%`, background: 'linear-gradient(90deg, #6366f1, #8b5cf6)', borderRadius: '9999px', transition: 'width 0.3s ease' }} />
+              </div>
+            </div>
+          )}
+
+          {/* Results */}
+          {results && (
+            <div>
+              <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', marginBottom: results.failed > 0 ? '0.75rem' : 0 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'rgba(16,185,129,0.1)', border: '1px solid rgba(16,185,129,0.25)', borderRadius: '8px', padding: '0.5rem 0.9rem', color: '#10b981', fontWeight: 700, fontSize: '0.9rem' }}>
+                  ✅ {results.sent} Sent
+                </div>
+                {results.failed > 0 && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.25)', borderRadius: '8px', padding: '0.5rem 0.9rem', color: '#f87171', fontWeight: 700, fontSize: '0.9rem' }}>
+                    ❌ {results.failed} Failed
+                  </div>
+                )}
+              </div>
+              {results.failed > 0 && (
+                <div style={{ background: 'rgba(239,68,68,0.05)', border: '1px solid rgba(239,68,68,0.15)', borderRadius: '10px', padding: '0.75rem', maxHeight: '140px', overflowY: 'auto' }}>
+                  {results.results.filter(r => !r.ok).map((r, i) => (
+                    <div key={i} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.82rem', padding: '0.25rem 0', borderBottom: '1px solid rgba(239,68,68,0.1)' }}>
+                      <span style={{ fontFamily: 'monospace', color: 'var(--text-primary)' }}>{r.phone}{r.name ? ` (${r.name})` : ''}</span>
+                      <span style={{ color: '#f87171' }}>{r.error}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Action buttons */}
+          <div style={{ display: 'flex', gap: '0.75rem', paddingTop: '0.25rem' }}>
+            {results ? (
+              <button type="button" onClick={reset}
+                style={{ flex: 1, padding: '0.75rem', border: '1px solid rgba(99,102,241,0.3)', background: 'transparent', color: '#818cf8', borderRadius: '10px', cursor: 'pointer', fontWeight: 600 }}>
+                Send Another
+              </button>
+            ) : (
+              <>
+                <button type="button" onClick={() => { setNumbers(''); setMessage(''); setError(''); setResults(null); setProgress(0); }}
+                  disabled={sending}
+                  style={{ padding: '0.75rem 1.25rem', border: '1px solid var(--glass-border)', background: 'transparent', color: 'var(--text-secondary)', borderRadius: '10px', cursor: 'pointer' }}>
+                  Clear
+                </button>
+                <button type="button" onClick={handleSend}
+                  disabled={sending || !message.trim() || validCount === 0}
+                  style={{
+                    flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem',
+                    padding: '0.75rem', border: 'none', borderRadius: '10px', cursor: (sending || !message.trim() || validCount === 0) ? 'not-allowed' : 'pointer',
+                    background: (sending || !message.trim() || validCount === 0) ? 'rgba(99,102,241,0.35)' : 'linear-gradient(135deg, #6366f1, #8b5cf6)',
+                    color: 'white', fontWeight: 700, fontSize: '0.95rem',
+                    boxShadow: '0 4px 14px rgba(99,102,241,0.35)'
+                  }}
+                >
+                  {sending
+                    ? <><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" style={{ animation: 'spin 1s linear infinite' }}><path d="M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z"/><path d="M21 12c0-4.97-4.03-9-9-9"/></svg> Sending…</>
+                    : <><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg> Send SMS to {validCount || '…'}</>
+                  }
+                </button>
+              </>
+            )}
           </div>
         </div>
       )}
