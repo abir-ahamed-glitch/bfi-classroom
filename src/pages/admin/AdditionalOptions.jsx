@@ -1314,6 +1314,24 @@ export default function AdditionalOptions() {
 
 // ─── Custom SMS Sender Panel ──────────────────────────────────────────────────
 // Standalone panel that lets admin send SMS to any phone numbers they type in.
+// Helper to calculate characters, SMS parts, and detect Unicode
+function calculateSmsInfo(text) {
+  const len = text.length;
+  const isUnicode = /[^\x00-\x7F]/.test(text);
+  const singleLimit = isUnicode ? 70 : 160;
+  const multiLimit  = isUnicode ? 67 : 153;
+  
+  let parts = 1;
+  let remaining = singleLimit - len;
+  
+  if (len > singleLimit) {
+    parts = Math.ceil(len / multiLimit);
+    remaining = (parts * multiLimit) - len;
+  }
+  
+  return { len, parts, remaining, isUnicode, singleLimit, multiLimit };
+}
+
 function CustomSmsSender() {
   const [expanded,    setExpanded]    = useState(false);
   const [numbers,     setNumbers]     = useState('');
@@ -1325,10 +1343,8 @@ function CustomSmsSender() {
   const [error,       setError]       = useState('');
   const taRef = useRef(null);
 
-  const SMS_LIMIT = 160;
-  const len       = message.length;
-  const parts     = len === 0 ? 1 : Math.ceil(len / SMS_LIMIT);
-  const remaining = (parts * SMS_LIMIT) - len;
+  const info = calculateSmsInfo(message);
+
 
   // Parse the raw textarea into {name, phone} pairs
   // Supports: one per line, comma-separated, "Name: 017xxxx", "017xxxx - Name"
@@ -1512,9 +1528,27 @@ function CustomSmsSender() {
               disabled={sending}
               style={{ width: '100%', resize: 'vertical', padding: '0.85rem 1rem', fontFamily: 'inherit', lineHeight: 1.6, borderRadius: '10px', boxSizing: 'border-box' }}
             />
-            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '0.3rem', fontSize: '0.75rem', color: remaining < 20 ? '#f59e0b' : 'var(--text-muted)' }}>
-              {parts > 1 && <span style={{ marginRight: '0.5rem', color: parts > 5 ? '#ef4444' : '#f59e0b' }}>⚠ {parts} SMS parts ·&nbsp;</span>}
-              {remaining} chars remaining · {len} total
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '0.4rem', fontSize: '0.78rem' }}>
+              <span style={{ color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                <span style={{
+                  background: info.isUnicode ? 'rgba(245, 158, 11, 0.15)' : 'rgba(16, 185, 129, 0.15)',
+                  color: info.isUnicode ? '#f59e0b' : '#10b981',
+                  padding: '0.1rem 0.4rem', borderRadius: '4px', fontSize: '0.7rem', fontWeight: 600
+                }}>
+                  {info.isUnicode ? 'Unicode/Bengali' : 'Text/GSM'}
+                </span>
+                <span style={{ color: info.parts > 5 ? '#ef4444' : 'var(--text-secondary)', fontWeight: 600 }}>
+                  {info.parts} part{info.parts !== 1 ? 's' : ''}
+                </span>
+                {validCount > 0 && (
+                  <span style={{ color: 'var(--text-muted)' }}>
+                    {` (Total SMS: ${info.parts * validCount})`}
+                  </span>
+                )}
+              </span>
+              <span style={{ color: info.remaining < (info.parts > 1 ? 15 : 20) ? '#f59e0b' : 'var(--text-muted)' }}>
+                {`${info.remaining} left · ${info.len}/${info.parts > 1 ? info.multiLimit * info.parts : info.singleLimit}`}
+              </span>
             </div>
           </div>
 

@@ -4,14 +4,25 @@ import {
   XCircle, Loader2, ChevronDown, ChevronUp, AlertCircle, Smartphone
 } from 'lucide-react';
 
-const SMS_CHAR_LIMIT = 160;
 const MAX_SMS_PARTS  = 5;
 
 function charInfo(text) {
-  const len   = text.length;
-  const parts = len === 0 ? 1 : Math.ceil(len / SMS_CHAR_LIMIT);
-  const remaining = (parts * SMS_CHAR_LIMIT) - len;
-  return { len, parts, remaining };
+  const len = text.length;
+  // Detect Unicode (e.g. Bengali characters or Emojis)
+  const isUnicode = /[^\x00-\x7F]/.test(text);
+  
+  const singleLimit = isUnicode ? 70 : 160;
+  const multiLimit  = isUnicode ? 67 : 153;
+  
+  let parts = 1;
+  let remaining = singleLimit - len;
+  
+  if (len > singleLimit) {
+    parts = Math.ceil(len / multiLimit);
+    remaining = (parts * multiLimit) - len;
+  }
+  
+  return { len, parts, remaining, isUnicode, singleLimit, multiLimit };
 }
 
 export default function BulkSmsModal({ recipients, onClose }) {
@@ -233,15 +244,25 @@ export default function BulkSmsModal({ recipients, onClose }) {
 
             {/* Character counter */}
             <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '0.4rem', fontSize: '0.78rem' }}>
-              <span style={{ color: 'var(--text-muted)' }}>
-                {info.parts > 1 && (
-                  <span style={{ color: info.parts > MAX_SMS_PARTS ? '#ef4444' : '#f59e0b' }}>
-                    {`? ${info.parts} SMS parts`}
+              <span style={{ color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                <span style={{
+                  background: info.isUnicode ? 'rgba(245, 158, 11, 0.15)' : 'rgba(16, 185, 129, 0.15)',
+                  color: info.isUnicode ? '#f59e0b' : '#10b981',
+                  padding: '0.1rem 0.4rem', borderRadius: '4px', fontSize: '0.7rem', fontWeight: 600
+                }}>
+                  {info.isUnicode ? 'Unicode/Bengali' : 'Text/GSM'}
+                </span>
+                <span style={{ color: info.parts > MAX_SMS_PARTS ? '#ef4444' : 'var(--text-secondary)', fontWeight: 600 }}>
+                  {info.parts} part{info.parts !== 1 ? 's' : ''}
+                </span>
+                {recipients.length > 0 && (
+                  <span style={{ color: 'var(--text-muted)' }}>
+                    {` (Total SMS: ${info.parts * recipients.length})`}
                   </span>
                 )}
               </span>
-              <span style={{ color: info.remaining < 20 ? '#f59e0b' : 'var(--text-muted)' }}>
-                {`${info.remaining} chars remaining · ${info.len} total`}
+              <span style={{ color: info.remaining < (info.parts > 1 ? 15 : 20) ? '#f59e0b' : 'var(--text-muted)' }}>
+                {`${info.remaining} left · ${info.len}/${info.parts > 1 ? info.multiLimit * info.parts : info.singleLimit}`}
               </span>
             </div>
 
