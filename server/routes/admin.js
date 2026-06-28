@@ -284,12 +284,13 @@ router.post('/students/bulk', authenticateToken, requireRole('admin'), sanitizeI
     if (saveHistory) {
       try {
         const insertHistory = db.prepare(`
-          INSERT INTO bulk_import_history (filename, batch_number, results_json, imported_by)
-          VALUES (?, ?, ?, ?)
+          INSERT INTO bulk_import_history (filename, batch_number, title, results_json, imported_by)
+          VALUES (?, ?, ?, ?, ?)
         `);
         insertHistory.run(
           `BFI_Students_Import_Batch_${batchNumber || 'New'}_${Date.now()}.xlsx`,
           batchNumber || 'Mixed',
+          batchNumber ? `${batchNumber} Batch` : 'Mixed Batch',
           JSON.stringify(results),
           req.user.userId || req.user.id
         );
@@ -456,12 +457,13 @@ router.post('/imports/save-history', authenticateToken, requireRole('admin'), sa
       return res.status(400).json({ error: 'Results array is required' });
     }
     const insertHistory = db.prepare(`
-      INSERT INTO bulk_import_history (filename, batch_number, results_json, imported_by)
-      VALUES (?, ?, ?, ?)
+      INSERT INTO bulk_import_history (filename, batch_number, title, results_json, imported_by)
+      VALUES (?, ?, ?, ?, ?)
     `);
     insertHistory.run(
       `BFI_Students_Import_Batch_${batchNumber || 'New'}_${Date.now()}.xlsx`,
       batchNumber || 'Mixed',
+      batchNumber ? `${batchNumber} Batch` : 'Mixed Batch',
       JSON.stringify(results),
       req.user.userId || req.user.id
     );
@@ -476,7 +478,7 @@ router.post('/imports/save-history', authenticateToken, requireRole('admin'), sa
 router.get('/imports/history', authenticateToken, requireRole('admin'), (req, res) => {
   try {
     const history = db.prepare(`
-      SELECT id, filename, batch_number, imported_by, created_at 
+      SELECT id, filename, batch_number, title, imported_by, created_at 
       FROM bulk_import_history 
       ORDER BY id DESC LIMIT 50
     `).all();
@@ -484,6 +486,26 @@ router.get('/imports/history', authenticateToken, requireRole('admin'), (req, re
   } catch (error) {
     console.error('Error fetching history:', error);
     res.status(500).json({ error: 'Failed to fetch import history' });
+  }
+});
+
+// Rename import history title
+router.put('/imports/history/:id/rename', authenticateToken, requireRole('admin'), sanitizeInput, (req, res) => {
+  try {
+    const { title } = req.body;
+    const { id } = req.params;
+    if (!title || typeof title !== 'string') {
+      return res.status(400).json({ error: 'Title is required' });
+    }
+    const update = db.prepare('UPDATE bulk_import_history SET title = ? WHERE id = ?');
+    const result = update.run(title.trim(), id);
+    if (result.changes === 0) {
+      return res.status(404).json({ error: 'History record not found' });
+    }
+    res.status(200).json({ success: true, title: title.trim() });
+  } catch (error) {
+    console.error('Error renaming history title:', error);
+    res.status(500).json({ error: 'Failed to rename import history title' });
   }
 });
 

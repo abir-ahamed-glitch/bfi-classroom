@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import * as XLSX from 'xlsx';
 import mammoth from 'mammoth';
 import * as pdfjsLib from 'pdfjs-dist';
-import { UploadCloud, CheckCircle2, FileSpreadsheet, X, AlertCircle, History, Download, Clapperboard, Film, FileText } from 'lucide-react';
+import { UploadCloud, CheckCircle2, FileSpreadsheet, X, AlertCircle, History, Download, Clapperboard, Film, FileText, MoreVertical } from 'lucide-react';
 import { getOrdinalSuffix } from '../../utils/formatUtils';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.mjs`;
@@ -21,6 +21,10 @@ export default function BulkRegisteredStudentImport({ onImportComplete }) {
   const [results, setResults] = useState(null);
   const [errorMsg, setErrorMsg] = useState('');
 
+  const [editingId, setEditingId] = useState(null);
+  const [editTitle, setEditTitle] = useState('');
+  const [menuOpenId, setMenuOpenId] = useState(null);
+
   const fetchHistory = async () => {
     setLoadingHistory(true);
     try {
@@ -35,6 +39,30 @@ export default function BulkRegisteredStudentImport({ onImportComplete }) {
       console.error(err);
     } finally {
       setLoadingHistory(false);
+    }
+  };
+
+  const handleRename = async (id) => {
+    if (!editTitle.trim()) return;
+    try {
+      const res = await fetch(`/api/admin/imports/history/${id}/rename`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
+        },
+        body: JSON.stringify({ title: editTitle })
+      });
+      if (res.ok) {
+        setHistoryList(historyList.map(item => item.id === id ? { ...item, title: editTitle.trim() } : item));
+        setEditingId(null);
+      } else {
+        const data = await res.json();
+        alert(data.error || 'Failed to rename history record.');
+      }
+    } catch (err) {
+      console.error(err);
+      alert('Failed to rename history record.');
     }
   };
 
@@ -627,8 +655,8 @@ export default function BulkRegisteredStudentImport({ onImportComplete }) {
       , document.body)}
 
       {isHistoryOpen && createPortal(
-        <div className="modern-modal-overlay" onClick={() => setIsHistoryOpen(false)}>
-          <div className="modern-modal-content glass-panel shadow-2xl" style={{ width: '100%', maxWidth: '600px', margin: 'auto' }} onClick={e => e.stopPropagation()}>
+        <div className="modern-modal-overlay" onClick={() => { setIsHistoryOpen(false); setMenuOpenId(null); setEditingId(null); }}>
+          <div className="modern-modal-content glass-panel shadow-2xl" style={{ width: '100%', maxWidth: '600px', margin: 'auto' }} onClick={e => { e.stopPropagation(); setMenuOpenId(null); }}>
             <div className="modern-modal-header">
               <h3 className="font-display" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
                 <div style={{ background: 'var(--bg-tertiary)', padding: '0.5rem', borderRadius: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)' }}>
@@ -636,7 +664,7 @@ export default function BulkRegisteredStudentImport({ onImportComplete }) {
                 </div>
                 Import History
               </h3>
-              <button type="button" className="icon-btn-ghost" onClick={() => setIsHistoryOpen(false)} aria-label="Close">
+              <button type="button" className="icon-btn-ghost" onClick={() => { setIsHistoryOpen(false); setMenuOpenId(null); setEditingId(null); }} aria-label="Close">
                 <X size={20} />
               </button>
             </div>
@@ -653,9 +681,97 @@ export default function BulkRegisteredStudentImport({ onImportComplete }) {
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
                   {historyList.map(item => (
-                    <div key={item.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '1rem 1.25rem', background: 'rgba(255,255,255,0.02)', border: '1px solid var(--glass-border)', borderRadius: '12px' }}>
-                      <div>
-                        <div style={{ fontWeight: '600', color: 'var(--text-primary)', marginBottom: '0.25rem' }}>{item.batch_number === 'Registered' ? 'Registered Students Import' : `${getOrdinalSuffix(item.batch_number)} Batch`}</div>
+                    <div key={item.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '1rem 1.25rem', background: 'rgba(255,255,255,0.02)', border: '1px solid var(--glass-border)', borderRadius: '12px', position: 'relative' }}>
+                      <div style={{ flex: 1, marginRight: '1rem' }}>
+                        {editingId === item.id ? (
+                          <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', marginBottom: '0.25rem' }} onClick={e => e.stopPropagation()}>
+                            <input 
+                              type="text" 
+                              value={editTitle}
+                              onChange={e => setEditTitle(e.target.value)}
+                              className="modern-input"
+                              style={{ padding: '0.3rem 0.5rem', fontSize: '0.85rem', borderRadius: '6px', flex: 1, minWidth: '150px', background: 'var(--bg-tertiary)', border: '1px solid var(--glass-border)', color: 'var(--text-primary)' }}
+                              autoFocus
+                              onKeyDown={e => {
+                                if (e.key === 'Enter') handleRename(item.id);
+                                if (e.key === 'Escape') setEditingId(null);
+                              }}
+                            />
+                            <button 
+                              onClick={() => handleRename(item.id)}
+                              className="modern-btn modern-btn--primary"
+                              style={{ padding: '0.3rem 0.6rem', fontSize: '0.75rem', height: 'auto', minWidth: 'auto' }}
+                            >
+                              Save
+                            </button>
+                            <button 
+                              onClick={() => setEditingId(null)}
+                              className="modern-btn modern-btn--secondary"
+                              style={{ padding: '0.3rem 0.6rem', fontSize: '0.75rem', height: 'auto', minWidth: 'auto' }}
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        ) : (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.25rem' }}>
+                            <div style={{ fontWeight: '600', color: 'var(--text-primary)' }}>
+                              {item.title || (item.batch_number === 'Registered' || item.batch_number === 'Registered Batch' ? 'Registered Batch' : `${getOrdinalSuffix(item.batch_number)} Batch`)}
+                            </div>
+                            <div style={{ position: 'relative' }}>
+                              <button 
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setMenuOpenId(menuOpenId === item.id ? null : item.id);
+                                }}
+                                className="icon-btn-ghost"
+                                style={{ padding: '0.2rem', borderRadius: '4px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                              >
+                                <MoreVertical size={14} />
+                              </button>
+                              {menuOpenId === item.id && (
+                                <div style={{
+                                  position: 'absolute',
+                                  top: '100%',
+                                  left: 0,
+                                  background: 'var(--bg-secondary)',
+                                  border: '1px solid var(--glass-border)',
+                                  borderRadius: '8px',
+                                  boxShadow: '0 8px 16px rgba(0,0,0,0.25)',
+                                  zIndex: 50,
+                                  minWidth: '90px',
+                                  display: 'flex',
+                                  flexDirection: 'column',
+                                  padding: '0.25rem'
+                                }}>
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setEditingId(item.id);
+                                      setEditTitle(item.title || (item.batch_number === 'Registered' || item.batch_number === 'Registered Batch' ? 'Registered Batch' : `${getOrdinalSuffix(item.batch_number)} Batch`));
+                                      setMenuOpenId(null);
+                                    }}
+                                    style={{
+                                      background: 'none',
+                                      border: 'none',
+                                      color: 'var(--text-primary)',
+                                      padding: '0.4rem 0.6rem',
+                                      textAlign: 'left',
+                                      cursor: 'pointer',
+                                      fontSize: '0.8rem',
+                                      borderRadius: '6px',
+                                      width: '100%',
+                                      transition: 'background 0.2s'
+                                    }}
+                                    onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-tertiary)'}
+                                    onMouseLeave={e => e.currentTarget.style.background = 'none'}
+                                  >
+                                    Rename
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        )}
                         <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>{new Date(item.created_at).toLocaleString()}</div>
                       </div>
                       <button 
@@ -672,7 +788,8 @@ export default function BulkRegisteredStudentImport({ onImportComplete }) {
                           gap: '0.5rem',
                           fontWeight: '600',
                           fontSize: '0.9rem',
-                          transition: 'all 0.2s'
+                          transition: 'all 0.2s',
+                          whiteSpace: 'nowrap'
                         }}
                         onMouseEnter={e => e.currentTarget.style.background = 'rgba(14, 165, 233, 0.2)'}
                         onMouseLeave={e => e.currentTarget.style.background = 'rgba(14, 165, 233, 0.1)'}
@@ -687,7 +804,7 @@ export default function BulkRegisteredStudentImport({ onImportComplete }) {
             </div>
 
             <div className="modern-modal-footer" style={{ display: 'flex', gap: '1rem' }}>
-              <button type="button" onClick={() => setIsHistoryOpen(false)} className="modern-btn modern-btn--secondary" style={{ flex: 1 }}>Close</button>
+              <button type="button" onClick={() => { setIsHistoryOpen(false); setMenuOpenId(null); setEditingId(null); }} className="modern-btn modern-btn--secondary" style={{ flex: 1 }}>Close</button>
             </div>
           </div>
         </div>
