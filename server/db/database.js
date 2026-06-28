@@ -521,7 +521,7 @@ export function initializeDatabase() {
     CREATE TABLE IF NOT EXISTS batches (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       batch_name TEXT NOT NULL,
-      batch_number TEXT NOT NULL UNIQUE,
+      batch_number TEXT NOT NULL,
       course_name TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'upcoming',
       start_date DATE,
@@ -529,7 +529,8 @@ export function initializeDatabase() {
       description TEXT,
       created_by INTEGER,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(batch_number, course_name)
     );
 
     -- Batch students association table
