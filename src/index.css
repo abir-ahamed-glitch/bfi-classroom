@@ -2459,5 +2459,18 @@ html {
   background: rgba(99, 102, 241, 0.06) !important;
 }
 
+/* Scheduled list item */
+.sms-scheduled-item {
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  background: rgba(255, 255, 255, 0.01) !important;
+}
+
+[data-mode="light"] .sms-scheduled-item {
+  border-color: rgba(99, 102, 241, 0.2) !important;
+  background: rgba(99, 102, 241, 0.02) !important;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.02) !important;
+}
+
+
 
 

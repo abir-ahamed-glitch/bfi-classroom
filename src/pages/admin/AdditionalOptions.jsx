@@ -1353,21 +1353,43 @@ function CustomSmsSender() {
   const [showSuggestions, setShowSuggestions] = useState(false);
   const searchContainerRef = useRef(null);
 
+  // Scheduling State
+  const [scheduleLater, setScheduleLater] = useState(false);
+  const [scheduledTime, setScheduledTime] = useState('');
+  const [scheduledList, setScheduledList] = useState([]);
+
   const info = calculateSmsInfo(message);
 
-  // Fetch all leads when expanded
-  useEffect(() => {
-    if (expanded && allStudents.length === 0) {
-      fetch('/api/admin/students/leads', {
+  const fetchScheduledList = async () => {
+    try {
+      const res = await fetch('/api/admin/sms/scheduled', {
         headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
-      })
-      .then(res => res.json())
-      .then(data => {
-        if (Array.isArray(data)) {
-          setAllStudents(data);
-        }
-      })
-      .catch(err => console.error('Error loading students for search:', err));
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setScheduledList(data);
+      }
+    } catch (e) {
+      console.error('Error fetching scheduled SMS list:', e);
+    }
+  };
+
+  // Fetch all leads and scheduled SMS when expanded
+  useEffect(() => {
+    if (expanded) {
+      fetchScheduledList();
+      if (allStudents.length === 0) {
+        fetch('/api/admin/students/leads', {
+          headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
+        })
+        .then(res => res.json())
+        .then(data => {
+          if (Array.isArray(data)) {
+            setAllStudents(data);
+          }
+        })
+        .catch(err => console.error('Error loading students for search:', err));
+      }
     }
   }, [expanded, allStudents.length]);
 
@@ -1413,25 +1435,54 @@ function CustomSmsSender() {
     if (!numbers.trim()) { setError('Please enter at least one phone number.'); return; }
     if (!message.trim()) { setError('Please enter a message.'); return; }
     if (validCount === 0) { setError('No valid phone numbers found.'); return; }
+    
+    if (scheduleLater && !scheduledTime) {
+      setError('Please select a date and time to schedule the SMS.');
+      return;
+    }
+
     setError(''); setSending(true); setProgress(0); setResults(null);
 
     try {
-      let fake = 0;
-      const ticker = setInterval(() => {
-        fake = Math.min(fake + (100 / validCount) * 0.5, 88);
-        setProgress(Math.round(fake));
-      }, Math.max(60, (validCount * 70) / 20));
+      if (scheduleLater) {
+        const res = await fetch('/api/admin/sms/schedule', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` },
+          body: JSON.stringify({
+            recipients: parsed,
+            message: message.trim(),
+            senderId: senderId.trim(),
+            scheduledAt: new Date(scheduledTime).toISOString()
+          })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Failed to schedule.');
+        
+        // Show success results
+        setResults({ sent: 0, failed: 0, scheduled: true });
+        setNumbers('');
+        setMessage('');
+        setScheduleLater(false);
+        setScheduledTime('');
+        fetchScheduledList();
+      } else {
+        let fake = 0;
+        const ticker = setInterval(() => {
+          fake = Math.min(fake + (100 / validCount) * 0.5, 88);
+          setProgress(Math.round(fake));
+        }, Math.max(60, (validCount * 70) / 20));
 
-      const res = await fetch('/api/admin/sms/bulk', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` },
-        body: JSON.stringify({ recipients: parsed, message: message.trim(), senderId: senderId.trim() })
-      });
-      clearInterval(ticker);
-      setProgress(100);
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to send.');
-      setResults(data);
+        const res = await fetch('/api/admin/sms/bulk', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` },
+          body: JSON.stringify({ recipients: parsed, message: message.trim(), senderId: senderId.trim() })
+        });
+        clearInterval(ticker);
+        setProgress(100);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Failed to send.');
+        setResults(data);
+      }
     } catch(err) {
       setError(err.message);
       setProgress(0);
@@ -1672,6 +1723,36 @@ function CustomSmsSender() {
             </div>
           </div>
 
+          {/* Schedule SMS Option */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem', background: 'rgba(255,255,255,0.02)', padding: '0.85rem', borderRadius: '10px', border: '1px solid var(--glass-border)' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', cursor: 'pointer', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-secondary)' }}>
+              <input
+                type="checkbox"
+                checked={scheduleLater}
+                onChange={e => setScheduleLater(e.target.checked)}
+                style={{ width: '17px', height: '17px', accentColor: '#6366f1', cursor: 'pointer' }}
+                disabled={sending}
+              />
+              Schedule this SMS to send later
+            </label>
+            
+            {scheduleLater && (
+              <div style={{ marginTop: '0.2rem', display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                <label className="sms-label" style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                  Select Date &amp; Time:
+                </label>
+                <input
+                  type="datetime-local"
+                  className="sms-textarea"
+                  style={{ width: '100%', maxWidth: '280px', height: '42px', padding: '0.5rem 0.85rem', fontSize: '0.85rem' }}
+                  value={scheduledTime}
+                  onChange={e => setScheduledTime(e.target.value)}
+                  disabled={sending}
+                />
+              </div>
+            )}
+          </div>
+
           {/* Error */}
           {error && (
             <div style={{
@@ -1687,7 +1768,7 @@ function CustomSmsSender() {
           {(sending || progress > 0) && !results && (
             <div>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '0.35rem' }}>
-                <span>{sending ? `Sending to ${validCount} number${validCount !== 1 ? 's' : ''}…` : 'Done!'}</span>
+                <span>{sending ? (scheduleLater ? 'Scheduling...' : `Sending to ${validCount} number${validCount !== 1 ? 's' : ''}…`) : 'Done!'}</span>
                 <span>{progress}%</span>
               </div>
               <div style={{ height: '6px', background: 'rgba(255,255,255,0.07)', borderRadius: '9999px', overflow: 'hidden' }}>
@@ -1699,27 +1780,35 @@ function CustomSmsSender() {
           {/* Results */}
           {results && (
             <div>
-              <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', marginBottom: results.failed > 0 ? '0.75rem' : 0 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'rgba(16,185,129,0.1)', border: '1px solid rgba(16,185,129,0.25)', borderRadius: '8px', padding: '0.5rem 0.9rem', color: '#10b981', fontWeight: 700, fontSize: '0.9rem' }}>
-                  ✅ {results.sent} Sent
+              {results.scheduled ? (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'rgba(16,185,129,0.1)', border: '1px solid rgba(16,185,129,0.25)', borderRadius: '8px', padding: '0.75rem 1rem', color: '#10b981', fontWeight: 700, fontSize: '0.9rem' }}>
+                  ✅ SMS Batch Scheduled Successfully!
                 </div>
-                {results.failed > 0 && (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.25)', borderRadius: '8px', padding: '0.5rem 0.9rem', color: '#f87171', fontWeight: 700, fontSize: '0.9rem' }}>
-                    ❌ {results.failed} Failed
-                  </div>
-                )}
-              </div>
-              {results.failed > 0 && (
-                <div style={{ background: 'rgba(239,68,68,0.05)', border: '1px solid rgba(239,68,68,0.15)', borderRadius: '10px', padding: '0.75rem', maxHeight: '140px', overflowY: 'auto' }}>
-                  {results.results.filter(r => !r.ok).map((r, i) => (
-                    <div key={i} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.82rem', padding: '0.25rem 0', borderBottom: '1px solid rgba(239,68,68,0.1)' }}>
-                      <span style={{ fontFamily: 'monospace', color: 'var(--text-primary)' }}>{r.phone}{r.name ? ` (${r.name})` : ''}</span>
-                      <span style={{ color: '#f87171' }}>
-                        {typeof r.error === 'object' ? (r.error.message || r.error.code || JSON.stringify(r.error)) : String(r.error || 'Failed')}
-                      </span>
+              ) : (
+                <>
+                  <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', marginBottom: results.failed > 0 ? '0.75rem' : 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'rgba(16,185,129,0.1)', border: '1px solid rgba(16,185,129,0.25)', borderRadius: '8px', padding: '0.5rem 0.9rem', color: '#10b981', fontWeight: 700, fontSize: '0.9rem' }}>
+                      ✅ {results.sent} Sent
                     </div>
-                  ))}
-                </div>
+                    {results.failed > 0 && (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.25)', borderRadius: '8px', padding: '0.5rem 0.9rem', color: '#f87171', fontWeight: 700, fontSize: '0.9rem' }}>
+                        ❌ {results.failed} Failed
+                      </div>
+                    )}
+                  </div>
+                  {results.failed > 0 && (
+                    <div style={{ background: 'rgba(239,68,68,0.05)', border: '1px solid rgba(239,68,68,0.15)', borderRadius: '10px', padding: '0.75rem', maxHeight: '140px', overflowY: 'auto' }}>
+                      {results.results.filter(r => !r.ok).map((r, i) => (
+                        <div key={i} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.82rem', padding: '0.25rem 0', borderBottom: '1px solid rgba(239,68,68,0.1)' }}>
+                          <span style={{ fontFamily: 'monospace', color: 'var(--text-primary)' }}>{r.phone}{r.name ? ` (${r.name})` : ''}</span>
+                          <span style={{ color: '#f87171' }}>
+                            {typeof r.error === 'object' ? (r.error.message || r.error.code || JSON.stringify(r.error)) : String(r.error || 'Failed')}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </>
               )}
             </div>
           )}
@@ -1733,29 +1822,107 @@ function CustomSmsSender() {
               </button>
             ) : (
               <>
-                <button type="button" onClick={() => { setNumbers(''); setMessage(''); setError(''); setResults(null); setProgress(0); }}
+                <button type="button" onClick={() => { setNumbers(''); setMessage(''); setError(''); setResults(null); setProgress(0); setScheduleLater(false); setScheduledTime(''); }}
                   disabled={sending}
                   style={{ padding: '0.75rem 1.25rem', border: '1px solid var(--glass-border)', background: 'transparent', color: 'var(--text-secondary)', borderRadius: '10px', cursor: 'pointer' }}>
                   Clear
                 </button>
                 <button type="button" onClick={handleSend}
-                  disabled={sending || !message.trim() || validCount === 0}
+                  disabled={sending || !message.trim() || validCount === 0 || (scheduleLater && !scheduledTime)}
                   style={{
                     flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem',
-                    padding: '0.75rem', border: 'none', borderRadius: '10px', cursor: (sending || !message.trim() || validCount === 0) ? 'not-allowed' : 'pointer',
-                    background: (sending || !message.trim() || validCount === 0) ? 'rgba(99,102,241,0.35)' : 'linear-gradient(135deg, #6366f1, #8b5cf6)',
+                    padding: '0.75rem', border: 'none', borderRadius: '10px', cursor: (sending || !message.trim() || validCount === 0 || (scheduleLater && !scheduledTime)) ? 'not-allowed' : 'pointer',
+                    background: (sending || !message.trim() || validCount === 0 || (scheduleLater && !scheduledTime)) ? 'rgba(99,102,241,0.35)' : 'linear-gradient(135deg, #6366f1, #8b5cf6)',
                     color: 'white', fontWeight: 700, fontSize: '0.95rem',
                     boxShadow: '0 4px 14px rgba(99,102,241,0.35)'
                   }}
                 >
                   {sending
-                    ? <><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" style={{ animation: 'spin 1s linear infinite' }}><path d="M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z"/><path d="M21 12c0-4.97-4.03-9-9-9"/></svg> Sending…</>
-                    : <><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg> Send SMS {validCount > 0 ? `(${validCount})` : ''}</>
+                    ? <><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" style={{ animation: 'spin 1s linear infinite' }}><path d="M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z"/><path d="M21 12c0-4.97-4.03-9-9-9"/></svg> {scheduleLater ? 'Scheduling...' : 'Sending...'}</>
+                    : <><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg> {scheduleLater ? 'Schedule SMS' : 'Send SMS'} {validCount > 0 ? `(${validCount})` : ''}</>
                   }
                 </button>
               </>
             )}
           </div>
+
+          {/* Scheduled list */}
+          {scheduledList.length > 0 && (
+            <div style={{ marginTop: '1.25rem', borderTop: '1px solid rgba(99,102,241,0.15)', paddingTop: '1.25rem' }}>
+              <div style={{ fontWeight: 700, fontSize: '0.9rem', color: 'var(--text-primary)', marginBottom: '0.75rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+                </svg>
+                Scheduled SMS Batches
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                {scheduledList.map((item) => {
+                  const localTime = new Date(item.scheduled_at).toLocaleString();
+                  const recCount = item.recipients.length;
+                  
+                  return (
+                    <div
+                      key={item.id}
+                      style={{
+                        padding: '0.85rem',
+                        borderRadius: '10px',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '0.5rem'
+                      }}
+                      className="sms-scheduled-item"
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
+                        <span style={{ fontSize: '0.78rem', fontWeight: 600, color: 'var(--text-secondary)' }}>
+                          ⏰ Send on: <span style={{ color: 'var(--text-primary)' }}>{localTime}</span>
+                        </span>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                          <span style={{
+                            fontSize: '0.7rem', fontWeight: 700, borderRadius: '4px', padding: '0.1rem 0.4rem',
+                            background: item.status === 'pending' ? 'rgba(245,158,11,0.15)' : item.status === 'sent' ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.15)',
+                            color: item.status === 'pending' ? '#f59e0b' : item.status === 'sent' ? '#10b981' : '#f87171'
+                          }}>
+                            {item.status.toUpperCase()}
+                          </span>
+                          {item.status === 'pending' && (
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                if (confirm('Are you sure you want to cancel this scheduled SMS?')) {
+                                  const res = await fetch(`/api/admin/sms/scheduled/${item.id}`, {
+                                    method: 'DELETE',
+                                    headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
+                                  });
+                                  if (res.ok) fetchScheduledList();
+                                }
+                              }}
+                              style={{
+                                background: 'transparent', border: 'none', color: '#f87171', fontSize: '0.75rem',
+                                cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.15rem', padding: '0.1rem 0.3rem'
+                              }}
+                            >
+                              ✕ Cancel
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                      <div style={{ fontSize: '0.8rem', color: 'var(--text-primary)', fontStyle: 'italic', background: 'rgba(255,255,255,0.01)', padding: '0.5rem', borderRadius: '6px', borderLeft: '3px solid #6366f1' }}>
+                        "{item.message}"
+                      </div>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                        👥 Recipients ({recCount}): {item.recipients.map(r => `${r.name || 'Plain'}(${r.phone})`).join(', ')}
+                      </div>
+                      {item.error_message && (
+                        <div style={{ fontSize: '0.75rem', color: '#f87171', background: 'rgba(239,68,68,0.05)', padding: '0.4rem', borderRadius: '6px' }}>
+                          Error details: {item.error_message}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>

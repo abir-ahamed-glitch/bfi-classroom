@@ -1012,6 +1012,25 @@ export function initializeDatabase() {
   } catch (error) {
     // Table probably already exists — safe to ignore
   }
+
+  // Scheduled SMS table
+  try {
+    db.prepare(`
+      CREATE TABLE IF NOT EXISTS scheduled_sms (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        sender_id TEXT NOT NULL,
+        recipients TEXT NOT NULL, -- JSON stringified array of {name, phone}
+        message TEXT NOT NULL,
+        scheduled_at TEXT NOT NULL, -- ISO string
+        status TEXT NOT NULL DEFAULT 'pending', -- 'pending', 'sent', 'failed'
+        error_message TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `).run();
+    console.log('✅ Ensured scheduled_sms table exists');
+  } catch (error) {
+    console.error('Error creating scheduled_sms table:', error);
+  }
 }
 
 export default db;

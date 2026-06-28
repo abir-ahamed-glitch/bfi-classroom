@@ -1756,7 +1756,106 @@ router.delete('/custom-subjects/:id', authenticateToken, requireRole('admin'), (
   }
 });
 
+export function startSmsScheduler() {
+  // Check every 10 seconds for scheduled SMS that are due to be sent
+  setInterval(async () => {
+    try {
+      const pendingSmsList = db.prepare(`
+        SELECT id, sender_id, recipients, message, scheduled_at
+        FROM scheduled_sms
+        WHERE status = 'pending'
+          AND datetime(scheduled_at) <= datetime('now')
+      `).all();
+
+      if (pendingSmsList.length > 0) {
+        console.log(`[SMS Scheduler] Sending ${pendingSmsList.length} scheduled SMS batches...`);
+
+        const apiKey = process.env.SMS_API_KEY;
+        if (!apiKey) {
+          console.error('[SMS Scheduler] SMS API key not configured on the server.');
+          return;
+        }
+
+        const updateStatus = db.prepare(`
+          UPDATE scheduled_sms
+          SET status = ?, error_message = ?
+          WHERE id = ?
+        `);
+
+        for (const sms of pendingSmsList) {
+          let recipients = [];
+          try {
+            recipients = JSON.parse(sms.recipients);
+          } catch (e) {
+            console.error('[SMS Scheduler] Failed to parse recipients JSON:', e);
+            updateStatus.run('failed', 'Invalid recipients data format', sms.id);
+            continue;
+          }
+
+          let sentCount = 0;
+          let failCount = 0;
+          const errors = [];
+
+          for (const recipient of recipients) {
+            const { name = '', phone = '' } = recipient;
+            const cleanPhone = phone.replace(/[^\d+]/g, '');
+            if (!cleanPhone || cleanPhone.length < 7) {
+              failCount++;
+              errors.push(`${phone}: Invalid phone number`);
+              continue;
+            }
+
+            const personalizedMsg = sms.message.replace(/\{name\}/gi, name);
+
+            try {
+              const response = await fetch('https://login.smsinbd.com/api/external/v1/sms/send', {
+                method: 'POST',
+                headers: {
+                  'X-API-KEY': apiKey,
+                  'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                  sender_id: sms.sender_id,
+                  phone: cleanPhone,
+                  message: personalizedMsg
+                })
+              });
+
+              const data = await response.json().catch(() => ({}));
+              if (response.ok && (data.status === 'success' || data.success || response.status === 200)) {
+                sentCount++;
+              } else {
+                failCount++;
+                errors.push(`${cleanPhone}: ${data.message || 'Failed'}`);
+              }
+            } catch (err) {
+              failCount++;
+              errors.push(`${cleanPhone}: ${err.message}`);
+            }
+
+            // Small delay between calls to respect rate limits
+            await new Promise(r => setTimeout(r, 60));
+          }
+
+          if (failCount === 0) {
+            updateStatus.run('sent', null, sms.id);
+          } else if (sentCount > 0) {
+            updateStatus.run('sent', `Partial: ${sentCount} sent, ${failCount} failed. Errors: ${errors.join(', ')}`, sms.id);
+          } else {
+            updateStatus.run('failed', errors.join(', '), sms.id);
+          }
+        }
+      }
+    } catch (error) {
+      console.error('[SMS Scheduler] Error processing scheduled SMS:', error);
+    }
+  }, 10000);
+}
+
 export function startAnnouncementScheduler(io) {
+  // Also start SMS scheduler
+  startSmsScheduler();
+
   // Check every 10 seconds for scheduled announcements that are due to be published
   setInterval(() => {
     try {
@@ -1943,6 +2042,84 @@ router.post('/sms/bulk', authenticateToken, requireRole('admin'), async (req, re
   } catch (error) {
     console.error('[SMS Bulk] Error:', error);
     res.status(500).json({ error: 'Internal server error during SMS sending.' });
+  }
+});
+
+// POST /api/admin/sms/schedule
+// Body: { senderId, recipients: [{name, phone}], message, scheduledAt }
+router.post('/sms/schedule', authenticateToken, requireRole('admin'), async (req, res) => {
+  try {
+    const { senderId, recipients, message, scheduledAt } = req.body;
+
+    if (!recipients || !Array.isArray(recipients) || recipients.length === 0) {
+      return res.status(400).json({ error: 'No recipients provided.' });
+    }
+    if (!message || !message.trim()) {
+      return res.status(400).json({ error: 'Message cannot be empty.' });
+    }
+    if (!scheduledAt) {
+      return res.status(400).json({ error: 'Scheduled time is required.' });
+    }
+
+    const defaultSenderId = process.env.SMS_SENDER_ID || '8809617626169';
+    const finalSenderId = (senderId || defaultSenderId).trim();
+
+    // Verify scheduledAt is valid
+    const schedDate = new Date(scheduledAt);
+    if (isNaN(schedDate.getTime())) {
+      return res.status(400).json({ error: 'Invalid scheduled time format.' });
+    }
+
+    db.prepare(`
+      INSERT INTO scheduled_sms (sender_id, recipients, message, scheduled_at, status)
+      VALUES (?, ?, ?, ?, 'pending')
+    `).run(finalSenderId, JSON.stringify(recipients), message.trim(), schedDate.toISOString());
+
+    res.status(200).json({ message: 'SMS batch scheduled successfully.' });
+  } catch (error) {
+    console.error('[SMS Schedule] Error:', error);
+    res.status(500).json({ error: 'Internal server error during scheduling.' });
+  }
+});
+
+// GET /api/admin/sms/scheduled
+router.get('/sms/scheduled', authenticateToken, requireRole('admin'), async (req, res) => {
+  try {
+    const list = db.prepare(`
+      SELECT id, sender_id, recipients, message, scheduled_at, status, error_message, created_at
+      FROM scheduled_sms
+      ORDER BY datetime(scheduled_at) DESC
+    `).all();
+
+    // Parse recipients for frontend display
+    const formatted = list.map(item => {
+      try {
+        item.recipients = JSON.parse(item.recipients);
+      } catch (e) {
+        item.recipients = [];
+      }
+      return item;
+    });
+
+    res.status(200).json(formatted);
+  } catch (error) {
+    console.error('[SMS Scheduled List] Error:', error);
+    res.status(500).json({ error: 'Internal server error fetching scheduled SMS list.' });
+  }
+});
+
+// DELETE /api/admin/sms/scheduled/:id
+router.delete('/sms/scheduled/:id', authenticateToken, requireRole('admin'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    db.prepare(`
+      DELETE FROM scheduled_sms
+      WHERE id = ? AND status = 'pending'
+    `).run(id);
+    res.status(200).json({ message: 'Scheduled SMS canceled successfully.' });
+  } catch (error) {
+    console.error('[SMS Schedule Cancel] Error:', error);
+    res.status(500).json({ error: 'Internal server error canceling scheduled SMS.' });
   }
 });
 
