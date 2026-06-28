@@ -149,7 +149,7 @@ export default function BulkRegisteredStudentImport({ onImportComplete }) {
           for (let j = 0; j < row.length; j++) {
             if (typeof row[j] === 'string') {
               const val = row[j].trim();
-              const batchMatch = val.match(/(\d+)(?:st|nd|rd|th)?\s*[Bb]atch/);
+              const batchMatch = val.match(/(\d+)(?:st|nd|rd|th)?\s*(?:[Bb]atch|[Ff]ilm|[Cc]ourse)/);
               if (batchMatch && !detectedBatch) {
                 detectedBatch = batchMatch[1];
               }
@@ -241,12 +241,38 @@ export default function BulkRegisteredStudentImport({ onImportComplete }) {
         let email = headerMap.email !== -1 && row[headerMap.email] ? String(row[headerMap.email]).trim() : '';
         if (email) email = email.split(/[,/\n]/)[0].trim();
         
-        let mobile = headerMap.mobile !== -1 && row[headerMap.mobile] ? String(row[headerMap.mobile]).trim() : '';
-        if (mobile) mobile = mobile.split(/[,/\n]/)[0].trim();
-        
-        // Excel drops leading zeros for numbers. If it's a 10-digit number starting with '1' (e.g. 17... instead of 017...), restore the '0'
-        if (mobile && mobile.length === 10 && mobile.startsWith('1')) {
-          mobile = '0' + mobile;
+        let rawMobile = headerMap.mobile !== -1 && row[headerMap.mobile] ? String(row[headerMap.mobile]).trim() : '';
+        let mobile = '';
+
+        // Smart extraction of email and phone if combined in the phone field
+        if (rawMobile) {
+          const emailRegex = /([a-zA-Z0-9._%-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,6})/;
+          const emailMatch = rawMobile.match(emailRegex);
+          if (emailMatch) {
+            if (!email) {
+              email = emailMatch[1];
+            }
+            // Remove the email string from the mobile field
+            rawMobile = rawMobile.replace(emailMatch[0], '').trim();
+          }
+
+          // Split multiple phone numbers if present
+          const phoneParts = rawMobile.split(/[,/;\n]+/).map(p => p.trim()).filter(Boolean);
+          for (const part of phoneParts) {
+            const cleanPart = part.replace(/[^\d+]/g, '');
+            if (cleanPart.length >= 7) {
+              mobile = cleanPart;
+              // Add leading zero if dropped by Excel
+              if (mobile.length === 10 && mobile.startsWith('1')) {
+                mobile = '0' + mobile;
+              }
+              break;
+            }
+          }
+          // Landline or short number fallback
+          if (!mobile && phoneParts.length > 0) {
+            mobile = phoneParts[0].replace(/[^\d+]/g, '');
+          }
         }
         
         // Skip completely empty rows
@@ -254,7 +280,16 @@ export default function BulkRegisteredStudentImport({ onImportComplete }) {
 
         const snNo = headerMap.sn !== -1 && row[headerMap.sn] ? String(row[headerMap.sn]).trim() : String(mappedData.length + 1);
         const year = headerMap.year !== -1 && row[headerMap.year] ? String(row[headerMap.year]).trim() : detectedYear || new Date().getFullYear().toString();
-        const batch = headerMap.batch !== -1 && row[headerMap.batch] ? String(row[headerMap.batch]).trim() : detectedBatch || '';
+        let batch = headerMap.batch !== -1 && row[headerMap.batch] ? String(row[headerMap.batch]).trim() : detectedBatch || '';
+        
+        // Normalize batch like '1st' to '1'
+        if (batch) {
+          const normBatchMatch = batch.match(/^(\d+)(?:st|nd|rd|th)?$/i);
+          if (normBatchMatch) {
+            batch = normBatchMatch[1];
+          }
+        }
+
         const address = headerMap.address !== -1 && row[headerMap.address] ? String(row[headerMap.address]).trim() : '';
         const permanentAddress = headerMap.permanentAddress !== -1 && row[headerMap.permanentAddress] ? String(row[headerMap.permanentAddress]).trim() : '';
         const gender = headerMap.gender !== -1 && row[headerMap.gender] ? String(row[headerMap.gender]).trim() : '';
@@ -265,7 +300,7 @@ export default function BulkRegisteredStudentImport({ onImportComplete }) {
 
         // Original row needs to be a standard object to pass gracefully, or we just pass the array
         mappedData.push({ 
-          snNo, year, batch: '', name, address, permanentAddress, gender, birthday, 
+          snNo, year, batch, name, address, permanentAddress, gender, birthday, 
           profession, education, whatsapp, mobile, email, originalRow: row 
         });
       }
