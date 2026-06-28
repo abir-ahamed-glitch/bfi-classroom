@@ -93,67 +93,125 @@ export default function BulkStudentImport({ onImportComplete }) {
       const ws = wb.Sheets[wsname];
       const data2D = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: "" });
 
-      // Find the actual header row (some files have titles/empty lines at the top)
-      let headerRowIdx = -1;
-      let headerMap = {};
+      // =========================================================
+      // UNIVERSAL SMART CELL SCANNER helpers
+      // =========================================================
+      const extractEmailsFromText = (text) => {
+        if (!text) return [];
+        return [...text.matchAll(/([a-zA-Z0-9._%-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,6})/g)].map(m => m[1]);
+      };
 
-      const mappedData = [];
+      const extractPhonesFromText = (text) => {
+        if (!text) return [];
+        const phones = [];
+        // BD mobile: starts with +880, 880, or 0, then 1[3-9], then 8 digits
+        const bdMatches = [...text.matchAll(/(?:\+?880|0)[1][3-9]\d{8}/g)];
+        for (const m of bdMatches) phones.push(m[0]);
+        if (phones.length > 0) return phones;
+        // 10-digit starting with 1 (Excel dropped leading zero)
+        const tenDigit = [...text.matchAll(/\b1[3-9]\d{8}\b/g)];
+        for (const m of tenDigit) phones.push('0' + m[0]);
+        if (phones.length > 0) return phones;
+        // Any 7–11 digit number (landline fallback)
+        const anyPhone = [...text.matchAll(/\b\d{7,11}\b/g)];
+        for (const m of anyPhone) phones.push(m[0]);
+        return phones;
+      };
+
+      const looksLikeName = (val) => {
+        if (!val || val.length < 3 || val.length > 100) return false;
+        if (/^\d/.test(val)) return false;
+        if (/@/.test(val)) return false;
+        if (/\d{5,}/.test(val)) return false;
+        if (/^\d+(?:st|nd|rd|th)$/i.test(val.trim())) return false;
+        const words = val.trim().split(/\s+/);
+        if (words.length < 2 || words.length > 6) return false;
+        return words.every(w => /^[A-Za-z\u0080-\uFFFF][a-zA-Z\u0080-\uFFFF.'()\-]{0,30}$/.test(w));
+      };
+
+      const looksLikeAddress = (val) => {
+        if (!val || val.length < 8) return false;
+        return /(?:house|road|street|block|sector|flat|floor|village|district|dhaka|chittagong|sylhet|rajshahi|khulna|mohammadpur|mirpur|gulshan|banani|dhanmondi|uttara|motijheel|paltan|wari|lalbagh|old dhaka|new dhaka|azimpur|rayer|bazar|para|thana|upazila|union|gram|#|avenue)/i.test(val);
+      };
+
+      const normalizeBatch = (val) => {
+        if (!val) return '';
+        // "1st" → "1", "2nd" → "2", "3rd" → "3" etc.
+        const m = val.trim().match(/^(\d+)(?:st|nd|rd|th)?$/i);
+        return m ? m[1] : val;
+      };
+
+      // =========================================================
+      // PASS 1: Pre-scan ALL rows for metadata (batch, year, course)
+      // =========================================================
       let detectedBatch = '';
       let detectedYear = '';
+      let detectedCourse = '';
+
+      for (const row of data2D) {
+        if (!row || !Array.isArray(row)) continue;
+        const rowText = row.map(c => c || '').join(' ');
+
+        if (!detectedBatch) {
+          // e.g. "1st Film Appreciation Course", "2nd Batch", "3rd Filmmaking"
+          const bm = rowText.match(/(\d+)(?:st|nd|rd|th)?\s*(?:batch|film\s+appreciation|filmmaking|script|cinematography|acting|course|workshop)/i);
+          if (bm) detectedBatch = bm[1];
+        }
+        if (!detectedYear) {
+          const ym = rowText.match(/\b(19[5-9]\d|20[0-3]\d)\b/);
+          if (ym) detectedYear = ym[1];
+        }
+        if (!detectedCourse) {
+          const cm = rowText.match(/(Film\s+Appreciation\s+Course|Online\s+Filmmaking\s+Course|Script\s+Writing|Cinematography\s+Course|Acting\s+Course|Filmmaking\s+Course)/i);
+          if (cm) detectedCourse = cm[1];
+        }
+      }
+
+      // =========================================================
+      // PASS 2: Header row detection (enhanced)
+      // =========================================================
+      let headerRowIdx = -1;
+      let headerMap = {};
 
       for (let i = 0; i < data2D.length; i++) {
         const row = data2D[i];
         if (!row || !Array.isArray(row)) continue;
-        
-        // Try to detect Batch and Year from text above the table headers
-        if (headerRowIdx === -1) {
-          for (let j = 0; j < row.length; j++) {
-            if (typeof row[j] === 'string') {
-              const val = row[j].trim();
-              const batchMatch = val.match(/(\d+)(?:st|nd|rd|th)?\s*(?:[Bb]atch|[Ff]ilm|[Cc]ourse)/);
-              if (batchMatch && !detectedBatch) {
-                detectedBatch = batchMatch[1];
-              }
-              const yearMatch = val.match(/(?:19|20)\d{2}/);
-              if (yearMatch && !detectedYear) {
-                detectedYear = yearMatch[0];
-              }
-            }
-          }
-        }
-        
-        let foundName = -1, foundEmail = -1, foundMobile = -1, foundAddress = -1, foundSN = -1, foundYear = -1, foundBatch = -1;
-        let foundGender = -1, foundBirthday = -1, foundProfession = -1, foundEducation = -1, foundWhatsapp = -1, foundPermanentAddress = -1;
-        
+
+        let foundName = -1, foundEmail = -1, foundMobile = -1, foundAddress = -1;
+        let foundSN = -1, foundYear = -1, foundBatch = -1;
+        let foundGender = -1, foundBirthday = -1, foundProfession = -1;
+        let foundEducation = -1, foundWhatsapp = -1, foundPermanentAddress = -1;
+
         for (let j = 0; j < row.length; j++) {
           if (!row[j] || typeof row[j] !== 'string') continue;
           const val = row[j].toLowerCase().trim();
-          
-          if (val.includes('name') || val.includes('student')) foundName = j;
+
+          if (val.includes('name') || val === 'student') foundName = j;
           if (val.includes('mail')) foundEmail = j;
-          if (val.includes('mobile') || val.includes('phone') || val.includes('contact')) foundMobile = j;
+          if (val.includes('mobile') || val.includes('phone') || val.includes('contact') || val.includes('telephone')) foundMobile = j;
           if (val.includes('whatsapp')) foundWhatsapp = j;
-          
+
           if (val.includes('permanent address')) foundPermanentAddress = j;
           else if (val.includes('present address') || val.includes('current address')) foundAddress = j;
-          else if (val.includes('address') || val.includes('city') || val.includes('location')) {
-            if (foundAddress === -1) foundAddress = j;
-          }
-          
-          if (val === 'sn' || val === 'no' || val === 's/n' || val === 'n.o.' || val.includes('serial')) foundSN = j;
+          else if ((val.includes('address') || val.includes('city') || val.includes('location')) && foundAddress === -1) foundAddress = j;
+
+          if (['sn', 'sl', 'sl.', 'no', 's/n', 'n.o.'].includes(val) || val.startsWith('sl.') || val.includes('serial') || val.includes('sl. no')) foundSN = j;
           if (val.includes('year') || val === 'yr') foundYear = j;
           if (val.includes('batch')) foundBatch = j;
-          
+
           if (val === 'gender' || val === 'sex') foundGender = j;
           if (val.includes('birth') || val === 'dob') foundBirthday = j;
           if (val.includes('profession') || val.includes('occupation') || val === 'job') foundProfession = j;
           if (val.includes('education') || val.includes('qualification') || val.includes('degree')) foundEducation = j;
         }
 
-        // If we found the 'Name' column and at least one contact column, we assume this is the header row
-        if (foundName !== -1 && (foundMobile !== -1 || foundEmail !== -1)) {
+        // Accept as header if Name + (contact OR address OR batch)
+        const hasContact = foundMobile !== -1 || foundEmail !== -1;
+        const hasEnoughContext = foundName !== -1 && (hasContact || foundAddress !== -1 || foundBatch !== -1);
+
+        if (hasEnoughContext) {
           headerRowIdx = i;
-          headerMap = { 
+          headerMap = {
             sn: foundSN, name: foundName, address: foundAddress, permanentAddress: foundPermanentAddress,
             mobile: foundMobile, whatsapp: foundWhatsapp, email: foundEmail, year: foundYear, batch: foundBatch,
             gender: foundGender, birthday: foundBirthday, profession: foundProfession, education: foundEducation
@@ -162,91 +220,181 @@ export default function BulkStudentImport({ onImportComplete }) {
         }
       }
 
-      if (headerRowIdx === -1) {
-        setErrorMsg("Could not detect the table headers automatically. Please ensure columns like 'Name of the Student' and 'Mobile' exist.");
-        setPreviewData([]);
-        return;
-      }
+      // =========================================================
+      // Smart per-row scanner: scans ALL cells and fills any missing field
+      // =========================================================
+      const smartScanRow = (row, base) => {
+        let { name, email, mobile, address, batch } = base;
+        const assignedCols = Object.values(headerMap).filter(v => v !== -1 && v !== undefined);
 
-      for (let i = headerRowIdx + 1; i < data2D.length; i++) {
-        const row = data2D[i];
-        if (!row || !Array.isArray(row) || row.length === 0) continue;
+        for (let j = 0; j < row.length; j++) {
+          const cellRaw = row[j] ? String(row[j]).trim() : '';
+          if (!cellRaw) continue;
 
-        const name = headerMap.name !== -1 && row[headerMap.name] ? String(row[headerMap.name]).trim() : '';
-        
-        let email = headerMap.email !== -1 && row[headerMap.email] ? String(row[headerMap.email]).trim() : '';
-        if (email) email = email.split(/[,/\n]/)[0].trim();
-        
-        let rawMobile = headerMap.mobile !== -1 && row[headerMap.mobile] ? String(row[headerMap.mobile]).trim() : '';
+          if (assignedCols.includes(j)) {
+            // Still check phone column for embedded email
+            if (j === headerMap.mobile && !email) {
+              const em = extractEmailsFromText(cellRaw);
+              if (em.length > 0) email = em[0];
+            }
+            continue;
+          }
+
+          if (!email) {
+            const em = extractEmailsFromText(cellRaw);
+            if (em.length > 0) { email = em[0]; continue; }
+          }
+          if (!mobile) {
+            const ph = extractPhonesFromText(cellRaw.replace(/@[\w.]+/g, ''));
+            if (ph.length > 0) { mobile = ph[0]; continue; }
+          }
+          if (!batch) {
+            const ordM = cellRaw.match(/^(\d+)(?:st|nd|rd|th)$/i);
+            if (ordM) { batch = ordM[1]; continue; }
+          }
+          if (!name && looksLikeName(cellRaw)) { name = cellRaw; continue; }
+          if (!address && looksLikeAddress(cellRaw)) { address = cellRaw; continue; }
+        }
+
+        return { name, email, mobile, address, batch };
+      };
+
+      // =========================================================
+      // Header-based parsing + smart augmentation per row
+      // =========================================================
+      const parseWithHeader = (row, rowIndex) => {
+        const hv = (key) => {
+          const col = headerMap[key];
+          return (col !== undefined && col !== -1 && row[col]) ? String(row[col]).trim() : '';
+        };
+
+        let name = hv('name');
+        let email = hv('email');
+        let rawMobile = hv('mobile');
+        let address = hv('address');
+        const permanentAddress = hv('permanentAddress');
+        const gender     = hv('gender');
+        const birthday   = hv('birthday');
+        const profession = hv('profession');
+        const education  = hv('education');
+        const whatsapp   = hv('whatsapp');
+        const snNo       = hv('sn') || String(rowIndex + 1);
+        const year       = hv('year') || detectedYear || new Date().getFullYear().toString();
+
+        // Batch column: normalize ordinals (1st → 1, 2nd → 2 ...)
+        let batch = normalizeBatch(hv('batch')) || detectedBatch || '';
+
+        // Extract email embedded inside any of phone / address / name fields
+        for (const field of [rawMobile, address, name]) {
+          if (!email && field) {
+            const em = extractEmailsFromText(field);
+            if (em.length > 0) email = em[0];
+          }
+        }
+
+        // Clean rawMobile: strip any embedded email, then extract a clean phone
         let mobile = '';
-
-        // Smart extraction of email and phone if combined in the phone field
         if (rawMobile) {
-          const emailRegex = /([a-zA-Z0-9._%-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,6})/;
-          const emailMatch = rawMobile.match(emailRegex);
-          if (emailMatch) {
-            if (!email) {
-              email = emailMatch[1];
-            }
-            // Remove the email string from the mobile field
-            rawMobile = rawMobile.replace(emailMatch[0], '').trim();
+          const embedded = extractEmailsFromText(rawMobile);
+          if (embedded.length > 0) {
+            if (!email) email = embedded[0];
+            rawMobile = rawMobile.replace(embedded[0], '').trim();
           }
-
-          // Split multiple phone numbers if present
-          const phoneParts = rawMobile.split(/[,/;\n]+/).map(p => p.trim()).filter(Boolean);
-          for (const part of phoneParts) {
-            const cleanPart = part.replace(/[^\d+]/g, '');
-            if (cleanPart.length >= 7) {
-              mobile = cleanPart;
-              // Add leading zero if dropped by Excel
-              if (mobile.length === 10 && mobile.startsWith('1')) {
-                mobile = '0' + mobile;
-              }
-              break;
-            }
-          }
-          // Landline or short number fallback
-          if (!mobile && phoneParts.length > 0) {
-            mobile = phoneParts[0].replace(/[^\d+]/g, '');
-          }
-        }
-        
-        // Skip completely empty rows
-        if (!name && !email && !mobile) continue;
-
-        const snNo = headerMap.sn !== -1 && row[headerMap.sn] ? String(row[headerMap.sn]).trim() : String(mappedData.length + 1);
-        const year = headerMap.year !== -1 && row[headerMap.year] ? String(row[headerMap.year]).trim() : detectedYear || new Date().getFullYear().toString();
-        let batch = headerMap.batch !== -1 && row[headerMap.batch] ? String(row[headerMap.batch]).trim() : detectedBatch || '';
-        
-        // Normalize batch like '1st' to '1'
-        if (batch) {
-          const normBatchMatch = batch.match(/^(\d+)(?:st|nd|rd|th)?$/i);
-          if (normBatchMatch) {
-            batch = normBatchMatch[1];
+          // Strip label artefacts like "Phone :" that appear in some cells
+          rawMobile = rawMobile.replace(/\bPhone\s*:?\s*/gi, '').trim();
+          const phones = extractPhonesFromText(rawMobile);
+          mobile = phones.length > 0 ? phones[0] : '';
+          if (!mobile && rawMobile.replace(/\D/g, '').length >= 7) {
+            mobile = rawMobile.replace(/[^\d+]/g, '');
           }
         }
 
-        const address = headerMap.address !== -1 && row[headerMap.address] ? String(row[headerMap.address]).trim() : '';
-        const permanentAddress = headerMap.permanentAddress !== -1 && row[headerMap.permanentAddress] ? String(row[headerMap.permanentAddress]).trim() : '';
-        const gender = headerMap.gender !== -1 && row[headerMap.gender] ? String(row[headerMap.gender]).trim() : '';
-        const birthday = headerMap.birthday !== -1 && row[headerMap.birthday] ? String(row[headerMap.birthday]).trim() : '';
-        const profession = headerMap.profession !== -1 && row[headerMap.profession] ? String(row[headerMap.profession]).trim() : '';
-        const education = headerMap.education !== -1 && row[headerMap.education] ? String(row[headerMap.education]).trim() : '';
-        const whatsapp = headerMap.whatsapp !== -1 && row[headerMap.whatsapp] ? String(row[headerMap.whatsapp]).trim() : '';
+        // Smart augmentation: fill any still-missing fields from unassigned cells
+        const aug = smartScanRow(row, { name, email, mobile, address, batch });
+        name    = aug.name    || name;
+        email   = aug.email   || email;
+        mobile  = aug.mobile  || mobile;
+        address = aug.address || address;
+        batch   = aug.batch   || batch || detectedBatch || '';
 
-        if (batch && !detectedBatch) {
-          detectedBatch = batch;
+        return { snNo, year, batch, name, address, permanentAddress, gender, birthday, profession, education, whatsapp, mobile, email, originalRow: row };
+      };
+
+      // =========================================================
+      // Fully headerless: Universal cell-scanner (last resort)
+      // =========================================================
+      const parseWithoutHeader = (row, rowIndex) => {
+        let name = '', email = '', mobile = '', address = '';
+        let batch = detectedBatch || '';
+        let year  = detectedYear  || new Date().getFullYear().toString();
+
+        for (let j = 0; j < row.length; j++) {
+          const cellRaw = row[j] ? String(row[j]).trim() : '';
+          if (!cellRaw) continue;
+
+          // Email
+          if (!email) {
+            const em = extractEmailsFromText(cellRaw);
+            if (em.length > 0) { email = em[0]; }
+          }
+          // Phone (strip email chars first)
+          if (!mobile) {
+            const cleaned = cellRaw.replace(/[a-zA-Z0-9._%-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,6}/g, '');
+            const ph = extractPhonesFromText(cleaned);
+            if (ph.length > 0) mobile = ph[0];
+          }
+          // Batch ordinal: 1st, 2nd, 3rd, 4th …
+          if (!batch) {
+            const ordM = cellRaw.match(/^(\d+)(?:st|nd|rd|th)$/i);
+            if (ordM) { batch = ordM[1]; continue; }
+          }
+          // Year
+          if (!year || year === new Date().getFullYear().toString()) {
+            const ym = cellRaw.match(/\b(19[5-9]\d|20[0-3]\d)\b/);
+            if (ym) year = ym[1];
+          }
+          if (!name && looksLikeName(cellRaw)) name = cellRaw;
+          if (!address && looksLikeAddress(cellRaw)) address = cellRaw;
         }
 
-        // Original row needs to be a standard object to pass gracefully, or we just pass the array
-        mappedData.push({ 
-          snNo, year, batch, name, address, permanentAddress, gender, birthday, 
-          profession, education, whatsapp, mobile, email, originalRow: row 
-        });
+        return { snNo: String(rowIndex + 1), year, batch, name, address, permanentAddress: '', gender: '', birthday: '', profession: '', education: '', whatsapp: '', mobile, email, originalRow: row };
+      };
+
+      // =========================================================
+      // BUILD FINAL mappedData
+      // =========================================================
+      const mappedData = [];
+
+      if (headerRowIdx !== -1) {
+        for (let i = headerRowIdx + 1; i < data2D.length; i++) {
+          const row = data2D[i];
+          if (!row || !Array.isArray(row) || row.every(c => !c)) continue;
+          const parsed = parseWithHeader(row, mappedData.length);
+          if (!parsed.name && !parsed.email && !parsed.mobile) continue;
+          mappedData.push(parsed);
+        }
+      } else {
+        // Fully headerless: scan every row
+        for (let i = 0; i < data2D.length; i++) {
+          const row = data2D[i];
+          if (!row || !Array.isArray(row) || row.every(c => !c)) continue;
+          const parsed = parseWithoutHeader(row, mappedData.length);
+          if (!parsed.name && !parsed.email && !parsed.mobile) continue;
+          if (!parsed.email && !parsed.mobile && !looksLikeName(parsed.name)) continue;
+          mappedData.push(parsed);
+        }
       }
 
-      if (detectedBatch) {
-        setBatchNumber(detectedBatch);
+      if (detectedBatch) setBatchNumber(detectedBatch);
+
+      // Auto-select the detected course from document title
+      if (detectedCourse) {
+        const lc = detectedCourse.toLowerCase();
+        if (lc.includes('appreciation'))        setCourses(['Film Appreciation Course']);
+        else if (lc.includes('filmmaking') || lc.includes('film')) setCourses(['Online Filmmaking Course']);
+        else if (lc.includes('script'))         setCourses(['Script Writing']);
+        else if (lc.includes('cinematography')) setCourses(['Cinematography']);
+        else if (lc.includes('acting'))         setCourses(['Acting']);
       }
 
       setPreviewData(mappedData);
