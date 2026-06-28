@@ -1538,7 +1538,7 @@ function CustomSmsSender() {
                   {info.isUnicode ? 'Unicode/Bengali' : 'Text/GSM'}
                 </span>
                 <span style={{ color: info.parts > 5 ? '#ef4444' : 'var(--text-secondary)', fontWeight: 600 }}>
-                  {info.parts} part{info.parts !== 1 ? 's' : ''}
+                  {info.parts} SMS
                 </span>
                 {validCount > 0 && (
                   <span style={{ color: 'var(--text-muted)' }}>
