@@ -1854,4 +1854,86 @@ export function startAnnouncementScheduler(io) {
   }, 10000);
 }
 
+// ─── Bulk SMS ─────────────────────────────────────────────────────────────────
+// POST /api/admin/sms/bulk
+// Body: { recipients: [{name, phone}], message: string, senderId?: string }
+// Returns: { sent: number, failed: number, results: [{name, phone, ok, error?}] }
+router.post('/sms/bulk', authenticateToken, requireRole('admin'), async (req, res) => {
+  try {
+    const { recipients, message, senderId } = req.body;
+
+    if (!recipients || !Array.isArray(recipients) || recipients.length === 0) {
+      return res.status(400).json({ error: 'No recipients provided.' });
+    }
+    if (!message || !message.trim()) {
+      return res.status(400).json({ error: 'Message cannot be empty.' });
+    }
+
+    const apiKey = process.env.SMS_API_KEY;
+    const defaultSenderId = process.env.SMS_SENDER_ID || 'BFICLS';
+    const finalSenderId = (senderId || defaultSenderId).trim();
+
+    if (!apiKey) {
+      return res.status(500).json({ error: 'SMS API key not configured on the server.' });
+    }
+
+    const results = [];
+    let sent = 0;
+    let failed = 0;
+
+    for (const recipient of recipients) {
+      const { name = '', phone = '' } = recipient;
+
+      // Sanitize phone: keep digits + leading +
+      const cleanPhone = phone.replace(/[^\d+]/g, '');
+      if (!cleanPhone || cleanPhone.length < 7) {
+        results.push({ name, phone, ok: false, error: 'Invalid phone number' });
+        failed++;
+        continue;
+      }
+
+      // Apply merge tags
+      const personalizedMsg = message.replace(/\{name\}/gi, name);
+
+      try {
+        const response = await fetch('https://login.smsinbd.com/api/external/v1/sms/send', {
+          method: 'POST',
+          headers: {
+            'X-API-KEY': apiKey,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            sender_id: finalSenderId,
+            phone: cleanPhone,
+            message: personalizedMsg
+          })
+        });
+
+        const data = await response.json().catch(() => ({}));
+
+        if (response.ok && (data.status === 'success' || data.success || response.status === 200)) {
+          results.push({ name, phone: cleanPhone, ok: true });
+          sent++;
+        } else {
+          const errMsg = data.message || data.error || `HTTP ${response.status}`;
+          results.push({ name, phone: cleanPhone, ok: false, error: errMsg });
+          failed++;
+        }
+      } catch (fetchErr) {
+        results.push({ name, phone: cleanPhone, ok: false, error: fetchErr.message });
+        failed++;
+      }
+
+      // Small delay to respect rate limits
+      await new Promise(r => setTimeout(r, 60));
+    }
+
+    res.status(200).json({ sent, failed, results });
+  } catch (error) {
+    console.error('[SMS Bulk] Error:', error);
+    res.status(500).json({ error: 'Internal server error during SMS sending.' });
+  }
+});
+
 export default router;
+

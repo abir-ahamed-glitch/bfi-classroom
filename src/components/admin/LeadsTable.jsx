@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { Search, Loader2, Users, Download, UserPlus, CheckCircle2, Copy, Send, X } from 'lucide-react';
+import { Search, Loader2, Users, Download, UserPlus, CheckCircle2, Copy, Send, X, MessageSquare } from 'lucide-react';
 import * as XLSX from 'xlsx';
+import BulkSmsModal from './BulkSmsModal';
 
 export default function LeadsTable({ refreshTrigger }) {
   const [leads, setLeads] = useState([]);
@@ -22,6 +23,10 @@ export default function LeadsTable({ refreshTrigger }) {
   // Success Modal State
   const [successData, setSuccessData] = useState(null);
   const [admittedEmails, setAdmittedEmails] = useState(new Set());
+
+  // SMS State
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [smsModalOpen, setSmsModalOpen] = useState(false);
 
   useEffect(() => {
     fetchLeads();
@@ -103,6 +108,40 @@ export default function LeadsTable({ refreshTrigger }) {
       (lead.mobile_number || '').toLowerCase().includes(term)
     );
   });
+
+  // ── Checkbox helpers ──────────────────────────────────────────────────────
+  const allFilteredSelected = filteredLeads.length > 0 && filteredLeads.every(l => selectedIds.has(l.user_id));
+  const someSelected = filteredLeads.some(l => selectedIds.has(l.user_id));
+
+  const toggleSelectAll = () => {
+    if (allFilteredSelected) {
+      setSelectedIds(prev => {
+        const next = new Set(prev);
+        filteredLeads.forEach(l => next.delete(l.user_id));
+        return next;
+      });
+    } else {
+      setSelectedIds(prev => {
+        const next = new Set(prev);
+        filteredLeads.forEach(l => next.add(l.user_id));
+        return next;
+      });
+    }
+  };
+
+  const toggleSelectOne = (id) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  // Build SMS recipients from selected rows
+  const smsRecipients = filteredLeads
+    .filter(l => selectedIds.has(l.user_id))
+    .map(l => ({ name: l.full_name || '', phone: l.mobile_number || '' }));
 
   const handleAdmitClick = (lead) => {
     setSelectedLead(lead);
@@ -186,6 +225,56 @@ export default function LeadsTable({ refreshTrigger }) {
 
   return (
     <div style={{ marginTop: '2rem' }}>
+      {/* ── SMS Toolbar (appears when selection > 0) ──────────────────────── */}
+      {selectedIds.size > 0 && (
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          gap: '1rem', flexWrap: 'wrap',
+          background: 'linear-gradient(135deg, rgba(99,102,241,0.15), rgba(139,92,246,0.12))',
+          border: '1px solid rgba(99,102,241,0.35)',
+          borderRadius: '12px', padding: '0.85rem 1.25rem',
+          marginBottom: '1rem',
+          animation: 'slideDown 0.2s ease'
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+            <div style={{
+              background: 'linear-gradient(135deg, #6366f1, #8b5cf6)',
+              color: 'white', borderRadius: '8px',
+              padding: '0.3rem 0.7rem', fontWeight: 700, fontSize: '0.9rem'
+            }}>
+              {selectedIds.size} selected
+            </div>
+            <span style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
+              Ready to send SMS
+            </span>
+          </div>
+          <div style={{ display: 'flex', gap: '0.6rem' }}>
+            <button
+              onClick={() => setSelectedIds(new Set())}
+              style={{
+                background: 'transparent', border: '1px solid rgba(99,102,241,0.35)',
+                color: 'var(--text-secondary)', borderRadius: '8px',
+                padding: '0.45rem 0.9rem', cursor: 'pointer', fontSize: '0.85rem'
+              }}
+            >
+              Deselect All
+            </button>
+            <button
+              onClick={() => setSmsModalOpen(true)}
+              style={{
+                background: 'linear-gradient(135deg, #6366f1, #8b5cf6)',
+                border: 'none', color: 'white', borderRadius: '8px',
+                padding: '0.45rem 1.1rem', cursor: 'pointer', fontWeight: 700,
+                fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.45rem',
+                boxShadow: '0 4px 12px rgba(99,102,241,0.4)'
+              }}
+            >
+              <MessageSquare size={15} /> Send SMS to {selectedIds.size}
+            </button>
+          </div>
+        </div>
+      )}
+
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '1rem' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           <div style={{ background: 'rgba(56, 189, 248, 0.1)', color: 'var(--accent-primary)', padding: '0.5rem', borderRadius: '8px' }}>
@@ -221,6 +310,17 @@ export default function LeadsTable({ refreshTrigger }) {
         <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
           <thead>
             <tr style={{ background: 'rgba(0,0,0,0.02)', color: 'var(--text-muted)', fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+              {/* Select-all checkbox */}
+              <th style={{ padding: '1.25rem 1rem 1.25rem 1.5rem', borderBottom: '1px solid var(--glass-border)', width: '40px' }}>
+                <input
+                  type="checkbox"
+                  checked={allFilteredSelected}
+                  ref={el => { if (el) el.indeterminate = someSelected && !allFilteredSelected; }}
+                  onChange={toggleSelectAll}
+                  style={{ width: '16px', height: '16px', cursor: 'pointer', accentColor: '#6366f1' }}
+                  title={allFilteredSelected ? 'Deselect all' : 'Select all'}
+                />
+              </th>
               <th style={{ padding: '1.25rem 1.5rem', borderBottom: '1px solid var(--glass-border)', fontWeight: '600' }}>Name</th>
               <th style={{ padding: '1.25rem 1.5rem', borderBottom: '1px solid var(--glass-border)', fontWeight: '600' }}>Email</th>
               <th style={{ padding: '1.25rem 1.5rem', borderBottom: '1px solid var(--glass-border)', fontWeight: '600' }}>Mobile</th>
@@ -238,17 +338,29 @@ export default function LeadsTable({ refreshTrigger }) {
                 </td>
               </tr>
             ) : (
-              filteredLeads.map(lead => (
+              filteredLeads.map(lead => {
+                const isChecked = selectedIds.has(lead.user_id);
+                return (
                 <tr 
                   key={lead.user_id}
                   className="animate-slide-up"
                   style={{ 
                     borderBottom: '1px solid var(--glass-border)', 
-                    transition: 'background 0.2s'
+                    transition: 'background 0.2s',
+                    background: isChecked ? 'rgba(99,102,241,0.06)' : 'transparent'
                   }} 
-                  onMouseEnter={(e) => e.currentTarget.style.background = 'rgba(14, 165, 233, 0.03)'} 
-                  onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                  onMouseEnter={(e) => { if (!isChecked) e.currentTarget.style.background = 'rgba(14, 165, 233, 0.03)'; }} 
+                  onMouseLeave={(e) => { e.currentTarget.style.background = isChecked ? 'rgba(99,102,241,0.06)' : 'transparent'; }}
                 >
+                  {/* Row checkbox */}
+                  <td style={{ padding: '1.25rem 1rem 1.25rem 1.5rem' }}>
+                    <input
+                      type="checkbox"
+                      checked={isChecked}
+                      onChange={() => toggleSelectOne(lead.user_id)}
+                      style={{ width: '16px', height: '16px', cursor: 'pointer', accentColor: '#6366f1' }}
+                    />
+                  </td>
                   <td style={{ padding: '1.25rem 1.5rem' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
                       <div style={{ width: '36px', height: '36px', borderRadius: '50%', background: 'linear-gradient(135deg, var(--accent-primary), var(--accent-secondary))', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold', fontSize: '1rem', flexShrink: 0 }}>
@@ -280,7 +392,8 @@ export default function LeadsTable({ refreshTrigger }) {
                     </button>
                   </td>
                 </tr>
-              ))
+                );
+              })
             )}
           </tbody>
         </table>
@@ -402,6 +515,14 @@ export default function LeadsTable({ refreshTrigger }) {
             </div>
           </div>
         </div>
+      )}
+
+      {/* ── Bulk SMS Modal ──────────────────────────────────────────────────── */}
+      {smsModalOpen && smsRecipients.length > 0 && (
+        <BulkSmsModal
+          recipients={smsRecipients}
+          onClose={() => setSmsModalOpen(false)}
+        />
       )}
     </div>
   );
