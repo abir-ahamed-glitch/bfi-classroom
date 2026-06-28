@@ -1318,7 +1318,7 @@ function CustomSmsSender() {
   const [expanded,    setExpanded]    = useState(false);
   const [numbers,     setNumbers]     = useState('');
   const [message,     setMessage]     = useState('');
-  const [senderId,    setSenderId]    = useState('BFICLS');
+  const [senderId,    setSenderId]    = useState('8809617626169');
   const [sending,     setSending]     = useState(false);
   const [progress,    setProgress]    = useState(0);
   const [results,     setResults]     = useState(null);
@@ -1471,15 +1471,15 @@ function CustomSmsSender() {
           {/* Sender ID */}
           <div>
             <label style={{ display: 'block', marginBottom: '0.4rem', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-secondary)' }}>
-              Sender ID <span style={{ fontWeight: 400, color: 'var(--text-muted)' }}>(max 11 chars)</span>
+              Sender ID <span style={{ fontWeight: 400, color: 'var(--text-muted)' }}>(max 15 chars)</span>
             </label>
             <input
               type="text"
               className="input-glass"
               value={senderId}
-              maxLength={11}
+              maxLength={15}
               onChange={e => setSenderId(e.target.value.replace(/\s/g, ''))}
-              placeholder="e.g. BFICLS"
+              placeholder="e.g. 8809617626169"
               disabled={sending}
               style={{ paddingLeft: '1rem', fontFamily: 'monospace', letterSpacing: '0.05em', maxWidth: '220px' }}
             />
@@ -1560,7 +1560,9 @@ function CustomSmsSender() {
                   {results.results.filter(r => !r.ok).map((r, i) => (
                     <div key={i} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.82rem', padding: '0.25rem 0', borderBottom: '1px solid rgba(239,68,68,0.1)' }}>
                       <span style={{ fontFamily: 'monospace', color: 'var(--text-primary)' }}>{r.phone}{r.name ? ` (${r.name})` : ''}</span>
-                      <span style={{ color: '#f87171' }}>{r.error}</span>
+                      <span style={{ color: '#f87171' }}>
+                        {typeof r.error === 'object' ? (r.error.message || r.error.code || JSON.stringify(r.error)) : String(r.error || 'Failed')}
+                      </span>
                     </div>
                   ))}
                 </div>

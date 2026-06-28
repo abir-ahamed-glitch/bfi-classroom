@@ -1,4 +1,4 @@
-﻿import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   X, Send, MessageSquare, Users, CheckCircle2,
   XCircle, Loader2, ChevronDown, ChevronUp, AlertCircle, Smartphone
@@ -16,7 +16,7 @@ function charInfo(text) {
 
 export default function BulkSmsModal({ recipients, onClose }) {
   const [message,      setMessage]      = useState('');
-  const [senderId,     setSenderId]     = useState('BFICLS');
+  const [senderId,     setSenderId]     = useState('8809617626169');
   const [sending,      setSending]      = useState(false);
   const [progress,     setProgress]     = useState(0);
   const [results,      setResults]      = useState(null);
@@ -187,9 +187,9 @@ export default function BulkSmsModal({ recipients, onClose }) {
               type="text"
               className="input-glass"
               value={senderId}
-              maxLength={11}
+              maxLength={15}
               onChange={e => setSenderId(e.target.value.replace(/\s/g, ''))}
-              placeholder="e.g. BFICLS"
+              placeholder="e.g. 8809617626169"
               style={{ paddingLeft: '1rem', fontFamily: 'monospace', letterSpacing: '0.05em' }}
               disabled={sending}
             />
@@ -326,7 +326,9 @@ export default function BulkSmsModal({ recipients, onClose }) {
                   {results.results.filter(r => !r.ok).map((r, i) => (
                     <div key={i} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.82rem', padding: '0.3rem 0', borderBottom: '1px solid rgba(239,68,68,0.1)' }}>
                       <span style={{ color: 'var(--text-primary)' }}>{r.name} <span style={{ color: 'var(--text-muted)', fontFamily: 'monospace' }}>({r.phone})</span></span>
-                      <span style={{ color: '#f87171', fontSize: '0.78rem' }}>{r.error}</span>
+                      <span style={{ color: '#f87171', fontSize: '0.78rem' }}>
+                        {typeof r.error === 'object' ? (r.error.message || r.error.code || JSON.stringify(r.error)) : String(r.error || 'Failed')}
+                      </span>
                     </div>
                   ))}
                 </div>

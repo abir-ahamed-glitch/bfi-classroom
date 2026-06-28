@@ -1870,7 +1870,7 @@ router.post('/sms/bulk', authenticateToken, requireRole('admin'), async (req, re
     }
 
     const apiKey = process.env.SMS_API_KEY;
-    const defaultSenderId = process.env.SMS_SENDER_ID || 'BFICLS';
+    const defaultSenderId = process.env.SMS_SENDER_ID || '8809617626169';
     const finalSenderId = (senderId || defaultSenderId).trim();
 
     if (!apiKey) {
@@ -1915,7 +1915,18 @@ router.post('/sms/bulk', authenticateToken, requireRole('admin'), async (req, re
           results.push({ name, phone: cleanPhone, ok: true });
           sent++;
         } else {
-          const errMsg = data.message || data.error || `HTTP ${response.status}`;
+          let errMsg = 'Failed to send';
+          if (data.message) {
+            errMsg = data.message;
+          } else if (data.error) {
+            if (typeof data.error === 'object') {
+              errMsg = data.error.message || data.error.code || JSON.stringify(data.error);
+            } else {
+              errMsg = data.error;
+            }
+          } else {
+            errMsg = `HTTP ${response.status}`;
+          }
           results.push({ name, phone: cleanPhone, ok: false, error: errMsg });
           failed++;
         }
