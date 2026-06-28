@@ -1,8 +1,12 @@
 import React, { useState } from 'react';
 import { createPortal } from 'react-dom';
 import * as XLSX from 'xlsx';
-import { UploadCloud, CheckCircle2, FileSpreadsheet, X, AlertCircle, History, Download, Clapperboard, Film } from 'lucide-react';
+import mammoth from 'mammoth';
+import * as pdfjsLib from 'pdfjs-dist';
+import { UploadCloud, CheckCircle2, FileSpreadsheet, X, AlertCircle, History, Download, Clapperboard, Film, FileText } from 'lucide-react';
 import { getOrdinalSuffix } from '../../utils/formatUtils';
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.mjs`;
 
 export default function BulkStudentImport({ onImportComplete }) {
   const [isOpen, setIsOpen] = useState(false);
@@ -86,12 +90,69 @@ export default function BulkStudentImport({ onImportComplete }) {
     setFile(uploadedFile);
 
     const reader = new FileReader();
-    reader.onload = (evt) => {
-      const bstr = evt.target.result;
-      const wb = XLSX.read(bstr, { type: 'binary' });
-      const wsname = wb.SheetNames[0];
-      const ws = wb.Sheets[wsname];
-      const data2D = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: "" });
+    reader.onload = async (evt) => {
+      let data2D = [];
+      const fileExt = uploadedFile.name.split('.').pop().toLowerCase();
+
+      try {
+        if (fileExt === 'docx' || fileExt === 'doc') {
+          const result = await mammoth.convertToHtml({ arrayBuffer: evt.target.result });
+          const parser = new DOMParser();
+          const doc = parser.parseFromString(result.value, 'text/html');
+          const tables = doc.querySelectorAll('table');
+          tables.forEach(table => {
+            const rows = table.querySelectorAll('tr');
+            rows.forEach(row => {
+              const cols = Array.from(row.querySelectorAll('th, td')).map(td => td.innerText.trim());
+              data2D.push(cols);
+            });
+          });
+          // Fallback if no tables but there are paragraphs
+          if (data2D.length === 0) {
+             const paragraphs = doc.querySelectorAll('p');
+             paragraphs.forEach(p => {
+               const text = p.innerText.trim();
+               if (text) {
+                 // Split by tabs, multiple spaces, pipes, or commas
+                 data2D.push(text.split(/\s{2,}|\t|\||,/));
+               }
+             });
+          }
+        } else if (fileExt === 'pdf') {
+          const loadingTask = pdfjsLib.getDocument(new Uint8Array(evt.target.result));
+          const pdf = await loadingTask.promise;
+          for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+            const page = await pdf.getPage(pageNum);
+            const content = await page.getTextContent();
+            
+            const rowsMap = new Map();
+            content.items.forEach(item => {
+              const y = Math.round(item.transform[5] / 5) * 5; // Group items within 5 pixels vertically
+              if (!rowsMap.has(y)) rowsMap.set(y, []);
+              rowsMap.get(y).push(item);
+            });
+            
+            const sortedY = Array.from(rowsMap.keys()).sort((a, b) => b - a);
+            sortedY.forEach(y => {
+              const rowItems = rowsMap.get(y).sort((a, b) => a.transform[4] - b.transform[4]);
+              const rowStrings = rowItems.map(item => item.str.trim()).filter(Boolean);
+              if (rowStrings.length > 0) data2D.push(rowStrings);
+            });
+          }
+        } else {
+          // Default to XLSX / CSV
+          const bstr = new Uint8Array(evt.target.result);
+          const wb = XLSX.read(bstr, { type: 'array' });
+          const wsname = wb.SheetNames[0];
+          const ws = wb.Sheets[wsname];
+          data2D = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: "" });
+        }
+      } catch (parseErr) {
+        console.error("Parse error:", parseErr);
+        setErrorMsg("Failed to parse file. Please ensure it's a valid Excel, Word, or PDF document.");
+        setPreviewData([]);
+        return;
+      }
 
       // =========================================================
       // UNIVERSAL SMART CELL SCANNER helpers
@@ -399,7 +460,7 @@ export default function BulkStudentImport({ onImportComplete }) {
 
       setPreviewData(mappedData);
     };
-    reader.readAsBinaryString(uploadedFile);
+    reader.readAsArrayBuffer(uploadedFile);
   };
 
   const handleImport = async () => {
@@ -640,7 +701,7 @@ export default function BulkStudentImport({ onImportComplete }) {
 
                     <input 
                       type="file" 
-                      accept=".xlsx, .xls, .csv" 
+                      accept=".xlsx, .xls, .csv, .doc, .docx, .pdf" 
                       onChange={handleFileUpload} 
                       style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', opacity: 0, cursor: 'pointer', zIndex: 10 }} 
                       title="Click to upload"
@@ -648,7 +709,7 @@ export default function BulkStudentImport({ onImportComplete }) {
                     
                     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.75rem', pointerEvents: 'none', position: 'relative', zIndex: 5 }}>
                       <div className={file ? "" : "bulk-import-icon-bg"} style={{ width: '64px', height: '64px', borderRadius: '50%', background: file ? 'rgba(192, 39, 74, 0.1)' : undefined, display: 'flex', alignItems: 'center', justifyContent: 'center', color: file ? 'var(--accent-primary)' : 'var(--text-muted)', transition: 'all 0.3s', boxShadow: '0 8px 20px rgba(0,0,0,0.05)', border: file ? '1px solid rgba(192,39,74,0.2)' : undefined }}>
-                        {file ? <FileSpreadsheet size={32} /> : <Film size={32} />}
+                        {file ? (file.name.endsWith('.pdf') ? <FileText size={32} /> : file.name.match(/\.docx?$/) ? <FileText size={32} /> : <FileSpreadsheet size={32} />) : <Film size={32} />}
                       </div>
                       
                       {file ? (
@@ -662,7 +723,7 @@ export default function BulkStudentImport({ onImportComplete }) {
                       ) : (
                         <>
                           <h3 style={{ margin: 0, color: 'var(--text-primary)', fontSize: '1.1rem' }}>Drop your roster file here</h3>
-                          <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: '0.9rem' }}>Upload an XLSX or CSV containing student details</p>
+                          <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: '0.9rem' }}>Upload an XLSX, CSV, DOC/DOCX, or PDF containing student details</p>
                           <p style={{ margin: 0, color: 'var(--text-secondary)', fontSize: '0.75rem', background: 'var(--bg-tertiary)', padding: '0.3rem 0.8rem', borderRadius: '8px', marginTop: '0.25rem', maxWidth: '350px', lineHeight: 1.4 }}>
                             Auto-detects: Name, Email, Mobile, WhatsApp, Address, Gender, DOB, Profession, Education, Batch
                           </p>
