@@ -14,6 +14,10 @@ function charInfo(text) {
   const singleLimit = isUnicode ? 70 : 160;
   const multiLimit  = isUnicode ? 67 : 153;
   
+  if (!text || !text.trim()) {
+    return { len, parts: 0, remaining: singleLimit - len, isUnicode, singleLimit, multiLimit };
+  }
+  
   let parts = 1;
   let remaining = singleLimit - len;
   
@@ -191,25 +195,25 @@ export default function BulkSmsModal({ recipients, onClose }) {
 
           {/* Sender ID */}
           <div>
-            <label style={{ display: 'block', marginBottom: '0.4rem', fontSize: '0.85rem', color: 'var(--text-secondary)', fontWeight: 600 }}>
-              Sender ID <span style={{ fontWeight: 400, color: 'var(--text-muted)' }}>(max 11 chars)</span>
+            <label className="sms-label" style={{ display: 'block', marginBottom: '0.4rem' }}>
+              Sender ID
             </label>
-            <input
-              type="text"
-              className="input-glass"
+            <select
+              className="sms-select-dropdown"
               value={senderId}
-              maxLength={15}
-              onChange={e => setSenderId(e.target.value.replace(/\s/g, ''))}
-              placeholder="e.g. 8809617626169"
-              style={{ paddingLeft: '1rem', fontFamily: 'monospace', letterSpacing: '0.05em' }}
+              onChange={e => setSenderId(e.target.value)}
+              style={{ maxWidth: 'none' }}
               disabled={sending}
-            />
+            >
+              <option value="8809617626169">8809617626169 (Non-Masked)</option>
+              <option value="8809606776711">8809606776711 (Non-Masked)</option>
+            </select>
           </div>
 
           {/* Message Composer */}
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem' }}>
-              <label style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', fontWeight: 600 }}>
+              <label className="sms-label">
                 Message
               </label>
               <button
@@ -229,17 +233,12 @@ export default function BulkSmsModal({ recipients, onClose }) {
 
             <textarea
               ref={textareaRef}
-              className="input-glass"
+              className="sms-textarea"
               value={message}
               onChange={e => setMessage(e.target.value)}
               placeholder={'Type your message here... Use {name} to personalize.'}
               rows={5}
               disabled={sending}
-              style={{
-                width: '100%', resize: 'vertical', padding: '0.85rem 1rem',
-                fontFamily: 'inherit', lineHeight: 1.6, borderRadius: '10px',
-                boxSizing: 'border-box'
-              }}
             />
 
             {/* Character counter */}

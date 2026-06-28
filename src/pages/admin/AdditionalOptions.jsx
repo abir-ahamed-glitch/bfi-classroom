@@ -1321,6 +1321,10 @@ function calculateSmsInfo(text) {
   const singleLimit = isUnicode ? 70 : 160;
   const multiLimit  = isUnicode ? 67 : 153;
   
+  if (!text || !text.trim()) {
+    return { len, parts: 0, remaining: singleLimit - len, isUnicode, singleLimit, multiLimit };
+  }
+  
   let parts = 1;
   let remaining = singleLimit - len;
   
@@ -1405,13 +1409,7 @@ function CustomSmsSender() {
   const reset = () => { setResults(null); setProgress(0); setError(''); };
 
   return (
-    <div style={{
-      marginBottom: '1.5rem',
-      border: '1px solid rgba(99,102,241,0.25)',
-      borderRadius: '14px',
-      overflow: 'hidden',
-      background: 'rgba(99,102,241,0.04)'
-    }}>
+    <div className="sms-panel-container">
       {/* ── Header / Toggle ─────────────────────────────────────────── */}
       <button
         type="button"
@@ -1457,7 +1455,7 @@ function CustomSmsSender() {
           {/* Phone numbers input */}
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem' }}>
-              <label style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-secondary)' }}>
+              <label className="sms-label">
                 Phone Numbers
               </label>
               {validCount > 0 && (
@@ -1471,13 +1469,12 @@ function CustomSmsSender() {
               )}
             </div>
             <textarea
-              className="input-glass"
+              className="sms-textarea sms-textarea--mono"
               value={numbers}
               onChange={e => setNumbers(e.target.value)}
               placeholder={"Enter numbers (one per line or comma-separated):\n01712345678\n01812345679, 01912345670\n\nWith names:\nRahim: 01712345678\n01812345679 - Karim"}
               rows={5}
               disabled={sending}
-              style={{ width: '100%', resize: 'vertical', padding: '0.85rem 1rem', fontFamily: 'monospace', fontSize: '0.85rem', lineHeight: 1.6, borderRadius: '10px', boxSizing: 'border-box' }}
             />
             <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.3rem' }}>
               Tip: Use <code style={{ background: 'rgba(99,102,241,0.1)', borderRadius: '4px', padding: '0.1rem 0.35rem', color: '#818cf8' }}>Name: 017xxx</code> format to personalize messages with <code style={{ background: 'rgba(99,102,241,0.1)', borderRadius: '4px', padding: '0.1rem 0.35rem', color: '#818cf8' }}>{'{name}'}</code>
@@ -1486,25 +1483,24 @@ function CustomSmsSender() {
 
           {/* Sender ID */}
           <div>
-            <label style={{ display: 'block', marginBottom: '0.4rem', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-secondary)' }}>
-              Sender ID <span style={{ fontWeight: 400, color: 'var(--text-muted)' }}>(max 15 chars)</span>
+            <label className="sms-label" style={{ display: 'block', marginBottom: '0.4rem' }}>
+              Sender ID
             </label>
-            <input
-              type="text"
-              className="input-glass"
+            <select
+              className="sms-select-dropdown"
               value={senderId}
-              maxLength={15}
-              onChange={e => setSenderId(e.target.value.replace(/\s/g, ''))}
-              placeholder="e.g. 8809617626169"
+              onChange={e => setSenderId(e.target.value)}
               disabled={sending}
-              style={{ paddingLeft: '1rem', fontFamily: 'monospace', letterSpacing: '0.05em', maxWidth: '220px' }}
-            />
+            >
+              <option value="8809617626169">8809617626169 (Non-Masked)</option>
+              <option value="8809606776711">8809606776711 (Non-Masked)</option>
+            </select>
           </div>
 
           {/* Message */}
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem' }}>
-              <label style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-secondary)' }}>Message</label>
+              <label className="sms-label">Message</label>
               <button
                 type="button"
                 onClick={insertTag}
@@ -1520,13 +1516,12 @@ function CustomSmsSender() {
             </div>
             <textarea
               ref={taRef}
-              className="input-glass"
+              className="sms-textarea"
               value={message}
               onChange={e => setMessage(e.target.value)}
               placeholder={'Type your SMS message... Use {name} to personalize per recipient.'}
               rows={4}
               disabled={sending}
-              style={{ width: '100%', resize: 'vertical', padding: '0.85rem 1rem', fontFamily: 'inherit', lineHeight: 1.6, borderRadius: '10px', boxSizing: 'border-box' }}
             />
             <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '0.4rem', fontSize: '0.78rem' }}>
               <span style={{ color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
