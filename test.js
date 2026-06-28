@@ -1,1 +1,17 @@
-const db = require('better-sqlite3')('server/database.sqlite'); console.log(db.prepare('SELECT id, sender_id, receiver_id, content, message_type, attachment_type, original_file_name FROM messages WHERE message_type = \'file\' ORDER BY id DESC LIMIT 5').all());
+require('dotenv').config({path:'.env'});
+const http = require('http');
+const req = http.request({
+  hostname: 'localhost',
+  port: 3001,
+  path: '/api/admin/students/leads',
+  method: 'GET',
+  headers: {
+    'Authorization': 'Bearer ' + require('jsonwebtoken').sign({id: 1, role: 'admin'}, require('./server/config/security.js').getJwtSecret())
+  }
+}, res => {
+  let data = '';
+  res.on('data', d => data += d);
+  res.on('end', () => console.log('Length:', JSON.parse(data).length));
+});
+req.on('error', console.error);
+req.end();

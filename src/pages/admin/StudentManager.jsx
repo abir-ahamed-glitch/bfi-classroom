@@ -758,24 +758,24 @@ export default function StudentManager() {
               </div>
             </div>
 
-            <div style={{ padding: '1.5rem', background: 'rgba(255,255,255,0.02)', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.05)' }}>
+            <div style={{ padding: '1.5rem', background: 'var(--bg-tertiary)', borderRadius: '12px', border: '1px solid var(--comment-line)' }}>
               <h3 style={{ fontSize: '1rem', marginBottom: '1rem', color: 'var(--text-secondary)' }}>Select Enrolled Courses</h3>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: '1rem' }}>
                 {availableCourses.map(course => (
-                  <label key={course.name} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', background: formData.courses.includes(course.name) ? 'rgba(56, 189, 248, 0.1)' : 'transparent', padding: '0.5rem 1rem', borderRadius: '8px', border: '1px solid', borderColor: formData.courses.includes(course.name) ? 'var(--accent-primary)' : 'rgba(255,255,255,0.1)', transition: 'all 0.2s' }}>
+                  <label key={course.name} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', background: formData.courses.includes(course.name) ? 'rgba(201, 168, 76, 0.15)' : 'var(--bg-secondary)', padding: '0.5rem 1rem', borderRadius: '8px', border: '1px solid', borderColor: formData.courses.includes(course.name) ? 'var(--accent-primary)' : 'var(--comment-line)', transition: 'all 0.2s' }}>
                     <input 
                       type="checkbox" 
                       checked={formData.courses.includes(course.name)} 
                       onChange={() => handleCourseChange(course.name)}
-                      style={{ width: '16px', height: '16px' }}
+                      style={{ width: '16px', height: '16px', accentColor: 'var(--accent-primary)' }}
                     />
-                    <span style={{ fontSize: '0.9rem' }}>{course.name}</span>
+                    <span style={{ fontSize: '0.9rem', color: 'var(--text-primary)' }}>{course.name}</span>
                   </label>
                 ))}
               </div>
             </div>
 
-            <div style={{ padding: '1.5rem', background: 'rgba(255,255,255,0.02)', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.05)' }}>
+            <div style={{ padding: '1.5rem', background: 'var(--bg-tertiary)', borderRadius: '12px', border: '1px solid var(--comment-line)' }}>
               <h3 style={{ fontSize: '1rem', marginBottom: '1rem', color: 'var(--text-secondary)' }}>Optional: Manual Credentials</h3>
               <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '1rem' }}>If left blank, secure credentials will be generated automatically.</p>
               
@@ -1541,6 +1541,9 @@ export default function StudentManager() {
           z-index: 10;
           background: rgba(15, 23, 42, 0.95);
           backdrop-filter: blur(12px);
+        }
+        [data-mode="light"] .student-manager-table th {
+          background: rgba(255, 255, 255, 0.96);
         }
         .student-manager-table .student-table-col-id {
           width: 9%;

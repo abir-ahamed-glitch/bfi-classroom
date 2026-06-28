@@ -1032,6 +1032,13 @@ export function initializeDatabase() {
   } catch (error) {
     console.error('Error creating scheduled_sms table:', error);
   }
+  // Add title column to bulk_import_history for rename feature
+  try {
+    db.prepare(`ALTER TABLE bulk_import_history ADD COLUMN title TEXT`).run();
+    console.log('✅ Added title column to bulk_import_history');
+  } catch (error) {
+    // Column already exists — safe to ignore
+  }
 }
 
 export default db;

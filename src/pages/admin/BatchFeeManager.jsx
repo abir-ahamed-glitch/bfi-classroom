@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   DollarSign, Plus, Trash2, RefreshCw, Save, AlertCircle, CheckCircle2,
-  Film, GraduationCap, Edit3, X, ChevronDown
+  Film, GraduationCap, Edit3, X, ChevronDown, Search, ArrowUpDown
 } from 'lucide-react';
 import './BatchFeeManager.css';
 
@@ -63,11 +63,29 @@ export default function BatchFeeManager() {
   const [availableBatches, setAvailableBatches] = useState([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [suggestionIndex, setSuggestionIndex] = useState(-1);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [sortDirection, setSortDirection] = useState('desc');
 
-  const filteredBatches = availableBatches.filter(batch => {
-    if (!form.batch_number) return true;
-    return String(batch).toLowerCase().includes(form.batch_number.toLowerCase());
+  const filteredFees = fees.filter(fee => {
+    if (!searchQuery) return true;
+    const q = searchQuery.toLowerCase();
+    const batchMatch = String(fee.batch_number).toLowerCase().includes(q);
+    const courseMatch = String(fee.course_name).toLowerCase().includes(q);
+    const badgeMatch = (fee.phase1_fee > 0 || fee.phase2_fee > 0 ? 'filmmaking' : 'appreciation').includes(q);
+    return batchMatch || courseMatch || badgeMatch;
   });
+
+  const filteredBatches = availableBatches
+    .filter(batch => {
+      if (!form.batch_number) return true;
+      return String(batch).toLowerCase().includes(form.batch_number.toLowerCase());
+    })
+    .sort((a, b) => {
+      const numA = parseFloat(a) || 0;
+      const numB = parseFloat(b) || 0;
+      if (numB !== numA) return numB - numA;
+      return String(b).localeCompare(String(a));
+    });
 
   const isBatchDefined = (batch) => {
     return fees.some(fee => fee.course_name === form.course_name && String(fee.batch_number) === String(batch));
@@ -176,7 +194,8 @@ export default function BatchFeeManager() {
       await apiFetch('/batch-fees', { method: 'POST', body: JSON.stringify(payload) });
       showToast(editingId ? 'Fee updated successfully.' : 'Fee added successfully.');
       setEditingId(null);
-      setForm(DEFAULT_FORM);
+      // Keep selected course, reset batch number and fee fields back to placeholder state
+      setForm(f => ({ ...f, batch_number: '', phase1_fee: '', phase2_fee: '', full_fee: '' }));
       await fetchFees();
     } catch (err) {
       showToast(err.message, 'error');
@@ -405,10 +424,66 @@ export default function BatchFeeManager() {
 
       {/* ── Table Card ── */}
       <div className="bfm-card">
-        <div className="bfm-card-header">
-          <DollarSign size={16} />
-          <span>Defined Batch Fees</span>
-          <span className="bfm-count-badge">{fees.length}</span>
+        <div className="bfm-card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.75rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.55rem' }}>
+            <DollarSign size={16} />
+            <span>Defined Batch Fees</span>
+            <span className="bfm-count-badge">{filteredFees.length}</span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginLeft: 'auto' }}>
+            <button
+              type="button"
+              className="bfm-sort-btn"
+              onClick={() => setSortDirection(prev => prev === 'desc' ? 'asc' : 'desc')}
+              title={sortDirection === 'desc' ? 'Sorted: Newest first (Click to sort oldest first)' : 'Sorted: Oldest first (Click to sort newest first)'}
+            >
+              <ArrowUpDown size={14} />
+              <span>{sortDirection === 'desc' ? 'Newest First' : 'Oldest First'}</span>
+            </button>
+            
+            <div className="bfm-search-wrapper" style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+              <Search size={14} style={{ position: 'absolute', left: '10px', color: 'var(--text-muted)' }} />
+              <input 
+                type="text" 
+                placeholder="Search batches..." 
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+                style={{
+                  padding: '0.4rem 0.6rem 0.4rem 2rem',
+                  fontSize: '0.85rem',
+                  borderRadius: '8px',
+                  border: '1px solid rgba(255, 255, 255, 0.08)',
+                  background: 'rgba(0, 0, 0, 0.2)',
+                  color: 'var(--text-primary)',
+                  width: '180px',
+                  transition: 'all 0.2s',
+                  textTransform: 'none',
+                  letterSpacing: 'normal'
+                }}
+                className="bfm-search-input"
+              />
+              {searchQuery && (
+                <button 
+                  type="button" 
+                  onClick={() => setSearchQuery('')}
+                  style={{
+                    position: 'absolute',
+                    right: '8px',
+                    background: 'none',
+                    border: 'none',
+                    color: 'var(--text-muted)',
+                    cursor: 'pointer',
+                    padding: '2px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center'
+                  }}
+                >
+                  <X size={12} />
+                </button>
+              )}
+            </div>
+          </div>
         </div>
 
         {loading ? (
@@ -422,7 +497,14 @@ export default function BatchFeeManager() {
             <p>No batch fees defined yet.</p>
             <p className="bfm-empty-sub">Add a fee definition above to get started.</p>
           </div>
+        ) : filteredFees.length === 0 ? (
+          <div className="bfm-empty" style={{ padding: '3rem 1.5rem' }}>
+            <Search size={36} style={{ color: 'var(--text-muted)', marginBottom: '0.5rem' }} />
+            <p>No matching batch fees found.</p>
+            <p className="bfm-empty-sub">Try adjusting your search terms.</p>
+          </div>
         ) : (
+
           <div className="bfm-table-wrapper">
             <table className="bfm-table">
               <thead>
@@ -437,7 +519,16 @@ export default function BatchFeeManager() {
                 </tr>
               </thead>
               <tbody>
-                {fees.map(fee => {
+                {[...filteredFees].sort((a, b) => {
+                  const numA = parseFloat(a.batch_number) || 0;
+                  const numB = parseFloat(b.batch_number) || 0;
+                  const diff = numA - numB;
+                  if (diff !== 0) {
+                    return sortDirection === 'asc' ? diff : -diff;
+                  }
+                  const strCompare = String(a.batch_number).localeCompare(String(b.batch_number));
+                  return sortDirection === 'asc' ? strCompare : -strCompare;
+                }).map(fee => {
                   const isFm = fee.phase1_fee > 0 || fee.phase2_fee > 0;
                   const total = isFm
                     ? (fee.phase1_fee || 0) + (fee.phase2_fee || 0)
@@ -447,7 +538,7 @@ export default function BatchFeeManager() {
                       <td>
                         <span className={`bfm-course-badge ${isFm ? 'bfm-course-badge--film' : 'bfm-course-badge--workshop'}`}>
                           {isFm ? <Film size={11} /> : <GraduationCap size={11} />}
-                          {isFm ? 'Filmmaking' : 'Workshop'}
+                          {isFm ? 'Filmmaking' : 'Appreciation'}
                         </span>
                       </td>
                       <td><span className="bfm-batch-num">Batch {fee.batch_number}</span></td>

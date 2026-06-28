@@ -527,10 +527,6 @@ router.delete('/:id/students/:studentId', authenticateToken, requireRole('admin'
       return res.status(404).json({ error: 'Batch not found' });
     }
 
-    if (batch.status === 'completed' || batch.status === 'archived') {
-      return res.status(400).json({ error: 'Cannot remove students from a completed or archived batch' });
-    }
-
     const association = db.prepare('SELECT id FROM batch_students WHERE batch_id = ? AND student_id = ?').get(batchId, studentId);
     if (!association) {
       return res.status(404).json({ error: 'Student not found in this batch' });

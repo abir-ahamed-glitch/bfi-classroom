@@ -24,6 +24,7 @@ export default function BulkRegisteredStudentImport({ onImportComplete }) {
   const [editingId, setEditingId] = useState(null);
   const [editTitle, setEditTitle] = useState('');
   const [menuOpenId, setMenuOpenId] = useState(null);
+  const [renameError, setRenameError] = useState('');
 
   const fetchHistory = async () => {
     setLoadingHistory(true);
@@ -43,7 +44,8 @@ export default function BulkRegisteredStudentImport({ onImportComplete }) {
   };
 
   const handleRename = async (id) => {
-    if (!editTitle.trim()) return;
+    if (!editTitle.trim()) { setRenameError('Title cannot be empty.'); return; }
+    setRenameError('');
     try {
       const res = await fetch(`/api/admin/imports/history/${id}/rename`, {
         method: 'PUT',
@@ -56,13 +58,14 @@ export default function BulkRegisteredStudentImport({ onImportComplete }) {
       if (res.ok) {
         setHistoryList(historyList.map(item => item.id === id ? { ...item, title: editTitle.trim() } : item));
         setEditingId(null);
+        setRenameError('');
       } else {
         const data = await res.json();
-        alert(data.error || 'Failed to rename history record.');
+        setRenameError(data.error || 'Failed to rename. Please try again.');
       }
     } catch (err) {
       console.error(err);
-      alert('Failed to rename history record.');
+      setRenameError('Network error. Please try again.');
     }
   };
 
@@ -684,33 +687,41 @@ export default function BulkRegisteredStudentImport({ onImportComplete }) {
                     <div key={item.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '1rem 1.25rem', background: 'rgba(255,255,255,0.02)', border: '1px solid var(--glass-border)', borderRadius: '12px', position: 'relative' }}>
                       <div style={{ flex: 1, marginRight: '1rem' }}>
                         {editingId === item.id ? (
-                          <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', marginBottom: '0.25rem' }} onClick={e => e.stopPropagation()}>
-                            <input 
-                              type="text" 
-                              value={editTitle}
-                              onChange={e => setEditTitle(e.target.value)}
-                              className="modern-input"
-                              style={{ padding: '0.3rem 0.5rem', fontSize: '0.85rem', borderRadius: '6px', flex: 1, minWidth: '150px', background: 'var(--bg-tertiary)', border: '1px solid var(--glass-border)', color: 'var(--text-primary)' }}
-                              autoFocus
-                              onKeyDown={e => {
-                                if (e.key === 'Enter') handleRename(item.id);
-                                if (e.key === 'Escape') setEditingId(null);
-                              }}
-                            />
-                            <button 
-                              onClick={() => handleRename(item.id)}
-                              className="modern-btn modern-btn--primary"
-                              style={{ padding: '0.3rem 0.6rem', fontSize: '0.75rem', height: 'auto', minWidth: 'auto' }}
-                            >
-                              Save
-                            </button>
-                            <button 
-                              onClick={() => setEditingId(null)}
-                              className="modern-btn modern-btn--secondary"
-                              style={{ padding: '0.3rem 0.6rem', fontSize: '0.75rem', height: 'auto', minWidth: 'auto' }}
-                            >
-                              Cancel
-                            </button>
+                          <div onClick={e => e.stopPropagation()}>
+                            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', marginBottom: '0.25rem' }}>
+                              <input 
+                                type="text" 
+                                value={editTitle}
+                                onChange={e => { setEditTitle(e.target.value); setRenameError(''); }}
+                                className="modern-input"
+                                style={{ padding: '0.3rem 0.5rem', fontSize: '0.85rem', borderRadius: '6px', flex: 1, minWidth: '150px', background: 'var(--bg-tertiary)', border: renameError ? '1px solid #f87171' : '1px solid var(--glass-border)', color: 'var(--text-primary)' }}
+                                autoFocus
+                                onKeyDown={e => {
+                                  if (e.key === 'Enter') handleRename(item.id);
+                                  if (e.key === 'Escape') { setEditingId(null); setRenameError(''); }
+                                }}
+                              />
+                              <button 
+                                onClick={() => handleRename(item.id)}
+                                className="modern-btn modern-btn--primary"
+                                style={{ padding: '0.3rem 0.6rem', fontSize: '0.75rem', height: 'auto', minWidth: 'auto' }}
+                              >
+                                Save
+                              </button>
+                              <button 
+                                onClick={() => { setEditingId(null); setRenameError(''); }}
+                                className="modern-btn modern-btn--secondary"
+                                style={{ padding: '0.3rem 0.6rem', fontSize: '0.75rem', height: 'auto', minWidth: 'auto' }}
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                            {renameError && (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginTop: '0.3rem', color: '#f87171', fontSize: '0.78rem', fontWeight: 500 }}>
+                                <AlertCircle size={12} />
+                                {renameError}
+                              </div>
+                            )}
                           </div>
                         ) : (
                           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.25rem' }}>

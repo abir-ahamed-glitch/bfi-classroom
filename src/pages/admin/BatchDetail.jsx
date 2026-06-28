@@ -91,8 +91,8 @@ function StatCard({ icon, value, label, colorVariant }) {
   };
 
   return (
-    <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '12px', padding: '1.25rem', display: 'flex', alignItems: 'center', gap: '1rem' }}>
-      <div style={{ width: '48px', height: '48px', borderRadius: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center', background: getIconBg(), color: getIconColor() }}>
+    <div className="batch-stat-card">
+      <div style={{ width: '48px', height: '48px', borderRadius: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center', background: getIconBg(), color: getIconColor(), flexShrink: 0 }}>
         {icon}
       </div>
       <div>
@@ -857,7 +857,7 @@ export default function BatchDetail() {
                 {batchData.status}
               </span>
               <span className={`batch-course-badge ${isFilmmaking ? 'filmmaking' : 'workshop'}`}>
-                {isFilmmaking ? 'FILMMAKING' : 'WORKSHOP'}
+                {isFilmmaking ? 'FILMMAKING' : 'APPRECIATION'}
               </span>
             </div>
           </div>
@@ -931,7 +931,7 @@ export default function BatchDetail() {
               ) : (
                 <div style={{ marginTop: '1rem' }} className="batch-phase2-section">
                   <div className="batch-phase-label purple">Phase 2</div>
-                  <div style={{ background: 'rgba(255,255,255,0.01)', border: '1px dashed rgba(255,255,255,0.05)', borderRadius: '12px', padding: '2rem', textAlign: 'center', color: 'var(--text-muted)' }}>
+                  <div className="batch-info-card-dashed" style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)' }}>
                     Phase 2 data will appear once students advance from Phase 1.
                   </div>
                 </div>
@@ -950,7 +950,7 @@ export default function BatchDetail() {
             </div>
           )}
 
-          <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '12px', padding: '1.5rem', marginTop: '1rem' }}>
+          <div className="batch-info-card" style={{ marginTop: '1rem' }}>
             <h3 style={{ margin: '0 0 0.25rem 0', fontSize: '1.1rem', fontFamily: 'Outfit, sans-serif' }}>Student Progression Funnel</h3>
             <p style={{ margin: '0 0 1.5rem 0', color: 'var(--text-muted)', fontSize: '0.85rem' }}>Drop-off at each stage</p>
             <ResponsiveContainer width="100%" height={220}>
@@ -974,7 +974,7 @@ export default function BatchDetail() {
               <Wallet size={14} /> Fees & Certificates
             </div>
             <div className="batch-fee-cert-row">
-              <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '12px', padding: '1.5rem', display: 'flex', flexDirection: 'column' }}>
+              <div className="batch-info-card" style={{ display: 'flex', flexDirection: 'column' }}>
                 <div className="fee-summary-row">
                   <div className="fee-summary-label">
                     <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#34d399' }}></span>
@@ -1007,7 +1007,7 @@ export default function BatchDetail() {
                 </Link>
               </div>
 
-              <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '12px', padding: '1.5rem', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+              <div className="batch-info-card" style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '1rem' }}>
                   <div style={{ fontSize: '1.5rem' }}>✅</div>
                   <div style={{ fontSize: '1.1rem', fontWeight: 600, color: 'var(--text-primary)' }}>
@@ -1054,7 +1054,7 @@ export default function BatchDetail() {
         </div>
 
         {studentsData.length === 0 ? (
-          <div style={{ textAlign: 'center', padding: '4rem 1rem', border: '1px dashed rgba(255,255,255,0.1)', borderRadius: '12px' }}>
+          <div className="batch-info-card-dashed" style={{ textAlign: 'center', padding: '4rem 1rem' }}>
             <UserPlus size={48} style={{ opacity: 0.2, margin: '0 auto 1rem auto', color: 'var(--primary)' }} />
             <h3 style={{ margin: '0 0 0.5rem 0', color: 'var(--text-primary)' }}>No students in this batch yet</h3>
             <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: '0.9rem' }}>Click '+ Add Students' to assign students to this batch</p>
@@ -1205,15 +1205,13 @@ export default function BatchDetail() {
                           <Trash2 size={16} />
                         </button>
                         
-                        {!isBatchLocked && (
-                          <button 
-                            onClick={() => handleRemoveStudentClick(s.user_id)}
-                            className="modern-btn modern-btn--danger"
-                            style={{ padding: '0.35rem 0.6rem', fontSize: '0.75rem', borderRadius: '6px', display: 'flex', alignItems: 'center', gap: '0.35rem' }}
-                          >
-                            <Trash2 size={14} /> Remove
-                          </button>
-                        )}
+                        <button 
+                          onClick={() => handleRemoveStudentClick(s.user_id)}
+                          className="modern-btn modern-btn--danger"
+                          style={{ padding: '0.35rem 0.6rem', fontSize: '0.75rem', borderRadius: '6px', display: 'flex', alignItems: 'center', gap: '0.35rem' }}
+                        >
+                          <Trash2 size={14} /> Remove
+                        </button>
 
                         {/* Inline Popover for Remove Confirmation */}
                         {removePopoverId === s.user_id && (

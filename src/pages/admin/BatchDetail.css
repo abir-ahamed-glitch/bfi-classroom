@@ -278,3 +278,98 @@
     order: -1;
   }
 }
+
+/* Card definitions for BatchDetail */
+.batch-stat-card {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 12px;
+  padding: 1.25rem;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.batch-info-card {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 12px;
+  padding: 1.5rem;
+}
+
+.batch-info-card-dashed {
+  background: rgba(255, 255, 255, 0.01);
+  border: 1px dashed rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  padding: 1.5rem;
+}
+
+/* Light Mode Visibility Overrides */
+[data-mode="light"] .batch-stat-card {
+  background: #ffffff !important;
+  border-color: rgba(0, 0, 0, 0.08) !important;
+  box-shadow: 0 4px 12px rgba(31, 38, 135, 0.02);
+}
+
+[data-mode="light"] .batch-info-card {
+  background: #ffffff !important;
+  border-color: rgba(0, 0, 0, 0.08) !important;
+  box-shadow: 0 4px 12px rgba(31, 38, 135, 0.02);
+}
+
+[data-mode="light"] .batch-info-card-dashed {
+  background: rgba(0, 0, 0, 0.01) !important;
+  border-color: rgba(0, 0, 0, 0.12) !important;
+}
+
+[data-mode="light"] .batch-timeline::before {
+  background: rgba(0, 0, 0, 0.08) !important;
+}
+
+[data-mode="light"] .batch-timeline-dot {
+  background: #f8fafc !important; /* matches slate-50 background */
+  border-color: var(--accent-primary) !important;
+}
+
+[data-mode="light"] .batch-timeline-transition {
+  color: var(--text-primary) !important;
+}
+
+[data-mode="light"] .batch-timeline-timestamp {
+  color: var(--text-muted) !important;
+}
+
+[data-mode="light"] .batch-timeline-reason {
+  color: var(--text-secondary) !important;
+}
+
+[data-mode="light"] .batch-timeline-trigger {
+  color: var(--text-muted) !important;
+}
+
+/* Recharts Funnel Chart Light Mode Ticks */
+[data-mode="light"] .recharts-cartesian-axis-tick-value {
+  fill: var(--text-secondary) !important;
+  font-weight: 500;
+}
+
+[data-mode="light"] .recharts-cartesian-grid-line {
+  stroke: rgba(0, 0, 0, 0.06) !important;
+}
+
+[data-mode="light"] .recharts-tooltip-cursor {
+  fill: rgba(0, 0, 0, 0.02) !important;
+}
+
+/* Light Mode Batch Meta Chips */
+[data-mode="light"] .batch-meta-chip {
+  background: var(--bg-tertiary) !important;
+  border-color: var(--comment-line) !important;
+  color: var(--text-secondary) !important;
+}
+
+[data-mode="light"] .batch-meta-chip svg {
+  color: var(--text-muted) !important;
+}
+
+
