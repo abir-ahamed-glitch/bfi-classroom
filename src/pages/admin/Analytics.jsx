@@ -1008,12 +1008,14 @@ export default function Analytics() {
       const willBeChecked = !currentValue;
 
       if (stepField === 'step4_completed') {
-        if (!e?.step1_completed) {
-          setConfirmConfig({ title: 'Action Restricted', message: 'Cannot update "Completed Course" because "Admission Confirmed" is not yet completed.', confirmText: 'OK', isAlert: true, onConfirm: () => {} });
+        if (willBeChecked) {
+          if (!e?.step1_completed) {
+            setConfirmConfig({ title: 'Action Restricted', message: 'Cannot check "Completed Course" because "Admission Confirmed" is not yet completed.', confirmText: 'OK', isAlert: true, onConfirm: () => {} });
+            return;
+          }
+          openAcademicModal(student, enrollmentId);
           return;
         }
-        openAcademicModal(student, enrollmentId);
-        return;
       }
 
       if (willBeChecked) {
@@ -1050,10 +1052,25 @@ export default function Analytics() {
     }
   };
 
-  // ---- Academic Modal handlers ----
   const openAcademicModal = (student, courseId) => {
     setAcademicError('');
     const enrollment = student.enrollments.find(e => e.id === courseId);
+    const isOnlineFilmmaking = enrollment?.course_name === 'Online Filmmaking Course';
+    const isAdmitted = isOnlineFilmmaking ? enrollment?.step3_completed : enrollment?.step1_completed;
+
+    if (!isAdmitted) {
+      setConfirmConfig({
+        title: 'Action Restricted',
+        message: isOnlineFilmmaking
+          ? 'Cannot update academic records because Phase 2: Admitted is not yet completed.'
+          : 'Cannot update exam results because Admission Confirmed is not yet completed.',
+        confirmText: 'OK',
+        isAlert: true,
+        onConfirm: () => {}
+      });
+      return;
+    }
+
     setAcademicStudent({ ...student, enrollment });
     setAcademicCourseId(courseId);
     

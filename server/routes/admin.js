@@ -1160,6 +1160,16 @@ router.put('/students/:id/academic-records/:courseId', authenticateToken, requir
       return res.status(404).json({ error: 'Course enrollment not found.' });
     }
 
+    const isOnlineFilmmaking = enrollment.course_name === 'Online Filmmaking Course';
+    const isAdmitted = isOnlineFilmmaking ? enrollment.step3_completed === 1 : enrollment.step1_completed === 1;
+    if (!isAdmitted) {
+      return res.status(400).json({ 
+        error: isOnlineFilmmaking 
+          ? 'Cannot update academic records because Phase 2: Admitted is not yet completed.' 
+          : 'Cannot update exam results because Admission Confirmed is not yet completed.' 
+      });
+    }
+
     // Custom flow for all courses except Online Filmmaking Course (no attendance, no assignments, score out of 100)
     if (enrollment.course_name !== 'Online Filmmaking Course') {
       const exam = parseInt(exam_written) || 0;

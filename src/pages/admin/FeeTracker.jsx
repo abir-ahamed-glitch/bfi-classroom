@@ -116,6 +116,22 @@ const FeeTracker = () => {
       const enrollment = fullStudent.enrollments?.find(e => e.course_name === s.course_name);
       if (!enrollment) throw new Error('Enrollment not found for this course.');
 
+      const isOnlineFilmmaking = enrollment.course_name === 'Online Filmmaking Course';
+      const isAdmitted = isOnlineFilmmaking ? enrollment.step3_completed === 1 : enrollment.step1_completed === 1;
+
+      if (!isAdmitted) {
+        setConfirmConfig({
+          title: 'Action Restricted',
+          message: isOnlineFilmmaking
+            ? 'Cannot update academic records because Phase 2: Admitted is not yet completed.'
+            : 'Cannot update exam results because Admission Confirmed is not yet completed.',
+          confirmText: 'OK',
+          isAlert: true,
+          onConfirm: () => {}
+        });
+        return;
+      }
+
       setAcademicStudent({ ...fullStudent, enrollment });
       setAcademicCourseId(enrollment.id);
       setAcademicFormData({
