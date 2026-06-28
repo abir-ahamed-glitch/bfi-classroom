@@ -330,7 +330,6 @@ router.get('/students/leads', authenticateToken, requireRole('admin'), (req, res
       FROM users u
       LEFT JOIN student_profiles p ON u.id = p.user_id
       WHERE u.role = 'student'
-        AND (u.username IS NULL OR u.username = '')
         AND (p.batch_number IS NULL OR p.batch_number = '')
       ORDER BY u.created_at DESC
     `).all();
