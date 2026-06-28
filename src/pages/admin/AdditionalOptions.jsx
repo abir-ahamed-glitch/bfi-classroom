@@ -1347,7 +1347,41 @@ function CustomSmsSender() {
   const [error,       setError]       = useState('');
   const taRef = useRef(null);
 
+  // Registered Student Search State
+  const [allStudents, setAllStudents] = useState([]);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const searchContainerRef = useRef(null);
+
   const info = calculateSmsInfo(message);
+
+  // Fetch all leads when expanded
+  useEffect(() => {
+    if (expanded && allStudents.length === 0) {
+      fetch('/api/admin/students/leads', {
+        headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
+      })
+      .then(res => res.json())
+      .then(data => {
+        if (Array.isArray(data)) {
+          setAllStudents(data);
+        }
+      })
+      .catch(err => console.error('Error loading students for search:', err));
+    }
+  }, [expanded, allStudents.length]);
+
+  // Click outside to close search suggestions
+  useEffect(() => {
+    const handleOutside = (e) => {
+      if (searchContainerRef.current && !searchContainerRef.current.contains(e.target)) {
+        setShowSuggestions(false);
+      }
+    };
+    document.addEventListener('mousedown', handleOutside);
+    return () => document.removeEventListener('mousedown', handleOutside);
+  }, []);
+
 
 
   // Parse the raw textarea into {name, phone} pairs
@@ -1451,6 +1485,97 @@ function CustomSmsSender() {
       {expanded && (
         <div style={{ padding: '0 1.25rem 1.25rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
           <div style={{ height: '1px', background: 'rgba(99,102,241,0.15)', marginBottom: '0.25rem' }} />
+
+          {/* Search Registered Students */}
+          <div ref={searchContainerRef} style={{ position: 'relative' }}>
+            <label className="sms-label" style={{ display: 'block', marginBottom: '0.4rem' }}>
+              Search &amp; Add Registered Student
+            </label>
+            <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+              <input
+                type="text"
+                className="sms-textarea"
+                style={{ paddingRight: '2.5rem', height: '42px', fontSize: '0.9rem' }}
+                placeholder="Type name, email, or phone number to search..."
+                value={searchQuery}
+                onFocus={() => setShowSuggestions(true)}
+                onChange={e => {
+                  setSearchQuery(e.target.value);
+                  setShowSuggestions(true);
+                }}
+                disabled={sending}
+              />
+              <div style={{ position: 'absolute', right: '0.85rem', top: '50%', transform: 'translateY(-50%)', display: 'flex', alignItems: 'center', color: 'var(--text-muted)' }}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                </svg>
+              </div>
+            </div>
+            
+            {showSuggestions && searchQuery.trim() && (
+              <div style={{
+                position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 100,
+                maxHeight: '220px', overflowY: 'auto',
+                borderRadius: '10px', marginTop: '0.35rem',
+                boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1)',
+                backdropFilter: 'blur(20px)', WebkitBackdropFilter: 'blur(20px)'
+              }}
+              className="sms-suggestions-container"
+              >
+                {allStudents
+                  .filter(s => {
+                    const q = searchQuery.toLowerCase();
+                    const name = (s.full_name || '').toLowerCase();
+                    const email = (s.email || '').toLowerCase();
+                    const phone = (s.mobile_number || '').toLowerCase();
+                    return name.includes(q) || email.includes(q) || phone.includes(q);
+                  })
+                  .slice(0, 10)
+                  .map((student, idx) => (
+                    <button
+                      key={idx}
+                      type="button"
+                      onClick={() => {
+                        const formatted = `${student.full_name || 'Student'}: ${student.mobile_number || ''}`;
+                        setNumbers(prev => {
+                          const current = prev.trim();
+                          return current ? `${current}\n${formatted}` : formatted;
+                        });
+                        setSearchQuery('');
+                        setShowSuggestions(false);
+                      }}
+                      style={{
+                        width: '100%', padding: '0.65rem 1rem', display: 'flex', flexDirection: 'column', gap: '0.15rem',
+                        alignItems: 'flex-start', background: 'transparent', border: 'none', cursor: 'pointer',
+                        textAlign: 'left', transition: 'background 0.2s'
+                      }}
+                      className="sms-suggestion-item"
+                    >
+                      <span style={{ fontWeight: 600, fontSize: '0.85rem', color: 'var(--text-primary)' }}>
+                        {student.full_name}
+                      </span>
+                      <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', display: 'flex', gap: '0.5rem' }}>
+                        <span>📞 {student.mobile_number}</span>
+                        <span>·</span>
+                        <span>✉ {student.email}</span>
+                      </span>
+                    </button>
+                  ))
+                }
+                {allStudents.filter(s => {
+                  const q = searchQuery.toLowerCase();
+                  const name = (s.full_name || '').toLowerCase();
+                  const email = (s.email || '').toLowerCase();
+                  const phone = (s.mobile_number || '').toLowerCase();
+                  return name.includes(q) || email.includes(q) || phone.includes(q);
+                }).length === 0 && (
+                  <div style={{ padding: '1rem', textAlign: 'center', fontSize: '0.82rem', color: 'var(--text-muted)' }}>
+                    No students match your search
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
 
           {/* Phone numbers input */}
           <div>
