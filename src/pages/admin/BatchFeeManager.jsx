@@ -57,6 +57,7 @@ export default function BatchFeeManager() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState(DEFAULT_FORM);
+  const [formMode, setFormMode] = useState('custom'); // 'custom' or 'default'
   const [editingId, setEditingId] = useState(null);
   const [toast, setToast] = useState(null);
   const [deletingId, setDeletingId] = useState(null);
@@ -72,7 +73,9 @@ export default function BatchFeeManager() {
     const batchMatch = String(fee.batch_number).toLowerCase().includes(q);
     const courseMatch = String(fee.course_name).toLowerCase().includes(q);
     const badgeMatch = (fee.phase1_fee > 0 || fee.phase2_fee > 0 ? 'filmmaking' : 'appreciation').includes(q);
-    return batchMatch || courseMatch || badgeMatch;
+    const isDefault = fee.batch_number === 'DEFAULT';
+    const defaultMatch = isDefault && 'default course fee'.includes(q);
+    return batchMatch || courseMatch || badgeMatch || defaultMatch;
   });
 
   const filteredBatches = availableBatches
@@ -143,8 +146,10 @@ export default function BatchFeeManager() {
   useEffect(() => { fetchFees(); }, [fetchFees]);
 
   useEffect(() => {
-    fetchAvailableBatches(form.course_name);
-  }, [form.course_name, fetchAvailableBatches]);
+    if (formMode === 'custom') {
+      fetchAvailableBatches(form.course_name);
+    }
+  }, [form.course_name, formMode, fetchAvailableBatches]);
 
   const selectedCourse = COURSE_OPTIONS.find(c => c.value === form.course_name);
   const isFilmmaking = selectedCourse?.type === 'filmmaking';
@@ -153,6 +158,19 @@ export default function BatchFeeManager() {
     setForm(f => ({
       ...f,
       course_name: value,
+      batch_number: formMode === 'default' ? 'DEFAULT' : '',
+      phase1_fee: '',
+      phase2_fee: '',
+      full_fee: '',
+    }));
+  };
+
+  const handleFormModeChange = (mode) => {
+    if (editingId) return;
+    setFormMode(mode);
+    setForm(f => ({
+      ...f,
+      batch_number: mode === 'default' ? 'DEFAULT' : '',
       phase1_fee: '',
       phase2_fee: '',
       full_fee: '',
@@ -161,6 +179,8 @@ export default function BatchFeeManager() {
 
   const handleEdit = (fee) => {
     setEditingId(fee.id);
+    const isDef = fee.batch_number === 'DEFAULT';
+    setFormMode(isDef ? 'default' : 'custom');
     setForm({
       course_name: fee.course_name,
       batch_number: String(fee.batch_number),
@@ -173,12 +193,13 @@ export default function BatchFeeManager() {
 
   const handleCancelEdit = () => {
     setEditingId(null);
+    setFormMode('custom');
     setForm(DEFAULT_FORM);
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!form.batch_number.trim()) {
+    if (formMode === 'custom' && !form.batch_number.trim()) {
       showToast('Please enter a batch number.', 'error');
       return;
     }
@@ -186,15 +207,15 @@ export default function BatchFeeManager() {
     try {
       const payload = {
         course_name: form.course_name,
-        batch_number: form.batch_number.trim(),
+        batch_number: formMode === 'default' ? 'DEFAULT' : form.batch_number.trim(),
         phase1_fee: isFilmmaking ? parseInt(form.phase1_fee, 10) || 0 : 0,
         phase2_fee: isFilmmaking ? parseInt(form.phase2_fee, 10) || 0 : 0,
         full_fee: !isFilmmaking ? parseInt(form.full_fee, 10) || 0 : 0,
       };
       await apiFetch('/batch-fees', { method: 'POST', body: JSON.stringify(payload) });
-      showToast(editingId ? 'Fee updated successfully.' : 'Fee added successfully.');
+      showToast(editingId ? 'Fee updated successfully.' : 'Fee saved successfully.');
       setEditingId(null);
-      // Keep selected course, reset batch number and fee fields back to placeholder state
+      setFormMode('custom');
       setForm(f => ({ ...f, batch_number: '', phase1_fee: '', phase2_fee: '', full_fee: '' }));
       await fetchFees();
     } catch (err) {
@@ -247,17 +268,42 @@ export default function BatchFeeManager() {
           {editingId ? (
             <>
               <Edit3 size={16} />
-              <span>Edit Batch Fee</span>
+              <span>{formMode === 'default' ? 'Edit Default Course Fee' : 'Edit Customized Batch Fee'}</span>
             </>
           ) : (
             <>
               <Plus size={16} />
-              <span>Add Batch Fee</span>
+              <span>{formMode === 'default' ? 'Default Course Fee' : 'Customize Batch Fee'}</span>
             </>
           )}
         </div>
 
         <form onSubmit={handleSubmit} className="bfm-form">
+          {/* Fee Type / Target Selector (Tabs) */}
+          {!editingId && (
+            <div className="bfm-field">
+              <label>Configuration Type</label>
+              <div className="bfm-course-pills" style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  className={`bfm-course-pill ${formMode === 'custom' ? 'active' : ''}`}
+                  onClick={() => handleFormModeChange('custom')}
+                  style={{ flex: 1, justifyContent: 'center', py: '0.5rem' }}
+                >
+                  Customize Batch Fee
+                </button>
+                <button
+                  type="button"
+                  className={`bfm-course-pill ${formMode === 'default' ? 'active' : ''}`}
+                  onClick={() => handleFormModeChange('default')}
+                  style={{ flex: 1, justifyContent: 'center', py: '0.5rem' }}
+                >
+                  Default Course Fee
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Course selector */}
           <div className="bfm-field">
             <label>Course</label>
@@ -270,6 +316,8 @@ export default function BatchFeeManager() {
                     type="button"
                     className={`bfm-course-pill ${form.course_name === opt.value ? 'active' : ''}`}
                     onClick={() => handleCourseChange(opt.value)}
+                    disabled={!!editingId}
+                    style={editingId ? { opacity: 0.6, cursor: 'not-allowed' } : {}}
                   >
                     <Icon size={14} />
                     {opt.label}
@@ -279,82 +327,105 @@ export default function BatchFeeManager() {
             </div>
           </div>
 
-          {/* Batch number */}
-          <div className="bfm-field">
-            <label htmlFor="bfm-batch">Batch Number</label>
-            <div className="bfm-input-wrapper">
-              <input
-                id="bfm-batch"
-                type="text"
-                className="bfm-input"
-                placeholder="e.g. 53, 75, 76A…"
-                value={form.batch_number}
-                onChange={e => {
-                  setForm(f => ({ ...f, batch_number: e.target.value }));
-                  setSuggestionIndex(-1);
-                  setShowSuggestions(true);
-                }}
-                onFocus={() => {
-                  setShowSuggestions(true);
-                  setSuggestionIndex(-1);
-                }}
-                onBlur={() => {
-                  setTimeout(() => setShowSuggestions(false), 200);
-                }}
-                onKeyDown={handleKeyDown}
-                disabled={!!editingId}
-                autoComplete="off"
-              />
-              {!editingId && filteredBatches.length > 0 && (
-                <button
-                  type="button"
-                  className={`bfm-dropdown-toggle ${showSuggestions ? 'open' : ''}`}
-                  onClick={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    setShowSuggestions(prev => !prev);
+          {/* Batch number (Conditional) */}
+          {formMode === 'custom' ? (
+            <div className="bfm-field">
+              <label htmlFor="bfm-batch">Batch Number</label>
+              <div className="bfm-input-wrapper">
+                <input
+                  id="bfm-batch"
+                  type="text"
+                  className="bfm-input"
+                  placeholder="e.g. 53, 75, 76A…"
+                  value={form.batch_number}
+                  onChange={e => {
+                    setForm(f => ({ ...f, batch_number: e.target.value }));
+                    setSuggestionIndex(-1);
+                    setShowSuggestions(true);
                   }}
-                  tabIndex={-1}
-                >
-                  <ChevronDown size={16} />
-                </button>
-              )}
-              {showSuggestions && filteredBatches.length > 0 && (
-                <div className="bfm-suggestions-dropdown">
-                  {filteredBatches.map((batch, index) => {
-                    const defined = isBatchDefined(batch);
-                    return (
-                      <div
-                        key={batch}
-                        className={`bfm-suggestion-item ${index === suggestionIndex ? 'active' : ''} ${defined ? 'defined' : ''}`}
-                        onMouseDown={(e) => {
-                          e.preventDefault();
-                        }}
-                        onClick={() => {
-                          if (defined) {
-                            showToast(`The course fee for Batch ${batch} is already defined. To edit this course fee, please see Defined Batch Fees below.`, 'error');
-                          } else {
-                            setForm(f => ({ ...f, batch_number: String(batch) }));
-                            setShowSuggestions(false);
-                          }
-                        }}
-                      >
-                        <span>{batch}</span>
-                        {defined && (
-                          <span style={{ fontSize: '0.75rem', fontWeight: 600, color: '#f87171', border: '1px solid rgba(239, 68, 68, 0.25)', padding: '2px 6px', borderRadius: '4px', background: 'rgba(239, 68, 68, 0.05)' }}>
-                            Already Defined
-                          </span>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
+                  onFocus={() => {
+                    setShowSuggestions(true);
+                    setSuggestionIndex(-1);
+                  }}
+                  onBlur={() => {
+                    setTimeout(() => setShowSuggestions(false), 200);
+                  }}
+                  onKeyDown={handleKeyDown}
+                  disabled={!!editingId}
+                  autoComplete="off"
+                />
+                {!editingId && filteredBatches.length > 0 && (
+                  <button
+                    type="button"
+                    className={`bfm-dropdown-toggle ${showSuggestions ? 'open' : ''}`}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setShowSuggestions(prev => !prev);
+                    }}
+                    tabIndex={-1}
+                  >
+                    <ChevronDown size={16} />
+                  </button>
+                )}
+                {showSuggestions && filteredBatches.length > 0 && (
+                  <div className="bfm-suggestions-dropdown">
+                    {filteredBatches.map((batch, index) => {
+                      const defined = isBatchDefined(batch);
+                      return (
+                        <div
+                          key={batch}
+                          className={`bfm-suggestion-item ${index === suggestionIndex ? 'active' : ''} ${defined ? 'defined' : ''}`}
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                          }}
+                          onClick={() => {
+                            if (defined) {
+                              showToast(`The course fee for Batch ${batch} is already defined. To edit this course fee, please see Defined Batch Fees below.`, 'error');
+                            } else {
+                              setForm(f => ({ ...f, batch_number: String(batch) }));
+                              setShowSuggestions(false);
+                            }
+                          }}
+                        >
+                          <span>{batch}</span>
+                          {defined && (
+                            <span style={{ fontSize: '0.75rem', fontWeight: 600, color: '#f87171', border: '1px solid rgba(239, 68, 68, 0.25)', padding: '2px 6px', borderRadius: '4px', background: 'rgba(239, 68, 68, 0.05)' }}>
+                              Already Defined
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+              {editingId && (
+                <span className="bfm-field-hint">Batch & course cannot be changed when editing — delete and re-add instead.</span>
               )}
             </div>
-            {editingId && (
-              <span className="bfm-field-hint">Batch & course cannot be changed when editing — delete and re-add instead.</span>
-            )}
-          </div>
+          ) : (
+            <div className="bfm-field">
+              <label>Default Scope</label>
+              <div style={{
+                background: 'rgba(245, 158, 11, 0.08)',
+                border: '1px solid rgba(245, 158, 11, 0.2)',
+                borderRadius: '8px',
+                padding: '0.8rem 1rem',
+                color: 'var(--text-secondary)',
+                fontSize: '0.85rem',
+                lineHeight: '1.4',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.6rem'
+              }}>
+                <AlertCircle size={16} className="text-warning" style={{ flexShrink: 0, color: '#f59e0b' }} />
+                <span>
+                  This default course fee applies globally to all batches of <strong>{form.course_name}</strong>.
+                </span>
+              </div>
+            </div>
+          )}
 
           {/* Fee fields */}
           <div className="bfm-fee-fields">
@@ -520,6 +591,12 @@ export default function BatchFeeManager() {
               </thead>
               <tbody>
                 {[...filteredFees].sort((a, b) => {
+                  const isA_Default = a.batch_number === 'DEFAULT';
+                  const isB_Default = b.batch_number === 'DEFAULT';
+                  if (isA_Default && !isB_Default) return -1;
+                  if (!isA_Default && isB_Default) return 1;
+                  if (isA_Default && isB_Default) return a.course_name.localeCompare(b.course_name);
+
                   const numA = parseFloat(a.batch_number) || 0;
                   const numB = parseFloat(b.batch_number) || 0;
                   const diff = numA - numB;
@@ -529,10 +606,11 @@ export default function BatchFeeManager() {
                   const strCompare = String(a.batch_number).localeCompare(String(b.batch_number));
                   return sortDirection === 'asc' ? strCompare : -strCompare;
                 }).map(fee => {
-                  const isFm = fee.phase1_fee > 0 || fee.phase2_fee > 0;
+                  const isFm = fee.course_name === 'Online Filmmaking Course';
                   const total = isFm
                     ? (fee.phase1_fee || 0) + (fee.phase2_fee || 0)
                     : (fee.full_fee || 0);
+                  const isDefault = fee.batch_number === 'DEFAULT';
                   return (
                     <tr key={fee.id} className={editingId === fee.id ? 'bfm-row--editing' : ''}>
                       <td>
@@ -541,7 +619,26 @@ export default function BatchFeeManager() {
                           {isFm ? 'Filmmaking' : 'Appreciation'}
                         </span>
                       </td>
-                      <td><span className="bfm-batch-num">Batch {fee.batch_number}</span></td>
+                      <td>
+                        {isDefault ? (
+                          <span style={{ 
+                            fontSize: '0.72rem', 
+                            fontWeight: 700, 
+                            color: '#f59e0b', 
+                            textTransform: 'uppercase', 
+                            letterSpacing: '0.04em', 
+                            background: 'rgba(245, 158, 11, 0.1)', 
+                            padding: '3px 8px', 
+                            borderRadius: '4px', 
+                            border: '1px solid rgba(245, 158, 11, 0.2)',
+                            display: 'inline-block'
+                          }}>
+                            default course fee
+                          </span>
+                        ) : (
+                          <span className="bfm-batch-num">Batch {fee.batch_number}</span>
+                        )}
+                      </td>
                       <td>{isFm ? formatCurrency(fee.phase1_fee) : '—'}</td>
                       <td>{isFm ? formatCurrency(fee.phase2_fee) : '—'}</td>
                       <td>{!isFm ? formatCurrency(fee.full_fee) : '—'}</td>

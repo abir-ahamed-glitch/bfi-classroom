@@ -73,7 +73,7 @@ router.get('/', authenticateToken, requireRole('admin'), (req, res) => {
       batch.phase1_completed_count = p1Count;
 
       const batchFee = getBatchFee(batch.course_name, batch.batch_number);
-      batch.course_fee = batchFee ? batchFee.full_fee : 0;
+      batch.course_fee = batchFee ? (batchFee.full_fee || (batchFee.phase1_fee + batchFee.phase2_fee)) : 0;
       batch.phase1_fee = batchFee ? batchFee.phase1_fee : 0;
       batch.phase2_fee = batchFee ? batchFee.phase2_fee : 0;
       batch.is_custom_fee = batchFee ? !!batchFee.is_custom : false;
@@ -109,7 +109,7 @@ router.get('/:id', authenticateToken, requireRole('admin'), (req, res) => {
     }
 
     const batchFee = getBatchFee(batch.course_name, batch.batch_number);
-    batch.course_fee = batchFee ? batchFee.full_fee : 0;
+    batch.course_fee = batchFee ? (batchFee.full_fee || (batchFee.phase1_fee + batchFee.phase2_fee)) : 0;
     batch.phase1_fee = batchFee ? batchFee.phase1_fee : 0;
     batch.phase2_fee = batchFee ? batchFee.phase2_fee : 0;
     batch.is_custom_fee = batchFee ? !!batchFee.is_custom : false;

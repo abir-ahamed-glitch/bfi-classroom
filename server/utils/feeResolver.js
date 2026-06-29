@@ -19,10 +19,17 @@ export function parseFeeDetails(raw) {
 export function getBatchFee(courseName, batchNumber) {
   if (!courseName || !batchNumber) return null;
   try {
-    const res = db.prepare(
+    // 1. Try specific batch fee
+    let res = db.prepare(
       'SELECT phase1_fee, phase2_fee, full_fee FROM batch_course_fees WHERE LOWER(TRIM(course_name)) = LOWER(TRIM(?)) AND TRIM(batch_number) = TRIM(?) LIMIT 1'
     ).get(courseName, String(batchNumber));
     if (res) return { ...res, is_custom: true };
+
+    // 2. Try global default course fee defined by admin
+    res = db.prepare(
+      'SELECT phase1_fee, phase2_fee, full_fee FROM batch_course_fees WHERE LOWER(TRIM(course_name)) = LOWER(TRIM(?)) AND TRIM(batch_number) = \'DEFAULT\' LIMIT 1'
+    ).get(courseName);
+    if (res) return { ...res, is_custom: false };
 
     // Default fallbacks if not defined by admin in the DB
     const lowerName = courseName.toLowerCase().trim();
