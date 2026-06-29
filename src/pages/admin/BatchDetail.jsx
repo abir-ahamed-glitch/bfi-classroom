@@ -67,7 +67,7 @@ const hasPendingDueOrPartialPayment = (course) => {
 import { getOrdinalSuffix } from '../../utils/formatUtils';
 
 // Reusable Stat Card
-function StatCard({ icon, value, label, colorVariant }) {
+function StatCard({ icon, value, label, colorVariant, onClick, isActive }) {
   const getIconColor = () => {
     switch (colorVariant) {
       case 'Blue': return '#3b82f6';
@@ -90,8 +90,23 @@ function StatCard({ icon, value, label, colorVariant }) {
     }
   };
 
+  const cardStyle = {
+    cursor: onClick ? 'pointer' : 'default',
+    transition: 'all 0.2s ease-in-out',
+    ...(onClick && {
+      transform: isActive ? 'translateY(-2px)' : 'none',
+      background: isActive ? getIconBg().replace('0.1', '0.15') : undefined,
+      borderColor: isActive ? getIconColor() : undefined,
+      boxShadow: isActive ? `0 4px 20px ${getIconBg().replace('0.1', '0.2')}` : undefined,
+    })
+  };
+
   return (
-    <div className="batch-stat-card">
+    <div 
+      className={`batch-stat-card ${onClick ? 'interactive' : ''} ${isActive ? 'active' : ''}`}
+      style={cardStyle}
+      onClick={onClick}
+    >
       <div style={{ width: '48px', height: '48px', borderRadius: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center', background: getIconBg(), color: getIconColor(), flexShrink: 0 }}>
         {icon}
       </div>
@@ -129,6 +144,7 @@ export default function BatchDetail() {
   const [error, setError] = useState('');
   const [batchData, setBatchData] = useState(null);
   const [progressData, setProgressData] = useState(null);
+  const [selectedStatFilter, setSelectedStatFilter] = useState(null);
   const [studentsData, setStudentsData] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
 
@@ -767,13 +783,66 @@ export default function BatchDetail() {
 
   if (!batchData) return null;
 
+  const toggleStatFilter = (filter) => {
+    setSelectedStatFilter(prev => prev === filter ? null : filter);
+  };
+
   // Filter students
   const filteredStudents = studentsData.filter(s => {
-    if (!searchQuery.trim()) return true;
-    const terms = searchQuery.toLowerCase().split(' ').filter(Boolean);
-    const fullName = `${s.first_name || ''} ${s.last_name || ''}`.toLowerCase();
-    const bfiId = (s.bfi_id || '').toLowerCase();
-    return terms.every(term => fullName.includes(term) || bfiId.includes(term));
+    // 1. Text search filter
+    if (searchQuery.trim()) {
+      const terms = searchQuery.toLowerCase().split(' ').filter(Boolean);
+      const fullName = `${s.first_name || ''} ${s.last_name || ''}`.toLowerCase();
+      const bfiId = (s.bfi_id || '').toLowerCase();
+      const matchesSearch = terms.every(term => fullName.includes(term) || bfiId.includes(term));
+      if (!matchesSearch) return false;
+    }
+
+    // 2. Stat card click filter
+    if (selectedStatFilter && selectedStatFilter !== 'all') {
+      const enrollment = s.enrollments?.find(e => e.course_name === batchData.course_name);
+      
+      switch (selectedStatFilter) {
+        // Phase 1 (Filmmaking)
+        case 'attendance_qualified':
+          return enrollment && enrollment.attendance_total > 0 && (enrollment.attendance_classes / enrollment.attendance_total >= 0.8);
+        case 'attendance_not_qualified':
+          return !enrollment || enrollment.attendance_total === 0 || (enrollment.attendance_classes / enrollment.attendance_total < 0.8);
+        case 'screenplay_submitted':
+          return enrollment && enrollment.assignment_screenplay > 0;
+        case 'shooting_script_submitted':
+          return enrollment && enrollment.assignment_shooting_script > 0;
+        case 'exam_passed':
+          return enrollment && enrollment.step2_completed === 1;
+        case 'exam_failed':
+          return enrollment && enrollment.step1_completed === 1 && enrollment.step2_completed !== 1;
+        case 'phase1_completed':
+          return enrollment && enrollment.step2_completed === 1;
+          
+        // Phase 2 (Filmmaking)
+        case 'phase2_admitted':
+          return enrollment && enrollment.step3_completed === 1;
+        case 'phase2_shooting_attended':
+          return enrollment && enrollment.phase2_shooting_attended === 1;
+        case 'phase2_editing_attended':
+          return enrollment && enrollment.phase2_editing_attended === 1;
+        case 'phase2_completed':
+          return enrollment && enrollment.step4_completed === 1;
+          
+        // Workshop (single phase)
+        case 'attendance':
+          return enrollment && enrollment.attendance_classes > 0;
+        case 'assignment_submitted':
+          return enrollment && (enrollment.assignment_screenplay > 0 || enrollment.assignment_shooting_script > 0);
+        case 'completed':
+          return enrollment && enrollment.step2_completed === 1;
+          
+        default:
+          return true;
+      }
+    }
+    
+    return true;
   });
 
   // Funnel data prep
@@ -960,14 +1029,14 @@ export default function BatchDetail() {
               <div>
                 <div className="batch-phase-label">Phase 1</div>
                 <div className="batch-metrics-grid">
-                  <StatCard icon={<Users size={20} />} value={progressData.total_students} label="Total Students" colorVariant="Blue" />
-                  <StatCard icon={<CheckCircle2 size={20} />} value={progressData.phase1?.attendance_qualified} label="Attendance Qualified" colorVariant="Green" />
-                  <StatCard icon={<XCircle size={20} />} value={progressData.phase1?.attendance_not_qualified} label="Not Qualified" colorVariant="Red" />
-                  <StatCard icon={<FileText size={20} />} value={progressData.phase1?.screenplay_submitted} label="Screenplay Submitted" colorVariant="Amber" />
-                  <StatCard icon={<Film size={20} />} value={progressData.phase1?.shooting_script_submitted} label="Shooting Script Submitted" colorVariant="Amber" />
-                  <StatCard icon={<Award size={20} />} value={progressData.phase1?.exam_passed} label="Exam Passed" colorVariant="Green" />
-                  <StatCard icon={<XCircle size={20} />} value={progressData.phase1?.exam_failed} label="Exam Failed" colorVariant="Red" />
-                  <StatCard icon={<CheckSquare size={20} />} value={progressData.phase1?.completed} label="Phase 1 Completed" colorVariant="Green" />
+                  <StatCard icon={<Users size={20} />} value={progressData.total_students} label="Total Students" colorVariant="Blue" onClick={() => toggleStatFilter('all')} isActive={selectedStatFilter === 'all'} />
+                  <StatCard icon={<CheckCircle2 size={20} />} value={progressData.phase1?.attendance_qualified} label="Attendance Qualified" colorVariant="Green" onClick={() => toggleStatFilter('attendance_qualified')} isActive={selectedStatFilter === 'attendance_qualified'} />
+                  <StatCard icon={<XCircle size={20} />} value={progressData.phase1?.attendance_not_qualified} label="Not Qualified" colorVariant="Red" onClick={() => toggleStatFilter('attendance_not_qualified')} isActive={selectedStatFilter === 'attendance_not_qualified'} />
+                  <StatCard icon={<FileText size={20} />} value={progressData.phase1?.screenplay_submitted} label="Screenplay Submitted" colorVariant="Amber" onClick={() => toggleStatFilter('screenplay_submitted')} isActive={selectedStatFilter === 'screenplay_submitted'} />
+                  <StatCard icon={<Film size={20} />} value={progressData.phase1?.shooting_script_submitted} label="Shooting Script Submitted" colorVariant="Amber" onClick={() => toggleStatFilter('shooting_script_submitted')} isActive={selectedStatFilter === 'shooting_script_submitted'} />
+                  <StatCard icon={<Award size={20} />} value={progressData.phase1?.exam_passed} label="Exam Passed" colorVariant="Green" onClick={() => toggleStatFilter('exam_passed')} isActive={selectedStatFilter === 'exam_passed'} />
+                  <StatCard icon={<XCircle size={20} />} value={progressData.phase1?.exam_failed} label="Exam Failed" colorVariant="Red" onClick={() => toggleStatFilter('exam_failed')} isActive={selectedStatFilter === 'exam_failed'} />
+                  <StatCard icon={<CheckSquare size={20} />} value={progressData.phase1?.completed} label="Phase 1 Completed" colorVariant="Green" onClick={() => toggleStatFilter('phase1_completed')} isActive={selectedStatFilter === 'phase1_completed'} />
                 </div>
               </div>
               
@@ -975,10 +1044,10 @@ export default function BatchDetail() {
                 <div style={{ marginTop: '1rem' }} className="batch-phase2-section visible">
                   <div className="batch-phase-label purple">Phase 2</div>
                   <div className="batch-metrics-grid">
-                    <StatCard icon={<UserCheck size={20} />} value={progressData.phase2?.admitted} label="Phase 2 Admitted" colorVariant="Blue" />
-                    <StatCard icon={<Camera size={20} />} value={progressData.phase2?.shooting_attended} label="Shooting Attended" colorVariant="Amber" />
-                    <StatCard icon={<Video size={20} />} value={progressData.phase2?.editing_attended} label="Editing Attended" colorVariant="Amber" />
-                    <StatCard icon={<CheckSquare size={20} />} value={progressData.phase2?.completed} label="Phase 2 Completed" colorVariant="Green" />
+                    <StatCard icon={<UserCheck size={20} />} value={progressData.phase2?.admitted} label="Phase 2 Admitted" colorVariant="Blue" onClick={() => toggleStatFilter('phase2_admitted')} isActive={selectedStatFilter === 'phase2_admitted'} />
+                    <StatCard icon={<Camera size={20} />} value={progressData.phase2?.shooting_attended} label="Shooting Attended" colorVariant="Amber" onClick={() => toggleStatFilter('phase2_shooting_attended')} isActive={selectedStatFilter === 'phase2_shooting_attended'} />
+                    <StatCard icon={<Video size={20} />} value={progressData.phase2?.editing_attended} label="Editing Attended" colorVariant="Amber" onClick={() => toggleStatFilter('phase2_editing_attended')} isActive={selectedStatFilter === 'phase2_editing_attended'} />
+                    <StatCard icon={<CheckSquare size={20} />} value={progressData.phase2?.completed} label="Phase 2 Completed" colorVariant="Green" onClick={() => toggleStatFilter('phase2_completed')} isActive={selectedStatFilter === 'phase2_completed'} />
                   </div>
                 </div>
               ) : (
@@ -994,11 +1063,11 @@ export default function BatchDetail() {
             <div>
               <div className="batch-phase-label">Course Progress</div>
               <div className="batch-metrics-grid" style={{ gridTemplateColumns: 'repeat(5, 1fr)' }}>
-                <StatCard icon={<Users size={20} />} value={progressData.single_phase?.admitted || progressData.total_students} label="Total Students" colorVariant="Blue" />
-                <StatCard icon={<CheckCircle2 size={20} />} value={progressData.single_phase?.attendance} label="Attendance" colorVariant="Green" />
-                <StatCard icon={<FileText size={20} />} value={progressData.single_phase?.assignment_submitted} label="Assignment Submitted" colorVariant="Amber" />
-                <StatCard icon={<Award size={20} />} value={progressData.single_phase?.exam_passed} label="Exam Passed" colorVariant="Green" />
-                <StatCard icon={<CheckSquare size={20} />} value={progressData.single_phase?.completed} label="Completed" colorVariant="Green" />
+                <StatCard icon={<Users size={20} />} value={progressData.single_phase?.admitted || progressData.total_students} label="Total Students" colorVariant="Blue" onClick={() => toggleStatFilter('all')} isActive={selectedStatFilter === 'all'} />
+                <StatCard icon={<CheckCircle2 size={20} />} value={progressData.single_phase?.attendance} label="Attendance" colorVariant="Green" onClick={() => toggleStatFilter('attendance')} isActive={selectedStatFilter === 'attendance'} />
+                <StatCard icon={<FileText size={20} />} value={progressData.single_phase?.assignment_submitted} label="Assignment Submitted" colorVariant="Amber" onClick={() => toggleStatFilter('assignment_submitted')} isActive={selectedStatFilter === 'assignment_submitted'} />
+                <StatCard icon={<Award size={20} />} value={progressData.single_phase?.exam_passed} label="Exam Passed" colorVariant="Green" onClick={() => toggleStatFilter('exam_passed')} isActive={selectedStatFilter === 'exam_passed'} />
+                <StatCard icon={<CheckSquare size={20} />} value={progressData.single_phase?.completed} label="Completed" colorVariant="Green" onClick={() => toggleStatFilter('completed')} isActive={selectedStatFilter === 'completed'} />
               </div>
             </div>
           )}
@@ -1091,6 +1160,29 @@ export default function BatchDetail() {
             <h2 style={{ margin: 0, fontSize: '1.25rem', fontFamily: 'Outfit, sans-serif' }}>STUDENTS IN THIS BATCH</h2>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+            {selectedStatFilter && (
+              <button 
+                onClick={() => setSelectedStatFilter(null)}
+                style={{
+                  background: 'rgba(239, 68, 68, 0.1)',
+                  color: '#f87171',
+                  border: '1px solid rgba(239, 68, 68, 0.2)',
+                  borderRadius: '12px',
+                  padding: '2px 10px',
+                  fontSize: '0.75rem',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '4px',
+                  transition: 'all 0.2s'
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.background = 'rgba(239, 68, 68, 0.2)'}
+                onMouseLeave={(e) => e.currentTarget.style.background = 'rgba(239, 68, 68, 0.1)'}
+              >
+                Clear Filter <X size={12} />
+              </button>
+            )}
             <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Showing {filteredStudents.length} students</span>
             <div style={{ position: 'relative' }}>
               <Search size={16} style={{ position: 'absolute', left: '0.75rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />

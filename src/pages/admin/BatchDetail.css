@@ -372,4 +372,19 @@
   color: var(--text-muted) !important;
 }
 
+/* StatCard Hover and Interactive Transitions */
+.batch-stat-card.interactive {
+  cursor: pointer;
+  transition: all 0.2s ease-in-out;
+}
+
+.batch-stat-card.interactive:hover {
+  transform: translateY(-2px);
+  filter: brightness(1.15);
+}
+
+[data-mode="light"] .batch-stat-card.interactive:hover {
+  filter: brightness(0.96);
+}
+
 
