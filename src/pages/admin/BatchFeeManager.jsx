@@ -151,6 +151,28 @@ export default function BatchFeeManager() {
     }
   }, [form.course_name, formMode, fetchAvailableBatches]);
 
+  // Automatically sync/populate global DEFAULT fees into the form when target switches
+  useEffect(() => {
+    if (formMode === 'default' && !editingId && fees.length > 0) {
+      const existing = fees.find(fee => fee.course_name === form.course_name && fee.batch_number === 'DEFAULT');
+      if (existing) {
+        setForm(f => ({
+          ...f,
+          phase1_fee: existing.phase1_fee ? String(existing.phase1_fee) : '',
+          phase2_fee: existing.phase2_fee ? String(existing.phase2_fee) : '',
+          full_fee: existing.full_fee ? String(existing.full_fee) : '',
+        }));
+      } else {
+        setForm(f => ({
+          ...f,
+          phase1_fee: '',
+          phase2_fee: '',
+          full_fee: '',
+        }));
+      }
+    }
+  }, [fees, formMode, form.course_name, editingId]);
+
   const selectedCourse = COURSE_OPTIONS.find(c => c.value === form.course_name);
   const isFilmmaking = selectedCourse?.type === 'filmmaking';
 
@@ -215,8 +237,9 @@ export default function BatchFeeManager() {
       await apiFetch('/batch-fees', { method: 'POST', body: JSON.stringify(payload) });
       showToast(editingId ? 'Fee updated successfully.' : 'Fee saved successfully.');
       setEditingId(null);
-      setFormMode('custom');
-      setForm(f => ({ ...f, batch_number: '', phase1_fee: '', phase2_fee: '', full_fee: '' }));
+      if (formMode === 'custom') {
+        setForm(f => ({ ...f, batch_number: '', phase1_fee: '', phase2_fee: '', full_fee: '' }));
+      }
       await fetchFees();
     } catch (err) {
       showToast(err.message, 'error');

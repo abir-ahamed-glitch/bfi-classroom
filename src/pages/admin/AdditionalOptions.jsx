@@ -537,7 +537,9 @@ export default function AdditionalOptions() {
               {currentView === 'custom-subjects' ? 'Custom Subjects' :
                currentView === 'settings' ? 'Global Settings' : 
                currentView === 'certificates' ? 'Certificate Generator' :
-               currentView === 'bulk-register' ? 'Bulk Import Registrations' : 'Option'}
+               currentView === 'bulk-register' ? 'Bulk Import Registrations' :
+               currentView === 'batch-fees' ? 'Batch Fee Manager' :
+               currentView === 'fee-tracker' ? 'Fee Tracker' : ''}
             </h2>
           </div>
           
