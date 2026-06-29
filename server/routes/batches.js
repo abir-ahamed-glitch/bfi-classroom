@@ -627,6 +627,7 @@ router.get('/:id/progress', authenticateToken, requireRole('admin'), (req, res) 
         sce.assignment_shooting_script,
         sce.phase2_shooting_attended,
         sce.phase2_editing_attended,
+        sce.exam_written,
         sce.fee_details,
         u.id as student_id
       FROM batch_students bs
@@ -661,6 +662,7 @@ router.get('/:id/progress', authenticateToken, requireRole('admin'), (req, res) 
       attendance: 0,
       assignment_submitted: 0,
       exam_passed: 0,
+      exam_failed: 0,
       completed: 0
     };
 
@@ -698,13 +700,16 @@ router.get('/:id/progress', authenticateToken, requireRole('admin'), (req, res) 
         if (s.phase2_editing_attended === 1) phase2.editing_attended++;
         if (s.step4_completed === 1) phase2.completed++;
       } else {
-        // Workshop progress metrics
+        // Workshop / Film Appreciation progress metrics
         if (s.step1_completed === 1) single_phase.admitted++;
         if (s.attendance_classes > 0) single_phase.attendance++;
         if (s.assignment_screenplay > 0 || s.assignment_shooting_script > 0) single_phase.assignment_submitted++;
         if (s.step2_completed === 1) {
           single_phase.exam_passed++;
           single_phase.completed++;
+        } else if (s.exam_written !== null && s.exam_written !== undefined && s.exam_written !== '') {
+          // Student has been graded but did not pass
+          single_phase.exam_failed++;
         }
       }
 

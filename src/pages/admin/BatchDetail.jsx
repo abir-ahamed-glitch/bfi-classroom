@@ -824,6 +824,10 @@ export default function BatchDetail() {
     setSelectedStatFilter(prev => prev === filter ? null : filter);
   };
 
+  // Course type flags
+  const isFilmmaking = batchData.course_name === 'Online Filmmaking Course';
+  const isFilmAppreciation = batchData.course_name === 'Film Appreciation Course';
+
   // Filter students
   const filteredStudents = studentsData.filter(s => {
     // 1. Text search filter
@@ -849,10 +853,6 @@ export default function BatchDetail() {
           return enrollment && enrollment.assignment_screenplay > 0;
         case 'shooting_script_submitted':
           return enrollment && enrollment.assignment_shooting_script > 0;
-        case 'exam_passed':
-          return enrollment && enrollment.step2_completed === 1;
-        case 'exam_failed':
-          return enrollment && enrollment.step1_completed === 1 && enrollment.step2_completed !== 1;
         case 'phase1_completed':
           return enrollment && enrollment.step2_completed === 1;
           
@@ -866,7 +866,21 @@ export default function BatchDetail() {
         case 'phase2_completed':
           return enrollment && enrollment.step4_completed === 1;
           
-        // Workshop (single phase)
+        // Shared: exam_passed works the same way for all courses
+        case 'exam_passed':
+          return enrollment && enrollment.step2_completed === 1;
+          
+        // exam_failed differs by course type
+        case 'exam_failed':
+          if (isFilmmaking) {
+            // Filmmaking: has attended (step1) but not passed exam (step2)
+            return enrollment && enrollment.step1_completed === 1 && enrollment.step2_completed !== 1;
+          } else {
+            // Film Appreciation / Workshop: has a graded exam_written score but did NOT pass
+            return enrollment && enrollment.exam_written !== null && enrollment.exam_written !== undefined && enrollment.exam_written !== '' && enrollment.step2_completed !== 1;
+          }
+          
+        // Workshop / Film Appreciation (single phase)
         case 'attendance':
           return enrollment && enrollment.attendance_classes > 0;
         case 'assignment_submitted':
@@ -884,7 +898,6 @@ export default function BatchDetail() {
 
   // Funnel data prep
   let funnelData = [];
-  const isFilmmaking = batchData.course_name === 'Online Filmmaking Course';
 
   if (progressData) {
     if (isFilmmaking) {
@@ -898,9 +911,10 @@ export default function BatchDetail() {
     } else {
       funnelData = [
         { stage: 'Enrolled', value: progressData.single_phase?.admitted || progressData.total_students || 0 },
-        { stage: 'Attended', value: progressData.single_phase?.attendance || 0 },
+        ...(!isFilmAppreciation ? [{ stage: 'Attended', value: progressData.single_phase?.attendance || 0 }] : []),
         { stage: 'Assignment', value: progressData.single_phase?.assignment_submitted || 0 },
         { stage: 'Exam Passed', value: progressData.single_phase?.exam_passed || 0 },
+        { stage: 'Exam Failed', value: progressData.single_phase?.exam_failed || 0 },
         { stage: 'Completed', value: progressData.single_phase?.completed || 0 },
       ];
     }
@@ -1099,11 +1113,16 @@ export default function BatchDetail() {
           ) : (
             <div>
               <div className="batch-phase-label">Course Progress</div>
-              <div className="batch-metrics-grid" style={{ gridTemplateColumns: 'repeat(5, 1fr)' }}>
+              <div className="batch-metrics-grid" style={{ gridTemplateColumns: isFilmAppreciation ? 'repeat(auto-fill, minmax(160px, 1fr))' : 'repeat(5, 1fr)' }}>
                 <StatCard icon={<Users size={20} />} value={progressData.single_phase?.admitted || progressData.total_students} label="Total Students" colorVariant="Blue" onClick={() => toggleStatFilter('all')} isActive={selectedStatFilter === 'all'} />
-                <StatCard icon={<CheckCircle2 size={20} />} value={progressData.single_phase?.attendance} label="Attendance" colorVariant="Green" onClick={() => toggleStatFilter('attendance')} isActive={selectedStatFilter === 'attendance'} />
+                {!isFilmAppreciation && (
+                  <StatCard icon={<CheckCircle2 size={20} />} value={progressData.single_phase?.attendance} label="Attendance" colorVariant="Green" onClick={() => toggleStatFilter('attendance')} isActive={selectedStatFilter === 'attendance'} />
+                )}
                 <StatCard icon={<FileText size={20} />} value={progressData.single_phase?.assignment_submitted} label="Assignment Submitted" colorVariant="Amber" onClick={() => toggleStatFilter('assignment_submitted')} isActive={selectedStatFilter === 'assignment_submitted'} />
                 <StatCard icon={<Award size={20} />} value={progressData.single_phase?.exam_passed} label="Exam Passed" colorVariant="Green" onClick={() => toggleStatFilter('exam_passed')} isActive={selectedStatFilter === 'exam_passed'} />
+                {isFilmAppreciation && (
+                  <StatCard icon={<XCircle size={20} />} value={progressData.single_phase?.exam_failed} label="Exam Failed" colorVariant="Red" onClick={() => toggleStatFilter('exam_failed')} isActive={selectedStatFilter === 'exam_failed'} />
+                )}
                 <StatCard icon={<CheckSquare size={20} />} value={progressData.single_phase?.completed} label="Completed" colorVariant="Green" onClick={() => toggleStatFilter('completed')} isActive={selectedStatFilter === 'completed'} />
               </div>
             </div>
