@@ -11,13 +11,19 @@ import { resolveMediaUrl } from '../../utils/mediaUtils';
 export default function AdditionalOptions() {
   const { showConfirm } = useModal();
   const [searchParams, setSearchParams] = useSearchParams();
-  const currentView = searchParams.get('view') || 'dashboard';
+  
+  let rawView = searchParams.get('view') || 'dashboard';
+  if (rawView === 'subjects') {
+    rawView = 'custom-subjects';
+  }
+  const currentView = rawView;
 
   const setCurrentView = (view, options = {}) => {
-    if (view === 'dashboard') {
+    const targetView = view === 'subjects' ? 'custom-subjects' : view;
+    if (targetView === 'dashboard') {
       setSearchParams({}, options);
     } else {
-      setSearchParams({ view }, options);
+      setSearchParams({ view: targetView }, options);
     }
   };
 
