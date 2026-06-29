@@ -146,10 +146,49 @@ const FeeTracker = () => {
 
   const closeAcademicModal = () => { setAcademicStudent(null); setAcademicCourseId(null); };
   const handleAcademicChange = (e) => setAcademicFormData({ ...academicFormData, [e.target.name]: e.target.value });
+
+  const getAcademicValidationError = () => {
+    if (!academicStudent) return null;
+    const isOnlineFilmmaking = academicStudent.enrollment?.course_name === 'Online Filmmaking Course';
+    if (!isOnlineFilmmaking) {
+      const exam = parseInt(academicFormData.exam_written) || 0;
+      if (exam > 100) return 'Written exam score cannot exceed 100.';
+      if (exam < 0) return 'Written exam score cannot be negative.';
+    } else {
+      const attendance = parseInt(academicFormData.attendance_classes) || 0;
+      const totalAttendance = parseInt(academicFormData.attendance_total) || 22;
+      const exam = parseInt(academicFormData.exam_written) || 0;
+      const screenplay = parseInt(academicFormData.assignment_screenplay) || 0;
+      const shootingScript = parseInt(academicFormData.assignment_shooting_script) || 0;
+
+      if (attendance > totalAttendance) return 'Attended classes cannot exceed total classes.';
+      if (attendance < 0) return 'Attended classes cannot be negative.';
+      if (totalAttendance < 1) return 'Total classes must be at least 1.';
+      
+      if (exam > 80) return 'Written exam score cannot exceed 80.';
+      if (exam < 0) return 'Written exam score cannot be negative.';
+      
+      if (screenplay > 10) return 'Screenplay assignment score cannot exceed 10.';
+      if (screenplay < 0) return 'Screenplay assignment score cannot be negative.';
+      
+      if (shootingScript > 10) return 'Shooting script assignment score cannot exceed 10.';
+      if (shootingScript < 0) return 'Shooting script assignment score cannot be negative.';
+    }
+    return null;
+  };
+
   const submitAcademic = async (e) => {
     e.preventDefault();
     setIsAcademicSaving(true);
     setAcademicError('');
+
+    const valError = getAcademicValidationError();
+    if (valError) {
+      setAcademicError(valError);
+      setIsAcademicSaving(false);
+      return;
+    }
+
     try {
       const res = await fetch('/api/admin/students/' + academicStudent.id + '/academic-records/' + academicCourseId, {
         method: 'PUT',
@@ -708,12 +747,35 @@ const FeeTracker = () => {
                 </>
               )}
 
-              {academicError && <div className="error-alert" style={{ marginTop: '0.5rem' }}>{academicError}</div>}
+              {(academicError || getAcademicValidationError()) && (
+                <div className="error-alert" style={{ 
+                  marginTop: '0.75rem', 
+                  color: '#f87171', 
+                  background: 'rgba(239, 68, 68, 0.1)', 
+                  border: '1px solid rgba(239, 68, 68, 0.2)',
+                  padding: '0.5rem 0.75rem',
+                  borderRadius: '6px',
+                  fontSize: '0.85rem'
+                }}>
+                  ⚠️ {academicError || getAcademicValidationError()}
+                </div>
+              )}
             </div>
 
             <div className="modern-modal-footer" style={{ display: 'flex', gap: '1rem' }}>
               <button type="button" onClick={closeAcademicModal} className="modern-btn modern-btn--secondary" style={{ flex: 1 }}>Cancel</button>
-              <button type="submit" className="modern-btn modern-btn--primary" disabled={isAcademicSaving} style={{ flex: 1, background: '#10b981', borderColor: '#10b981' }}>
+              <button 
+                type="submit" 
+                className="modern-btn modern-btn--primary" 
+                disabled={isAcademicSaving || !!getAcademicValidationError()} 
+                style={{ 
+                  flex: 1, 
+                  background: '#10b981', 
+                  borderColor: '#10b981',
+                  opacity: (isAcademicSaving || !!getAcademicValidationError()) ? 0.5 : 1,
+                  cursor: (isAcademicSaving || !!getAcademicValidationError()) ? 'not-allowed' : 'pointer'
+                }}
+              >
                 {isAcademicSaving ? 'Saving...' : (academicStudent.enrollment?.course_name !== 'Online Filmmaking Course' ? 'Save Result' : 'Save Records')}
               </button>
             </div>

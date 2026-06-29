@@ -1173,6 +1173,12 @@ router.put('/students/:id/academic-records/:courseId', authenticateToken, requir
     // Custom flow for all courses except Online Filmmaking Course (no attendance, no assignments, score out of 100)
     if (enrollment.course_name !== 'Online Filmmaking Course') {
       const exam = parseInt(exam_written) || 0;
+      if (exam > 100) {
+        return res.status(400).json({ error: 'Written exam score cannot exceed 100.' });
+      }
+      if (exam < 0) {
+        return res.status(400).json({ error: 'Written exam score cannot be negative.' });
+      }
       const completed = exam >= 33 ? 1 : 0;
       
       db.prepare(`
@@ -1198,6 +1204,34 @@ router.put('/students/:id/academic-records/:courseId', authenticateToken, requir
     const exam = parseInt(exam_written) || 0;
     const screenplay = parseInt(assignment_screenplay) || 0;
     const shootingScript = parseInt(assignment_shooting_script) || 0;
+
+    if (attendance > totalAttendance) {
+      return res.status(400).json({ error: 'Attended classes cannot exceed total classes.' });
+    }
+    if (attendance < 0) {
+      return res.status(400).json({ error: 'Attended classes cannot be negative.' });
+    }
+    if (totalAttendance < 1) {
+      return res.status(400).json({ error: 'Total classes must be at least 1.' });
+    }
+    if (exam > 80) {
+      return res.status(400).json({ error: 'Written exam score cannot exceed 80.' });
+    }
+    if (exam < 0) {
+      return res.status(400).json({ error: 'Written exam score cannot be negative.' });
+    }
+    if (screenplay > 10) {
+      return res.status(400).json({ error: 'Screenplay assignment score cannot exceed 10.' });
+    }
+    if (screenplay < 0) {
+      return res.status(400).json({ error: 'Screenplay assignment score cannot be negative.' });
+    }
+    if (shootingScript > 10) {
+      return res.status(400).json({ error: 'Shooting script assignment score cannot exceed 10.' });
+    }
+    if (shootingScript < 0) {
+      return res.status(400).json({ error: 'Shooting script assignment score cannot be negative.' });
+    }
 
     const transaction = db.transaction(() => {
       // 1. Update the specific student's record with all the fields (except step2_completed)

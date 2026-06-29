@@ -1292,7 +1292,7 @@ export default function EditStudentModal({ student, onClose, onSaveSuccess }) {
           </div>
 
           {/* Error banner lives OUTSIDE the scrollable body so it's always visible */}
-          {editError && (
+          {(editError || validateFees()) && (
             <div style={{
               margin: '0 1.25rem',
               padding: '0.65rem 1rem',
@@ -1305,16 +1305,26 @@ export default function EditStudentModal({ student, onClose, onSaveSuccess }) {
               lineHeight: '1.4',
               display: 'flex',
               alignItems: 'flex-start',
-              gap: '0.5rem'
+              gap: '0.5rem',
+              marginBottom: '0.5rem'
             }}>
               <span style={{ flexShrink: 0 }}>⚠️</span>
-              <span>{editError}</span>
+              <span>{editError || validateFees()}</span>
             </div>
           )}
 
           <div className="modern-modal-footer" style={{ display: 'flex', gap: '1rem' }}>
             <button type="button" onClick={onClose} className="modern-btn modern-btn--secondary" style={{ flex: 1 }}>Cancel</button>
-            <button type="submit" className="modern-btn modern-btn--primary" disabled={isEditing} style={{ flex: 1 }}>
+            <button 
+              type="submit" 
+              className="modern-btn modern-btn--primary" 
+              disabled={isEditing || !!validateFees()} 
+              style={{ 
+                flex: 1,
+                opacity: (isEditing || !!validateFees()) ? 0.5 : 1,
+                cursor: (isEditing || !!validateFees()) ? 'not-allowed' : 'pointer'
+              }}
+            >
               {isEditing ? 'Saving...' : 'Save Changes'}
             </button>
           </div>
