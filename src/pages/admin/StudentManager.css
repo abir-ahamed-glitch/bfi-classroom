@@ -148,7 +148,6 @@ input[type="checkbox"].student-row-check {
   cursor: pointer;
 }
 
-/* Mobile */
 @media (max-width: 768px) {
   .export-format-cards {
     grid-template-columns: repeat(3, 1fr);
@@ -157,4 +156,65 @@ input[type="checkbox"].student-row-check {
   .export-format-card {
     padding: 14px 8px;
   }
+}
+
+/* Glass-style form nested sections */
+.form-section-card {
+  padding: 1.5rem;
+  background: rgba(0, 0, 0, 0.15);
+  border: 1px solid var(--glass-border);
+  border-radius: 12px;
+}
+
+[data-mode="light"] .form-section-card {
+  background: rgba(255, 255, 255, 0.35);
+  border-color: rgba(14, 165, 233, 0.15);
+}
+
+/* Glass-style course selection checkboxes */
+.course-select-pill {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  cursor: pointer;
+  padding: 0.5rem 1rem;
+  border-radius: 8px;
+  border: 1px solid var(--glass-border);
+  background: rgba(0, 0, 0, 0.15);
+  color: var(--text-secondary);
+  font-weight: 500;
+  transition: all 0.25s cubic-bezier(0.25, 0.8, 0.25, 1);
+  user-select: none;
+}
+
+.course-select-pill:hover {
+  background: rgba(255, 255, 255, 0.03);
+  border-color: rgba(255, 255, 255, 0.12);
+  color: var(--text-primary);
+}
+
+.course-select-pill.selected {
+  background: color-mix(in srgb, var(--accent-primary) 12%, transparent);
+  border-color: var(--accent-primary);
+  color: var(--text-primary);
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--accent-primary) 8%, transparent);
+}
+
+[data-mode="light"] .course-select-pill {
+  background: rgba(255, 255, 255, 0.4);
+  color: var(--text-secondary);
+  border-color: rgba(14, 165, 233, 0.15);
+}
+
+[data-mode="light"] .course-select-pill:hover {
+  background: rgba(255, 255, 255, 0.7);
+  border-color: rgba(14, 165, 233, 0.25);
+  color: var(--text-primary);
+}
+
+[data-mode="light"] .course-select-pill.selected {
+  background: color-mix(in srgb, var(--accent-primary) 12%, transparent);
+  border-color: var(--accent-primary);
+  color: var(--text-primary);
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--accent-primary) 12%, transparent);
 }

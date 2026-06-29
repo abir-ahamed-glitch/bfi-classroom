@@ -758,26 +758,32 @@ export default function StudentManager() {
               </div>
             </div>
 
-            <div style={{ padding: '1.5rem', background: 'var(--bg-tertiary)', borderRadius: '12px', border: '1px solid var(--comment-line)' }}>
-              <h3 style={{ fontSize: '1rem', marginBottom: '1rem', color: 'var(--text-secondary)' }}>Select Enrolled Courses</h3>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '1rem' }}>
-                {availableCourses.map(course => (
-                  <label key={course.name} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', background: formData.courses.includes(course.name) ? 'rgba(201, 168, 76, 0.15)' : 'var(--bg-secondary)', padding: '0.5rem 1rem', borderRadius: '8px', border: '1px solid', borderColor: formData.courses.includes(course.name) ? 'var(--accent-primary)' : 'var(--comment-line)', transition: 'all 0.2s' }}>
-                    <input 
-                      type="checkbox" 
-                      checked={formData.courses.includes(course.name)} 
-                      onChange={() => handleCourseChange(course.name)}
-                      style={{ width: '16px', height: '16px', accentColor: 'var(--accent-primary)' }}
-                    />
-                    <span style={{ fontSize: '0.9rem', color: 'var(--text-primary)' }}>{course.name}</span>
-                  </label>
-                ))}
+            <div className="form-section-card">
+              <h3 style={{ fontSize: '1.05rem', fontWeight: 600, marginBottom: '1.25rem', color: 'var(--text-primary)', fontFamily: 'Outfit, sans-serif', letterSpacing: '0.02em' }}>Select Enrolled Courses</h3>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem' }}>
+                {availableCourses.map(course => {
+                  const isSelected = formData.courses.includes(course.name);
+                  return (
+                    <label 
+                      key={course.name} 
+                      className={`course-select-pill ${isSelected ? 'selected' : ''}`}
+                    >
+                      <input 
+                        type="checkbox" 
+                        checked={isSelected} 
+                        onChange={() => handleCourseChange(course.name)}
+                        style={{ width: '15px', height: '15px', accentColor: 'var(--accent-primary)', cursor: 'pointer' }}
+                      />
+                      <span style={{ fontSize: '0.88rem' }}>{course.name}</span>
+                    </label>
+                  );
+                })}
               </div>
             </div>
 
-            <div style={{ padding: '1.5rem', background: 'var(--bg-tertiary)', borderRadius: '12px', border: '1px solid var(--comment-line)' }}>
-              <h3 style={{ fontSize: '1rem', marginBottom: '1rem', color: 'var(--text-secondary)' }}>Optional: Manual Credentials</h3>
-              <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '1rem' }}>If left blank, secure credentials will be generated automatically.</p>
+            <div className="form-section-card">
+              <h3 style={{ fontSize: '1.05rem', fontWeight: 600, marginBottom: '0.5rem', color: 'var(--text-primary)', fontFamily: 'Outfit, sans-serif', letterSpacing: '0.02em' }}>Optional: Manual Credentials</h3>
+              <p style={{ fontSize: '0.82rem', color: 'var(--text-muted)', marginBottom: '1.25rem' }}>If left blank, secure credentials will be generated automatically.</p>
               
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
                 <div>
