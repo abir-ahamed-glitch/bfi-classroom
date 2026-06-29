@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { NavLink } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { Award, Film, BookOpen, Download, CheckCircle, CalendarCheck, FileText, AlertCircle, Clapperboard, Scissors, BarChart2, Lock } from 'lucide-react';
+import { Award, Film, BookOpen, Download, CheckCircle, CalendarCheck, FileText, AlertCircle, Clapperboard, Scissors, BarChart2, Lock, XCircle } from 'lucide-react';
 import { io } from 'socket.io-client';
 
 const getStatusBadgeStyle = (status) => {
@@ -211,12 +211,29 @@ export default function StudentPortal() {
                       </div>
                       <div className="text-sm">Phase 1: Enrolled</div>
                     </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', opacity: course.step2_completed ? 1 : 0.5 }}>
-                      <div style={{ width: '24px', height: '24px', borderRadius: '50%', background: course.step2_completed ? '#34d399' : 'transparent', border: course.step2_completed ? 'none' : '2px solid var(--text-muted)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                        {course.step2_completed ? <CheckCircle size={16} color="black" /> : null}
-                      </div>
-                      <div className="text-sm">Phase 1: Passed Exam</div>
-                    </div>
+                    {(() => {
+                      const isGraded = course.exam_written !== null && course.exam_written !== undefined && course.exam_written !== '';
+                      const totalScore = (parseInt(course.exam_written) || 0) + (parseInt(course.assignment_screenplay) || 0) + (parseInt(course.assignment_shooting_script) || 0);
+                      const hasFailed = isGraded && course.step1_completed === 1 && course.step2_completed !== 1;
+                      if (hasFailed) {
+                        return (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', opacity: 1 }}>
+                            <div style={{ width: '24px', height: '24px', borderRadius: '50%', background: '#ef4444', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                              <XCircle size={16} color="white" />
+                            </div>
+                            <div className="text-sm" style={{ color: '#ef4444' }}>Phase 1: Failed Exam (Score: {totalScore})</div>
+                          </div>
+                        );
+                      }
+                      return (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', opacity: course.step2_completed ? 1 : 0.5 }}>
+                          <div style={{ width: '24px', height: '24px', borderRadius: '50%', background: course.step2_completed ? '#34d399' : 'transparent', border: course.step2_completed ? 'none' : '2px solid var(--text-muted)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                            {course.step2_completed ? <CheckCircle size={16} color="black" /> : null}
+                          </div>
+                          <div className="text-sm">Phase 1: Passed Exam</div>
+                        </div>
+                      );
+                    })()}
                     <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', opacity: course.step3_completed ? 1 : 0.5 }}>
                       <div style={{ width: '24px', height: '24px', borderRadius: '50%', background: course.step3_completed ? '#34d399' : 'transparent', border: course.step3_completed ? 'none' : '2px solid var(--text-muted)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                         {course.step3_completed ? <CheckCircle size={16} color="black" /> : null}
@@ -238,12 +255,28 @@ export default function StudentPortal() {
                       </div>
                       <div className="text-sm">Admission Confirmed</div>
                     </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', opacity: course.step4_completed ? 1 : 0.5 }}>
-                      <div style={{ width: '24px', height: '24px', borderRadius: '50%', background: course.step4_completed ? '#34d399' : 'transparent', border: course.step4_completed ? 'none' : '2px solid var(--text-muted)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                        {course.step4_completed ? <CheckCircle size={16} color="black" /> : null}
-                      </div>
-                      <div className="text-sm">Course Completed</div>
-                    </div>
+                    {(() => {
+                      const isGraded = course.exam_written !== null && course.exam_written !== undefined && course.exam_written !== '';
+                      const hasFailed = isGraded && course.step1_completed === 1 && course.step4_completed !== 1;
+                      if (hasFailed) {
+                        return (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', opacity: 1 }}>
+                            <div style={{ width: '24px', height: '24px', borderRadius: '50%', background: '#ef4444', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                              <XCircle size={16} color="white" />
+                            </div>
+                            <div className="text-sm" style={{ color: '#ef4444' }}>Failed Exam (Score: {course.exam_written})</div>
+                          </div>
+                        );
+                      }
+                      return (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', opacity: course.step4_completed ? 1 : 0.5 }}>
+                          <div style={{ width: '24px', height: '24px', borderRadius: '50%', background: course.step4_completed ? '#34d399' : 'transparent', border: course.step4_completed ? 'none' : '2px solid var(--text-muted)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                            {course.step4_completed ? <CheckCircle size={16} color="black" /> : null}
+                          </div>
+                          <div className="text-sm">Course Completed</div>
+                        </div>
+                      );
+                    })()}
                   </>
                 )}
               </div>

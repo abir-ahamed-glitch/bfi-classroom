@@ -4,7 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import { renderAsync } from 'docx-preview';
 import { 
   Users, Award, Download, Play, Star, ChevronRight, 
-  FileText, ArrowDownToLine, Clock, Film, AlertTriangle, X, CheckCircle2,
+  FileText, ArrowDownToLine, Clock, Film, AlertTriangle, X, CheckCircle2, XCircle,
   Layers, Megaphone, ArrowRight, Clapperboard, Camera, Video, Ticket, MonitorPlay, Lock,
   File, Music, Eye, Paperclip, Image as ImageIcon, Printer, ZoomIn, ZoomOut, RotateCcw
 } from 'lucide-react';
@@ -1221,10 +1221,25 @@ export default function Dashboard() {
                             <CheckCircle2 size={24} style={{ color: course.step1_completed ? '#10b981' : 'var(--text-muted)' }} />
                             <span style={{ fontSize: '1.1rem', color: course.step1_completed ? 'var(--text-primary)' : 'var(--text-muted)' }}>Phase 1: Enrolled</span>
                           </div>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', opacity: course.step2_completed ? 1 : 0.5 }}>
-                            <CheckCircle2 size={24} style={{ color: course.step2_completed ? '#10b981' : 'var(--text-muted)' }} />
-                            <span style={{ fontSize: '1.1rem', color: course.step2_completed ? 'var(--text-primary)' : 'var(--text-muted)' }}>Phase 1: Passed Exam</span>
-                          </div>
+                           {(() => {
+                            const isGraded = course.exam_written !== null && course.exam_written !== undefined && course.exam_written !== '';
+                            const totalScore = (parseInt(course.exam_written) || 0) + (parseInt(course.assignment_screenplay) || 0) + (parseInt(course.assignment_shooting_script) || 0);
+                            const hasFailed = isGraded && course.step1_completed === 1 && course.step2_completed !== 1;
+                            if (hasFailed) {
+                              return (
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', opacity: 1 }}>
+                                  <XCircle size={24} style={{ color: '#ef4444' }} />
+                                  <span style={{ fontSize: '1.1rem', color: '#ef4444' }}>Phase 1: Failed Exam (Score: {totalScore})</span>
+                                </div>
+                              );
+                            }
+                            return (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', opacity: course.step2_completed ? 1 : 0.5 }}>
+                                <CheckCircle2 size={24} style={{ color: course.step2_completed ? '#10b981' : 'var(--text-muted)' }} />
+                                <span style={{ fontSize: '1.1rem', color: course.step2_completed ? 'var(--text-primary)' : 'var(--text-muted)' }}>Phase 1: Passed Exam</span>
+                              </div>
+                            );
+                          })()}
                           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', opacity: course.step3_completed ? 1 : 0.5 }}>
                             <CheckCircle2 size={24} style={{ color: course.step3_completed ? '#10b981' : 'var(--text-muted)' }} />
                             <span style={{ fontSize: '1.1rem', color: course.step3_completed ? 'var(--text-primary)' : 'var(--text-muted)' }}>Phase 2: Enrolled</span>
@@ -1240,10 +1255,24 @@ export default function Dashboard() {
                             <CheckCircle2 size={24} style={{ color: course.step1_completed ? '#10b981' : 'var(--text-muted)' }} />
                             <span style={{ fontSize: '1.1rem', color: course.step1_completed ? 'var(--text-primary)' : 'var(--text-muted)' }}>Admission Confirmed</span>
                           </div>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', opacity: course.step4_completed ? 1 : 0.5 }}>
-                            <CheckCircle2 size={24} style={{ color: course.step4_completed ? '#10b981' : 'var(--text-muted)' }} />
-                            <span style={{ fontSize: '1.1rem', color: course.step4_completed ? 'var(--text-primary)' : 'var(--text-muted)' }}>Course Completed</span>
-                          </div>
+                          {(() => {
+                            const isGraded = course.exam_written !== null && course.exam_written !== undefined && course.exam_written !== '';
+                            const hasFailed = isGraded && course.step1_completed === 1 && course.step4_completed !== 1;
+                            if (hasFailed) {
+                              return (
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', opacity: 1 }}>
+                                  <XCircle size={24} style={{ color: '#ef4444' }} />
+                                  <span style={{ fontSize: '1.1rem', color: '#ef4444' }}>Failed Exam (Score: {course.exam_written})</span>
+                                </div>
+                              );
+                            }
+                            return (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', opacity: course.step4_completed ? 1 : 0.5 }}>
+                                <CheckCircle2 size={24} style={{ color: course.step4_completed ? '#10b981' : 'var(--text-muted)' }} />
+                                <span style={{ fontSize: '1.1rem', color: course.step4_completed ? 'var(--text-primary)' : 'var(--text-muted)' }}>Course Completed</span>
+                              </div>
+                            );
+                          })()}
                         </>
                       )}
                     </div>
