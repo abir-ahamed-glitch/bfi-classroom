@@ -2,6 +2,7 @@ import express from 'express';
 import db from '../db/database.js';
 import { authenticateToken, requireRole } from '../middleware/auth.js';
 import { runBatchStatusAutomation } from '../utils/batchStatusAutomation.js';
+import { getBatchFee } from '../utils/feeResolver.js';
 
 const router = express.Router();
 
@@ -70,6 +71,11 @@ router.get('/', authenticateToken, requireRole('admin'), (req, res) => {
       `).get(batch.course_name, batch.id).count || 0;
 
       batch.phase1_completed_count = p1Count;
+
+      const batchFee = getBatchFee(batch.course_name, batch.batch_number);
+      batch.course_fee = batchFee ? batchFee.full_fee : 0;
+      batch.phase1_fee = batchFee ? batchFee.phase1_fee : 0;
+      batch.phase2_fee = batchFee ? batchFee.phase2_fee : 0;
     }
 
     res.json(batches);
@@ -100,6 +106,11 @@ router.get('/:id', authenticateToken, requireRole('admin'), (req, res) => {
     if (!batch) {
       return res.status(404).json({ error: 'Batch not found' });
     }
+
+    const batchFee = getBatchFee(batch.course_name, batch.batch_number);
+    batch.course_fee = batchFee ? batchFee.full_fee : 0;
+    batch.phase1_fee = batchFee ? batchFee.phase1_fee : 0;
+    batch.phase2_fee = batchFee ? batchFee.phase2_fee : 0;
 
     res.json(batch);
   } catch (error) {

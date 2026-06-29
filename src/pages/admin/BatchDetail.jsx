@@ -818,6 +818,40 @@ export default function BatchDetail() {
   const totalCollected = 0; // Placeholder, assuming it's not directly in progressData
   const totalOutstanding = 0; // Placeholder
 
+  const renderCourseFeeChip = () => {
+    let fee = batchData.course_fee;
+    let p1 = batchData.phase1_fee;
+    let p2 = batchData.phase2_fee;
+    const name = batchData.course_name || '';
+
+    // Frontend fallback defaults if not returned by backend
+    if (fee === undefined || fee === null || fee === 0) {
+      if (name === 'Online Filmmaking Course') {
+        fee = 8000;
+        p1 = 4000;
+        p2 = 4000;
+      } else if (name === 'Film Appreciation Course') {
+        fee = 8000;
+        p1 = 8000;
+        p2 = 0;
+      }
+    }
+
+    if (!fee) return null;
+
+    return (
+      <div className="batch-meta-chip" title="Course Fee" style={{ fontWeight: 600 }}>
+        <Wallet size={14} />
+        <span>Course Fee: ৳{fee.toLocaleString()}</span>
+        {name === 'Online Filmmaking Course' && p1 !== undefined && p2 !== undefined && p1 > 0 && (
+          <span style={{ fontSize: '0.85em', opacity: 0.8, marginLeft: '0.25rem', fontWeight: 400 }}>
+            (P1: ৳{p1.toLocaleString()} | P2: ৳{p2.toLocaleString()})
+          </span>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div className="page-container container batch-detail-container">
       {/* Toast */}
@@ -886,6 +920,7 @@ export default function BatchDetail() {
         </div>
 
         <div className="batch-meta-chips">
+          {renderCourseFeeChip()}
           <div className="batch-meta-chip"><Calendar size={14} /> {formatDate(batchData.start_date)}</div>
           <div className="batch-meta-chip"><Calendar size={14} /> {formatDate(batchData.end_date)}</div>
           <div className="batch-meta-chip"><Users size={14} /> {batchData.student_count || 0} students enrolled</div>
