@@ -22,14 +22,14 @@ export function getBatchFee(courseName, batchNumber) {
     const res = db.prepare(
       'SELECT phase1_fee, phase2_fee, full_fee FROM batch_course_fees WHERE LOWER(TRIM(course_name)) = LOWER(TRIM(?)) AND TRIM(batch_number) = TRIM(?) LIMIT 1'
     ).get(courseName, String(batchNumber));
-    if (res) return res;
+    if (res) return { ...res, is_custom: true };
 
     // Default fallbacks if not defined by admin in the DB
     const lowerName = courseName.toLowerCase().trim();
     if (lowerName === 'film appreciation course' || lowerName.includes('appreciation')) {
-      return { phase1_fee: 8000, phase2_fee: 0, full_fee: 8000 };
+      return { phase1_fee: 8000, phase2_fee: 0, full_fee: 8000, is_custom: false };
     } else if (lowerName === 'online filmmaking course' || lowerName.includes('filmmaking')) {
-      return { phase1_fee: 4000, phase2_fee: 4000, full_fee: 8000 };
+      return { phase1_fee: 4000, phase2_fee: 4000, full_fee: 8000, is_custom: false };
     }
     return null;
   } catch {

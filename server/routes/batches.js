@@ -76,6 +76,7 @@ router.get('/', authenticateToken, requireRole('admin'), (req, res) => {
       batch.course_fee = batchFee ? batchFee.full_fee : 0;
       batch.phase1_fee = batchFee ? batchFee.phase1_fee : 0;
       batch.phase2_fee = batchFee ? batchFee.phase2_fee : 0;
+      batch.is_custom_fee = batchFee ? !!batchFee.is_custom : false;
     }
 
     res.json(batches);
@@ -111,6 +112,7 @@ router.get('/:id', authenticateToken, requireRole('admin'), (req, res) => {
     batch.course_fee = batchFee ? batchFee.full_fee : 0;
     batch.phase1_fee = batchFee ? batchFee.phase1_fee : 0;
     batch.phase2_fee = batchFee ? batchFee.phase2_fee : 0;
+    batch.is_custom_fee = batchFee ? !!batchFee.is_custom : false;
 
     res.json(batch);
   } catch (error) {

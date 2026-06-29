@@ -822,6 +822,7 @@ export default function BatchDetail() {
     let fee = batchData.course_fee;
     let p1 = batchData.phase1_fee;
     let p2 = batchData.phase2_fee;
+    let isCustom = batchData.is_custom_fee;
     const name = batchData.course_name || '';
 
     // Frontend fallback defaults if not returned by backend
@@ -830,19 +831,36 @@ export default function BatchDetail() {
         fee = 8000;
         p1 = 4000;
         p2 = 4000;
+        isCustom = false;
       } else if (name === 'Film Appreciation Course') {
         fee = 8000;
         p1 = 8000;
         p2 = 0;
+        isCustom = false;
       }
     }
 
     if (!fee) return null;
 
     return (
-      <div className="batch-meta-chip" title="Course Fee" style={{ fontWeight: 600 }}>
+      <div className="batch-meta-chip" title={isCustom ? "Customized Course Fee" : "Default Course Fee"} style={{ fontWeight: 600 }}>
         <Wallet size={14} />
         <span>Course Fee: ৳{fee.toLocaleString()}</span>
+        <span style={{ 
+          fontSize: '0.7rem', 
+          opacity: 0.85, 
+          marginLeft: '0.4rem', 
+          padding: '0.1rem 0.4rem', 
+          borderRadius: '4px', 
+          background: isCustom ? 'rgba(16, 185, 129, 0.12)' : 'rgba(148, 163, 184, 0.12)', 
+          color: isCustom ? '#10b981' : 'var(--text-muted)',
+          border: isCustom ? '1px solid rgba(16, 185, 129, 0.2)' : '1px solid rgba(148, 163, 184, 0.2)',
+          textTransform: 'uppercase',
+          letterSpacing: '0.03em',
+          fontWeight: 700
+        }}>
+          {isCustom ? 'custom' : 'default'}
+        </span>
         {name === 'Online Filmmaking Course' && p1 !== undefined && p2 !== undefined && p1 > 0 && (
           <span style={{ fontSize: '0.85em', opacity: 0.8, marginLeft: '0.25rem', fontWeight: 400 }}>
             (P1: ৳{p1.toLocaleString()} | P2: ৳{p2.toLocaleString()})
