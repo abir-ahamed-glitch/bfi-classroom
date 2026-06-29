@@ -60,11 +60,30 @@ export default function AdditionalOptions() {
   const [editingTeacherId, setEditingTeacherId] = useState('');
   const [subjectSearchQuery, setSubjectSearchQuery] = useState('');
 
-  const filteredCustomSubjects = customSubjects.filter(sub => 
-    sub.course_name === activeTab.course &&
-    (activeTab.hasPhases ? sub.phase === selectedPhase : true) &&
-    sub.name.toLowerCase().includes(subjectSearchQuery.toLowerCase())
-  );
+  const filteredCustomSubjects = customSubjects.filter(sub => {
+    const query = subjectSearchQuery.trim().toLowerCase();
+    if (query === '') {
+      return sub.course_name === activeTab.course &&
+        (activeTab.hasPhases ? sub.phase === selectedPhase : true);
+    }
+    
+    const nameMatch = sub.name.toLowerCase().includes(query);
+    const teacherMatch = sub.teacher_name && sub.teacher_name.toLowerCase().includes(query);
+    const courseMatch = sub.course_name.toLowerCase().includes(query);
+    let typeMatch = false;
+    if (query === 'live' || query === 'recorded') {
+      typeMatch = sub.class_type === query;
+    }
+    let phaseMatch = false;
+    if (query.includes('phase')) {
+      const numMatch = query.match(/\d+/);
+      if (numMatch) {
+        phaseMatch = sub.phase === parseInt(numMatch[0]);
+      }
+    }
+    
+    return nameMatch || teacherMatch || courseMatch || typeMatch || phaseMatch;
+  });
 
   const [draggedIndex, setDraggedIndex] = useState(null);
 
@@ -220,6 +239,47 @@ export default function AdditionalOptions() {
       setNewSubjectDuration('');
       setNewSubjectPartDurations([]);
       setNewSubjectTeacherId('');
+      fetchCustomSubjects();
+    } catch (error) {
+      setErrorMsg(error.message);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleImportSubject = async (sub) => {
+    setIsLoading(true);
+    setErrorMsg('');
+    setSuccessMsg('');
+
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch('/api/admin/custom-subjects', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ 
+          name: sub.name,
+          course_name: activeTab.course,
+          phase: activeTab.hasPhases ? selectedPhase : null,
+          parts_count: sub.parts_count || 1,
+          class_type: sub.class_type || 'live',
+          has_live_qa: !!sub.has_live_qa,
+          duration_minutes: sub.duration_minutes || null,
+          part_durations: sub.part_durations ? JSON.parse(sub.part_durations) : null,
+          teacher_id: sub.teacher_id || null
+        })
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to import subject');
+      }
+
+      setSuccessMsg(`Subject "${sub.name}" successfully added to ${activeTab.course}${activeTab.hasPhases ? ` Phase ${selectedPhase}` : ''}.`);
       fetchCustomSubjects();
     } catch (error) {
       setErrorMsg(error.message);
@@ -846,10 +906,13 @@ export default function AdditionalOptions() {
                       {filteredCustomSubjects.map((subject, idx) => {
                         const isEditing = editingId === subject.id;
                         const isSearchEmpty = subjectSearchQuery.trim() === '';
+                        const isFromActiveCourseAndPhase = 
+                          subject.course_name === activeTab.course &&
+                          (activeTab.hasPhases ? subject.phase === selectedPhase : true);
                         return (
                           <div
                             key={subject.id}
-                            draggable={isSearchEmpty}
+                            draggable={isSearchEmpty && isFromActiveCourseAndPhase}
                             onDragStart={(e) => handleDragStart(e, idx)}
                             onDragOver={(e) => handleDragOver(e, idx)}
                             onDragEnd={() => setDraggedIndex(null)}
@@ -864,7 +927,7 @@ export default function AdditionalOptions() {
                               border: '1px solid rgba(255,255,255,0.05)',
                               transition: 'all 0.2s',
                               opacity: draggedIndex === idx ? 0.4 : 1,
-                              cursor: isSearchEmpty ? 'grab' : 'default',
+                              cursor: isSearchEmpty && isFromActiveCourseAndPhase ? 'grab' : 'default',
                               userSelect: 'none'
                             }}
                           >
@@ -1053,13 +1116,29 @@ export default function AdditionalOptions() {
                             ) : (
                               <>
                                 <span style={{ fontSize: '0.95rem', color: 'var(--text-primary)', fontWeight: 500, display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap' }}>
-                                  {isSearchEmpty && (
+                                  {isSearchEmpty && isFromActiveCourseAndPhase && (
                                     <>
                                       <GripVertical size={16} style={{ color: 'var(--text-muted)', cursor: 'grab', opacity: 0.5 }} />
                                       <span style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>#{idx + 1}</span>
                                     </>
                                   )}
                                   <span>{subject.name}</span>
+                                  {!isFromActiveCourseAndPhase && (
+                                    <span style={{
+                                      fontSize: '0.72rem',
+                                      padding: '2px 8px',
+                                      borderRadius: '12px',
+                                      fontWeight: 600,
+                                      display: 'inline-flex',
+                                      alignItems: 'center',
+                                      background: 'rgba(255, 255, 255, 0.06)',
+                                      color: 'rgba(255, 255, 255, 0.7)',
+                                      border: '1px solid rgba(255, 255, 255, 0.1)',
+                                      letterSpacing: '0.02em'
+                                    }}>
+                                      {subject.course_name === 'Online Filmmaking Course' ? `Filmmaking P${subject.phase}` : subject.course_name}
+                                    </span>
+                                  )}
                                   {subject.parts_count > 1 && (
                                     <span style={{ 
                                       fontSize: '0.75rem', 
@@ -1157,127 +1236,159 @@ export default function AdditionalOptions() {
                                       ) : null}
                                     </span>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                                  {isSearchEmpty && (
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.1rem', marginRight: '0.3rem' }}>
+                                  {isFromActiveCourseAndPhase ? (
+                                    <>
+                                      {isSearchEmpty && (
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.1rem', marginRight: '0.3rem' }}>
+                                          <button
+                                            type="button"
+                                            onClick={() => moveSubjectUp(idx)}
+                                            disabled={idx === 0}
+                                            style={{
+                                              background: 'none',
+                                              border: 'none',
+                                              color: idx === 0 ? 'var(--text-muted)' : 'var(--text-secondary)',
+                                              opacity: idx === 0 ? 0.3 : 0.8,
+                                              cursor: idx === 0 ? 'not-allowed' : 'pointer',
+                                              padding: '4px',
+                                              display: 'flex',
+                                              alignItems: 'center',
+                                              borderRadius: '4px',
+                                              transition: 'background 0.2s'
+                                            }}
+                                            onMouseEnter={(e) => {
+                                              if (idx > 0) e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)';
+                                            }}
+                                            onMouseLeave={(e) => {
+                                              e.currentTarget.style.background = 'none';
+                                            }}
+                                            title="Move Up"
+                                          >
+                                            <ChevronUp size={16} />
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={() => moveSubjectDown(idx)}
+                                            disabled={idx === filteredCustomSubjects.length - 1}
+                                            style={{
+                                              background: 'none',
+                                              border: 'none',
+                                              color: idx === filteredCustomSubjects.length - 1 ? 'var(--text-muted)' : 'var(--text-secondary)',
+                                              opacity: idx === filteredCustomSubjects.length - 1 ? 0.3 : 0.8,
+                                              cursor: idx === filteredCustomSubjects.length - 1 ? 'not-allowed' : 'pointer',
+                                              padding: '4px',
+                                              display: 'flex',
+                                              alignItems: 'center',
+                                              borderRadius: '4px',
+                                              transition: 'background 0.2s'
+                                            }}
+                                            onMouseEnter={(e) => {
+                                              if (idx < filteredCustomSubjects.length - 1) e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)';
+                                            }}
+                                            onMouseLeave={(e) => {
+                                              e.currentTarget.style.background = 'none';
+                                            }}
+                                            title="Move Down"
+                                          >
+                                            <ChevronDown size={16} />
+                                          </button>
+                                        </div>
+                                      )}
                                       <button
                                         type="button"
-                                        onClick={() => moveSubjectUp(idx)}
-                                        disabled={idx === 0}
+                                        onClick={() => {
+                                          setEditingId(subject.id);
+                                          setEditingName(subject.name);
+                                          setEditingPartsCount(subject.parts_count || 1);
+                                          setEditingClassType(subject.class_type || 'live');
+                                          setEditingHasLiveQa(!!subject.has_live_qa);
+                                          setEditingDuration(subject.duration_minutes ? String(subject.duration_minutes) : '');
+                                          setEditingTeacherId(subject.teacher_id || '');
+                                          try {
+                                            setEditingPartDurations(subject.part_durations ? JSON.parse(subject.part_durations).map(String) : []);
+                                          } catch { setEditingPartDurations([]); }
+                                        }}
                                         style={{
                                           background: 'none',
                                           border: 'none',
-                                          color: idx === 0 ? 'var(--text-muted)' : 'var(--text-secondary)',
-                                          opacity: idx === 0 ? 0.3 : 0.8,
-                                          cursor: idx === 0 ? 'not-allowed' : 'pointer',
+                                          color: 'var(--text-secondary)',
+                                          cursor: 'pointer',
                                           padding: '4px',
                                           display: 'flex',
                                           alignItems: 'center',
+                                          justifyContent: 'center',
                                           borderRadius: '4px',
-                                          transition: 'background 0.2s'
+                                          transition: 'all 0.2s'
                                         }}
                                         onMouseEnter={(e) => {
-                                          if (idx > 0) e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)';
+                                          e.currentTarget.style.color = 'var(--accent-primary)';
+                                          e.currentTarget.style.background = 'rgba(56, 189, 248, 0.1)';
                                         }}
                                         onMouseLeave={(e) => {
+                                          e.currentTarget.style.color = 'var(--text-secondary)';
                                           e.currentTarget.style.background = 'none';
                                         }}
-                                        title="Move Up"
+                                        title="Rename subject"
                                       >
-                                        <ChevronUp size={16} />
+                                        <Edit2 size={16} />
                                       </button>
                                       <button
                                         type="button"
-                                        onClick={() => moveSubjectDown(idx)}
-                                        disabled={idx === filteredCustomSubjects.length - 1}
+                                        onClick={() => handleDeleteSubject(subject.id, subject.name)}
                                         style={{
                                           background: 'none',
                                           border: 'none',
-                                          color: idx === filteredCustomSubjects.length - 1 ? 'var(--text-muted)' : 'var(--text-secondary)',
-                                          opacity: idx === filteredCustomSubjects.length - 1 ? 0.3 : 0.8,
-                                          cursor: idx === filteredCustomSubjects.length - 1 ? 'not-allowed' : 'pointer',
+                                          color: 'var(--text-secondary)',
+                                          cursor: 'pointer',
                                           padding: '4px',
                                           display: 'flex',
                                           alignItems: 'center',
+                                          justifyContent: 'center',
                                           borderRadius: '4px',
-                                          transition: 'background 0.2s'
+                                          transition: 'all 0.2s'
                                         }}
                                         onMouseEnter={(e) => {
-                                          if (idx < filteredCustomSubjects.length - 1) e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)';
+                                          e.currentTarget.style.color = 'var(--danger)';
+                                          e.currentTarget.style.background = 'rgba(239, 68, 68, 0.1)';
                                         }}
                                         onMouseLeave={(e) => {
+                                          e.currentTarget.style.color = 'var(--text-secondary)';
                                           e.currentTarget.style.background = 'none';
                                         }}
-                                        title="Move Down"
+                                        title="Delete subject"
                                       >
-                                        <ChevronDown size={16} />
+                                        <Trash2 size={16} />
                                       </button>
-                                    </div>
+                                    </>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleImportSubject(subject)}
+                                      style={{
+                                        padding: '4px 10px',
+                                        borderRadius: '8px',
+                                        border: '1px solid rgba(225, 29, 72, 0.3)',
+                                        background: 'rgba(225, 29, 72, 0.15)',
+                                        color: 'var(--accent-primary)',
+                                        cursor: 'pointer',
+                                        fontSize: '0.75rem',
+                                        fontWeight: 600,
+                                        height: '32px',
+                                        display: 'inline-flex',
+                                        alignItems: 'center',
+                                        gap: '4px',
+                                        transition: 'all 0.2s'
+                                      }}
+                                      onMouseEnter={(e) => {
+                                        e.currentTarget.style.background = 'rgba(225, 29, 72, 0.25)';
+                                      }}
+                                      onMouseLeave={(e) => {
+                                        e.currentTarget.style.background = 'rgba(225, 29, 72, 0.15)';
+                                      }}
+                                    >
+                                      <Plus size={14} /> Add to Current
+                                    </button>
                                   )}
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      setEditingId(subject.id);
-                                      setEditingName(subject.name);
-                                      setEditingPartsCount(subject.parts_count || 1);
-                                      setEditingClassType(subject.class_type || 'live');
-                                      setEditingHasLiveQa(!!subject.has_live_qa);
-                                      setEditingDuration(subject.duration_minutes ? String(subject.duration_minutes) : '');
-                                      setEditingTeacherId(subject.teacher_id || '');
-                                      try {
-                                        setEditingPartDurations(subject.part_durations ? JSON.parse(subject.part_durations).map(String) : []);
-                                      } catch { setEditingPartDurations([]); }
-                                    }}
-                                    style={{
-                                      background: 'none',
-                                      border: 'none',
-                                      color: 'var(--text-secondary)',
-                                      cursor: 'pointer',
-                                      padding: '4px',
-                                      display: 'flex',
-                                      alignItems: 'center',
-                                      justifyContent: 'center',
-                                      borderRadius: '4px',
-                                      transition: 'all 0.2s'
-                                    }}
-                                    onMouseEnter={(e) => {
-                                      e.currentTarget.style.color = 'var(--accent-primary)';
-                                      e.currentTarget.style.background = 'rgba(56, 189, 248, 0.1)';
-                                    }}
-                                    onMouseLeave={(e) => {
-                                      e.currentTarget.style.color = 'var(--text-secondary)';
-                                      e.currentTarget.style.background = 'none';
-                                    }}
-                                    title="Rename subject"
-                                  >
-                                    <Edit2 size={16} />
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => handleDeleteSubject(subject.id, subject.name)}
-                                    style={{
-                                      background: 'none',
-                                      border: 'none',
-                                      color: 'var(--text-secondary)',
-                                      cursor: 'pointer',
-                                      padding: '4px',
-                                      display: 'flex',
-                                      alignItems: 'center',
-                                      justifyContent: 'center',
-                                      borderRadius: '4px',
-                                      transition: 'all 0.2s'
-                                    }}
-                                    onMouseEnter={(e) => {
-                                      e.currentTarget.style.color = 'var(--danger)';
-                                      e.currentTarget.style.background = 'rgba(239, 68, 68, 0.1)';
-                                    }}
-                                    onMouseLeave={(e) => {
-                                      e.currentTarget.style.color = 'var(--text-secondary)';
-                                      e.currentTarget.style.background = 'none';
-                                    }}
-                                    title="Delete subject"
-                                  >
-                                    <Trash2 size={16} />
-                                  </button>
                                 </div>
                               </>
                             )}
