@@ -876,8 +876,8 @@ export default function BatchDetail() {
             // Filmmaking: has attended (step1) but not passed exam (step2)
             return enrollment && enrollment.step1_completed === 1 && enrollment.step2_completed !== 1;
           } else {
-            // Film Appreciation / Workshop: has a graded exam_written score but did NOT pass
-            return enrollment && enrollment.exam_written !== null && enrollment.exam_written !== undefined && enrollment.exam_written !== '' && enrollment.step2_completed !== 1;
+            // Film Appreciation / Workshop: has a non-zero exam score but did NOT pass
+            return enrollment && (enrollment.exam_written > 0) && enrollment.step2_completed !== 1;
           }
           
         // Workshop / Film Appreciation (single phase)
@@ -1336,22 +1336,22 @@ export default function BatchDetail() {
                                 </>
                               ) : (
                                 <>
-                                  <button onClick={() => toggleProgress(s.id, e.id, 'step1_completed', e.step1_completed, e.course_name)} title="Admitted" style={{ background: 'none', border: 'none', cursor: 'pointer', color: e.step1_completed ? '#10b981' : 'var(--text-muted)' }}>
-                                    {e.step1_completed ? <CheckSquare size={18} /> : <Square size={18} />}
-                                  </button>
+                                  {/* Film Appreciation: no attendance step shown, just exam result */}
                                   {(() => {
-                                    const isGraded = e.exam_written !== null && e.exam_written !== undefined && e.exam_written !== '';
-                                    const hasFailed = isGraded && e.step1_completed === 1 && e.step4_completed !== 1;
+                                    const examScore = parseInt(e.exam_written) || 0;
+                                    const hasExam = examScore > 0;
+                                    const hasPassed = e.step2_completed === 1;
+                                    const hasFailed = hasExam && !hasPassed;
                                     if (hasFailed) {
                                       return (
-                                        <button onClick={() => toggleProgress(s.id, e.id, 'step4_completed', e.step4_completed, e.course_name)} title={`Failed (Score: ${e.exam_written})`} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444' }}>
+                                        <button onClick={() => toggleProgress(s.id, e.id, 'step2_completed', e.step2_completed, e.course_name)} title={`Failed Exam (Score: ${examScore})`} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444' }}>
                                           <XCircle size={18} />
                                         </button>
                                       );
                                     }
                                     return (
-                                      <button onClick={() => toggleProgress(s.id, e.id, 'step4_completed', e.step4_completed, e.course_name)} title="Completed Course" style={{ background: 'none', border: 'none', cursor: 'pointer', color: e.step4_completed ? '#10b981' : 'var(--text-muted)' }}>
-                                        {e.step4_completed ? <CheckSquare size={18} /> : <Square size={18} />}
+                                      <button onClick={() => toggleProgress(s.id, e.id, 'step2_completed', e.step2_completed, e.course_name)} title={hasPassed ? `Passed Exam (Score: ${examScore})` : 'Exam Not Yet Taken'} style={{ background: 'none', border: 'none', cursor: 'pointer', color: hasPassed ? '#10b981' : 'var(--text-muted)' }}>
+                                        {hasPassed ? <CheckSquare size={18} /> : <Square size={18} />}
                                       </button>
                                     );
                                   })()}

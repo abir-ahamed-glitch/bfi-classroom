@@ -701,14 +701,15 @@ router.get('/:id/progress', authenticateToken, requireRole('admin'), (req, res) 
         if (s.step4_completed === 1) phase2.completed++;
       } else {
         // Workshop / Film Appreciation progress metrics
-        if (s.step1_completed === 1) single_phase.admitted++;
+        // For Film Appreciation: all enrolled students are "admitted" (no attendance gate)
+        single_phase.admitted++;
         if (s.attendance_classes > 0) single_phase.attendance++;
         if (s.assignment_screenplay > 0 || s.assignment_shooting_script > 0) single_phase.assignment_submitted++;
         if (s.step2_completed === 1) {
           single_phase.exam_passed++;
           single_phase.completed++;
-        } else if (s.exam_written !== null && s.exam_written !== undefined && s.exam_written !== '') {
-          // Student has been graded but did not pass
+        } else if (s.exam_written > 0) {
+          // Student has a non-zero exam score but did NOT pass
           single_phase.exam_failed++;
         }
       }

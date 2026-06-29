@@ -1161,16 +1161,16 @@ router.put('/students/:id/academic-records/:courseId', authenticateToken, requir
     }
 
     const isOnlineFilmmaking = enrollment.course_name === 'Online Filmmaking Course';
-    const isAdmitted = isOnlineFilmmaking ? enrollment.step3_completed === 1 : enrollment.step1_completed === 1;
-    if (!isAdmitted) {
-      return res.status(400).json({ 
-        error: isOnlineFilmmaking 
-          ? 'Cannot update academic records because Phase 2: Admitted is not yet completed.' 
-          : 'Cannot update exam results because Admission Confirmed is not yet completed.' 
-      });
+    // For Online Filmmaking, phase 2 admission (step3) is required before entering academic records.
+    // For Film Appreciation / other workshops, any enrolled student can have exam results entered.
+    if (isOnlineFilmmaking) {
+      const isPhase2Admitted = enrollment.step3_completed === 1;
+      if (!isPhase2Admitted) {
+        return res.status(400).json({ error: 'Cannot update academic records because Phase 2: Admitted is not yet completed.' });
+      }
     }
 
-    // Custom flow for all courses except Online Filmmaking Course (no attendance, no assignments, score out of 100)
+    // Film Appreciation / other workshops: exam out of 100, pass mark 33, no attendance required
     if (enrollment.course_name !== 'Online Filmmaking Course') {
       const exam = parseInt(exam_written) || 0;
       if (exam > 100) {
@@ -1179,17 +1179,18 @@ router.put('/students/:id/academic-records/:courseId', authenticateToken, requir
       if (exam < 0) {
         return res.status(400).json({ error: 'Written exam score cannot be negative.' });
       }
-      const completed = exam >= 33 ? 1 : 0;
+      const passed = exam >= 33 ? 1 : 0;
       
       db.prepare(`
         UPDATE student_course_enrollments
         SET exam_written = ?, 
             assignment_screenplay = 0, 
             assignment_shooting_script = 0,
+            step2_completed = ?,
             step4_completed = ?,
             updated_at = datetime('now')
         WHERE id = ? AND user_id = ?
-      `).run(exam, completed, courseId, studentId);
+      `).run(exam, passed, passed, courseId, studentId);
 
       const io = req.app.get('io');
       if (io) {
