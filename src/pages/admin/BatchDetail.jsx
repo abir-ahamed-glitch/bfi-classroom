@@ -223,14 +223,12 @@ export default function BatchDetail() {
   const openAcademicModal = (student, enrollmentId) => {
     const enrollment = student.enrollments?.find(e => e.id === enrollmentId);
     const isOnlineFilmmaking = enrollment?.course_name === 'Online Filmmaking Course';
-    const isAdmitted = isOnlineFilmmaking ? enrollment?.step3_completed : enrollment?.step1_completed;
+    const isAdmitted = isOnlineFilmmaking ? (enrollment?.step3_completed === 1) : true;
 
     if (!isAdmitted) {
       setConfirmConfig({
         title: 'Action Restricted',
-        message: isOnlineFilmmaking
-          ? 'Cannot update academic records because Phase 2: Admitted is not yet completed.'
-          : 'Cannot update exam results because Admission Confirmed is not yet completed.',
+        message: 'Cannot update academic records because Phase 2: Admitted is not yet completed.',
         confirmText: 'OK',
         isAlert: true,
         onConfirm: () => {}
@@ -349,7 +347,7 @@ export default function BatchDetail() {
       const e = student?.enrollments?.find(env => env.id === enrollmentId);
       const willBeChecked = !currentValue;
 
-      if (stepField === 'step4_completed') {
+      if (stepField === 'step2_completed') {
         if (willBeChecked) {
           if (!e?.step1_completed) {
             setConfirmConfig({ title: 'Action Restricted', message: 'Cannot check "Completed Course" because "Admission Confirmed" is not yet completed.', confirmText: 'OK', isAlert: true, onConfirm: () => {} });
@@ -366,7 +364,7 @@ export default function BatchDetail() {
           return;
         }
       } else {
-        if (stepField === 'step1_completed' && e?.step4_completed) {
+        if (stepField === 'step1_completed' && e?.step2_completed) {
           setConfirmConfig({ title: 'Action Restricted', message: 'Cannot uncheck "Admission Confirmed" while "Completed Course" is checked.', confirmText: 'OK', isAlert: true, onConfirm: () => {} });
           return;
         }
@@ -387,6 +385,7 @@ export default function BatchDetail() {
       });
       if (res.ok) {
         fetchStudents(batchData.id);
+        fetchProgress(batchData.id);
       } else {
         const data = await res.json();
         setConfirmConfig({ title: 'Update Failed', message: data.error || 'Failed to update progress.', confirmText: 'OK', isAlert: true, onConfirm: () => {} });
@@ -459,6 +458,7 @@ export default function BatchDetail() {
 
       if (res.ok) {
         fetchStudents(batchData.id); // refresh list in batch detail
+        fetchProgress(batchData.id);
         closeAcademicModal();
       } else {
         const data = await res.json();
@@ -497,6 +497,7 @@ export default function BatchDetail() {
 
       if (res.ok) {
         fetchStudents(batchData.id); // refresh list in batch detail
+        fetchProgress(batchData.id);
         closePhase2Modal();
       } else {
         const data = await res.json();
@@ -541,6 +542,7 @@ export default function BatchDetail() {
       if (res.ok) {
         showToast('Student deleted successfully');
         fetchStudents(batchData.id);
+        fetchProgress(batchData.id);
       } else {
         const data = await res.json();
         setConfirmConfig({ title: 'Deletion Failed', message: data.error || 'Failed to delete student.', confirmText: 'OK', isAlert: true, onConfirm: () => {} });
@@ -821,7 +823,18 @@ export default function BatchDetail() {
   if (!batchData) return null;
 
   const toggleStatFilter = (filter) => {
-    setSelectedStatFilter(prev => prev === filter ? null : filter);
+    setSelectedStatFilter(prev => {
+      const newVal = prev === filter ? null : filter;
+      if (newVal) {
+        setTimeout(() => {
+          const el = document.querySelector('.batch-students-section');
+          if (el) {
+            el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }
+        }, 100);
+      }
+      return newVal;
+    });
   };
 
   // Course type flags
@@ -912,7 +925,7 @@ export default function BatchDetail() {
       funnelData = [
         { stage: 'Enrolled', value: progressData.single_phase?.admitted || progressData.total_students || 0 },
         ...(!isFilmAppreciation ? [{ stage: 'Attended', value: progressData.single_phase?.attendance || 0 }] : []),
-        { stage: 'Assignment', value: progressData.single_phase?.assignment_submitted || 0 },
+        ...(!isFilmAppreciation ? [{ stage: 'Assignment', value: progressData.single_phase?.assignment_submitted || 0 }] : []),
         { stage: 'Exam Passed', value: progressData.single_phase?.exam_passed || 0 },
         { stage: 'Exam Failed', value: progressData.single_phase?.exam_failed || 0 },
         { stage: 'Completed', value: progressData.single_phase?.completed || 0 },
@@ -1118,7 +1131,9 @@ export default function BatchDetail() {
                 {!isFilmAppreciation && (
                   <StatCard icon={<CheckCircle2 size={20} />} value={progressData.single_phase?.attendance} label="Attendance" colorVariant="Green" onClick={() => toggleStatFilter('attendance')} isActive={selectedStatFilter === 'attendance'} />
                 )}
-                <StatCard icon={<FileText size={20} />} value={progressData.single_phase?.assignment_submitted} label="Assignment Submitted" colorVariant="Amber" onClick={() => toggleStatFilter('assignment_submitted')} isActive={selectedStatFilter === 'assignment_submitted'} />
+                {!isFilmAppreciation && (
+                  <StatCard icon={<FileText size={20} />} value={progressData.single_phase?.assignment_submitted} label="Assignment Submitted" colorVariant="Amber" onClick={() => toggleStatFilter('assignment_submitted')} isActive={selectedStatFilter === 'assignment_submitted'} />
+                )}
                 <StatCard icon={<Award size={20} />} value={progressData.single_phase?.exam_passed} label="Exam Passed" colorVariant="Green" onClick={() => toggleStatFilter('exam_passed')} isActive={selectedStatFilter === 'exam_passed'} />
                 {isFilmAppreciation && (
                   <StatCard icon={<XCircle size={20} />} value={progressData.single_phase?.exam_failed} label="Exam Failed" colorVariant="Red" onClick={() => toggleStatFilter('exam_failed')} isActive={selectedStatFilter === 'exam_failed'} />
@@ -1336,7 +1351,9 @@ export default function BatchDetail() {
                                 </>
                               ) : (
                                 <>
-                                  {/* Film Appreciation: no attendance step shown, just exam result */}
+                                  <button onClick={() => toggleProgress(s.id, e.id, 'step1_completed', e.step1_completed, e.course_name)} title="Admission Confirmed" style={{ background: 'none', border: 'none', cursor: 'pointer', color: e.step1_completed ? '#10b981' : 'var(--text-muted)' }}>
+                                    {e.step1_completed ? <CheckSquare size={18} /> : <Square size={18} />}
+                                  </button>
                                   {(() => {
                                     const examScore = parseInt(e.exam_written) || 0;
                                     const hasExam = examScore > 0;
@@ -1357,7 +1374,7 @@ export default function BatchDetail() {
                                   })()}
                                 </>
                               )}
-                              {e.step4_completed === 1 && hasPendingDueOrPartialPayment(e) && (
+                              {((e.course_name === 'Online Filmmaking Course' && e.step4_completed === 1) || (e.course_name !== 'Online Filmmaking Course' && e.step2_completed === 1)) && hasPendingDueOrPartialPayment(e) && (
                                 <Lock size={14} style={{ color: '#f87171', display: 'inline-block' }} title="Certificate Locked (Pending/Due/Partial Payment)" />
                               )}
                             </div>

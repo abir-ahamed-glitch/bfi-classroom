@@ -706,21 +706,21 @@ router.put('/students/:id', authenticateToken, requireRole('admin'), sanitizeInp
           if (course === 'Online Filmmaking Course') {
             // Phase 1 payment check
             const phase1 = cfee.phase1 || {};
-            const amountPaidNum = parseFloat((phase1.amount_paid || '').replace(/[^\d.]/g, '')) || 0;
-            const hasPaidInst = (phase1.installments || []).some(inst => inst.status === 'Paid' && parseFloat((inst.amount || '').replace(/[^\d.]/g, '')) > 0);
+            const amountPaidNum = parseFloat(String(phase1.amount_paid || '').replace(/[^\d.]/g, '')) || 0;
+            const hasPaidInst = (phase1.installments || []).some(inst => inst.status === 'Paid' && parseFloat(String(inst.amount || '').replace(/[^\d.]/g, '')) > 0);
             const isPhase1Paid = amountPaidNum > 0 || hasPaidInst ? 1 : 0;
             forceStep1Stmt.run(isPhase1Paid, id, course);
 
             // Phase 2 payment check
             const phase2 = cfee.phase2 || {};
-            const phase2PaidNum = parseFloat((phase2.amount_paid || '').replace(/[^\d.]/g, '')) || 0;
-            const phase2HasPaidInst = (phase2.installments || []).some(inst => inst.status === 'Paid' && parseFloat((inst.amount || '').replace(/[^\d.]/g, '')) > 0);
+            const phase2PaidNum = parseFloat(String(phase2.amount_paid || '').replace(/[^\d.]/g, '')) || 0;
+            const phase2HasPaidInst = (phase2.installments || []).some(inst => inst.status === 'Paid' && parseFloat(String(inst.amount || '').replace(/[^\d.]/g, '')) > 0);
             const isPhase2Paid = phase2PaidNum > 0 || phase2HasPaidInst ? 1 : 0;
             forceStep3Stmt.run(isPhase2Paid, id, course);
           } else {
             // Other courses (Workshops) payment check
-            const amountPaidNum = parseFloat((cfee.amount_paid || '').replace(/[^\d.]/g, '')) || 0;
-            const hasPaidInst = (cfee.installments || []).some(inst => inst.status === 'Paid' && parseFloat((inst.amount || '').replace(/[^\d.]/g, '')) > 0);
+            const amountPaidNum = parseFloat(String(cfee.amount_paid || '').replace(/[^\d.]/g, '')) || 0;
+            const hasPaidInst = (cfee.installments || []).some(inst => inst.status === 'Paid' && parseFloat(String(inst.amount || '').replace(/[^\d.]/g, '')) > 0);
             const isPaid = amountPaidNum > 0 || hasPaidInst ? 1 : 0;
             forceStep1Stmt.run(isPaid, id, course);
           }
@@ -1083,18 +1083,18 @@ router.patch('/students/:id/progress', authenticateToken, requireRole('admin'), 
       }
 
       const phase1 = feeDetails?.phase1 || {};
-      const fullFeeNum = parseFloat((phase1.full_fee || '').replace(/[^\d.]/g, '')) || 0;
-      const amountPaidNum = parseFloat((phase1.amount_paid || '').replace(/[^\d.]/g, '')) || 0;
-      const discountNum = parseFloat((phase1.discount || '').replace(/[^\d.]/g, '')) || 0;
+      const fullFeeNum = parseFloat(String(phase1.full_fee || '').replace(/[^\d.]/g, '')) || 0;
+      const amountPaidNum = parseFloat(String(phase1.amount_paid || '').replace(/[^\d.]/g, '')) || 0;
+      const discountNum = parseFloat(String(phase1.discount || '').replace(/[^\d.]/g, '')) || 0;
       const remainingDue = Math.max(0, fullFeeNum - discountNum - amountPaidNum);
       
-      const phase1PaidAny = amountPaidNum > 0 || (phase1.installments || []).some(inst => inst.status === 'Paid' && parseFloat((inst.amount || '').replace(/[^\d.]/g, '')) > 0);
+      const phase1PaidAny = amountPaidNum > 0 || (phase1.installments || []).some(inst => inst.status === 'Paid' && parseFloat(String(inst.amount || '').replace(/[^\d.]/g, '')) > 0);
       const phase1FullyPaid = (fullFeeNum > 0 && amountPaidNum + discountNum >= fullFeeNum) ||
         (fullFeeNum > 0 && remainingDue > 0 && (phase1.installments || []).length > 0 && (phase1.installments || []).every(inst => inst.status === 'Paid'));
 
       const phase2 = feeDetails?.phase2 || {};
-      const phase2PaidAny = (parseFloat((phase2.amount_paid || '').replace(/[^\d.]/g, '')) || 0) > 0 ||
-        (phase2.installments || []).some(inst => inst.status === 'Paid' && parseFloat((inst.amount || '').replace(/[^\d.]/g, '')) > 0);
+      const phase2PaidAny = (parseFloat(String(phase2.amount_paid || '').replace(/[^\d.]/g, '')) || 0) > 0 ||
+        (phase2.installments || []).some(inst => inst.status === 'Paid' && parseFloat(String(inst.amount || '').replace(/[^\d.]/g, '')) > 0);
 
       if (step1_completed === 0 && phase1PaidAny) {
         return res.status(400).json({ error: 'Cannot uncheck "Phase 1: Admitted" because a payment has already been made for this phase.' });

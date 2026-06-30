@@ -678,7 +678,12 @@ router.get('/:id/progress', authenticateToken, requireRole('admin'), (req, res) 
     for (const s of students) {
       // Core progress metrics
       if (batch.course_name === 'Online Filmmaking Course') {
-        if (s.step1_completed === 1) phase1.admitted++;
+        if (s.step1_completed === 1) {
+          phase1.admitted++;
+          if (s.step2_completed !== 1) {
+            phase1.exam_failed++;
+          }
+        }
         
         const isQualified = s.attendance_total > 0 && (s.attendance_classes / s.attendance_total >= 0.8);
         if (isQualified) {

@@ -893,7 +893,7 @@ export default function AdditionalOptions() {
                     </div>
                   )}
 
-                  {customSubjects.length === 0 ? (
+                  {!customSubjects.some(sub => sub.course_name === activeTab.course && (activeTab.hasPhases ? sub.phase === selectedPhase : true)) ? (
                     <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', fontStyle: 'italic' }}>
                       No subjects created yet. Use the panel on the left to add one.
                     </p>

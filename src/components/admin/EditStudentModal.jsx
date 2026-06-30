@@ -43,19 +43,11 @@ const syncInstallmentsAndStatus = (target, forceAutoAdjust = false) => {
   if (fullFeeNum > 0) {
     if (amountPaidNum + discountNum >= fullFeeNum) {
       target.status = 'Paid Full';
+    } else if (amountPaidNum > 0 || discountNum > 0) {
+      target.status = 'Partial';
     } else {
-      if (target.status === 'Paid Full') {
-        if (amountPaidNum > 0 || discountNum > 0) {
-          target.status = 'Partial';
-        } else {
-          target.status = 'Due';
-        }
-      } else if (!target.status) {
-        if (amountPaidNum > 0 || discountNum > 0) {
-          target.status = 'Partial';
-        } else {
-          target.status = 'Due';
-        }
+      if (target.status === 'Paid Full' || target.status === 'Partial' || !target.status) {
+        target.status = 'Due';
       }
     }
   }
@@ -1014,61 +1006,60 @@ export default function EditStudentModal({ student, onClose, onSaveSuccess }) {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to update student profile');
 
-      // ── Auto-uncheck step1_completed when payment amount becomes zero ────────
-      // Rule: any payment made → admitted; payment amount zero → not admitted.
+      // ── Auto-sync step1_completed based on payment amount ────────
+      // Rule: any payment made (> 0) → checked/admitted; payment amount zero → unchecked/not admitted.
       const studentIdForProgress = student.id || student.user_id;
       const enrollmentsToCheck = fullStudent?.enrollments || student?.enrollments || [];
 
-      const uncheckPromises = enrollmentsToCheck
-        .filter(enr => enr.step1_completed === 1)
-        .map(async (enr) => {
-          const cn = enr.course_name;
-          const courseFees = editFormData.course_fees?.[cn];
-          if (!courseFees) return;
+      const syncPromises = enrollmentsToCheck.map(async (enr) => {
+        const cn = enr.course_name;
+        const courseFees = editFormData.course_fees?.[cn];
+        if (!courseFees) return;
 
-          let effectiveAmountPaid = 0;
+        let effectiveAmountPaid = 0;
 
-          if (cn === 'Online Filmmaking Course') {
-            const ph1 = courseFees.phase1 || {};
-            const installments = ph1.installments || [];
-            if (installments.length > 0) {
-              // Sum all installments that are "Paid"
-              effectiveAmountPaid = installments
-                .filter(inst => (inst.status || '').toLowerCase() === 'paid')
-                .reduce((sum, inst) => sum + (parseFloat((inst.amount || '').toString().replace(/[^\d.]/g, '')) || 0), 0);
-            } else {
-              effectiveAmountPaid = parseFloat((ph1.amount_paid || '').toString().replace(/[^\d.]/g, '')) || 0;
-            }
+        if (cn === 'Online Filmmaking Course') {
+          const ph1 = courseFees.phase1 || {};
+          const installments = ph1.installments || [];
+          if (installments.length > 0) {
+            // Sum all installments that are "Paid"
+            effectiveAmountPaid = installments
+              .filter(inst => (inst.status || '').toLowerCase() === 'paid')
+              .reduce((sum, inst) => sum + (parseFloat((inst.amount || '').toString().replace(/[^\d.]/g, '')) || 0), 0);
           } else {
-            const installments = courseFees.installments || [];
-            if (installments.length > 0) {
-              effectiveAmountPaid = installments
-                .filter(inst => (inst.status || '').toLowerCase() === 'paid')
-                .reduce((sum, inst) => sum + (parseFloat((inst.amount || '').toString().replace(/[^\d.]/g, '')) || 0), 0);
-            } else {
-              effectiveAmountPaid = parseFloat((courseFees.amount_paid || '').toString().replace(/[^\d.]/g, '')) || 0;
-            }
+            effectiveAmountPaid = parseFloat((ph1.amount_paid || '').toString().replace(/[^\d.]/g, '')) || 0;
           }
-
-          if (effectiveAmountPaid === 0) {
-            // Uncheck step1_completed for this enrollment
-            try {
-              await fetch(`/api/admin/students/${studentIdForProgress}/progress`, {
-                method: 'PATCH',
-                headers: {
-                  'Content-Type': 'application/json',
-                  'Authorization': `Bearer ${localStorage.getItem('token')}`
-                },
-                body: JSON.stringify({ course_id: enr.id, step1_completed: 0 })
-              });
-            } catch (progErr) {
-              console.warn('Could not uncheck step1_completed for enrollment', enr.id, progErr);
-            }
+        } else {
+          const installments = courseFees.installments || [];
+          if (installments.length > 0) {
+            effectiveAmountPaid = installments
+              .filter(inst => (inst.status || '').toLowerCase() === 'paid')
+              .reduce((sum, inst) => sum + (parseFloat((inst.amount || '').toString().replace(/[^\d.]/g, '')) || 0), 0);
+          } else {
+            effectiveAmountPaid = parseFloat((courseFees.amount_paid || '').toString().replace(/[^\d.]/g, '')) || 0;
           }
-        });
+        }
 
-      await Promise.all(uncheckPromises);
-      // ─────────────────────────────────────────────────────────────────────────
+        const targetStep1Val = effectiveAmountPaid > 0 ? 1 : 0;
+
+        if (enr.step1_completed !== targetStep1Val) {
+          try {
+            await fetch(`/api/admin/students/${studentIdForProgress}/progress`, {
+              method: 'PATCH',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${localStorage.getItem('token')}`
+              },
+              body: JSON.stringify({ course_id: enr.id, step1_completed: targetStep1Val })
+            });
+          } catch (progErr) {
+            console.warn('Could not sync step1_completed for enrollment', enr.id, progErr);
+          }
+        }
+      });
+
+      await Promise.all(syncPromises);
+      // ─────────────────────────────────────────────────────────────
 
       onSaveSuccess();
       onClose();
