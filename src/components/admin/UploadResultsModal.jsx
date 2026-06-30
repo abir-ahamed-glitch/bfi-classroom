@@ -24,7 +24,11 @@ export default function UploadResultsModal({ isOpen, onClose, batchId, onUploadS
     }
   }, [isOpen]);
 
-  const onDrop = (acceptedFiles) => {
+  const onDrop = (acceptedFiles, fileRejections) => {
+    if (fileRejections && fileRejections.length > 0) {
+      setErrorMsg("Invalid file type. Please upload a PDF, XLSX, or CSV file.");
+      return;
+    }
     if (!acceptedFiles || acceptedFiles.length === 0) return;
     const uploadedFile = acceptedFiles[0];
     handleFileUpload(uploadedFile);
@@ -130,8 +134,13 @@ export default function UploadResultsModal({ isOpen, onClose, batchId, onUploadS
                  rollNo = cell;
                } else if (obtainedMarks === null) {
                  obtainedMarks = num;
-               } else if (num === 100 && obtainedMarks !== null) {
-                 totalMarks = num;
+               } else {
+                 if (obtainedMarks === 100 && num <= 100) {
+                   totalMarks = 100;
+                   obtainedMarks = num;
+                 } else if (num === 100 && obtainedMarks <= 100) {
+                   totalMarks = 100;
+                 }
                }
              }
              continue;

@@ -421,6 +421,12 @@ router.post('/batches/:id/results/bulk', authenticateToken, requireRole('admin')
       WHERE user_id = ?
     `);
 
+    const updateEnrollmentStatus = db.prepare(`
+      UPDATE student_course_enrollments
+      SET step2_completed = ?
+      WHERE user_id = ? AND course_name = ?
+    `);
+
     db.transaction(() => {
       for (const row of results) {
         let student = null;
@@ -432,7 +438,7 @@ router.post('/batches/:id/results/bulk', authenticateToken, requireRole('admin')
              JOIN batch_students bs ON u.id = bs.student_id
              JOIN student_profiles sp ON u.id = sp.user_id
              WHERE bs.batch_id = ? AND (sp.student_id = ? OR sp.student_id LIKE ?)
-           `).get(batchId, row.rollNo, `%${row.rollNo}`);
+           `).get(batchId, row.rollNo, `%${row.rollNo}%`);
         }
 
         if (!student && row.name) {
@@ -462,6 +468,7 @@ router.post('/batches/:id/results/bulk', authenticateToken, requireRole('admin')
            if (row.remarks) {
               const passed = row.remarks === 'Pass' ? 1 : 0;
               updateProfile.run(passed, student.id);
+              updateEnrollmentStatus.run(passed, student.id, batch.course_name);
            }
            updatedCount++;
         }
@@ -819,13 +826,15 @@ router.put('/students/:id', authenticateToken, requireRole('admin'), sanitizeInp
       const parsedYear = parseInt(year, 10);
       const cleanYear = isNaN(parsedYear) ? new Date().getFullYear().toString() : String(parsedYear);
       
-      const studentId = `BFI${cleanSn}${cleanBatch}${cleanYear}`;
+      const studentIdStr = `BFI${cleanSn}${cleanBatch}${cleanYear}`;
+      
+      const { additionalInfo } = req.body;
 
       db.prepare(`
         UPDATE student_profiles 
-        SET full_name = ?, batch_number = ?, phase1_fee = ?, phase2_fee = ?, student_id = ?
+        SET full_name = ?, batch_number = ?, phase1_fee = ?, phase2_fee = ?, student_id = ?, additional_info = ?
         WHERE user_id = ?
-      `).run(fullName, batchNumber || '', phase1_fee || '', phase2_fee || '', studentId, id);
+      `).run(fullName, batchNumber || '', phase1_fee || '', phase2_fee || '', studentIdStr, additionalInfo || '', id);
 
       // 3. Update course enrollments
       const currentEnrollments = db.prepare('SELECT course_name FROM student_course_enrollments WHERE user_id = ?').all(id).map(r => r.course_name);

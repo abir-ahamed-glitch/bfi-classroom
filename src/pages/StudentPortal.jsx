@@ -576,10 +576,24 @@ export default function StudentPortal() {
             {/* Right: Exam Results */}
             <div style={{ flex: '1 1 280px', padding: '0.5rem 0.5rem 0.5rem 1rem', display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
               <h4 style={{ margin: '0 0 0.25rem 0', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <FileText size={17} className="text-accent" /> Exam Results
+                <FileText size={17} className="text-accent" /> Exam Results & Attendance
               </h4>
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+                {/* Attendance */}
+                {otherEnrollment.course_name === 'Film Appreciation Course' && (
+                  <div className="academic-inner-section">
+                    <h4 style={{ margin: '0 0 0.75rem 0', color: 'var(--text-primary)' }}>Attendance</h4>
+                    <div className="academic-assignment-box">
+                      <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '0.2rem' }}>Total Classes Attended</div>
+                      <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.5rem' }}>
+                        <span style={{ fontWeight: 'bold', color: 'var(--text-secondary)', fontSize: '1.3rem' }}>{otherEnrollment.attendance_classes || 0}</span>
+                        <span className="text-muted" style={{ fontSize: '0.9rem' }}>/ {otherEnrollment.attendance_total || 0}</span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+                
                 {/* Total Score */}
                 <div className="academic-inner-section">
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>

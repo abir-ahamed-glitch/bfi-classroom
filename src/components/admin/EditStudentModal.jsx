@@ -668,6 +668,7 @@ const getInitialFormData = (student) => {
     batchNumber: student.batch_number || '',
     snNo: extractedSn,
     year: extractedYear,
+    additionalInfo: student.additional_info || '',
     phase1_fee: student.phase1_fee || '',
     phase2_fee: student.phase2_fee || '',
     course_fees: builtFees,
@@ -1147,6 +1148,11 @@ export default function EditStudentModal({ student, onClose, onSaveSuccess }) {
                 <label style={{ display: 'block', marginBottom: '0.4rem', color: 'var(--text-secondary)' }}>Year (4 digits)</label>
                 <input type="text" name="year" value={editFormData.year} onChange={handleEditChange} className="input-glass" style={{ paddingLeft: '1rem' }} placeholder="e.g. 2024" />
               </div>
+            </div>
+
+            <div style={{ marginTop: '0.5rem' }}>
+              <label style={{ display: 'block', marginBottom: '0.4rem', color: 'var(--text-secondary)' }}>Additional Info (Legacy Data)</label>
+              <textarea name="additionalInfo" value={editFormData.additionalInfo} onChange={handleEditChange} className="input-glass" rows="4" style={{ padding: '0.75rem 1rem', resize: 'vertical' }} placeholder="Any extra information extracted from old documents..."></textarea>
             </div>
 
             {/* Enrolled Courses */}
