@@ -1116,7 +1116,7 @@ export default function BatchManager() {
                             </span>
                           </div>
                           <button
-                            onClick={() => navigate(`/admin/batchmanager/${generateSlug(t.batch_name)}`)}
+                            onClick={() => navigate(`/admin/batchmanager/${t.batch_id}`)}
                             className="modern-btn modern-btn--secondary"
                             style={{ padding: '0.35rem 0.75rem', fontSize: '0.8rem' }}
                           >
@@ -1309,7 +1309,7 @@ export default function BatchManager() {
                     {/* Bottom Actions Row */}
                     <div className="batch-card-actions">
                       <button 
-                        onClick={() => navigate(`/admin/batchmanager/${generateSlug(b.batch_name)}`)}
+                        onClick={() => navigate(`/admin/batchmanager/${b.id}`)}
                         className="modern-btn modern-btn--secondary"
                         style={{ flex: 1, padding: '0.45rem', fontSize: '0.85rem', whiteSpace: 'nowrap' }}
                       >
@@ -1352,7 +1352,7 @@ export default function BatchManager() {
                                 <Archive size={14} /> Archive Batch
                               </button>
                             )}
-                            {b.student_count === 0 && b.status === 'archived' ? (
+                            {b.status === 'archived' ? (
                               <button 
                                 onClick={() => handleDeleteBatch(b.id)}
                                 className="dropdown-item-custom danger"
@@ -1396,7 +1396,7 @@ export default function BatchManager() {
                                 <Trash2 size={24} color="#ef4444" className="batch-confirm-popover-icon" />
                                 <h4 className="batch-confirm-popover-title">Permanently delete '{b.batch_name}'?</h4>
                                 <p className="batch-confirm-popover-subtitle" style={{ color: '#ef4444' }}>
-                                  This action cannot be undone. All batch data will be permanently removed.
+                                  This action cannot be undone. All batch data will be permanently removed. Enrolled students will be unassigned.
                                 </p>
                                 <div className="batch-confirm-popover-actions">
                                   <button 

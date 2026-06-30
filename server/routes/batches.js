@@ -284,25 +284,28 @@ router.patch('/:id', authenticateToken, requireRole('admin'), (req, res) => {
 router.delete('/:id', authenticateToken, requireRole('admin'), (req, res) => {
   try {
     const batchId = parseInt(req.params.id, 10);
-    const batch = db.prepare(`
-      SELECT b.*, COUNT(bs.id) as student_count
-      FROM batches b
-      LEFT JOIN batch_students bs ON bs.batch_id = b.id
-      WHERE b.id = ?
-      GROUP BY b.id
-    `).get(batchId);
+    const batch = db.prepare('SELECT * FROM batches WHERE id = ?').get(batchId);
 
     if (!batch) {
       return res.status(404).json({ error: 'Batch not found' });
     }
 
-    if (batch.student_count > 0) {
-      return res.status(400).json({ 
-        error: 'Cannot delete a batch that has enrolled students. Please remove the students first.' 
-      });
-    }
+    // Get all students enrolled in this batch before deleting
+    const studentsInBatch = db.prepare('SELECT student_id FROM batch_students WHERE batch_id = ?').all(batchId);
 
-    db.prepare('DELETE FROM batches WHERE id = ?').run(batchId);
+    const deleteTransaction = db.transaction(() => {
+      // 1. Clear batch_number for all students in this batch
+      const clearBatchNumStmt = db.prepare('UPDATE student_profiles SET batch_number = NULL WHERE user_id = ?');
+      for (const s of studentsInBatch) {
+        clearBatchNumStmt.run(s.student_id);
+      }
+      
+      // 2. Delete the batch (cascades to batch_students)
+      db.prepare('DELETE FROM batches WHERE id = ?').run(batchId);
+    });
+
+    deleteTransaction();
+    
     res.json({ success: true });
   } catch (error) {
     console.error('[Batches] DELETE /:id error:', error);

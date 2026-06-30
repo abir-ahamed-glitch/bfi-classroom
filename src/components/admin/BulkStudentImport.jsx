@@ -26,6 +26,7 @@ export default function BulkStudentImport({ onImportComplete }) {
   const [editingId, setEditingId] = useState(null);
   const [editTitle, setEditTitle] = useState('');
   const [menuOpenId, setMenuOpenId] = useState(null);
+  const [confirmConfig, setConfirmConfig] = useState(null);
   const [renameError, setRenameError] = useState('');
 
   const fetchHistory = async () => {
@@ -69,6 +70,34 @@ export default function BulkStudentImport({ onImportComplete }) {
       console.error(err);
       setRenameError('Network error. Please try again.');
     }
+  };
+
+  const handleDeleteHistory = (id) => {
+    setConfirmConfig({
+      title: 'Confirm Delete',
+      message: 'Are you sure you want to delete this import history record?',
+      confirmText: 'Delete',
+      type: 'danger',
+      onConfirm: async () => {
+        try {
+          const res = await fetch(`/api/admin/imports/history/${id}`, {
+            method: 'DELETE',
+            headers: {
+              'Authorization': `Bearer ${localStorage.getItem('token')}`
+            }
+          });
+          if (res.ok) {
+            setHistoryList(prev => prev.filter(item => item.id !== id));
+          } else {
+            const data = await res.json();
+            alert(data.error || 'Failed to delete history');
+          }
+        } catch (err) {
+          console.error(err);
+          alert('Network error while deleting history');
+        }
+      }
+    });
   };
 
   const handleDownloadOldResults = async (id, batchNumber) => {
@@ -130,24 +159,33 @@ export default function BulkStudentImport({ onImportComplete }) {
           const result = await mammoth.convertToHtml({ arrayBuffer: evt.target.result });
           const parser = new DOMParser();
           const doc = parser.parseFromString(result.value, 'text/html');
+          
+          const paragraphsText = [];
+          const paragraphs = doc.querySelectorAll('p, h1, h2, h3, h4, h5, h6, div');
+          paragraphs.forEach(p => {
+            if (!p.closest('table')) {
+              const text = (p.innerText || p.textContent || '').trim();
+              if (text) {
+                paragraphsText.push([text]);
+              }
+            }
+          });
+
           const tables = doc.querySelectorAll('table');
           tables.forEach(table => {
             const rows = table.querySelectorAll('tr');
             rows.forEach(row => {
-              const cols = Array.from(row.querySelectorAll('th, td')).map(td => td.innerText.trim());
+              const cols = Array.from(row.querySelectorAll('th, td')).map(td => (td.innerText || td.textContent || '').trim());
               data2D.push(cols);
             });
           });
-          // Fallback if no tables but there are paragraphs
-          if (data2D.length === 0) {
-             const paragraphs = doc.querySelectorAll('p');
-             paragraphs.forEach(p => {
-               const text = p.innerText.trim();
-               if (text) {
-                 // Split by tabs, multiple spaces, pipes, or commas
-                 data2D.push(text.split(/\s{2,}|\t|\||,/));
-               }
-             });
+
+          if (data2D.length > 0) {
+            data2D = [...paragraphsText, ...data2D];
+          } else {
+            paragraphsText.forEach(pText => {
+              data2D.push(pText[0].split(/\s{2,}|\t|\||,/));
+            });
           }
         } else if (fileExt === 'pdf') {
           const loadingTask = pdfjsLib.getDocument(new Uint8Array(evt.target.result));
@@ -216,9 +254,51 @@ export default function BulkStudentImport({ onImportComplete }) {
         if (/@/.test(val)) return false;
         if (/\d{5,}/.test(val)) return false;
         if (/^\d+(?:st|nd|rd|th)$/i.test(val.trim())) return false;
+        // Reject spreadsheet section titles / column headers
+        if (/\b(course|batch|appreciation|filmmaking|cinematography|acting|script writing|workshop)\b/i.test(val)) return false;
+        if (/^(sl\.?\s*no\.?|s\.?\s*no\.?|serial\s*no\.?)$/i.test(val.trim())) return false;
+        if (/^student\s*name/i.test(val.trim())) return false;
+        if (/^student\s*$/i.test(val.trim())) return false;
+        if (/(winter|spring|summer|fall|autumn|july|august|january|february|march|april|may|june|september|october|november|december)[\s\-\u2013]+\d{4}/i.test(val)) return false;
         const words = val.trim().split(/\s+/);
         if (words.length < 2 || words.length > 6) return false;
         return words.every(w => /^[A-Za-z\u0080-\uFFFF][a-zA-Z\u0080-\uFFFF.'()\-]{0,30}$/.test(w));
+      };
+
+      // Detect if a row is a section/page header (not a real student)
+      const isSectionHeader = (row) => {
+        const text = row.map(c => (c || '').toString().trim()).join(' ').trim();
+        if (!text || text.length < 2) return false;
+        // e.g. "2nd Film Appreciation Course", "10th Filmmaking Course"
+        if (/\d+(st|nd|rd|th)\s+(film|batch|course|workshop|script|acting|cinematography)/i.test(text)) return true;
+        // season+year headers like "Winter - 2005", "Spring 2006"
+        if (/(winter|spring|summer|fall|autumn|july|august|january|february|march|april|may|june|september|october|november|december)[\s\-\u2013]+\d{4}/i.test(text)) return true;
+        // Plain column-header rows
+        if (/^(sl\.?\s*no\.?|s\.?\s*no\.?)/i.test(text)) return true;
+        if (/^student\s*name\s*(and|&)\s*address/i.test(text)) return true;
+        return false;
+      };
+
+      // Extract batch number from a section-header row (e.g. "3rd Film Appreciation" → '3')
+      const batchFromSectionHeader = (row) => {
+        const text = row.map(c => (c || '').toString().trim()).join(' ');
+        const m = text.match(/(\d+)\s*(?:st|nd|rd|th)\s+(?:film|batch|course|workshop|script|acting|cinematography)/i);
+        return m ? m[1] : null;
+      };
+
+      // Is a parsed row's name clearly junk?
+      const isJunkName = (name) => {
+        if (!name) return true;
+        const n = name.trim();
+        if (n.length < 3) return true;
+        if (/^[0-9\s]+$/.test(n)) return true;   // pure numbers / whitespace
+        if (/^(sl\.?\s*no\.?|s\.?\s*no\.?)$/i.test(n)) return true;
+        if (/^student\s*name/i.test(n)) return true;
+        if (/^student\s*$/i.test(n)) return true;
+        if (/\b(film appreciation course|filmmaking course|script writing course|acting course|cinematography course)\b/i.test(n)) return true;
+        if (/(winter|spring|summer|fall|autumn|july|august|january|february|march|april|may|june|september|october|november|december)[\s\-\u2013]+\d{4}/i.test(n)) return true;
+        if (/\d+(st|nd|rd|th)\s+(film|batch|course|workshop)/i.test(n)) return true;
+        return false;
       };
 
       const looksLikeAddress = (val) => {
@@ -232,6 +312,42 @@ export default function BulkStudentImport({ onImportComplete }) {
         const m = val.trim().match(/^(\d+)(?:st|nd|rd|th)?$/i);
         return m ? m[1] : val;
       };
+
+      // =========================================================
+      // PRE-PASS: Squash continuation rows (for legacy BFI formats)
+      // In older documents, a single student's data spans multiple rows.
+      // This pass merges continuation rows (empty column 0) into the main row.
+      // =========================================================
+      const squashedData2D = [];
+      const isSerialCell = (v) => {
+        const s = String(v || '').trim();
+        return /^(\d+\.?\s*|sl\.?\s*no\.?)$/i.test(s) && s !== '';
+      };
+      
+      let lastMainRow = null;
+      for (const row of data2D) {
+        if (!row || !Array.isArray(row) || row.every(c => !c)) continue;
+        
+        const cell0 = String(row[0] || '').trim();
+        const rowText = row.join(' ').toLowerCase();
+
+        if (isSectionHeader(row) || isSerialCell(cell0) || rowText.includes('student name') || !lastMainRow) {
+           lastMainRow = [...row];
+           squashedData2D.push(lastMainRow);
+        } else {
+           for (let c = 1; c < Math.max(row.length, lastMainRow.length); c++) {
+             const cellVal = String(row[c] || '').trim();
+             if (cellVal) {
+                if (!lastMainRow[c]) {
+                   lastMainRow[c] = cellVal;
+                } else {
+                   lastMainRow[c] = lastMainRow[c] + ' ' + cellVal;
+                }
+             }
+           }
+        }
+      }
+      data2D = squashedData2D;
 
       // =========================================================
       // PASS 1: Pre-scan ALL rows for metadata (batch, year, course)
@@ -250,7 +366,7 @@ export default function BulkStudentImport({ onImportComplete }) {
           if (bm) detectedBatch = bm[1];
         }
         if (!detectedYear) {
-          const ym = rowText.match(/\b(19[5-9]\d|20[0-3]\d)\b/);
+          const ym = rowText.match(/\b(19\d{2}|20\d{2})\b/);
           if (ym) detectedYear = ym[1];
         }
         if (!detectedCourse) {
@@ -374,7 +490,9 @@ export default function BulkStudentImport({ onImportComplete }) {
         const year       = hv('year') || detectedYear || new Date().getFullYear().toString();
 
         // Batch column: normalize ordinals (1st → 1, 2nd → 2 ...)
-        let batch = normalizeBatch(hv('batch')) || detectedBatch || '';
+        // NOTE: do NOT fall back to detectedBatch here — the BUILD FINAL loop
+        // will apply the correct per-section batch after section-header tracking.
+        let batch = normalizeBatch(hv('batch')) || '';
 
         // Extract email embedded inside any of phone / address / name fields
         for (const field of [rawMobile, address, name]) {
@@ -417,7 +535,9 @@ export default function BulkStudentImport({ onImportComplete }) {
       // =========================================================
       const parseWithoutHeader = (row, rowIndex) => {
         let name = '', email = '', mobile = '', address = '';
-        let batch = detectedBatch || '';
+        // Do NOT pre-fill batch from detectedBatch here — the BUILD FINAL loop
+        // will apply the correct per-section batch after section-header tracking.
+        let batch = '';
         let year  = detectedYear  || new Date().getFullYear().toString();
 
         for (let j = 0; j < row.length; j++) {
@@ -458,26 +578,84 @@ export default function BulkStudentImport({ onImportComplete }) {
       const mappedData = [];
 
       if (headerRowIdx !== -1) {
+        // currentSectionBatch tracks which batch the current rows belong to.
+        // It starts at detectedBatch (from the pre-scan) and updates whenever
+        // a section header row like "3rd Film Appreciation Course" is encountered.
+        // It ALWAYS overrides whatever parseWithHeader puts in parsed.batch.
+        let currentSectionBatch = detectedBatch || '';
+        let sectionHeaderSeen = false;
+
         for (let i = headerRowIdx + 1; i < data2D.length; i++) {
           const row = data2D[i];
           if (!row || !Array.isArray(row) || row.every(c => !c)) continue;
+
+          // If this row looks like a section/batch header, update currentSectionBatch
+          // and skip the row — don't treat it as a student.
+          if (isSectionHeader(row)) {
+            const newBatch = batchFromSectionHeader(row);
+            if (newBatch) {
+              currentSectionBatch = newBatch;
+              sectionHeaderSeen = true;
+            }
+            continue;
+          }
+
           const parsed = parseWithHeader(row, mappedData.length);
           if (!parsed.name && !parsed.email && !parsed.mobile) continue;
+
+          // Skip rows whose "name" is clearly junk and have no contact info
+          if (isJunkName(parsed.name) && !parsed.email && !parsed.mobile) continue;
+
+          // Always apply the tracked section batch — this is the critical fix.
+          // currentSectionBatch is authoritative; parsed.batch (from a batch column
+          // in the spreadsheet) is only used when no section tracking has occurred.
+          if (currentSectionBatch) {
+            parsed.batch = currentSectionBatch;
+          }
+
           mappedData.push(parsed);
         }
       } else {
         // Fully headerless: scan every row
+        let currentSectionBatch = detectedBatch || '';
+        let sectionHeaderSeen = false;
+
         for (let i = 0; i < data2D.length; i++) {
           const row = data2D[i];
           if (!row || !Array.isArray(row) || row.every(c => !c)) continue;
+
+          // Detect and skip section headers, but capture their batch number
+          if (isSectionHeader(row)) {
+            const newBatch = batchFromSectionHeader(row);
+            if (newBatch) {
+              currentSectionBatch = newBatch;
+              sectionHeaderSeen = true;
+            }
+            continue;
+          }
+
           const parsed = parseWithoutHeader(row, mappedData.length);
           if (!parsed.name && !parsed.email && !parsed.mobile) continue;
+          if (isJunkName(parsed.name) && !parsed.email && !parsed.mobile) continue;
           if (!parsed.email && !parsed.mobile && !looksLikeName(parsed.name)) continue;
+
+          // Apply current section's batch
+          if (currentSectionBatch) parsed.batch = currentSectionBatch;
+
           mappedData.push(parsed);
         }
       }
 
-      if (detectedBatch) setBatchNumber(detectedBatch);
+      // Only auto-fill the batch field when the document contains a SINGLE batch.
+      // For multi-batch documents each row already carries its own per-section batch.
+      const uniqueBatches = new Set(mappedData.map(r => r.batch).filter(Boolean));
+      if (uniqueBatches.size === 1) {
+        setBatchNumber([...uniqueBatches][0]);
+      } else if (uniqueBatches.size === 0 && detectedBatch) {
+        setBatchNumber(detectedBatch);
+      }
+      // If multiple different batches detected, leave the field empty so admin
+      // does not accidentally override all rows with a single batch number.
 
       // Auto-select the detected course from document title
       if (detectedCourse) {
@@ -693,7 +871,11 @@ export default function BulkStudentImport({ onImportComplete }) {
             <div className="modern-modal-header">
               <h3 className="font-display" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
                 <div style={{ background: 'linear-gradient(135deg, #0ea5e9, #0369a1)', padding: '0.4rem', borderRadius: '10px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#ffffff', border: '1px solid rgba(255,255,255,0.2)', boxShadow: '0 4px 15px rgba(14, 165, 233, 0.3)' }}>
-                  <Clapperboard size={20} />
+                  <img
+                    src={`${import.meta.env.BASE_URL}bfi-logo.jpg`}
+                    alt="BFI Logo"
+                    style={{ width: '28px', height: '28px', objectFit: 'contain', borderRadius: '4px' }}
+                  />
                 </div>
                 Bulk Student Import
               </h3>
@@ -749,7 +931,13 @@ export default function BulkStudentImport({ onImportComplete }) {
                     
                     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.75rem', pointerEvents: 'none', position: 'relative', zIndex: 5 }}>
                       <div className={file ? "" : "bulk-import-icon-bg"} style={{ width: '64px', height: '64px', borderRadius: '50%', background: file ? 'rgba(192, 39, 74, 0.1)' : undefined, display: 'flex', alignItems: 'center', justifyContent: 'center', color: file ? 'var(--accent-primary)' : 'var(--text-muted)', transition: 'all 0.3s', boxShadow: '0 8px 20px rgba(0,0,0,0.05)', border: file ? '1px solid rgba(192,39,74,0.2)' : undefined }}>
-                        {file ? (file.name.endsWith('.pdf') ? <FileText size={32} /> : file.name.match(/\.docx?$/) ? <FileText size={32} /> : <FileSpreadsheet size={32} />) : <Film size={32} />}
+                        {file ? (file.name.endsWith('.pdf') ? <FileText size={32} /> : file.name.match(/\.docx?$/) ? <FileText size={32} /> : <FileSpreadsheet size={32} />) : (
+                          <img
+                            src={`${import.meta.env.BASE_URL}bfi-logo.jpg`}
+                            alt="BFI Logo"
+                            style={{ width: '38px', height: '38px', objectFit: 'contain', borderRadius: '6px' }}
+                          />
+                        )}
                       </div>
                       
                       {file ? (
@@ -1022,6 +1210,29 @@ export default function BulkStudentImport({ onImportComplete }) {
                                   >
                                     Rename
                                   </button>
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleDeleteHistory(item.id);
+                                      setMenuOpenId(null);
+                                    }}
+                                    style={{
+                                      background: 'none',
+                                      border: 'none',
+                                      color: '#ef4444',
+                                      padding: '0.4rem 0.6rem',
+                                      textAlign: 'left',
+                                      cursor: 'pointer',
+                                      fontSize: '0.8rem',
+                                      borderRadius: '6px',
+                                      width: '100%',
+                                      transition: 'background 0.2s'
+                                    }}
+                                    onMouseEnter={e => e.currentTarget.style.background = 'rgba(239, 68, 68, 0.1)'}
+                                    onMouseLeave={e => e.currentTarget.style.background = 'none'}
+                                  >
+                                    Delete
+                                  </button>
                                 </div>
                               )}
                             </div>
@@ -1064,6 +1275,36 @@ export default function BulkStudentImport({ onImportComplete }) {
           </div>
         </div>
       , document.body)}
+
+      {confirmConfig && typeof document !== 'undefined' && createPortal(
+        <div className="modern-modal-overlay">
+          <div className="modern-modal-content glass-panel shadow-2xl" onClick={e => e.stopPropagation()}>
+            <div className="modern-modal-header">
+              <h3 className="font-display">{confirmConfig.title}</h3>
+              <button className="icon-btn-ghost" onClick={() => setConfirmConfig(null)} aria-label="Close"><X size={20} /></button>
+            </div>
+            <div className="modern-modal-body">
+              <p>{confirmConfig.message}</p>
+            </div>
+            <div className="modern-modal-footer">
+              {!confirmConfig.isAlert && (
+                <button className="modern-btn modern-btn--secondary" onClick={() => setConfirmConfig(null)}>Cancel</button>
+              )}
+              <button 
+                className={`modern-btn ${confirmConfig.type === 'danger' ? 'modern-btn--danger' : 'modern-btn--primary'}`}
+                style={confirmConfig.isAlert ? { width: '100%', maxWidth: '200px', margin: '0 auto' } : {}}
+                onClick={() => {
+                  confirmConfig.onConfirm();
+                  setConfirmConfig(null);
+                }}
+              >
+                {confirmConfig.confirmText || 'Confirm'}
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
     </>
   );
 }

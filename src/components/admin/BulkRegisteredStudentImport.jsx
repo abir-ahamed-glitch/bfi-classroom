@@ -24,6 +24,7 @@ export default function BulkRegisteredStudentImport({ onImportComplete }) {
   const [editingId, setEditingId] = useState(null);
   const [editTitle, setEditTitle] = useState('');
   const [menuOpenId, setMenuOpenId] = useState(null);
+  const [confirmConfig, setConfirmConfig] = useState(null);
   const [renameError, setRenameError] = useState('');
 
   const fetchHistory = async () => {
@@ -69,6 +70,34 @@ export default function BulkRegisteredStudentImport({ onImportComplete }) {
     }
   };
 
+  const handleDeleteHistory = (id) => {
+    setConfirmConfig({
+      title: 'Confirm Delete',
+      message: 'Are you sure you want to delete this import history record?',
+      confirmText: 'Delete',
+      type: 'danger',
+      onConfirm: async () => {
+        try {
+          const res = await fetch(`/api/admin/imports/history/${id}`, {
+            method: 'DELETE',
+            headers: {
+              'Authorization': `Bearer ${localStorage.getItem('token')}`
+            }
+          });
+          if (res.ok) {
+            setHistoryList(prev => prev.filter(item => item.id !== id));
+          } else {
+            const data = await res.json();
+            alert(data.error || 'Failed to delete history');
+          }
+        } catch (err) {
+          console.error(err);
+          alert('Network error while deleting history');
+        }
+      }
+    });
+  };
+
   const handleDownloadOldResults = async (id, batchNumber) => {
     try {
       const res = await fetch(`/api/admin/imports/history/${id}`, {
@@ -112,21 +141,33 @@ export default function BulkRegisteredStudentImport({ onImportComplete }) {
           const result = await mammoth.convertToHtml({ arrayBuffer: evt.target.result });
           const parser = new DOMParser();
           const doc = parser.parseFromString(result.value, 'text/html');
+
+          const paragraphsText = [];
+          const paragraphs = doc.querySelectorAll('p, h1, h2, h3, h4, h5, h6, div');
+          paragraphs.forEach(p => {
+            if (!p.closest('table')) {
+              const text = (p.innerText || p.textContent || '').trim();
+              if (text) {
+                paragraphsText.push([text]);
+              }
+            }
+          });
+
           const tables = doc.querySelectorAll('table');
           tables.forEach(table => {
             const rows = table.querySelectorAll('tr');
             rows.forEach(row => {
-              const cols = Array.from(row.querySelectorAll('th, td')).map(td => td.innerText.trim());
+              const cols = Array.from(row.querySelectorAll('th, td')).map(td => (td.innerText || td.textContent || '').trim());
               data2D.push(cols);
             });
           });
-          // Fallback if no tables but there are paragraphs (one student per line maybe)
-          if (data2D.length === 0) {
-             const paragraphs = doc.querySelectorAll('p');
-             paragraphs.forEach(p => {
-               const text = p.innerText.trim();
-               if (text) data2D.push(text.split(/\s{2,}|\t|\||,/)); // Split by tabs, multiple spaces, pipes, or commas
-             });
+
+          if (data2D.length > 0) {
+            data2D = [...paragraphsText, ...data2D];
+          } else {
+            paragraphsText.forEach(pText => {
+              data2D.push(pText[0].split(/\s{2,}|\t|\||,/));
+            });
           }
         } else if (fileExt === 'pdf') {
           const loadingTask = pdfjsLib.getDocument(new Uint8Array(evt.target.result));
@@ -778,6 +819,29 @@ export default function BulkRegisteredStudentImport({ onImportComplete }) {
                                   >
                                     Rename
                                   </button>
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleDeleteHistory(item.id);
+                                      setMenuOpenId(null);
+                                    }}
+                                    style={{
+                                      background: 'none',
+                                      border: 'none',
+                                      color: '#ef4444',
+                                      padding: '0.4rem 0.6rem',
+                                      textAlign: 'left',
+                                      cursor: 'pointer',
+                                      fontSize: '0.8rem',
+                                      borderRadius: '6px',
+                                      width: '100%',
+                                      transition: 'background 0.2s'
+                                    }}
+                                    onMouseEnter={e => e.currentTarget.style.background = 'rgba(239, 68, 68, 0.1)'}
+                                    onMouseLeave={e => e.currentTarget.style.background = 'none'}
+                                  >
+                                    Delete
+                                  </button>
                                 </div>
                               )}
                             </div>
@@ -820,6 +884,36 @@ export default function BulkRegisteredStudentImport({ onImportComplete }) {
           </div>
         </div>
       , document.body)}
+
+      {confirmConfig && typeof document !== 'undefined' && createPortal(
+        <div className="modern-modal-overlay">
+          <div className="modern-modal-content glass-panel shadow-2xl" onClick={e => e.stopPropagation()}>
+            <div className="modern-modal-header">
+              <h3 className="font-display">{confirmConfig.title}</h3>
+              <button className="icon-btn-ghost" onClick={() => setConfirmConfig(null)} aria-label="Close"><X size={20} /></button>
+            </div>
+            <div className="modern-modal-body">
+              <p>{confirmConfig.message}</p>
+            </div>
+            <div className="modern-modal-footer">
+              {!confirmConfig.isAlert && (
+                <button className="modern-btn modern-btn--secondary" onClick={() => setConfirmConfig(null)}>Cancel</button>
+              )}
+              <button 
+                className={`modern-btn ${confirmConfig.type === 'danger' ? 'modern-btn--danger' : 'modern-btn--primary'}`}
+                style={confirmConfig.isAlert ? { width: '100%', maxWidth: '200px', margin: '0 auto' } : {}}
+                onClick={() => {
+                  confirmConfig.onConfirm();
+                  setConfirmConfig(null);
+                }}
+              >
+                {confirmConfig.confirmText || 'Confirm'}
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
     </>
   );
 }

@@ -82,20 +82,8 @@
 
 .batch-metrics-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 1rem;
-}
-
-@media (max-width: 1024px) {
-  .batch-metrics-grid {
-    grid-template-columns: repeat(2, 1fr);
-  }
-}
-
-@media (max-width: 640px) {
-  .batch-metrics-grid {
-    grid-template-columns: 1fr;
-  }
 }
 
 /* SECTION 3: Fees and Certificates */
@@ -385,6 +373,33 @@
 
 [data-mode="light"] .batch-stat-card.interactive:hover {
   filter: brightness(0.96);
+}
+
+/* Student Table List Styles */
+.student-list-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 1rem;
+}
+
+.student-list-table th {
+  text-align: left;
+  padding: 0.75rem 1rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.student-list-table td {
+  padding: 0.75rem 1rem;
+  font-size: 0.9rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  vertical-align: middle !important;
+}
+
+.student-list-row:hover {
+  background: rgba(255, 255, 255, 0.02);
 }
 
 

@@ -14,6 +14,7 @@ import './BatchDetail.css';
 import BatchFormModal from '../../components/admin/BatchFormModal';
 import AddStudentsModal from '../../components/admin/AddStudentsModal';
 import EditStudentModal from '../../components/admin/EditStudentModal';
+import UploadResultsModal from '../../components/admin/UploadResultsModal';
 
 const hasPendingDueOrPartialPayment = (course) => {
   if (!course || !course.fee_details) return false;
@@ -145,6 +146,7 @@ export default function BatchDetail() {
   const [batchData, setBatchData] = useState(null);
   const [progressData, setProgressData] = useState(null);
   const [selectedStatFilter, setSelectedStatFilter] = useState(null);
+  const [recentlyToggledIds, setRecentlyToggledIds] = useState([]);
   const [studentsData, setStudentsData] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
 
@@ -190,6 +192,7 @@ export default function BatchDetail() {
   const [automationRunning, setAutomationRunning] = useState(false);
   const [flashHeader, setFlashHeader] = useState(false);
   const [showAddStudentsModal, setShowAddStudentsModal] = useState(false);
+  const [showUploadResultsModal, setShowUploadResultsModal] = useState(false);
 
   const timelineEvents = useMemo(() => {
     if (!batchData) return [];
@@ -210,6 +213,123 @@ export default function BatchDetail() {
 
     return [...transitionsData, createdEvent];
   }, [transitionsData, batchData]);
+
+  // Fee calculation dynamically computed from student enrollments
+  const { totalCollected, totalOutstanding, feeSegments, paidCount, partialCount, dueCount } = useMemo(() => {
+    if (!batchData) {
+      return { totalCollected: 0, totalOutstanding: 0, feeSegments: { paidPct: 0, partialPct: 0, duePct: 100 }, paidCount: 0, partialCount: 0, dueCount: 0 };
+    }
+
+    let collectedSum = 0;
+    let outstandingSum = 0;
+    
+    let paidCount = 0;
+    let partialCount = 0;
+    let dueCount = 0;
+
+    const courseName = batchData.course_name;
+    const isOnlineFilmmaking = courseName === 'Online Filmmaking Course';
+
+    const defaultFee = batchData.course_fee || 8000;
+    const defaultP1 = batchData.phase1_fee || 4000;
+    const defaultP2 = batchData.phase2_fee || 4000;
+
+    studentsData.forEach(student => {
+      const e = student.enrollments?.find(x => x.course_name === courseName);
+      let feeDetails = null;
+      if (e?.fee_details) {
+        try {
+          feeDetails = typeof e.fee_details === 'string' ? JSON.parse(e.fee_details) : e.fee_details;
+        } catch (err) {
+          // Ignore
+        }
+      }
+
+      let totalFee = 0;
+      let collected = 0;
+
+      const cleanNum = (val) => {
+        if (val === undefined || val === null) return 0;
+        return parseFloat(String(val).replace(/[^\d.]/g, '')) || 0;
+      };
+
+      if (isOnlineFilmmaking) {
+        // Phase 1
+        const p1 = feeDetails?.phase1 || {};
+        const p1Full = cleanNum(p1.full_fee) || defaultP1;
+        const p1Paid = cleanNum(p1.amount_paid);
+        const p1Discount = cleanNum(p1.discount);
+        const p1Insts = p1.installments || [];
+        const p1InstPaidSum = p1Insts
+          .filter(inst => (inst.status || '').toLowerCase() === 'paid')
+          .reduce((sum, inst) => sum + cleanNum(inst.amount), 0);
+        const p1Collected = Math.min(p1Paid + p1InstPaidSum + p1Discount, p1Full);
+
+        // Phase 2
+        const p2 = feeDetails?.phase2 || {};
+        const p2Full = cleanNum(p2.full_fee) || defaultP2;
+        const p2Paid = cleanNum(p2.amount_paid);
+        const p2Discount = cleanNum(p2.discount);
+        const p2Insts = p2.installments || [];
+        const p2InstPaidSum = p2Insts
+          .filter(inst => (inst.status || '').toLowerCase() === 'paid')
+          .reduce((sum, inst) => sum + cleanNum(inst.amount), 0);
+        const p2Collected = Math.min(p2Paid + p2InstPaidSum + p2Discount, p2Full);
+
+        totalFee = p1Full + p2Full;
+        collected = p1Collected + p2Collected;
+      } else {
+        // Workshop
+        const p = feeDetails || {};
+        const full = cleanNum(p.full_fee) || defaultFee;
+        const paid = cleanNum(p.amount_paid);
+        const discount = cleanNum(p.discount);
+        const insts = p.installments || [];
+        const instPaidSum = insts
+          .filter(inst => (inst.status || '').toLowerCase() === 'paid')
+          .reduce((sum, inst) => sum + cleanNum(inst.amount), 0);
+        
+        totalFee = full;
+        collected = Math.min(paid + instPaidSum + discount, full);
+      }
+
+      const outstanding = Math.max(0, totalFee - collected);
+
+      collectedSum += collected;
+      outstandingSum += outstanding;
+
+      // Classify for progress bar segments
+      if (totalFee > 0 && outstanding === 0) {
+        paidCount++;
+      } else if (collected > 0) {
+        partialCount++;
+      } else {
+        dueCount++;
+      }
+    });
+
+    const totalStudents = studentsData.length;
+    let paidPct = 0;
+    let partialPct = 0;
+    let duePct = 0;
+
+    if (totalStudents > 0) {
+      paidPct = (paidCount / totalStudents) * 100;
+      partialPct = (partialCount / totalStudents) * 100;
+      duePct = (dueCount / totalStudents) * 100;
+    } else {
+      duePct = 100;
+    }
+
+    return {
+      totalCollected: Math.round(collectedSum),
+      totalOutstanding: Math.round(outstandingSum),
+      feeSegments: { paidPct, partialPct, duePct },
+      paidCount,
+      partialCount,
+      dueCount
+    };
+  }, [studentsData, batchData]);
 
   const showToast = (msg) => {
     setToastMsg(msg);
@@ -336,7 +456,7 @@ export default function BatchDetail() {
           return;
         }
         if (stepField === 'step1_completed' && phase1PaidAny) {
-          setConfirmConfig({ title: 'Action Restricted', message: 'Cannot uncheck "Phase 1: Admitted" because a payment has already been made for this phase.', confirmText: 'OK', isAlert: true, onConfirm: () => {} });
+          setConfirmConfig({ title: 'Action Restricted', message: 'Cannot uncheck "Phase 1: Admitted" because a payment has already been made for this phase. Please change the payment to 0 first.', confirmText: 'OK', isAlert: true, onConfirm: () => {} });
           return;
         }
       }
@@ -348,14 +468,12 @@ export default function BatchDetail() {
       const willBeChecked = !currentValue;
 
       if (stepField === 'step2_completed') {
-        if (willBeChecked) {
-          if (!e?.step1_completed) {
-            setConfirmConfig({ title: 'Action Restricted', message: 'Cannot check "Completed Course" because "Admission Confirmed" is not yet completed.', confirmText: 'OK', isAlert: true, onConfirm: () => {} });
-            return;
-          }
-          openAcademicModal(student, enrollmentId);
+        if (!e?.step1_completed) {
+          setConfirmConfig({ title: 'Action Restricted', message: 'Cannot update "Completed Course" because "Admission Confirmed" is not yet completed.', confirmText: 'OK', isAlert: true, onConfirm: () => {} });
           return;
         }
+        openAcademicModal(student, enrollmentId);
+        return;
       }
 
       if (willBeChecked) {
@@ -366,6 +484,23 @@ export default function BatchDetail() {
       } else {
         if (stepField === 'step1_completed' && e?.step2_completed) {
           setConfirmConfig({ title: 'Action Restricted', message: 'Cannot uncheck "Admission Confirmed" while "Completed Course" is checked.', confirmText: 'OK', isAlert: true, onConfirm: () => {} });
+          return;
+        }
+        
+        let feeDetails = {};
+        if (e?.fee_details) {
+          try {
+            feeDetails = typeof e.fee_details === 'string' ? JSON.parse(e.fee_details) : e.fee_details;
+          } catch (err) {
+            console.error(err);
+          }
+        }
+        const amountPaidNum = parseFloat((feeDetails.amount_paid || '').toString().replace(/[^\d.]/g, '')) || 0;
+        const installments = feeDetails.installments || [];
+        const paidAny = amountPaidNum > 0 || installments.some(inst => inst.status === 'Paid' && parseFloat((inst.amount || '').toString().replace(/[^\d.]/g, '')) > 0);
+        
+        if (stepField === 'step1_completed' && paidAny) {
+          setConfirmConfig({ title: 'Action Restricted', message: 'Cannot uncheck "Admission Confirmed" because a payment has already been made. Please change the payment to 0 first.', confirmText: 'OK', isAlert: true, onConfirm: () => {} });
           return;
         }
       }
@@ -778,6 +913,10 @@ export default function BatchDetail() {
     setShowAddStudentsModal(true);
   };
 
+  const handleUploadResultsClick = () => {
+    setShowUploadResultsModal(true);
+  };
+
   // Format dates
   const formatDate = (dateStr) => {
     if (!dateStr) return 'Not set';
@@ -823,6 +962,7 @@ export default function BatchDetail() {
   if (!batchData) return null;
 
   const toggleStatFilter = (filter) => {
+    setRecentlyToggledIds([]);
     setSelectedStatFilter(prev => {
       const newVal = prev === filter ? null : filter;
       if (newVal) {
@@ -900,6 +1040,104 @@ export default function BatchDetail() {
           return enrollment && (enrollment.assignment_screenplay > 0 || enrollment.assignment_shooting_script > 0);
         case 'completed':
           return enrollment && enrollment.step2_completed === 1;
+
+        case 'fee_fully_paid':
+          if (!enrollment) return false;
+          {
+            const feeDetails = typeof enrollment.fee_details === 'string' ? JSON.parse(enrollment.fee_details) : enrollment.fee_details;
+            const defaultFee = batchData.course_fee || 8000;
+            const defaultP1 = batchData.phase1_fee || 4000;
+            const defaultP2 = batchData.phase2_fee || 4000;
+            const cleanNum = (val) => parseFloat(String(val || '').replace(/[^\d.]/g, '')) || 0;
+            let totalFee = 0;
+            let collected = 0;
+            if (batchData.course_name === 'Online Filmmaking Course') {
+              const p1 = feeDetails?.phase1 || {};
+              const p1Full = cleanNum(p1.full_fee) || defaultP1;
+              const p1Paid = cleanNum(p1.amount_paid);
+              const p1Discount = cleanNum(p1.discount);
+              const p1Insts = p1.installments || [];
+              const p1InstPaidSum = p1Insts
+                .filter(inst => (inst.status || '').toLowerCase() === 'paid')
+                .reduce((sum, inst) => sum + cleanNum(inst.amount), 0);
+              const p1Collected = Math.min(p1Paid + p1InstPaidSum + p1Discount, p1Full);
+
+              const p2 = feeDetails?.phase2 || {};
+              const p2Full = cleanNum(p2.full_fee) || defaultP2;
+              const p2Paid = cleanNum(p2.amount_paid);
+              const p2Discount = cleanNum(p2.discount);
+              const p2Insts = p2.installments || [];
+              const p2InstPaidSum = p2Insts
+                .filter(inst => (inst.status || '').toLowerCase() === 'paid')
+                .reduce((sum, inst) => sum + cleanNum(inst.amount), 0);
+              const p2Collected = Math.min(p2Paid + p2InstPaidSum + p2Discount, p2Full);
+
+              totalFee = p1Full + p2Full;
+              collected = p1Collected + p2Collected;
+            } else {
+              const p = feeDetails || {};
+              const full = cleanNum(p.full_fee) || defaultFee;
+              const paid = cleanNum(p.amount_paid);
+              const discount = cleanNum(p.discount);
+              const insts = p.installments || [];
+              const instPaidSum = insts
+                .filter(inst => (inst.status || '').toLowerCase() === 'paid')
+                .reduce((sum, inst) => sum + cleanNum(inst.amount), 0);
+              
+              totalFee = full;
+              collected = Math.min(paid + instPaidSum + discount, full);
+            }
+            return totalFee > 0 && collected >= totalFee;
+          }
+
+        case 'fee_partial_paid':
+          if (!enrollment) return false;
+          {
+            const feeDetails = typeof enrollment.fee_details === 'string' ? JSON.parse(enrollment.fee_details) : enrollment.fee_details;
+            const defaultFee = batchData.course_fee || 8000;
+            const defaultP1 = batchData.phase1_fee || 4000;
+            const defaultP2 = batchData.phase2_fee || 4000;
+            const cleanNum = (val) => parseFloat(String(val || '').replace(/[^\d.]/g, '')) || 0;
+            let totalFee = 0;
+            let collected = 0;
+            if (batchData.course_name === 'Online Filmmaking Course') {
+              const p1 = feeDetails?.phase1 || {};
+              const p1Full = cleanNum(p1.full_fee) || defaultP1;
+              const p1Paid = cleanNum(p1.amount_paid);
+              const p1Discount = cleanNum(p1.discount);
+              const p1Insts = p1.installments || [];
+              const p1InstPaidSum = p1Insts
+                .filter(inst => (inst.status || '').toLowerCase() === 'paid')
+                .reduce((sum, inst) => sum + cleanNum(inst.amount), 0);
+              const p1Collected = Math.min(p1Paid + p1InstPaidSum + p1Discount, p1Full);
+
+              const p2 = feeDetails?.phase2 || {};
+              const p2Full = cleanNum(p2.full_fee) || defaultP2;
+              const p2Paid = cleanNum(p2.amount_paid);
+              const p2Discount = cleanNum(p2.discount);
+              const p2Insts = p2.installments || [];
+              const p2InstPaidSum = p2Insts
+                .filter(inst => (inst.status || '').toLowerCase() === 'paid')
+                .reduce((sum, inst) => sum + cleanNum(inst.amount), 0);
+              const p2Collected = Math.min(p2Paid + p2InstPaidSum + p2Discount, p2Full);
+
+              totalFee = p1Full + p2Full;
+              collected = p1Collected + p2Collected;
+            } else {
+              const p = feeDetails || {};
+              const full = cleanNum(p.full_fee) || defaultFee;
+              const paid = cleanNum(p.amount_paid);
+              const discount = cleanNum(p.discount);
+              const insts = p.installments || [];
+              const instPaidSum = insts
+                .filter(inst => (inst.status || '').toLowerCase() === 'paid')
+                .reduce((sum, inst) => sum + cleanNum(inst.amount), 0);
+              
+              totalFee = full;
+              collected = Math.min(paid + instPaidSum + discount, full);
+            }
+            return collected > 0 && collected < totalFee;
+          }
           
         default:
           return true;
@@ -946,10 +1184,6 @@ export default function BatchDetail() {
 
 
   const isBatchLocked = batchData.status === 'completed' || batchData.status === 'archived';
-
-  // Fee calculation (fallback logic if no specific totals exist yet)
-  const totalCollected = 0; // Placeholder, assuming it's not directly in progressData
-  const totalOutstanding = 0; // Placeholder
 
   const renderCourseFeeChip = () => {
     let fee = batchData.course_fee;
@@ -1064,6 +1298,9 @@ export default function BatchDetail() {
             <button onClick={handleEditClick} className="modern-btn modern-btn--secondary" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
               <Pencil size={16} /> Edit Batch
             </button>
+            <button onClick={handleUploadResultsClick} className="modern-btn modern-btn--secondary" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <FileText size={16} /> Upload Results
+            </button>
             <button onClick={handleAddStudentsClick} className="modern-btn modern-btn--primary" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
               <UserPlus size={16} /> Add Students
             </button>
@@ -1126,7 +1363,7 @@ export default function BatchDetail() {
           ) : (
             <div>
               <div className="batch-phase-label">Course Progress</div>
-              <div className="batch-metrics-grid" style={{ gridTemplateColumns: isFilmAppreciation ? 'repeat(auto-fill, minmax(160px, 1fr))' : 'repeat(5, 1fr)' }}>
+              <div className="batch-metrics-grid">
                 <StatCard icon={<Users size={20} />} value={progressData.single_phase?.admitted || progressData.total_students} label="Total Students" colorVariant="Blue" onClick={() => toggleStatFilter('all')} isActive={selectedStatFilter === 'all'} />
                 {!isFilmAppreciation && (
                   <StatCard icon={<CheckCircle2 size={20} />} value={progressData.single_phase?.attendance} label="Attendance" colorVariant="Green" onClick={() => toggleStatFilter('attendance')} isActive={selectedStatFilter === 'attendance'} />
@@ -1167,35 +1404,75 @@ export default function BatchDetail() {
               <Wallet size={14} /> Fees & Certificates
             </div>
             <div className="batch-fee-cert-row">
-              <div className="batch-info-card" style={{ display: 'flex', flexDirection: 'column' }}>
-                <div className="fee-summary-row">
-                  <div className="fee-summary-label">
-                    <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#34d399' }}></span>
-                    Fully Paid
+              <div className="batch-info-card" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                {/* Two Sub-Cards side by side */}
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+                  {/* Card 1: Fully Paid */}
+                  <div 
+                    onClick={() => toggleStatFilter(selectedStatFilter === 'fee_fully_paid' ? 'all' : 'fee_fully_paid')}
+                    style={{
+                      padding: '0.75rem',
+                      background: selectedStatFilter === 'fee_fully_paid' ? 'rgba(16, 185, 129, 0.15)' : 'rgba(255, 255, 255, 0.02)',
+                      border: selectedStatFilter === 'fee_fully_paid' ? '1.5px solid #10b981' : '1px solid rgba(255, 255, 255, 0.05)',
+                      borderRadius: '8px',
+                      cursor: 'pointer',
+                      transition: 'all 0.2s',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '0.25rem',
+                      boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
+                    }}
+                    className="hover-scale-subtle"
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.78rem', color: '#34d399', fontWeight: '600' }}>
+                      <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#34d399' }}></span>
+                      Fully Paid
+                    </div>
+                    <div style={{ fontSize: '1.2rem', fontWeight: '700', color: 'var(--text-primary)', marginTop: '0.15rem' }}>
+                      {paidCount} {paidCount === 1 ? 'Student' : 'Students'}
+                    </div>
                   </div>
-                  <div className="fee-summary-value" style={{ color: '#34d399' }}>৳{totalCollected} collected</div>
+
+                  {/* Card 2: Partial Payment */}
+                  <div 
+                    onClick={() => toggleStatFilter(selectedStatFilter === 'fee_partial_paid' ? 'all' : 'fee_partial_paid')}
+                    style={{
+                      padding: '0.75rem',
+                      background: selectedStatFilter === 'fee_partial_paid' ? 'rgba(245, 158, 11, 0.15)' : 'rgba(255, 255, 255, 0.02)',
+                      border: selectedStatFilter === 'fee_partial_paid' ? '1.5px solid #f59e0b' : '1px solid rgba(255, 255, 255, 0.05)',
+                      borderRadius: '8px',
+                      cursor: 'pointer',
+                      transition: 'all 0.2s',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '0.25rem',
+                      boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
+                    }}
+                    className="hover-scale-subtle"
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.78rem', color: '#fbbf24', fontWeight: '600' }}>
+                      <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#f59e0b' }}></span>
+                      Partial Paid
+                    </div>
+                    <div style={{ fontSize: '1.2rem', fontWeight: '700', color: 'var(--text-primary)', marginTop: '0.15rem' }}>
+                      {partialCount} {partialCount === 1 ? 'Student' : 'Students'}
+                    </div>
+                  </div>
                 </div>
-                <div className="fee-summary-row">
-                  <div className="fee-summary-label">
-                    <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#f59e0b' }}></span>
-                    Partial Payment
-                  </div>
+
+                {/* Collected & Outstanding Totals below cards */}
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '0.25rem', padding: '0 0.2rem' }}>
+                  <div>Collected: <span style={{ color: '#34d399', fontWeight: '600' }}>৳{totalCollected.toLocaleString('en-BD')}</span></div>
+                  <div>Outstanding: <span style={{ color: '#ef4444', fontWeight: '600' }}>৳{totalOutstanding.toLocaleString('en-BD')}</span></div>
                 </div>
-                <div className="fee-summary-row">
-                  <div className="fee-summary-label">
-                    <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#ef4444' }}></span>
-                    Payment Due
-                  </div>
-                  <div className="fee-summary-value" style={{ color: '#ef4444' }}>৳{totalOutstanding} outstanding</div>
+
+                <div className="fee-progress-bar" style={{ marginTop: '0.25rem' }}>
+                  <div className="fee-progress-segment" style={{ width: `${feeSegments.paidPct}%`, background: '#34d399' }}></div>
+                  <div className="fee-progress-segment" style={{ width: `${feeSegments.partialPct}%`, background: '#f59e0b' }}></div>
+                  <div className="fee-progress-segment" style={{ width: `${feeSegments.duePct}%`, background: '#ef4444' }}></div>
                 </div>
                 
-                <div className="fee-progress-bar">
-                  <div className="fee-progress-segment" style={{ width: '50%', background: '#34d399' }}></div>
-                  <div className="fee-progress-segment" style={{ width: '30%', background: '#f59e0b' }}></div>
-                  <div className="fee-progress-segment" style={{ width: '20%', background: '#ef4444' }}></div>
-                </div>
-                
-                <Link to={`/admin/fee-tracker?batch=${batchData.batch_number}`} style={{ color: 'var(--primary)', fontSize: '0.85rem', textDecoration: 'none', marginTop: 'auto', alignSelf: 'flex-start' }}>
+                <Link to={`/admin/fee-tracker?batch=${batchData.batch_number}`} style={{ color: 'var(--primary)', fontSize: '0.85rem', textDecoration: 'none', marginTop: 'auto', alignSelf: 'flex-start', paddingTop: '0.5rem' }}>
                   View in Fee Tracker →
                 </Link>
               </div>
@@ -1233,7 +1510,7 @@ export default function BatchDetail() {
           <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
             {selectedStatFilter && (
               <button 
-                onClick={() => setSelectedStatFilter(null)}
+                onClick={() => { setSelectedStatFilter(null); setRecentlyToggledIds([]); }}
                 style={{
                   background: 'rgba(239, 68, 68, 0.1)',
                   color: '#f87171',
@@ -1289,29 +1566,80 @@ export default function BatchDetail() {
                   <th>Student Name</th>
                   <th>BFI ID</th>
                   <th>Course Progressions</th>
-                  <th>Fee Status</th>
+                  <th style={{ textAlign: 'center' }}>Fee Status</th>
                   <th>Joined</th>
                   <th style={{ textAlign: 'right' }}>Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {filteredStudents.map((s, index) => (
-                  <tr key={s.user_id} className="student-list-row">
-                    <td style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>{index + 1}</td>
-                    <td>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                        {s.avatar ? (
-                          <img src={s.avatar} alt="" style={{ width: '32px', height: '32px', borderRadius: '50%', objectFit: 'cover' }} />
-                        ) : (
-                          <div style={{ width: '32px', height: '32px', borderRadius: '50%', background: 'rgba(255,255,255,0.05)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.8rem', fontWeight: 'bold' }}>
-                            {s.first_name?.[0]}{s.last_name?.[0]}
-                          </div>
-                        )}
-                        <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{s.first_name} {s.last_name}</div>
-                      </div>
-                    </td>
-                    <td style={{ fontFamily: 'monospace', color: 'var(--text-secondary)' }}>{s.bfi_id || '—'}</td>
-                    <td style={{ minWidth: '250px' }}>
+                {filteredStudents.map((s, index) => {
+                  const enrollment = s.enrollments?.find(e => e.course_name === batchData.course_name);
+                  let totalFee = 0;
+                  let collected = 0;
+                  if (enrollment) {
+                    let feeDetails = null;
+                    if (enrollment.fee_details) {
+                      try {
+                        feeDetails = typeof enrollment.fee_details === 'string' ? JSON.parse(enrollment.fee_details) : enrollment.fee_details;
+                      } catch (err) {}
+                    }
+                    const defaultFee = batchData.course_fee || 8000;
+                    const defaultP1 = batchData.phase1_fee || 4000;
+                    const defaultP2 = batchData.phase2_fee || 4000;
+                    const cleanNum = (val) => parseFloat(String(val || '').replace(/[^\d.]/g, '')) || 0;
+                    if (batchData.course_name === 'Online Filmmaking Course') {
+                      const p1 = feeDetails?.phase1 || {};
+                      const p1Full = cleanNum(p1.full_fee) || defaultP1;
+                      const p1Paid = cleanNum(p1.amount_paid);
+                      const p1Discount = cleanNum(p1.discount);
+                      const p1Insts = p1.installments || [];
+                      const p1InstPaidSum = p1Insts
+                        .filter(inst => (inst.status || '').toLowerCase() === 'paid')
+                        .reduce((sum, inst) => sum + cleanNum(inst.amount), 0);
+                      const p1Collected = Math.min(p1Paid + p1InstPaidSum + p1Discount, p1Full);
+
+                      const p2 = feeDetails?.phase2 || {};
+                      const p2Full = cleanNum(p2.full_fee) || defaultP2;
+                      const p2Paid = cleanNum(p2.amount_paid);
+                      const p2Discount = cleanNum(p2.discount);
+                      const p2Insts = p2.installments || [];
+                      const p2InstPaidSum = p2Insts
+                        .filter(inst => (inst.status || '').toLowerCase() === 'paid')
+                        .reduce((sum, inst) => sum + cleanNum(inst.amount), 0);
+                      const p2Collected = Math.min(p2Paid + p2InstPaidSum + p2Discount, p2Full);
+
+                      totalFee = p1Full + p2Full;
+                      collected = p1Collected + p2Collected;
+                    } else {
+                      const p = feeDetails || {};
+                      const full = cleanNum(p.full_fee) || defaultFee;
+                      const paid = cleanNum(p.amount_paid);
+                      const discount = cleanNum(p.discount);
+                      const insts = p.installments || [];
+                      const instPaidSum = insts
+                        .filter(inst => (inst.status || '').toLowerCase() === 'paid')
+                        .reduce((sum, inst) => sum + cleanNum(inst.amount), 0);
+                      totalFee = full;
+                      collected = Math.min(paid + instPaidSum + discount, full);
+                    }
+                  }
+                  return (
+                    <tr key={s.user_id} className="student-list-row">
+                      <td style={{ color: 'var(--text-muted)', fontSize: '0.85rem', verticalAlign: 'middle' }}>{index + 1}</td>
+                      <td style={{ verticalAlign: 'middle' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                          {s.avatar ? (
+                            <img src={s.avatar} alt="" style={{ width: '32px', height: '32px', borderRadius: '50%', objectFit: 'cover' }} />
+                          ) : (
+                            <div style={{ width: '32px', height: '32px', borderRadius: '50%', background: 'rgba(255,255,255,0.05)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.8rem', fontWeight: 'bold' }}>
+                              {s.first_name?.[0]}{s.last_name?.[0]}
+                            </div>
+                          )}
+                          <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{s.first_name} {s.last_name}</div>
+                        </div>
+                      </td>
+                      <td style={{ fontFamily: 'monospace', color: 'var(--text-secondary)', verticalAlign: 'middle' }}>{s.bfi_id || '—'}</td>
+                      <td style={{ minWidth: '250px', verticalAlign: 'middle' }}>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
                         {s.enrollments && s.enrollments.map(e => (
                           <div key={e.id} className="student-table-course-card" style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', background: 'rgba(0,0,0,0.01)', padding: '0.5rem', borderRadius: '8px', border: '1px solid var(--glass-border)' }}>
@@ -1327,7 +1655,10 @@ export default function BatchDetail() {
                                   {(() => {
                                     const isGraded = e.exam_written !== null && e.exam_written !== undefined && e.exam_written !== '';
                                     const totalScore = (parseInt(e.exam_written) || 0) + (parseInt(e.assignment_screenplay) || 0) + (parseInt(e.assignment_shooting_script) || 0);
-                                    const hasFailed = isGraded && e.step1_completed === 1 && e.step2_completed !== 1;
+                                    const attClasses = e.attendance_classes || 0;
+                                    const attTotal = e.attendance_total || 22;
+                                    const qualifiesAttendance = attTotal > 0 ? (attClasses / attTotal) >= 0.8 : false;
+                                    const hasFailed = isGraded && e.step1_completed === 1 && e.step2_completed !== 1 && (!qualifiesAttendance || totalScore < 33);
                                     if (hasFailed) {
                                       return (
                                         <button onClick={() => toggleProgress(s.id, e.id, 'step2_completed', e.step2_completed, e.course_name)} title={`Phase 1: Failed (Score: ${totalScore})`} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444' }}>
@@ -1358,7 +1689,7 @@ export default function BatchDetail() {
                                     const examScore = parseInt(e.exam_written) || 0;
                                     const hasExam = examScore > 0;
                                     const hasPassed = e.step2_completed === 1;
-                                    const hasFailed = hasExam && !hasPassed;
+                                    const hasFailed = hasExam && examScore < 33 && !hasPassed;
                                     if (hasFailed) {
                                       return (
                                         <button onClick={() => toggleProgress(s.id, e.id, 'step2_completed', e.step2_completed, e.course_name)} title={`Failed Exam (Score: ${examScore})`} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444' }}>
@@ -1375,26 +1706,37 @@ export default function BatchDetail() {
                                 </>
                               )}
                               {((e.course_name === 'Online Filmmaking Course' && e.step4_completed === 1) || (e.course_name !== 'Online Filmmaking Course' && e.step2_completed === 1)) && hasPendingDueOrPartialPayment(e) && (
-                                <Lock size={14} style={{ color: '#f87171', display: 'inline-block' }} title="Certificate Locked (Pending/Due/Partial Payment)" />
+                                <Lock 
+                                  size={14} 
+                                  style={{ color: '#f87171', display: 'inline-block', cursor: 'not-allowed', marginLeft: '0.2rem' }} 
+                                  title={`Certificate Locked (Outstanding: ৳${(totalFee - collected).toLocaleString('en-BD')})`} 
+                                />
                               )}
                             </div>
                           </div>
                         ))}
                       </div>
                     </td>
-                    <td>
-                      {s.fee_status ? (
-                        <span className={`batch-status-badge ${s.fee_status.toLowerCase().replace(' ', '-')}`} style={{ fontSize: '0.7rem' }}>
-                          {s.fee_status}
-                        </span>
-                      ) : (
-                        <span style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>—</span>
-                      )}
+                    <td style={{ textAlign: 'center', verticalAlign: 'middle' }}>
+                      <div style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'center', gap: '0.2rem' }}>
+                        {s.fee_status ? (
+                          <span className={`batch-status-badge ${s.fee_status.toLowerCase().replace(' ', '-')}`} style={{ fontSize: '0.7rem', display: 'inline-block', width: 'fit-content' }}>
+                            {s.fee_status}
+                          </span>
+                        ) : (
+                          <span className="batch-status-badge unpaid" style={{ fontSize: '0.7rem', display: 'inline-block', width: 'fit-content' }}>UNPAID</span>
+                        )}
+                        {enrollment && (
+                          <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', whiteSpace: 'nowrap', marginTop: '0.1rem' }}>
+                            Paid: <span style={{ color: collected > 0 ? '#34d399' : 'var(--text-muted)', fontWeight: '600' }}>৳{collected.toLocaleString('en-BD')}</span> of <span style={{ color: 'var(--text-secondary)', fontWeight: '500' }}>৳{totalFee.toLocaleString('en-BD')}</span>
+                          </div>
+                        )}
+                      </div>
                     </td>
-                    <td style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                    <td style={{ color: 'var(--text-muted)', fontSize: '0.85rem', verticalAlign: 'middle' }}>
                       {s.created_at ? new Date(s.created_at).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) : '—'}
                     </td>
-                    <td style={{ textAlign: 'right' }}>
+                    <td style={{ textAlign: 'right', verticalAlign: 'middle' }}>
                       <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem', position: 'relative' }}>
                         {(() => {
                           const e = s.enrollments?.find(x => x.course_name === batchData.course_name);
@@ -1479,7 +1821,8 @@ export default function BatchDetail() {
                       </div>
                     </td>
                   </tr>
-                ))}
+                );
+              })}
               </tbody>
             </table>
           </div>
@@ -1582,7 +1925,6 @@ export default function BatchDetail() {
         </div>
       </div>
       
-      {/* CREATE/EDIT BATCH MODAL */}
       <BatchFormModal
         mode="edit"
         batch={batchData}
@@ -1643,19 +1985,62 @@ export default function BatchDetail() {
       {academicStudent && typeof document !== 'undefined' && createPortal(
         <div className="modern-modal-overlay">
           <form onSubmit={submitAcademic} className="modern-modal-content glass-panel shadow-2xl" style={{ width: '100%', maxWidth: '500px', margin: 'auto' }} onClick={e => e.stopPropagation()}>
-            <div className="modern-modal-header">
-              <div>
-                <h3 className="font-display" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <GraduationCap size={24} style={{ color: '#10b981' }} /> {academicStudent.enrollment?.course_name !== 'Online Filmmaking Course' ? 'Exam Result' : 'Academic Records'}
+            <style>{`
+              .academic-modal-header-h3::before {
+                display: none !important;
+              }
+            `}</style>
+            <div className="modern-modal-header" style={{ position: 'relative', display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', borderBottom: '1px solid rgba(255, 255, 255, 0.05)', paddingBottom: '1.25rem' }}>
+              {/* Centered BFI Logo Box */}
+              <div style={{
+                width: '44px',
+                height: '44px',
+                backgroundImage: "url('/bfi-classroom/bfi-logo.jpg')",
+                backgroundSize: 'contain',
+                backgroundRepeat: 'no-repeat',
+                backgroundPosition: 'center',
+                backgroundColor: '#ffffff',
+                borderRadius: '8px',
+                border: '1.5px solid rgba(255, 255, 255, 0.1)',
+                boxShadow: '0 2px 8px rgba(0, 0, 0, 0.2)',
+                marginBottom: '0.75rem'
+              }} />
+
+              {/* Centered Content */}
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: '100%' }}>
+                <h3 className="academic-modal-header-h3 font-display" style={{ 
+                  margin: '0 0 20px 0', 
+                  fontSize: '1.35rem', 
+                  fontWeight: '700', 
+                  display: 'flex', 
+                  alignItems: 'center', 
+                  justifyContent: 'center',
+                  gap: '0.5rem',
+                  color: 'var(--text-primary)'
+                }}>
+                  <GraduationCap size={22} style={{ color: '#10b981' }} /> 
+                  {academicStudent.enrollment?.course_name !== 'Online Filmmaking Course' ? 'Exam Result' : 'Academic Records'}
                 </h3>
-                <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginTop: '0.2rem' }}>
-                  {academicStudent.full_name} <span style={{ opacity: 0.7 }}>({academicStudent.batch_number ? `${getOrdinalSuffix(academicStudent.batch_number)} Batch` : 'No Batch'})</span>
+                <p style={{ color: 'var(--text-secondary)', fontSize: '0.95rem', margin: '0 0 0.5rem 0', fontWeight: '500' }}>
+                  {academicStudent.full_name} <span style={{ opacity: 0.6, fontSize: '0.85rem' }}>({academicStudent.batch_number ? `${getOrdinalSuffix(academicStudent.batch_number)} Batch` : 'No Batch'})</span>
                 </p>
-                <p style={{ color: 'var(--text-primary)', fontSize: '0.85rem', marginTop: '0.4rem', fontWeight: '500', background: 'rgba(16, 185, 129, 0.1)', border: '1px solid rgba(16, 185, 129, 0.2)', padding: '0.2rem 0.6rem', borderRadius: '6px', display: 'inline-block' }}>
-                  {academicStudent.enrollment?.course_name || 'Course'}
-                </p>
+                <div>
+                  <span style={{ 
+                    color: '#34d399', 
+                    fontSize: '0.72rem', 
+                    fontWeight: '600', 
+                    background: 'rgba(16, 185, 129, 0.15)', 
+                    border: '1px solid rgba(16, 185, 129, 0.3)', 
+                    padding: '0.2rem 0.6rem', 
+                    borderRadius: '6px', 
+                    display: 'inline-block' 
+                  }}>
+                    {academicStudent.enrollment?.course_name || 'Course'}
+                  </span>
+                </div>
               </div>
-              <button type="button" className="icon-btn-ghost" onClick={closeAcademicModal} aria-label="Close"><X size={20} /></button>
+              
+              <button type="button" className="icon-btn-ghost" onClick={closeAcademicModal} aria-label="Close" style={{ position: 'absolute', right: 0, top: 0 }}><X size={20} /></button>
             </div>
 
             <div className="modern-modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem', maxHeight: '60vh', overflowY: 'auto' }}>
@@ -1671,42 +2056,43 @@ export default function BatchDetail() {
                     const totalGained = parseInt(academicFormData.exam_written) || 0;
                     const isPassed = totalGained >= 33;
                     return (
-                      <p style={{ 
-                        fontSize: '0.75rem', 
-                        color: 'var(--text-muted)', 
-                        marginTop: '1.25rem',
+                      <div style={{ 
+                        marginTop: '1.25rem', 
+                        padding: '1rem', 
+                        background: 'rgba(0, 0, 0, 0.2)', 
+                        borderRadius: '8px', 
+                        border: '1px solid var(--glass-border)',
                         display: 'flex',
-                        justifyContent: 'space-between',
-                        alignItems: 'center',
-                        flexWrap: 'wrap',
-                        gap: '0.5rem'
+                        flexDirection: 'column',
+                        gap: '0.75rem'
                       }}>
-                        <span>Requires 33+ marks to pass.</span>
-                        <span style={{ 
-                          fontSize: '0.85rem', 
-                          fontWeight: '700', 
-                          color: isPassed ? '#34d399' : '#f87171',
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '0.3rem'
-                        }}>
-                          <span>Total Gained:</span>
-                          <strong style={{ fontSize: '0.98rem' }}>{totalGained}</strong>
-                          <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 'normal' }}>/ 100</span>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Passing Requirement:</span>
+                          <span style={{ fontSize: '0.85rem', color: 'var(--text-primary)', fontWeight: '500' }}>33+ marks</span>
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Total Score Gained:</span>
+                          <span style={{ fontSize: '1rem', fontWeight: '700', color: 'var(--text-primary)' }}>
+                            {totalGained} <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 'normal' }}>/ 100</span>
+                          </span>
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid rgba(255, 255, 255, 0.05)', paddingTop: '0.75rem' }}>
+                          <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Status:</span>
                           <span style={{ 
-                            fontSize: '0.68rem', 
+                            fontSize: '0.72rem', 
                             fontWeight: '600', 
-                            padding: '0.05rem 0.35rem', 
+                            padding: '0.15rem 0.5rem', 
                             borderRadius: '4px',
-                            marginLeft: '0.25rem',
                             background: isPassed ? 'rgba(52, 211, 153, 0.12)' : 'rgba(239, 68, 68, 0.12)',
                             color: isPassed ? '#34d399' : '#f87171',
-                            border: isPassed ? '1px solid rgba(52, 211, 153, 0.2)' : '1px solid rgba(239, 68, 68, 0.2)'
+                            border: isPassed ? '1px solid rgba(52, 211, 153, 0.2)' : '1px solid rgba(239, 68, 68, 0.2)',
+                            textTransform: 'uppercase',
+                            letterSpacing: '0.05em'
                           }}>
                             {isPassed ? 'Passed' : 'Failed'}
                           </span>
-                        </span>
-                      </p>
+                        </div>
+                      </div>
                     );
                   })()}
                 </div>
@@ -1753,42 +2139,43 @@ export default function BatchDetail() {
                                           (parseInt(academicFormData.assignment_shooting_script) || 0);
                       const isPassed = totalGained >= 33;
                       return (
-                        <p style={{ 
-                          fontSize: '0.75rem', 
-                          color: 'var(--text-muted)', 
-                          marginTop: '1.25rem',
+                        <div style={{ 
+                          marginTop: '1.25rem', 
+                          padding: '1rem', 
+                          background: 'rgba(0, 0, 0, 0.2)', 
+                          borderRadius: '8px', 
+                          border: '1px solid var(--glass-border)',
                           display: 'flex',
-                          justifyContent: 'space-between',
-                          alignItems: 'center',
-                          flexWrap: 'wrap',
-                          gap: '0.5rem'
+                          flexDirection: 'column',
+                          gap: '0.75rem'
                         }}>
-                          <span>Requires 33+ total marks to pass.</span>
-                          <span style={{ 
-                            fontSize: '0.85rem', 
-                            fontWeight: '700', 
-                            color: isPassed ? '#34d399' : '#f87171',
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '0.3rem'
-                          }}>
-                            <span>Total Gained:</span>
-                            <strong style={{ fontSize: '0.98rem' }}>{totalGained}</strong>
-                            <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 'normal' }}>/ 100</span>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Passing Requirement:</span>
+                            <span style={{ fontSize: '0.85rem', color: 'var(--text-primary)', fontWeight: '500' }}>33+ total marks</span>
+                          </div>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Total Score Gained:</span>
+                            <span style={{ fontSize: '1rem', fontWeight: '700', color: 'var(--text-primary)' }}>
+                              {totalGained} <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 'normal' }}>/ 100</span>
+                            </span>
+                          </div>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid rgba(255, 255, 255, 0.05)', paddingTop: '0.75rem' }}>
+                            <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Status:</span>
                             <span style={{ 
-                              fontSize: '0.68rem', 
+                              fontSize: '0.72rem', 
                               fontWeight: '600', 
-                              padding: '0.05rem 0.35rem', 
+                              padding: '0.15rem 0.5rem', 
                               borderRadius: '4px',
-                              marginLeft: '0.25rem',
                               background: isPassed ? 'rgba(52, 211, 153, 0.12)' : 'rgba(239, 68, 68, 0.12)',
                               color: isPassed ? '#34d399' : '#f87171',
-                              border: isPassed ? '1px solid rgba(52, 211, 153, 0.2)' : '1px solid rgba(239, 68, 68, 0.2)'
+                              border: isPassed ? '1px solid rgba(52, 211, 153, 0.2)' : '1px solid rgba(239, 68, 68, 0.2)',
+                              textTransform: 'uppercase',
+                              letterSpacing: '0.05em'
                             }}>
                               {isPassed ? 'Passed' : 'Failed'}
                             </span>
-                          </span>
-                        </p>
+                          </div>
+                        </div>
                       );
                     })()}
                   </div>
@@ -1925,6 +2312,16 @@ export default function BatchDetail() {
             ...prev,
             student_count: (prev.student_count || 0) + assignedCount
           }));
+        }}
+      />
+      <UploadResultsModal 
+        isOpen={showUploadResultsModal}
+        onClose={() => setShowUploadResultsModal(false)}
+        batchId={batchData.id}
+        onUploadSuccess={(data) => {
+          showToast(`Successfully updated results for ${data.updated} students`);
+          fetchStudents(batchData.id);
+          fetchProgress(batchData.id);
         }}
       />
     </div>

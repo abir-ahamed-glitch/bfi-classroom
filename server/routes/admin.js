@@ -22,7 +22,7 @@ router.post('/students', authenticateToken, requireRole('admin'), sanitizeInput,
     const { 
       firstName, 
       lastName, 
-      email, 
+      email: rawEmail, 
       mobileNumber = '',
       batchNumber = '',
       snNo = '',
@@ -32,18 +32,8 @@ router.post('/students', authenticateToken, requireRole('admin'), sanitizeInput,
       courses = [] // ['Online Filmmaking Course', 'Film Appreciation Course', etc.]
     } = req.body;
 
-    if (!firstName || !lastName || !email || !snNo || !batchNumber || !year) {
-      return res.status(400).json({ error: 'First name, last name, email, SN No, Batch, and Year are required.' });
-    }
-
-    if (!validateEmail(email)) {
-      return res.status(400).json({ error: 'Invalid email format.' });
-    }
-
-    // Check if email already exists (case-insensitive)
-    const existingUser = db.prepare('SELECT id FROM users WHERE lower(email) = lower(?)').get(email);
-    if (existingUser) {
-      return res.status(400).json({ error: 'A user with this email already exists.' });
+    if (!firstName || !lastName || !snNo || !batchNumber || !year) {
+      return res.status(400).json({ error: 'First name, last name, SN No, Batch, and Year are required.' });
     }
 
     // Determine Username: Use manual if provided, otherwise generate automatically
@@ -53,6 +43,17 @@ router.post('/students', authenticateToken, requireRole('admin'), sanitizeInput,
       const baseUsername = `${firstName.toLowerCase()}.${lastName.toLowerCase()}`.replace(/[^a-z0-9]/g, '');
       const randomSuffix = Math.random().toString(36).substring(2, 6);
       username = `${baseUsername}.${randomSuffix}`;
+    }
+
+    // Generate a fake email if missing/invalid
+    const email = (rawEmail && rawEmail.trim() && validateEmail(rawEmail.trim())) 
+      ? rawEmail.trim() 
+      : `${username}@bfi-app.org`;
+
+    // Check if email already exists (case-insensitive)
+    const existingUser = db.prepare('SELECT id FROM users WHERE lower(email) = lower(?)').get(email);
+    if (existingUser) {
+      return res.status(400).json({ error: 'A user with this email already exists.' });
     }
 
     // Check if username is already taken (very rare for auto, but possible for manual)
@@ -161,7 +162,7 @@ router.post('/students/bulk', authenticateToken, requireRole('admin'), sanitizeI
       const studentData = students[i];
       // Expecting { name, email, mobile, address, snNo } roughly
       
-      const email = studentData.email ? studentData.email.trim() : null;
+      const emailInput = studentData.email ? studentData.email.trim() : null;
       let firstName = 'Student';
       let lastName = '';
       
@@ -183,26 +184,83 @@ router.post('/students/bulk', authenticateToken, requireRole('admin'), sanitizeI
       // Auto-assign SN: if not provided, just use index + 1
       const snNo = studentData.snNo || String(i + 1);
 
-      if (!email || !validateEmail(email)) {
-        results.push({ ...studentData, status: 'error', error: 'Invalid or missing email' });
-        continue;
-      }
-      
-      const existingUser = db.prepare('SELECT id FROM users WHERE lower(email) = lower(?)').get(email);
-      if (existingUser) {
-        if (req.query.skipExisting === 'true') {
-          results.push({ ...studentData, status: 'success', error: 'Already registered (Skipped)', username: 'Existing User', password: 'N/A', studentId: 'N/A' });
-          continue;
-        }
-        results.push({ ...studentData, status: 'error', error: 'Email already exists' });
-        continue;
-      }
-
       // Generate credentials
       const baseUsername = `${firstName.toLowerCase()}.${lastName.toLowerCase()}`.replace(/[^a-z0-9]/g, '');
       const randomSuffix = Math.random().toString(36).substring(2, 6);
       const username = req.query.isRegisteredOnly === 'true' ? `lead_${Date.now()}_${randomSuffix}` : `${baseUsername}.${randomSuffix}`;
-      
+
+      // Generate a fake email if missing/invalid
+      const hasRealEmail = emailInput && validateEmail(emailInput);
+      const email = hasRealEmail ? emailInput : `${username}@bfi-app.org`;
+
+      let existingUserId = null;
+      let duplicateReason = null;
+
+      // Duplicate full-name guard: if no real email, check for same full name
+      if (!hasRealEmail) {
+        const fullName = `${firstName} ${lastName}`.trim();
+        const existingByName = db.prepare(
+          `SELECT sp.user_id FROM student_profiles sp WHERE LOWER(TRIM(sp.full_name)) = LOWER(TRIM(?))`
+        ).get(fullName);
+        if (existingByName) {
+          existingUserId = existingByName.user_id;
+          duplicateReason = 'Name Match';
+        }
+      }
+
+      // If not found by name, check by email
+      if (!existingUserId) {
+        const existingUser = db.prepare('SELECT id FROM users WHERE lower(email) = lower(?)').get(email);
+        if (existingUser) {
+          existingUserId = existingUser.id;
+          duplicateReason = 'Email Match';
+        }
+      }
+
+      if (existingUserId) {
+        // Smart Batch Import: Automatically link existing student to the new batch
+        const studentBatch = studentData.batch || batchNumber;
+        if (studentBatch && Array.isArray(courses) && courses.length > 0) {
+          const getOrdinal = (n) => {
+            const num = parseInt(n, 10);
+            if (isNaN(num)) return n;
+            const s = ['th','st','nd','rd'];
+            const v = num % 100;
+            return num + (s[(v-20) % 10] || s[v] || s[0]);
+          };
+          for (const course of courses) {
+            let batchId;
+            const existingBatch = db.prepare('SELECT id FROM batches WHERE batch_number = ? AND course_name = ?').get(studentBatch, course);
+            if (existingBatch) {
+              batchId = existingBatch.id;
+            } else {
+              const batchName = `${getOrdinal(studentBatch)} Batch`;
+              const resultBatch = db.prepare(`
+                INSERT INTO batches (batch_name, batch_number, course_name, status, created_by)
+                VALUES (?, ?, ?, 'completed', ?)
+              `).run(batchName, studentBatch, course, req.user.userId || req.user.id);
+              batchId = resultBatch.lastInsertRowid;
+            }
+            db.prepare('INSERT OR IGNORE INTO batch_students (batch_id, student_id) VALUES (?, ?)').run(batchId, existingUserId);
+            const type = course === 'Online Filmmaking Course' ? 'filmmaking' : 'workshop';
+            db.prepare('INSERT OR IGNORE INTO student_course_enrollments (user_id, course_name, course_type) VALUES (?, ?, ?)').run(existingUserId, course, type);
+          }
+          // Update primary batch number in profile
+          db.prepare('UPDATE student_profiles SET batch_number = ? WHERE user_id = ?').run(studentBatch, existingUserId);
+          
+          results.push({ ...studentData, status: 'success', error: `Already registered (Linked to Batch ${studentBatch})`, username: 'Existing User', password: 'N/A', studentId: 'Existing' });
+          continue;
+        } else {
+          // If no batch info provided, fallback to standard skip/error
+          if (req.query.skipExisting === 'true') {
+            results.push({ ...studentData, status: 'success', error: 'Already registered (Skipped)', username: 'Existing User', password: 'N/A', studentId: 'N/A' });
+            continue;
+          }
+          results.push({ ...studentData, status: 'error', error: `Duplicate (${duplicateReason})` });
+          continue;
+        }
+      }
+
       // Password: bfi@ + last 6 digits of mobile, or random
       let rawPassword = req.query.isRegisteredOnly === 'true' ? `DISABLED_${Date.now()}` : `bfi@${Math.random().toString().substring(2,8)}`;
       
@@ -290,6 +348,7 @@ router.post('/students/bulk', authenticateToken, requireRole('admin'), sanitizeI
         
         results.push({
           ...studentData,
+          email: email,
           status: 'success',
           username: username,
           password: rawPassword,
@@ -334,6 +393,85 @@ router.post('/students/bulk', authenticateToken, requireRole('admin'), sanitizeI
   } catch (error) {
     console.error('Error in bulk import:', error);
     res.status(500).json({ error: 'Internal server error during bulk import.' });
+  }
+});
+
+// Bulk upload exam results for a batch
+router.post('/batches/:id/results/bulk', authenticateToken, requireRole('admin'), sanitizeInput, (req, res) => {
+  const batchId = req.params.id;
+  const { results } = req.body;
+  if (!Array.isArray(results)) {
+    return res.status(400).json({ error: 'Results must be an array' });
+  }
+
+  try {
+    const batch = db.prepare('SELECT * FROM batches WHERE id = ?').get(batchId);
+    if (!batch) return res.status(404).json({ error: 'Batch not found' });
+
+    let updatedCount = 0;
+    const updateEnrollment = db.prepare(`
+      UPDATE student_course_enrollments 
+      SET exam_written = ?
+      WHERE user_id = ? AND course_name = ?
+    `);
+
+    const updateProfile = db.prepare(`
+      UPDATE student_profiles 
+      SET phase1_passed = ?
+      WHERE user_id = ?
+    `);
+
+    db.transaction(() => {
+      for (const row of results) {
+        let student = null;
+
+        if (row.rollNo) {
+           student = db.prepare(`
+             SELECT u.id 
+             FROM users u
+             JOIN batch_students bs ON u.id = bs.student_id
+             JOIN student_profiles sp ON u.id = sp.user_id
+             WHERE bs.batch_id = ? AND (sp.student_id = ? OR sp.student_id LIKE ?)
+           `).get(batchId, row.rollNo, `%${row.rollNo}`);
+        }
+
+        if (!student && row.name) {
+           student = db.prepare(`
+             SELECT u.id 
+             FROM users u
+             JOIN batch_students bs ON u.id = bs.student_id
+             JOIN student_profiles sp ON u.id = sp.user_id
+             WHERE bs.batch_id = ? AND LOWER(TRIM(sp.full_name)) = LOWER(TRIM(?))
+           `).get(batchId, row.name);
+        }
+
+        if (!student && row.name) {
+           student = db.prepare(`
+             SELECT u.id 
+             FROM users u
+             JOIN batch_students bs ON u.id = bs.student_id
+             JOIN student_profiles sp ON u.id = sp.user_id
+             WHERE bs.batch_id = ? AND LOWER(sp.full_name) LIKE LOWER(?)
+           `).get(batchId, `%${row.name.trim()}%`);
+        }
+
+        if (student) {
+           if (row.obtainedMarks !== '' && row.obtainedMarks !== null) {
+              updateEnrollment.run(row.obtainedMarks, student.id, batch.course_name);
+           }
+           if (row.remarks) {
+              const passed = row.remarks === 'Pass' ? 1 : 0;
+              updateProfile.run(passed, student.id);
+           }
+           updatedCount++;
+        }
+      }
+    })();
+
+    res.json({ success: true, updated: updatedCount });
+  } catch (error) {
+    console.error('Bulk results upload error:', error);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -548,6 +686,21 @@ router.get('/imports/history/:id', authenticateToken, requireRole('admin'), (req
   }
 });
 
+// Delete import history record
+router.delete('/imports/history/:id', authenticateToken, requireRole('admin'), (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = db.prepare('DELETE FROM bulk_import_history WHERE id = ?').run(id);
+    if (result.changes === 0) {
+      return res.status(404).json({ error: 'History record not found' });
+    }
+    res.status(200).json({ success: true });
+  } catch (error) {
+    console.error('Error deleting history record:', error);
+    res.status(500).json({ error: 'Failed to delete import history record' });
+  }
+});
+
 // Route to update a student's Phase 2 attendance (Shooting + Editing parts)
 // Only for Online Filmmaking Course. If both parts attended => step4_completed = 1
 // IMPORTANT: This must be declared BEFORE the generic PUT /students/:id route.
@@ -645,12 +798,16 @@ router.put('/students/:id', authenticateToken, requireRole('admin'), sanitizeInp
     }
 
     const transaction = db.transaction(() => {
+      const finalEmail = (email && email.trim() && validateEmail(email.trim())) 
+        ? email.trim() 
+        : (username ? `${username}@bfi-app.org` : `student.${id}@bfi-app.org`);
+
       // 1. Update users
       db.prepare(`
         UPDATE users 
         SET first_name = ?, last_name = ?, email = ?, mobile_number = ?, username = ?
         WHERE id = ?
-      `).run(firstName, lastName, email, mobileNumber, username, id);
+      `).run(firstName, lastName, finalEmail, mobileNumber, username, id);
 
       // 2. Update student_profiles
       const fullName = `${firstName} ${lastName}`;

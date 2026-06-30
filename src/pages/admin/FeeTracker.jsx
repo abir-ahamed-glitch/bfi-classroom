@@ -595,19 +595,62 @@ const FeeTracker = () => {
       {academicStudent && typeof document !== 'undefined' && createPortal(
         <div className="modern-modal-overlay">
           <form onSubmit={submitAcademic} className="modern-modal-content glass-panel shadow-2xl" style={{ width: '100%', maxWidth: '500px', margin: 'auto' }} onClick={e => e.stopPropagation()}>
-            <div className="modern-modal-header">
-              <div>
-                <h3 className="font-display" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <GraduationCap size={24} style={{ color: '#10b981' }} /> {academicStudent.enrollment?.course_name !== 'Online Filmmaking Course' ? 'Exam Result' : 'Academic Records'}
+            <style>{`
+              .academic-modal-header-h3::before {
+                display: none !important;
+              }
+            `}</style>
+            <div className="modern-modal-header" style={{ position: 'relative', display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', borderBottom: '1px solid rgba(255, 255, 255, 0.05)', paddingBottom: '1.25rem' }}>
+              {/* Centered BFI Logo Box */}
+              <div style={{
+                width: '44px',
+                height: '44px',
+                backgroundImage: "url('/bfi-classroom/bfi-logo.jpg')",
+                backgroundSize: 'contain',
+                backgroundRepeat: 'no-repeat',
+                backgroundPosition: 'center',
+                backgroundColor: '#ffffff',
+                borderRadius: '8px',
+                border: '1.5px solid rgba(255, 255, 255, 0.1)',
+                boxShadow: '0 2px 8px rgba(0, 0, 0, 0.2)',
+                marginBottom: '0.75rem'
+              }} />
+
+              {/* Centered Content */}
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: '100%' }}>
+                <h3 className="academic-modal-header-h3 font-display" style={{ 
+                  margin: '0 0 20px 0', 
+                  fontSize: '1.35rem', 
+                  fontWeight: '700', 
+                  display: 'flex', 
+                  alignItems: 'center', 
+                  justifyContent: 'center',
+                  gap: '0.5rem',
+                  color: 'var(--text-primary)'
+                }}>
+                  <GraduationCap size={22} style={{ color: '#10b981' }} /> 
+                  {academicStudent.enrollment?.course_name !== 'Online Filmmaking Course' ? 'Exam Result' : 'Academic Records'}
                 </h3>
-                <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginTop: '0.2rem' }}>
-                  {academicStudent.full_name} <span style={{ opacity: 0.7 }}>({academicStudent.batch_number ? `${getOrdinalSuffix(academicStudent.batch_number)} Batch` : 'No Batch'})</span>
+                <p style={{ color: 'var(--text-secondary)', fontSize: '0.95rem', margin: '0 0 0.5rem 0', fontWeight: '500' }}>
+                  {academicStudent.full_name} <span style={{ opacity: 0.6, fontSize: '0.85rem' }}>({academicStudent.batch_number ? `${getOrdinalSuffix(academicStudent.batch_number)} Batch` : 'No Batch'})</span>
                 </p>
-                <p style={{ color: 'var(--text-primary)', fontSize: '0.85rem', marginTop: '0.4rem', fontWeight: '500', background: 'rgba(16, 185, 129, 0.1)', border: '1px solid rgba(16, 185, 129, 0.2)', padding: '0.2rem 0.6rem', borderRadius: '6px', display: 'inline-block' }}>
-                  {academicStudent.enrollment?.course_name || 'Course'}
-                </p>
+                <div>
+                  <span style={{ 
+                    color: '#34d399', 
+                    fontSize: '0.72rem', 
+                    fontWeight: '600', 
+                    background: 'rgba(16, 185, 129, 0.15)', 
+                    border: '1px solid rgba(16, 185, 129, 0.3)', 
+                    padding: '0.2rem 0.6rem', 
+                    borderRadius: '6px', 
+                    display: 'inline-block' 
+                  }}>
+                    {academicStudent.enrollment?.course_name || 'Course'}
+                  </span>
+                </div>
               </div>
-              <button type="button" className="icon-btn-ghost" onClick={closeAcademicModal} aria-label="Close"><X size={20} /></button>
+              
+              <button type="button" className="icon-btn-ghost" onClick={closeAcademicModal} aria-label="Close" style={{ position: 'absolute', right: 0, top: 0 }}><X size={20} /></button>
             </div>
 
             <div className="modern-modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem', maxHeight: '60vh', overflowY: 'auto' }}>
@@ -623,42 +666,43 @@ const FeeTracker = () => {
                     const totalGained = parseInt(academicFormData.exam_written) || 0;
                     const isPassed = totalGained >= 33;
                     return (
-                      <p style={{ 
-                        fontSize: '0.75rem', 
-                        color: 'var(--text-muted)', 
-                        marginTop: '1.25rem',
+                      <div style={{ 
+                        marginTop: '1.25rem', 
+                        padding: '1rem', 
+                        background: 'rgba(0, 0, 0, 0.2)', 
+                        borderRadius: '8px', 
+                        border: '1px solid var(--glass-border)',
                         display: 'flex',
-                        justifyContent: 'space-between',
-                        alignItems: 'center',
-                        flexWrap: 'wrap',
-                        gap: '0.5rem'
+                        flexDirection: 'column',
+                        gap: '0.75rem'
                       }}>
-                        <span>Requires 33+ marks to pass.</span>
-                        <span style={{ 
-                          fontSize: '0.85rem', 
-                          fontWeight: '700', 
-                          color: isPassed ? '#34d399' : '#f87171',
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '0.3rem'
-                        }}>
-                          <span>Total Gained:</span>
-                          <strong style={{ fontSize: '0.98rem' }}>{totalGained}</strong>
-                          <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 'normal' }}>/ 100</span>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Passing Requirement:</span>
+                          <span style={{ fontSize: '0.85rem', color: 'var(--text-primary)', fontWeight: '500' }}>33+ marks</span>
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Total Score Gained:</span>
+                          <span style={{ fontSize: '1rem', fontWeight: '700', color: 'var(--text-primary)' }}>
+                            {totalGained} <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 'normal' }}>/ 100</span>
+                          </span>
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid rgba(255, 255, 255, 0.05)', paddingTop: '0.75rem' }}>
+                          <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Status:</span>
                           <span style={{ 
-                            fontSize: '0.68rem', 
+                            fontSize: '0.72rem', 
                             fontWeight: '600', 
-                            padding: '0.05rem 0.35rem', 
+                            padding: '0.15rem 0.5rem', 
                             borderRadius: '4px',
-                            marginLeft: '0.25rem',
                             background: isPassed ? 'rgba(52, 211, 153, 0.12)' : 'rgba(239, 68, 68, 0.12)',
                             color: isPassed ? '#34d399' : '#f87171',
-                            border: isPassed ? '1px solid rgba(52, 211, 153, 0.2)' : '1px solid rgba(239, 68, 68, 0.2)'
+                            border: isPassed ? '1px solid rgba(52, 211, 153, 0.2)' : '1px solid rgba(239, 68, 68, 0.2)',
+                            textTransform: 'uppercase',
+                            letterSpacing: '0.05em'
                           }}>
                             {isPassed ? 'Passed' : 'Failed'}
                           </span>
-                        </span>
-                      </p>
+                        </div>
+                      </div>
                     );
                   })()}
                 </div>
@@ -705,42 +749,43 @@ const FeeTracker = () => {
                                           (parseInt(academicFormData.assignment_shooting_script) || 0);
                       const isPassed = totalGained >= 33;
                       return (
-                        <p style={{ 
-                          fontSize: '0.75rem', 
-                          color: 'var(--text-muted)', 
-                          marginTop: '1.25rem',
+                        <div style={{ 
+                          marginTop: '1.25rem', 
+                          padding: '1rem', 
+                          background: 'rgba(0, 0, 0, 0.2)', 
+                          borderRadius: '8px', 
+                          border: '1px solid var(--glass-border)',
                           display: 'flex',
-                          justifyContent: 'space-between',
-                          alignItems: 'center',
-                          flexWrap: 'wrap',
-                          gap: '0.5rem'
+                          flexDirection: 'column',
+                          gap: '0.75rem'
                         }}>
-                          <span>Requires 33+ total marks to pass.</span>
-                          <span style={{ 
-                            fontSize: '0.85rem', 
-                            fontWeight: '700', 
-                            color: isPassed ? '#34d399' : '#f87171',
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '0.3rem'
-                          }}>
-                            <span>Total Gained:</span>
-                            <strong style={{ fontSize: '0.98rem' }}>{totalGained}</strong>
-                            <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 'normal' }}>/ 100</span>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Passing Requirement:</span>
+                            <span style={{ fontSize: '0.85rem', color: 'var(--text-primary)', fontWeight: '500' }}>33+ total marks</span>
+                          </div>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Total Score Gained:</span>
+                            <span style={{ fontSize: '1rem', fontWeight: '700', color: 'var(--text-primary)' }}>
+                              {totalGained} <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 'normal' }}>/ 100</span>
+                            </span>
+                          </div>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid rgba(255, 255, 255, 0.05)', paddingTop: '0.75rem' }}>
+                            <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Status:</span>
                             <span style={{ 
-                              fontSize: '0.68rem', 
+                              fontSize: '0.72rem', 
                               fontWeight: '600', 
-                              padding: '0.05rem 0.35rem', 
+                              padding: '0.15rem 0.5rem', 
                               borderRadius: '4px',
-                              marginLeft: '0.25rem',
                               background: isPassed ? 'rgba(52, 211, 153, 0.12)' : 'rgba(239, 68, 68, 0.12)',
                               color: isPassed ? '#34d399' : '#f87171',
-                              border: isPassed ? '1px solid rgba(52, 211, 153, 0.2)' : '1px solid rgba(239, 68, 68, 0.2)'
+                              border: isPassed ? '1px solid rgba(52, 211, 153, 0.2)' : '1px solid rgba(239, 68, 68, 0.2)',
+                              textTransform: 'uppercase',
+                              letterSpacing: '0.05em'
                             }}>
                               {isPassed ? 'Passed' : 'Failed'}
                             </span>
-                          </span>
-                        </p>
+                          </div>
+                        </div>
                       );
                     })()}
                   </div>
