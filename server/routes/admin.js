@@ -462,15 +462,40 @@ router.post('/batches/:id/results/bulk', authenticateToken, requireRole('admin')
         }
 
         if (student) {
-           if (row.obtainedMarks !== '' && row.obtainedMarks !== null) {
-              updateEnrollment.run(row.obtainedMarks, student.id, batch.course_name);
+           const enrollment = db.prepare('SELECT fee_details FROM student_course_enrollments WHERE user_id = ? AND course_name = ?').get(student.id, batch.course_name);
+           let isUnpaid = false;
+           if (enrollment && enrollment.fee_details) {
+             let feeDetails = {};
+             try { feeDetails = typeof enrollment.fee_details === 'string' ? JSON.parse(enrollment.fee_details) : enrollment.fee_details; } catch(err) {}
+             
+             if (batch.course_name === 'Online Filmmaking Course') {
+               const p1 = feeDetails.phase1 || {};
+               const amountPaidNum = parseFloat((p1.amount_paid || '').toString().replace(/[^\d.]/g, '')) || 0;
+               const installments = p1.installments || [];
+               const paidAny = amountPaidNum > 0 || installments.some(inst => inst.status === 'Paid' && parseFloat((inst.amount || '').toString().replace(/[^\d.]/g, '')) > 0);
+               if (!paidAny) isUnpaid = true;
+             } else {
+               const amountPaidNum = parseFloat((feeDetails.amount_paid || '').toString().replace(/[^\d.]/g, '')) || 0;
+               const installments = feeDetails.installments || [];
+               const paidAny = amountPaidNum > 0 || installments.some(inst => inst.status === 'Paid' && parseFloat((inst.amount || '').toString().replace(/[^\d.]/g, '')) > 0);
+               if (!paidAny) isUnpaid = true;
+             }
+           } else {
+             // If no fee details yet, consider unpaid
+             isUnpaid = true;
            }
-           if (row.remarks) {
-              const passed = row.remarks === 'Pass' ? 1 : 0;
-              updateProfile.run(passed, student.id);
-              updateEnrollmentStatus.run(passed, student.id, batch.course_name);
+
+           if (!isUnpaid) {
+             if (row.obtainedMarks !== '' && row.obtainedMarks !== null) {
+                updateEnrollment.run(row.obtainedMarks, student.id, batch.course_name);
+             }
+             if (row.remarks) {
+                const passed = row.remarks === 'Pass' ? 1 : 0;
+                updateProfile.run(passed, student.id);
+                updateEnrollmentStatus.run(passed, student.id, batch.course_name);
+             }
+             updatedCount++;
            }
-           updatedCount++;
         }
       }
     })();

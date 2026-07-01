@@ -412,6 +412,10 @@ export default function BatchDetail() {
         (phase2.installments || []).some(inst => inst.status === 'Paid' && parseFloat((inst.amount || '').replace(/[^\d.]/g, '')) > 0);
 
       if (stepField === 'step2_completed') {
+        if (!phase1PaidAny) {
+          setConfirmConfig({ title: 'Action Restricted', message: 'Cannot update exam results because the student is completely unpaid.', confirmText: 'OK', isAlert: true, onConfirm: () => {} });
+          return;
+        }
         openAcademicModal(student, enrollmentId);
         return;
       }
@@ -467,7 +471,23 @@ export default function BatchDetail() {
       const e = student?.enrollments?.find(env => env.id === enrollmentId);
       const willBeChecked = !currentValue;
 
+      let feeDetails = {};
+      if (e?.fee_details) {
+        try {
+          feeDetails = typeof e.fee_details === 'string' ? JSON.parse(e.fee_details) : e.fee_details;
+        } catch (err) {
+          console.error(err);
+        }
+      }
+      const amountPaidNum = parseFloat((feeDetails.amount_paid || '').toString().replace(/[^\d.]/g, '')) || 0;
+      const installments = feeDetails.installments || [];
+      const paidAny = amountPaidNum > 0 || installments.some(inst => inst.status === 'Paid' && parseFloat((inst.amount || '').toString().replace(/[^\d.]/g, '')) > 0);
+
       if (stepField === 'step2_completed') {
+        if (!paidAny) {
+          setConfirmConfig({ title: 'Action Restricted', message: 'Cannot update "Completed Course" because the student is completely unpaid.', confirmText: 'OK', isAlert: true, onConfirm: () => {} });
+          return;
+        }
         if (!e?.step1_completed) {
           setConfirmConfig({ title: 'Action Restricted', message: 'Cannot update "Completed Course" because "Admission Confirmed" is not yet completed.', confirmText: 'OK', isAlert: true, onConfirm: () => {} });
           return;
