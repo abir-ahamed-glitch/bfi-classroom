@@ -1122,6 +1122,8 @@ router.delete('/students/:id', authenticateToken, requireRole('admin'), (req, re
       db.prepare('DELETE FROM student_experiences WHERE user_id = ?').run(id);
       db.prepare('DELETE FROM community_posts WHERE user_id = ?').run(id);
       db.prepare('DELETE FROM student_course_enrollments WHERE user_id = ?').run(id);
+      db.prepare('DELETE FROM batch_students WHERE student_id = ?').run(id);
+      db.prepare('DELETE FROM bfiaa_members WHERE user_id = ?').run(id);
       db.prepare('DELETE FROM student_profiles WHERE user_id = ?').run(id);
       db.prepare('DELETE FROM users WHERE id = ?').run(id);
     });
@@ -1211,6 +1213,8 @@ router.delete('/teachers/:id', authenticateToken, requireRole('admin'), (req, re
       db.prepare('DELETE FROM projects WHERE user_id = ?').run(id);
       db.prepare('DELETE FROM community_posts WHERE user_id = ?').run(id);
       db.prepare('DELETE FROM course_materials WHERE uploaded_by = ?').run(id);
+      db.prepare('DELETE FROM batch_students WHERE student_id = ?').run(id);
+      db.prepare('DELETE FROM bfiaa_members WHERE user_id = ?').run(id);
       db.prepare('DELETE FROM instructor_profiles WHERE user_id = ?').run(id);
       db.prepare('DELETE FROM users WHERE id = ?').run(id);
     });
