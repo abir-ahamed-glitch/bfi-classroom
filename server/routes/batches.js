@@ -93,7 +93,10 @@ router.get('/', authenticateToken, requireRole('admin'), (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/:id', authenticateToken, requireRole('admin'), (req, res) => {
   try {
-    const batchId = parseInt(req.params.id, 10);
+    const slug = req.params.id;
+    const batchRecordLookup = db.prepare('SELECT id FROM batches WHERE slug = ?').get(slug);
+    if (!batchRecordLookup) return res.status(404).json({ error: 'Batch not found' });
+    const batchId = batchRecordLookup.id;
     const batch = db.prepare(`
       SELECT 
         b.*,
@@ -195,7 +198,10 @@ router.post('/', authenticateToken, requireRole('admin'), (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 router.patch('/:id', authenticateToken, requireRole('admin'), (req, res) => {
   try {
-    const batchId = parseInt(req.params.id, 10);
+    const slug = req.params.id;
+    const batchRecordLookup = db.prepare('SELECT id FROM batches WHERE slug = ?').get(slug);
+    if (!batchRecordLookup) return res.status(404).json({ error: 'Batch not found' });
+    const batchId = batchRecordLookup.id;
     const current = db.prepare('SELECT * FROM batches WHERE id = ?').get(batchId);
     if (!current) {
       return res.status(404).json({ error: 'Batch not found' });
@@ -283,7 +289,10 @@ router.patch('/:id', authenticateToken, requireRole('admin'), (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 router.delete('/:id', authenticateToken, requireRole('admin'), (req, res) => {
   try {
-    const batchId = parseInt(req.params.id, 10);
+    const slug = req.params.id;
+    const batchRecordLookup = db.prepare('SELECT id FROM batches WHERE slug = ?').get(slug);
+    if (!batchRecordLookup) return res.status(404).json({ error: 'Batch not found' });
+    const batchId = batchRecordLookup.id;
     const batch = db.prepare('SELECT * FROM batches WHERE id = ?').get(batchId);
 
     if (!batch) {
@@ -319,7 +328,10 @@ router.delete('/:id', authenticateToken, requireRole('admin'), (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/:id/students', authenticateToken, requireRole('admin'), (req, res) => {
   try {
-    const batchId = parseInt(req.params.id, 10);
+    const slug = req.params.id;
+    const batchRecordLookup = db.prepare('SELECT id FROM batches WHERE slug = ?').get(slug);
+    if (!batchRecordLookup) return res.status(404).json({ error: 'Batch not found' });
+    const batchId = batchRecordLookup.id;
     const search = req.query.search ? `%${req.query.search}%` : null;
 
     const rawStudents = db.prepare(`
@@ -459,7 +471,10 @@ router.get('/:id/available-students', authenticateToken, requireRole('admin'), (
 // ─────────────────────────────────────────────────────────────────────────────
 router.post('/:id/students', authenticateToken, requireRole('admin'), (req, res) => {
   try {
-    const batchId = parseInt(req.params.id, 10);
+    const slug = req.params.id;
+    const batchRecordLookup = db.prepare('SELECT id FROM batches WHERE slug = ?').get(slug);
+    if (!batchRecordLookup) return res.status(404).json({ error: 'Batch not found' });
+    const batchId = batchRecordLookup.id;
     const { student_ids } = req.body;
 
     if (!Array.isArray(student_ids) || student_ids.length === 0) {
@@ -535,7 +550,10 @@ router.post('/:id/students', authenticateToken, requireRole('admin'), (req, res)
 // ─────────────────────────────────────────────────────────────────────────────
 router.delete('/:id/students/:studentId', authenticateToken, requireRole('admin'), (req, res) => {
   try {
-    const batchId = parseInt(req.params.id, 10);
+    const slug = req.params.id;
+    const batchRecordLookup = db.prepare('SELECT id FROM batches WHERE slug = ?').get(slug);
+    if (!batchRecordLookup) return res.status(404).json({ error: 'Batch not found' });
+    const batchId = batchRecordLookup.id;
     const studentId = parseInt(req.params.studentId, 10);
 
     const batch = db.prepare('SELECT * FROM batches WHERE id = ?').get(batchId);
@@ -568,7 +586,10 @@ router.delete('/:id/students/:studentId', authenticateToken, requireRole('admin'
 // ─────────────────────────────────────────────────────────────────────────────
 router.post('/:id/students/:studentId/admit-phase2', authenticateToken, requireRole('admin'), (req, res) => {
   try {
-    const batchId = parseInt(req.params.id, 10);
+    const slug = req.params.id;
+    const batchRecordLookup = db.prepare('SELECT id FROM batches WHERE slug = ?').get(slug);
+    if (!batchRecordLookup) return res.status(404).json({ error: 'Batch not found' });
+    const batchId = batchRecordLookup.id;
     const studentId = parseInt(req.params.studentId, 10);
 
     const batch = db.prepare('SELECT * FROM batches WHERE id = ?').get(batchId);
@@ -612,7 +633,10 @@ router.post('/:id/students/:studentId/admit-phase2', authenticateToken, requireR
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/:id/progress', authenticateToken, requireRole('admin'), (req, res) => {
   try {
-    const batchId = parseInt(req.params.id, 10);
+    const slug = req.params.id;
+    const batchRecordLookup = db.prepare('SELECT id FROM batches WHERE slug = ?').get(slug);
+    if (!batchRecordLookup) return res.status(404).json({ error: 'Batch not found' });
+    const batchId = batchRecordLookup.id;
     const batch = db.prepare('SELECT * FROM batches WHERE id = ?').get(batchId);
     if (!batch) {
       return res.status(404).json({ error: 'Batch not found' });
@@ -851,7 +875,10 @@ router.get('/:id/progress', authenticateToken, requireRole('admin'), (req, res) 
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/:id/transitions', authenticateToken, requireRole('admin'), (req, res) => {
   try {
-    const batchId = parseInt(req.params.id, 10);
+    const slug = req.params.id;
+    const batchRecordLookup = db.prepare('SELECT id FROM batches WHERE slug = ?').get(slug);
+    if (!batchRecordLookup) return res.status(404).json({ error: 'Batch not found' });
+    const batchId = batchRecordLookup.id;
     if (isNaN(batchId)) {
       return res.status(400).json({ error: 'Invalid batch ID' });
     }

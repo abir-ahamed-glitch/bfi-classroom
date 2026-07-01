@@ -363,7 +363,7 @@ function App() {
               <Layout><BatchManager /></Layout>
             </ProtectedRoute>
           } />
-          <Route path="/admin/batchmanager/:id" element={
+          <Route path="/admin/batchmanager/:slug" element={
             <ProtectedRoute requiredRole={['admin']}>
               <Layout><BatchDetail /></Layout>
             </ProtectedRoute>

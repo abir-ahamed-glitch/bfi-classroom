@@ -1116,7 +1116,7 @@ export default function BatchManager() {
                             </span>
                           </div>
                           <button
-                            onClick={() => navigate(`/admin/batchmanager/${t.batch_id}`)}
+                            onClick={() => navigate(`/admin/batchmanager/${t.batch_slug}`)}
                             className="modern-btn modern-btn--secondary"
                             style={{ padding: '0.35rem 0.75rem', fontSize: '0.8rem' }}
                           >
@@ -1309,7 +1309,7 @@ export default function BatchManager() {
                     {/* Bottom Actions Row */}
                     <div className="batch-card-actions">
                       <button 
-                        onClick={() => navigate(`/admin/batchmanager/${b.id}`)}
+                        onClick={() => navigate(`/admin/batchmanager/${b.slug}`)}
                         className="modern-btn modern-btn--secondary"
                         style={{ flex: 1, padding: '0.45rem', fontSize: '0.85rem', whiteSpace: 'nowrap' }}
                       >

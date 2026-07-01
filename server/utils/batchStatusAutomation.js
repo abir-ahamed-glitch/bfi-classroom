@@ -218,6 +218,7 @@ export function runBatchStatusAutomation(db, triggeredBy = null) {
           applyTransition(db, batch, newStatus, reason, triggeredBy);
           results.transitions.push({
             batch_id: batch.id,
+            batch_slug: batch.slug,
             batch_name: batch.batch_name,
             from_status: batch.status,
             to_status: newStatus,

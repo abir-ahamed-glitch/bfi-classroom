@@ -8,7 +8,7 @@ import {
   History, RefreshCw, Zap, Loader2, GraduationCap, Clapperboard, Edit, Square, X, Lock
 } from 'lucide-react';
 import { 
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell 
+  BarChart, Bar, XAxis, YAxis, CartesianGrslug, Tooltip, ResponsiveContainer, Cell 
 } from 'recharts';
 import './BatchDetail.css';
 import BatchFormModal from '../../components/admin/BatchFormModal';
@@ -138,7 +138,7 @@ const CustomTooltip = ({ active, payload, label }) => {
 };
 
 export default function BatchDetail() {
-  const { id } = useParams();
+  const { slug } = useParams();
   const navigate = useNavigate();
 
   const [loading, setLoading] = useState(true);
@@ -1298,9 +1298,7 @@ export default function BatchDetail() {
             <button onClick={handleEditClick} className="modern-btn modern-btn--secondary" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
               <Pencil size={16} /> Edit Batch
             </button>
-            <button onClick={handleUploadResultsClick} className="modern-btn modern-btn--secondary" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <FileText size={16} /> Upload Results
-            </button>
+
             <button onClick={handleAddStudentsClick} className="modern-btn modern-btn--primary" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
               <UserPlus size={16} /> Add Students
             </button>
@@ -1649,7 +1647,7 @@ export default function BatchDetail() {
                             <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
                               {e.course_type === 'filmmaking' || e.course_name === 'Online Filmmaking Course' ? (
                                 <>
-                                  <button onClick={() => toggleProgress(s.id, e.id, 'step1_completed', e.step1_completed, e.course_name)} title="Phase 1: Admitted" style={{ background: 'none', border: 'none', cursor: 'pointer', color: e.step1_completed ? '#10b981' : 'var(--text-muted)' }}>
+                                  <button onClick={() => toggleProgress(s.slug, e.slug, 'step1_completed', e.step1_completed, e.course_name)} title="Phase 1: Admitted" style={{ background: 'none', border: 'none', cursor: 'pointer', color: e.step1_completed ? '#10b981' : 'var(--text-muted)' }}>
                                     {e.step1_completed ? <CheckSquare size={18} /> : <Square size={18} />}
                                   </button>
                                   {(() => {
@@ -1661,28 +1659,28 @@ export default function BatchDetail() {
                                     const hasFailed = isGraded && e.step1_completed === 1 && e.step2_completed !== 1 && (!qualifiesAttendance || totalScore < 33);
                                     if (hasFailed) {
                                       return (
-                                        <button onClick={() => toggleProgress(s.id, e.id, 'step2_completed', e.step2_completed, e.course_name)} title={`Phase 1: Failed (Score: ${totalScore})`} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444' }}>
+                                        <button onClick={() => toggleProgress(s.slug, e.slug, 'step2_completed', e.step2_completed, e.course_name)} title={`Phase 1: Failed (Score: ${totalScore})`} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444' }}>
                                           <XCircle size={18} />
                                         </button>
                                       );
                                     }
                                     return (
-                                      <button onClick={() => toggleProgress(s.id, e.id, 'step2_completed', e.step2_completed, e.course_name)} title="Phase 1: Passed Exam" style={{ background: 'none', border: 'none', cursor: 'pointer', color: e.step2_completed ? '#10b981' : 'var(--text-muted)' }}>
+                                      <button onClick={() => toggleProgress(s.slug, e.slug, 'step2_completed', e.step2_completed, e.course_name)} title="Phase 1: Passed Exam" style={{ background: 'none', border: 'none', cursor: 'pointer', color: e.step2_completed ? '#10b981' : 'var(--text-muted)' }}>
                                         {e.step2_completed ? <CheckSquare size={18} /> : <Square size={18} />}
                                       </button>
                                     );
                                   })()}
                                   <div style={{ width: '1px', height: '14px', background: 'var(--glass-border)', margin: '0 0.2rem' }}></div>
-                                  <button onClick={() => toggleProgress(s.id, e.id, 'step3_completed', e.step3_completed, e.course_name)} title="Phase 2: Admitted" style={{ background: 'none', border: 'none', cursor: 'pointer', color: e.step3_completed ? '#10b981' : 'var(--text-muted)' }}>
+                                  <button onClick={() => toggleProgress(s.slug, e.slug, 'step3_completed', e.step3_completed, e.course_name)} title="Phase 2: Admitted" style={{ background: 'none', border: 'none', cursor: 'pointer', color: e.step3_completed ? '#10b981' : 'var(--text-muted)' }}>
                                     {e.step3_completed ? <CheckSquare size={18} /> : <Square size={18} />}
                                   </button>
-                                  <button onClick={() => toggleProgress(s.id, e.id, 'step4_completed', e.step4_completed, e.course_name)} title="Phase 2: Completed Course" style={{ background: 'none', border: 'none', cursor: 'pointer', color: e.step4_completed ? '#10b981' : 'var(--text-muted)' }}>
+                                  <button onClick={() => toggleProgress(s.slug, e.slug, 'step4_completed', e.step4_completed, e.course_name)} title="Phase 2: Completed Course" style={{ background: 'none', border: 'none', cursor: 'pointer', color: e.step4_completed ? '#10b981' : 'var(--text-muted)' }}>
                                     {e.step4_completed ? <CheckSquare size={18} /> : <Square size={18} />}
                                   </button>
                                 </>
                               ) : (
                                 <>
-                                  <button onClick={() => toggleProgress(s.id, e.id, 'step1_completed', e.step1_completed, e.course_name)} title="Admission Confirmed" style={{ background: 'none', border: 'none', cursor: 'pointer', color: e.step1_completed ? '#10b981' : 'var(--text-muted)' }}>
+                                  <button onClick={() => toggleProgress(s.slug, e.slug, 'step1_completed', e.step1_completed, e.course_name)} title="Admission Confirmed" style={{ background: 'none', border: 'none', cursor: 'pointer', color: e.step1_completed ? '#10b981' : 'var(--text-muted)' }}>
                                     {e.step1_completed ? <CheckSquare size={18} /> : <Square size={18} />}
                                   </button>
                                   {(() => {
@@ -1692,13 +1690,13 @@ export default function BatchDetail() {
                                     const hasFailed = hasExam && examScore < 33 && !hasPassed;
                                     if (hasFailed) {
                                       return (
-                                        <button onClick={() => toggleProgress(s.id, e.id, 'step2_completed', e.step2_completed, e.course_name)} title={`Failed Exam (Score: ${examScore})`} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444' }}>
+                                        <button onClick={() => toggleProgress(s.slug, e.slug, 'step2_completed', e.step2_completed, e.course_name)} title={`Failed Exam (Score: ${examScore})`} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444' }}>
                                           <XCircle size={18} />
                                         </button>
                                       );
                                     }
                                     return (
-                                      <button onClick={() => toggleProgress(s.id, e.id, 'step2_completed', e.step2_completed, e.course_name)} title={hasPassed ? `Passed Exam (Score: ${examScore})` : 'Exam Not Yet Taken'} style={{ background: 'none', border: 'none', cursor: 'pointer', color: hasPassed ? '#10b981' : 'var(--text-muted)' }}>
+                                      <button onClick={() => toggleProgress(s.slug, e.slug, 'step2_completed', e.step2_completed, e.course_name)} title={hasPassed ? `Passed Exam (Score: ${examScore})` : 'Exam Not Yet Taken'} style={{ background: 'none', border: 'none', cursor: 'pointer', color: hasPassed ? '#10b981' : 'var(--text-muted)' }}>
                                         {hasPassed ? <CheckSquare size={18} /> : <Square size={18} />}
                                       </button>
                                     );
@@ -1782,7 +1780,7 @@ export default function BatchDetail() {
                           <Edit size={16} />
                         </button>
                         <button 
-                          onClick={() => confirmDeleteStudent(s.id, s.full_name, s.batch_number)}
+                          onClick={() => confirmDeleteStudent(s.slug, s.full_name, s.batch_number)}
                           className="btn" 
                           style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0.5rem', background: 'rgba(239, 68, 68, 0.1)', color: '#ef4444', border: '1px solid rgba(239, 68, 68, 0.2)', borderRadius: '8px', transition: 'all 0.2s' }} 
                           onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(239, 68, 68, 0.2)'; e.currentTarget.style.transform = 'scale(1.05)'; }} 
@@ -1814,7 +1812,7 @@ export default function BatchDetail() {
                             </p>
                             <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
                               <button onClick={cancelRemove} className="modern-btn modern-btn--secondary" style={{ padding: '0.35rem 0.75rem', fontSize: '0.75rem' }}>Cancel</button>
-                              <button onClick={() => confirmRemoveStudent(s.user_id, `${s.first_name} ${s.last_name}`)} className="modern-btn modern-btn--danger" style={{ padding: '0.35rem 0.75rem', fontSize: '0.75rem' }}>Remove</button>
+                              <button onClick={() => confirmRemoveStudent(s.user_slug, `${s.first_name} ${s.last_name}`)} className="modern-btn modern-btn--danger" style={{ padding: '0.35rem 0.75rem', fontSize: '0.75rem' }}>Remove</button>
                             </div>
                           </div>
                         )}
