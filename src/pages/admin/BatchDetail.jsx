@@ -1118,7 +1118,56 @@ export default function BatchDetail() {
             }
             return collected > 0 && collected < totalFee;
           }
-          
+
+        case 'fee_unpaid':
+          if (!enrollment) return false;
+          {
+            const feeDetails = typeof enrollment.fee_details === 'string' ? JSON.parse(enrollment.fee_details) : enrollment.fee_details;
+            const defaultFee = batchData.course_fee || 8000;
+            const defaultP1 = batchData.phase1_fee || 4000;
+            const defaultP2 = batchData.phase2_fee || 4000;
+            const cleanNum = (val) => parseFloat(String(val || '').replace(/[^\d.]/g, '')) || 0;
+            let totalFee = 0;
+            let collected = 0;
+            if (batchData.course_name === 'Online Filmmaking Course') {
+              const p1 = feeDetails?.phase1 || {};
+              const p1Full = cleanNum(p1.full_fee) || defaultP1;
+              const p1Paid = cleanNum(p1.amount_paid);
+              const p1Discount = cleanNum(p1.discount);
+              const p1Insts = p1.installments || [];
+              const p1InstPaidSum = p1Insts
+                .filter(inst => (inst.status || '').toLowerCase() === 'paid')
+                .reduce((sum, inst) => sum + cleanNum(inst.amount), 0);
+              const p1Collected = Math.min(p1Paid + p1InstPaidSum + p1Discount, p1Full);
+
+              const p2 = feeDetails?.phase2 || {};
+              const p2Full = cleanNum(p2.full_fee) || defaultP2;
+              const p2Paid = cleanNum(p2.amount_paid);
+              const p2Discount = cleanNum(p2.discount);
+              const p2Insts = p2.installments || [];
+              const p2InstPaidSum = p2Insts
+                .filter(inst => (inst.status || '').toLowerCase() === 'paid')
+                .reduce((sum, inst) => sum + cleanNum(inst.amount), 0);
+              const p2Collected = Math.min(p2Paid + p2InstPaidSum + p2Discount, p2Full);
+
+              totalFee = p1Full + p2Full;
+              collected = p1Collected + p2Collected;
+            } else {
+              const p = feeDetails || {};
+              const full = cleanNum(p.full_fee) || defaultFee;
+              const paid = cleanNum(p.amount_paid);
+              const discount = cleanNum(p.discount);
+              const insts = p.installments || [];
+              const instPaidSum = insts
+                .filter(inst => (inst.status || '').toLowerCase() === 'paid')
+                .reduce((sum, inst) => sum + cleanNum(inst.amount), 0);
+              
+              totalFee = full;
+              collected = Math.min(paid + instPaidSum + discount, full);
+            }
+            return collected === 0;
+          }
+
         default:
           return true;
       }
@@ -1386,7 +1435,7 @@ export default function BatchDetail() {
             <div className="batch-fee-cert-row">
               <div className="batch-info-card" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
                 {/* Two Sub-Cards side by side */}
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.75rem' }}>
                   {/* Card 1: Fully Paid */}
                   <div 
                     onClick={() => toggleStatFilter(selectedStatFilter === 'fee_fully_paid' ? 'all' : 'fee_fully_paid')}
@@ -1436,6 +1485,32 @@ export default function BatchDetail() {
                     </div>
                     <div style={{ fontSize: '1.2rem', fontWeight: '700', color: 'var(--text-primary)', marginTop: '0.15rem' }}>
                       {partialCount} {partialCount === 1 ? 'Student' : 'Students'}
+                    </div>
+                  </div>
+
+                  {/* Card 3: Unpaid */}
+                  <div 
+                    onClick={() => toggleStatFilter(selectedStatFilter === 'fee_unpaid' ? 'all' : 'fee_unpaid')}
+                    style={{
+                      padding: '0.75rem',
+                      background: selectedStatFilter === 'fee_unpaid' ? 'rgba(239, 68, 68, 0.15)' : 'rgba(255, 255, 255, 0.02)',
+                      border: selectedStatFilter === 'fee_unpaid' ? '1.5px solid #ef4444' : '1px solid rgba(255, 255, 255, 0.05)',
+                      borderRadius: '8px',
+                      cursor: 'pointer',
+                      transition: 'all 0.2s',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '0.25rem',
+                      boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
+                    }}
+                    className="hover-scale-subtle"
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.78rem', color: '#f87171', fontWeight: '600' }}>
+                      <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#ef4444' }}></span>
+                      Unpaid
+                    </div>
+                    <div style={{ fontSize: '1.2rem', fontWeight: '700', color: 'var(--text-primary)', marginTop: '0.15rem' }}>
+                      {dueCount} {dueCount === 1 ? 'Student' : 'Students'}
                     </div>
                   </div>
                 </div>
