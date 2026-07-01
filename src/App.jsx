@@ -35,11 +35,11 @@ import BatchManager from './pages/admin/BatchManager';
 import BatchDetail from './pages/admin/BatchDetail';
 import TeacherManager from './pages/admin/TeacherManager';
 import CertificateDesigner from './pages/admin/CertificateDesigner';
-import AnnouncementsManager from './pages/admin/AnnouncementsManager';
 import CourseMaterialsManager from './pages/admin/CourseMaterialsManager';
 import Analytics from './pages/admin/Analytics';
 import Reports from './pages/admin/Reports';
 import AdditionalOptions from './pages/admin/AdditionalOptions';
+import BroadcastManager from './pages/admin/BroadcastManager';
 import Certificates from './pages/Certificates';
 import StudentPortal from './pages/StudentPortal';
 import Sidebar from './components/Sidebar';
@@ -381,11 +381,14 @@ function App() {
             </ProtectedRoute>
           } />
           <Route path="/admin/announcements" element={
-            <ProtectedRoute requiredRole={['admin']}>
+            <ProtectedRoute requiredRole={['admin', 'instructor']}>
               <Layout>
-                <AnnouncementsManager />
+                <BroadcastManager />
               </Layout>
             </ProtectedRoute>
+          } />
+          <Route path="/admin/broadcast" element={
+            <Navigate to="/admin/announcements" replace />
           } />
           <Route path="/admin/course-materials" element={
             <ProtectedRoute requiredRole={['admin']}>

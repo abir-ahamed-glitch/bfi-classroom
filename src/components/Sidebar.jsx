@@ -47,6 +47,7 @@ export default function Sidebar({ isNotifOpen, setIsNotifOpen }) {
   const [unreadInboxCount, setUnreadInboxCount] = useState(0);
   const [unreadNotificationCount, setUnreadNotificationCount] = useState(0);
   const [unreadReportCount, setUnreadReportCount] = useState(0);
+  const [hasBroadcastPermission, setHasBroadcastPermission] = useState(false);
   const currentUserIdRef = useRef(null);
   const socketUrl = import.meta.env.VITE_SOCKET_URL || '';
   const hideBottomNav = isOpen;
@@ -124,6 +125,24 @@ export default function Sidebar({ isNotifOpen, setIsNotifOpen }) {
     }
   };
 
+  const fetchBroadcastPermission = async () => {
+    if (currentUser?.role !== 'instructor') {
+      setHasBroadcastPermission(false);
+      return;
+    }
+    const token = localStorage.getItem('token');
+    if (!token) return;
+    try {
+      const response = await fetch('/api/admin/broadcast?limit=1', {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setHasBroadcastPermission(response.ok);
+    } catch (error) {
+      console.error('Failed to check broadcast permission', error);
+      setHasBroadcastPermission(false);
+    }
+  };
+
   useEffect(() => {
     currentUserIdRef.current = Number(currentUser?.id);
   }, [currentUser?.id]);
@@ -133,6 +152,7 @@ export default function Sidebar({ isNotifOpen, setIsNotifOpen }) {
       const timeoutId = window.setTimeout(() => {
         setUnreadInboxCount(0);
         setUnreadNotificationCount(0);
+        setHasBroadcastPermission(false);
       }, 0);
       return () => window.clearTimeout(timeoutId);
     }
@@ -141,11 +161,13 @@ export default function Sidebar({ isNotifOpen, setIsNotifOpen }) {
       fetchUnreadInboxCount();
       fetchUnreadNotificationCount();
       fetchUnreadReportCount();
+      fetchBroadcastPermission();
     }, 0);
     const intervalId = window.setInterval(() => {
       fetchUnreadInboxCount();
       fetchUnreadNotificationCount();
       fetchUnreadReportCount();
+      fetchBroadcastPermission();
     }, 10000);
     return () => {
       window.clearTimeout(timeoutId);
@@ -339,37 +361,43 @@ export default function Sidebar({ isNotifOpen, setIsNotifOpen }) {
             <Globe size={20} /> BFIAA Network
           </NavLink>
 
-          {currentUser?.role === 'admin' && (
+          {(currentUser?.role === 'admin' || (currentUser?.role === 'instructor' && hasBroadcastPermission)) && (
             <>
               <p className="nav-subtitle">Administration</p>
-              <NavLink to="/admin/analytics" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
-                <BarChart2 size={20} /> Analytics
-              </NavLink>
-              <NavLink to="/admin/reports" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
-                <Flag size={20} /> Reports
-                {unreadReportCount > 0 && <span className="nav-badge">{unreadReportCount > 99 ? '99+' : unreadReportCount}</span>}
-              </NavLink>
-              <NavLink to="/admin/studentsmanager" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
-                <Settings size={20} /> Student Manager
-              </NavLink>
-              <NavLink to="/admin/batchmanager" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
-                <Users size={20} /> Batch Manager
-              </NavLink>
-              <NavLink to="/admin/teachers" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
-                <Settings size={20} /> Teacher Manager
-              </NavLink>
-              <NavLink to="/admin/course-materials" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
-                <BookOpen size={20} /> Course Materials
-              </NavLink>
-              <NavLink to="/admin/certificate-designer" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
-                <FileSignature size={20} /> Certificate Designer
-              </NavLink>
+              {currentUser?.role === 'admin' && (
+                <>
+                  <NavLink to="/admin/analytics" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
+                    <BarChart2 size={20} /> Analytics
+                  </NavLink>
+                  <NavLink to="/admin/reports" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
+                    <Flag size={20} /> Reports
+                    {unreadReportCount > 0 && <span className="nav-badge">{unreadReportCount > 99 ? '99+' : unreadReportCount}</span>}
+                  </NavLink>
+                  <NavLink to="/admin/studentsmanager" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
+                    <Settings size={20} /> Student Manager
+                  </NavLink>
+                  <NavLink to="/admin/batchmanager" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
+                    <Users size={20} /> Batch Manager
+                  </NavLink>
+                  <NavLink to="/admin/teachers" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
+                    <Settings size={20} /> Teacher Manager
+                  </NavLink>
+                  <NavLink to="/admin/course-materials" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
+                    <BookOpen size={20} /> Course Materials
+                  </NavLink>
+                  <NavLink to="/admin/certificate-designer" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
+                    <FileSignature size={20} /> Certificate Designer
+                  </NavLink>
+                </>
+              )}
               <NavLink to="/admin/announcements" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
-                <Megaphone size={20} /> Announcements
+                <Megaphone size={20} /> Announcements & Broadcasts
               </NavLink>
-              <NavLink to="/admin/additional-options" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
-                <Sliders size={20} /> Additional Options
-              </NavLink>
+              {currentUser?.role === 'admin' && (
+                <NavLink to="/admin/additional-options" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
+                  <Sliders size={20} /> Additional Options
+                </NavLink>
+              )}
             </>
           )}
         </nav>

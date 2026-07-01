@@ -48,6 +48,7 @@ import {
   Clock,
   Check,
   Download,
+  Megaphone,
 } from 'lucide-react';
 import { io } from 'socket.io-client';
 import { useAuth } from '../context/AuthContext';
@@ -457,6 +458,11 @@ export default function Inbox() {
   const { currentUser } = useAuth();
   const { initiateCall, onlineUsers } = useCall();
   const [loading, setLoading] = useState(true);
+  const [hasBroadcastPermission, setHasBroadcastPermission] = useState(false);
+  const [quickBroadcastOpen, setQuickBroadcastOpen] = useState(false);
+  const [quickForm, setQuickForm] = useState({ title: '', message: '', audience_type: 'all', audience_value: '', priority: 'normal', allow_reply: false });
+  const [quickSending, setQuickSending] = useState(false);
+  const [batches, setBatches] = useState([]);
   const [conversations, setConversations] = useState([]);
   const [activeChat, setActiveChat] = useState(null);
   const [messages, setMessages] = useState([]);
@@ -484,6 +490,39 @@ export default function Inbox() {
       }
     }
   }, [newMessage, activeChat?.other_user_id]);
+
+  useEffect(() => {
+    const checkPermission = async () => {
+      if (currentUser?.role !== 'instructor') {
+        setHasBroadcastPermission(false);
+        return;
+      }
+      const token = localStorage.getItem('token');
+      if (!token) return;
+      try {
+        const response = await fetch('/api/admin/broadcast?limit=1', {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        setHasBroadcastPermission(response.ok);
+      } catch (err) {
+        console.error('Failed to check broadcast permission', err);
+        setHasBroadcastPermission(false);
+      }
+    };
+    checkPermission();
+  }, [currentUser]);
+
+  useEffect(() => {
+    if (quickBroadcastOpen && batches.length === 0) {
+      const token = localStorage.getItem('token');
+      fetch('/api/admin/batches', {
+        headers: { Authorization: `Bearer ${token}` }
+      })
+        .then(r => r.json())
+        .then(d => setBatches(d.batches || []))
+        .catch(err => console.error('Failed to fetch batches', err));
+    }
+  }, [quickBroadcastOpen, batches.length]);
   
   const clearAttachments = () => {
     setAttachedFiles(prev => {
@@ -503,6 +542,61 @@ export default function Inbox() {
         return true;
       }));
     }, 200);
+  };
+
+  const handleSendQuickBroadcast = async (e) => {
+    e.preventDefault();
+    if (!quickForm.title.trim() || !quickForm.message.trim()) {
+      alert('Title and Message are required.');
+      return;
+    }
+    setQuickSending(true);
+    const token = localStorage.getItem('token');
+    try {
+      // 1. Create draft
+      const draftRes = await fetch('/api/admin/broadcast', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          title: quickForm.title,
+          message: quickForm.message,
+          audience_type: quickForm.audience_type,
+          audience_value: quickForm.audience_value || null,
+          priority: quickForm.priority,
+          allow_reply: quickForm.allow_reply,
+          status: 'draft'
+        })
+      });
+      const draftData = await draftRes.json();
+      if (!draftData.broadcast) {
+        alert(draftData.error || 'Failed to create broadcast');
+        setQuickSending(false);
+        return;
+      }
+
+      // 2. Send broadcast
+      const sendRes = await fetch(`/api/admin/broadcast/${draftData.broadcast.id}/send`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`
+        }
+      });
+      const sendData = await sendRes.json();
+      if (sendData.success) {
+        alert(`Broadcast successfully sent to ${sendData.total_recipients} students.`);
+        setQuickBroadcastOpen(false);
+        setQuickForm({ title: '', message: '', audience_type: 'all', audience_value: '', priority: 'normal', allow_reply: false });
+      } else {
+        alert(sendData.error || 'Failed to send broadcast');
+      }
+    } catch (err) {
+      console.error('Quick broadcast error:', err);
+      alert('An error occurred while sending the broadcast.');
+    }
+    setQuickSending(false);
   };
   const [sidebarQuery, setSidebarQuery] = useState('');
   const [sidebarSearchResults, setSidebarSearchResults] = useState([]);
@@ -3790,6 +3884,11 @@ export default function Inbox() {
                   }}
                 />
               </h2>
+              {(currentUser?.role === 'admin' || (currentUser?.role === 'instructor' && hasBroadcastPermission)) && (
+                <button className="new-msg-btn broadcast-btn" onClick={() => setQuickBroadcastOpen(true)} title="Quick Send Broadcast" style={{ marginRight: '8px' }}>
+                  <Megaphone size={18} strokeWidth={2.5} />
+                </button>
+              )}
               <button className="new-msg-btn" onClick={() => setComposerMode('new')} title="New Message">
                 <Pencil size={18} strokeWidth={3} />
               </button>
@@ -4461,8 +4560,35 @@ export default function Inbox() {
               </button>
             )}
 
-            <form className="chat-input-area" onSubmit={submitMessage}>
-              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+            {(() => {
+              const lastMessage = messages[messages.length - 1];
+              const repliesDisabled = lastMessage && lastMessage.is_broadcast === 1 && lastMessage.allow_reply === 0;
+              if (repliesDisabled) {
+                return (
+                  <div className="replies-disabled-banner" style={{
+                    width: '100%',
+                    padding: '0.9rem 1.25rem',
+                    background: 'rgba(255, 255, 255, 0.02)',
+                    border: '1px solid rgba(255, 255, 255, 0.05)',
+                    borderRadius: '12px',
+                    textAlign: 'center',
+                    color: 'var(--text-secondary)',
+                    fontSize: '0.88rem',
+                    fontStyle: 'italic',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '8px',
+                    margin: '10px 0'
+                  }}>
+                    <Megaphone size={16} style={{ color: '#a78bfa' }} />
+                    <span>Replies are disabled for this announcement</span>
+                  </div>
+                );
+              }
+              return (
+                <form className="chat-input-area" onSubmit={submitMessage}>
+                  <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
                 {(replyToMessage || editingMessage) && (
                   <div className="composer-banner">
                     <div>
@@ -4733,6 +4859,8 @@ export default function Inbox() {
                 </div>
               </div>
             </form>
+              );
+            })()}
 
           </>
         ) : (
@@ -5325,6 +5453,107 @@ export default function Inbox() {
         document.body
       )}
 
+      {quickBroadcastOpen && typeof document !== 'undefined' && createPortal(
+        <div className="quick-broadcast-overlay" onClick={() => setQuickBroadcastOpen(false)}>
+          <div className="quick-broadcast-modal" onClick={e => e.stopPropagation()}>
+            <div className="quick-broadcast-header">
+              <span className="quick-broadcast-title"><Megaphone size={16} /> Quick Send Broadcast</span>
+              <button type="button" className="fb-icon-btn" onClick={() => setQuickBroadcastOpen(false)} style={{ border: 'none', background: 'none', cursor: 'pointer', color: 'var(--text-secondary)' }}><X size={18} /></button>
+            </div>
+            <form onSubmit={handleSendQuickBroadcast}>
+              <div className="quick-broadcast-body" style={{ padding: '1.25rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                  <label style={{ fontSize: '0.78rem', fontWeight: 600, color: 'var(--text-secondary)' }}>Title *</label>
+                  <input
+                    type="text"
+                    required
+                    style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 10, color: 'var(--text-primary)', padding: '0.65rem 0.9rem', fontSize: '0.9rem' }}
+                    placeholder="Enter broadcast title..."
+                    value={quickForm.title}
+                    onChange={e => setQuickForm(f => ({ ...f, title: e.target.value }))}
+                  />
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                  <label style={{ fontSize: '0.78rem', fontWeight: 600, color: 'var(--text-secondary)' }}>Message *</label>
+                  <textarea
+                    required
+                    style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 10, color: 'var(--text-primary)', padding: '0.65rem 0.9rem', fontSize: '0.9rem', minHeight: 120, resize: 'vertical' }}
+                    placeholder="Enter broadcast message content..."
+                    value={quickForm.message}
+                    onChange={e => setQuickForm(f => ({ ...f, message: e.target.value }))}
+                  />
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                  <label style={{ fontSize: '0.78rem', fontWeight: 600, color: 'var(--text-secondary)' }}>Audience *</label>
+                  <select
+                    style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 10, color: 'var(--text-primary)', padding: '0.65rem 0.9rem', fontSize: '0.9rem', cursor: 'pointer' }}
+                    value={quickForm.audience_type}
+                    onChange={e => setQuickForm(f => ({ ...f, audience_type: e.target.value, audience_value: '' }))}
+                  >
+                    <option value="all">All Students</option>
+                    <option value="batch">Specific Batch</option>
+                  </select>
+                </div>
+                {quickForm.audience_type === 'batch' && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                    <label style={{ fontSize: '0.78rem', fontWeight: 600, color: 'var(--text-secondary)' }}>Select Batch *</label>
+                    <select
+                      required
+                      style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 10, color: 'var(--text-primary)', padding: '0.65rem 0.9rem', fontSize: '0.9rem', cursor: 'pointer' }}
+                      value={quickForm.audience_value}
+                      onChange={e => setQuickForm(f => ({ ...f, audience_value: e.target.value }))}
+                    >
+                      <option value="">Choose batch...</option>
+                      {batches.map(b => (
+                        <option key={b.id} value={b.batch_number}>{b.batch_name || `${b.batch_number}th Batch`}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                  <label style={{ fontSize: '0.78rem', fontWeight: 600, color: 'var(--text-secondary)' }}>Priority</label>
+                  <div style={{ display: 'flex', gap: '0.5rem' }}>
+                    <button
+                      type="button"
+                      onClick={() => setQuickForm(f => ({ ...f, priority: 'normal' }))}
+                      style={{ flex: 1, padding: '0.55rem', border: '1px solid', borderRadius: 10, cursor: 'pointer', fontSize: '0.82rem', fontWeight: 600, transition: 'all 0.2s', ...(quickForm.priority === 'normal' ? { background: 'rgba(16, 185, 129, 0.12)', borderColor: 'rgba(16, 185, 129, 0.4)', color: '#34d399' } : { background: 'rgba(255,255,255,0.04)', borderColor: 'rgba(255,255,255,0.1)', color: 'var(--text-secondary)' }) }}
+                    >
+                      Normal
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setQuickForm(f => ({ ...f, priority: 'urgent' }))}
+                      style={{ flex: 1, padding: '0.55rem', border: '1px solid', borderRadius: 10, cursor: 'pointer', fontSize: '0.82rem', fontWeight: 600, transition: 'all 0.2s', ...(quickForm.priority === 'urgent' ? { background: 'rgba(239, 68, 68, 0.12)', borderColor: 'rgba(239, 68, 68, 0.4)', color: '#f87171' } : { background: 'rgba(255,255,255,0.04)', borderColor: 'rgba(255,255,255,0.1)', color: 'var(--text-secondary)' }) }}
+                    >
+                      🚨 Urgent
+                    </button>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '0.5rem' }}>
+                  <div>
+                    <span style={{ fontSize: '0.85rem', color: 'var(--text-primary)' }}>Allow Reply</span>
+                    <small style={{ display: 'block', fontSize: '0.72rem', color: 'var(--text-secondary)' }}>Students can reply to this message</small>
+                  </div>
+                  <label className="bc-toggle" style={{ position: 'relative', width: 44, height: 24, flexShrink: 0 }}>
+                    <input type="checkbox" checked={quickForm.allow_reply} style={{ opacity: 0, width: 0, height: 0 }}
+                      onChange={e => setQuickForm(f => ({ ...f, allow_reply: e.target.checked }))} />
+                    <span className="bc-toggle-slider" style={{ position: 'absolute', inset: 0, background: quickForm.allow_reply ? '#7c3aed' : 'rgba(255,255,255,0.12)', borderRadius: 24, cursor: 'pointer', transition: 'background 0.25s' }} />
+                    <span style={{ position: 'absolute', width: 18, height: 18, left: quickForm.allow_reply ? 23 : 3, top: 3, background: 'white', borderRadius: '50%', transition: 'transform 0.25s, left 0.25s', boxShadow: '0 2px 4px rgba(0,0,0,0.3)' }} />
+                  </label>
+                </div>
+              </div>
+              <div className="quick-broadcast-footer" style={{ padding: '1rem 1.25rem', borderTop: '1px solid rgba(255,255,255,0.06)', display: 'flex', gap: '0.75rem', justifyContent: 'flex-end' }}>
+                <button type="button" className="modern-btn modern-btn--secondary" onClick={() => setQuickBroadcastOpen(false)} style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', color: 'var(--text-secondary)', borderRadius: 10, padding: '0.6rem 1.1rem', cursor: 'pointer', fontSize: '0.82rem' }}>Cancel</button>
+                <button type="submit" className="modern-btn modern-btn--primary" disabled={quickSending} style={{ background: 'linear-gradient(135deg, #7c3aed 0%, #2563eb 100%)', border: 'none', color: 'white', borderRadius: 10, padding: '0.6rem 1.25rem', cursor: 'pointer', fontSize: '0.82rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                  {quickSending && <div className="bc-spinner" />} {quickSending ? 'Sending...' : '📣 Send Broadcast'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>,
+        document.body
+      )}
+
       {imageViewer && typeof document !== 'undefined' && createPortal(
         <div className="image-viewer-overlay" onClick={() => setImageViewer(null)}>
           <div className="image-viewer-shell" onClick={(event) => event.stopPropagation()}>
@@ -5342,6 +5571,43 @@ export default function Inbox() {
       )}
 
       <style>{`
+        /* --- Quick Broadcast Modal --- */
+        .quick-broadcast-overlay {
+          position: fixed;
+          inset: 0;
+          background: rgba(0,0,0,0.75);
+          z-index: 99999;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          padding: 1rem;
+        }
+        .quick-broadcast-modal {
+          width: min(540px, 100%);
+          background: var(--bg-surface, #0f172a);
+          border: 1px solid var(--glass-border, rgba(255,255,255,0.1));
+          border-radius: 18px;
+          display: flex;
+          flex-direction: column;
+          overflow: hidden;
+          box-shadow: 0 20px 50px rgba(0,0,0,0.5);
+        }
+        .quick-broadcast-header {
+          padding: 1.15rem 1.35rem;
+          border-bottom: 1px solid rgba(255,255,255,0.06);
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+        }
+        .quick-broadcast-title {
+          font-size: 0.95rem;
+          font-weight: 700;
+          color: var(--text-primary);
+          display: flex;
+          align-items: center;
+          gap: 0.5rem;
+        }
+
         /* --- Media Tabs --- */
         .media-tabs-nav {
           display: flex;

@@ -545,6 +545,72 @@ export function initializeDatabase() {
     );
   `);
 
+  // ── Broadcast Messaging System tables ──────────────────────────────────────
+  const broadcastMigrations = [
+    `CREATE TABLE IF NOT EXISTS broadcasts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      title TEXT NOT NULL,
+      message TEXT NOT NULL,
+      sender_id INTEGER NOT NULL,
+      audience_type TEXT NOT NULL DEFAULT 'all',
+      audience_value TEXT,
+      status TEXT NOT NULL DEFAULT 'draft',
+      priority TEXT NOT NULL DEFAULT 'normal',
+      allow_reply INTEGER NOT NULL DEFAULT 0,
+      scheduled_at DATETIME,
+      sent_at DATETIME,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      total_recipients INTEGER DEFAULT 0,
+      delivered_count INTEGER DEFAULT 0,
+      failed_count INTEGER DEFAULT 0,
+      channels TEXT NOT NULL DEFAULT 'inbox,notification,notice'
+    )`,
+    `CREATE TABLE IF NOT EXISTS broadcast_recipients (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      broadcast_id INTEGER NOT NULL REFERENCES broadcasts(id) ON DELETE CASCADE,
+      student_id INTEGER NOT NULL,
+      inbox_delivered INTEGER DEFAULT 0,
+      notification_delivered INTEGER DEFAULT 0,
+      notice_delivered INTEGER DEFAULT 0,
+      delivered_at DATETIME,
+      failed_reason TEXT
+    )`,
+    `CREATE TABLE IF NOT EXISTS broadcast_attachments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      broadcast_id INTEGER NOT NULL REFERENCES broadcasts(id) ON DELETE CASCADE,
+      file_name TEXT NOT NULL,
+      file_path TEXT NOT NULL,
+      file_type TEXT NOT NULL,
+      file_size INTEGER NOT NULL,
+      uploaded_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`,
+    `CREATE TABLE IF NOT EXISTS broadcast_permissions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      teacher_id INTEGER NOT NULL REFERENCES users(id),
+      granted_by INTEGER NOT NULL,
+      can_send_to TEXT NOT NULL DEFAULT 'all',
+      granted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      revoked_at DATETIME,
+      is_active INTEGER NOT NULL DEFAULT 1,
+      UNIQUE(teacher_id)
+    )`,
+    // Add is_broadcast and allow_reply to messages for broadcast tracking
+    `ALTER TABLE messages ADD COLUMN is_broadcast INTEGER DEFAULT 0`,
+    `ALTER TABLE messages ADD COLUMN broadcast_id INTEGER`,
+    `ALTER TABLE messages ADD COLUMN allow_reply INTEGER DEFAULT 1`,
+    `ALTER TABLE announcements ADD COLUMN is_broadcast INTEGER DEFAULT 0`,
+    `ALTER TABLE broadcasts ADD COLUMN channels TEXT NOT NULL DEFAULT 'inbox,notification,notice'`,
+  ];
+
+  for (const sql of broadcastMigrations) {
+    try {
+      db.prepare(sql).run();
+    } catch (e) {
+      // Column/table already exists — ignore
+    }
+  }
+
   // One-time migration for batches and batch_students
   try {
     const distinctBatches = db.prepare(`

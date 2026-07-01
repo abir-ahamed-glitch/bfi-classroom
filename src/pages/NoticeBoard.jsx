@@ -699,11 +699,15 @@ export default function NoticeBoard() {
               <div 
                 key={notice.id} 
                 id={`notice-${notice.id}`}
-                className="glass-panel card-hover" 
+                className={`glass-panel card-hover ${notice.is_broadcast === 1 ? 'broadcast-card' : ''}`} 
                 style={{ 
                   padding: '2rem', 
-                  borderLeft: `5px solid ${priorityColor}`,
-                  background: notice.priority === 'high' ? 'rgba(239, 68, 68, 0.03)' : 'var(--glass-bg)',
+                  borderLeft: `5px solid ${notice.is_broadcast === 1 ? '#7c3aed' : priorityColor}`,
+                  border: notice.is_broadcast === 1 ? '1px solid rgba(124, 58, 237, 0.35)' : undefined,
+                  boxShadow: notice.is_broadcast === 1 ? '0 0 15px rgba(124, 58, 237, 0.15)' : undefined,
+                  background: notice.is_broadcast === 1 
+                    ? 'linear-gradient(135deg, rgba(124, 58, 237, 0.08), rgba(37, 99, 235, 0.04))' 
+                    : (notice.priority === 'high' ? 'rgba(239, 68, 68, 0.03)' : 'var(--glass-bg)'),
                   position: 'relative',
                   overflow: 'hidden',
                   transition: 'all 0.3s ease'
@@ -755,6 +759,24 @@ export default function NoticeBoard() {
                   </div>
                   
                   <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                    {notice.is_broadcast === 1 && (
+                      <span className="broadcast-notice-badge" style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '4px',
+                        padding: '3px 10px',
+                        borderRadius: '20px',
+                        fontSize: '0.68rem',
+                        fontWeight: 700,
+                        background: 'rgba(124, 58, 237, 0.12)',
+                        color: '#a78bfa',
+                        border: '1px solid rgba(124, 58, 237, 0.25)',
+                        textTransform: 'uppercase',
+                        letterSpacing: '0.05em'
+                      }}>
+                        📣 Broadcast
+                      </span>
+                    )}
                     {notice.target_course && (
                       <span style={{ fontSize: '0.72rem', padding: '3px 10px', borderRadius: '6px', background: 'rgba(255,255,255,0.07)', color: 'var(--text-secondary)', border: '1px solid var(--glass-border)', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
                         <Layers size={11} /> {notice.target_course}

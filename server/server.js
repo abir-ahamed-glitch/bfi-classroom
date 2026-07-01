@@ -39,6 +39,8 @@ import feeTrackerRoutes from './routes/fee-tracker.js';
 import batchRoutes from './routes/batches.js';
 import studentExportRoutes from './routes/student-export.js';
 import { runBatchStatusAutomation } from './utils/batchStatusAutomation.js';
+import broadcastRoutes from './routes/broadcast.js';
+import { checkScheduledBroadcasts } from './utils/broadcastScheduler.js';
 
 import { getJwtRefreshSecret, getJwtSecret } from './config/security.js';
 import { authenticateToken } from './middleware/auth.js';
@@ -399,6 +401,7 @@ app.use('/api/analytics', analyticsRoutes);
 app.use('/api/reports', reportsRoutes);
 app.use('/api/admin/batches', batchRoutes);
 app.use('/api/student-export', studentExportRoutes);
+app.use('/api/admin/broadcast', broadcastRoutes);
 
 app.use('/api', (req, res) => {
   res.status(404).json({ error: `API route not found: ${req.method} ${req.originalUrl}` });
@@ -601,5 +604,12 @@ httpServer.listen(PORT, () => {
     }
   }, TWENTY_FOUR_HOURS);
   // ── End Batch Automation Scheduler ────────────────────────────────────────
+
+  // Broadcast scheduler — runs every 5 minutes
+  setInterval(() => {
+    checkScheduledBroadcasts(io).catch(err =>
+      console.error('[BroadcastScheduler] Error:', err)
+    );
+  }, 5 * 60 * 1000);
 });
 
