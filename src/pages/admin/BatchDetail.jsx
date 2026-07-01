@@ -812,32 +812,12 @@ export default function BatchDetail() {
         const token = localStorage.getItem('token');
         const headers = { 'Authorization': `Bearer ${token}` };
 
-        let resolvedId = id;
-
-        // Slug resolution logic
-        if (id && !/^\d+$/.test(id)) {
-          const res = await fetch('/api/admin/batches', { headers });
-          if (res.ok) {
-            const batches = await res.json();
-            const generateSlug = (name) => name.toLowerCase().replace(/[^a-z0-9]/g, '');
-            const match = batches.find(b => generateSlug(b.batch_name) === id);
-            if (match) {
-              resolvedId = match.id;
-            } else {
-              setError('Batch not found');
-              setLoading(false);
-              return;
-            }
-          } else {
-            throw new Error('Failed to fetch batches for slug resolution');
-          }
-        }
 
         const [batchRes, progressRes, studentsRes, transitionsRes] = await Promise.all([
-          fetch(`/api/admin/batches/${resolvedId}`, { headers }),
-          fetch(`/api/admin/batches/${resolvedId}/progress`, { headers }),
-          fetch(`/api/admin/batches/${resolvedId}/students`, { headers }),
-          fetch(`/api/admin/batches/${resolvedId}/transitions`, { headers })
+          fetch(`/api/admin/batches/${slug}`, { headers }),
+          fetch(`/api/admin/batches/${slug}/progress`, { headers }),
+          fetch(`/api/admin/batches/${slug}/students`, { headers }),
+          fetch(`/api/admin/batches/${slug}/transitions`, { headers })
         ]);
 
         if (batchRes.status === 404) {
@@ -866,7 +846,7 @@ export default function BatchDetail() {
       }
     };
 
-    if (id) {
+    if (slug) {
       fetchAllData();
     }
   }, [slug]);
