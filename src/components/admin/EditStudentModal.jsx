@@ -750,11 +750,25 @@ export default function EditStudentModal({ student, onClose, onSaveSuccess }) {
         if (bfRes.ok) {
           const allBatchFees = await bfRes.json();
           if (batchNum) {
+            // First pass: collect default fees
+            allBatchFees.forEach(bf => {
+              if (String(bf.batch_number).trim().toUpperCase() === 'DEFAULT') {
+                fetchedBatchFees[bf.course_name] = bf;
+              }
+            });
+            // Second pass: override with batch-specific fees if they exist
             allBatchFees.forEach(bf => {
               if (String(bf.batch_number).trim() === String(batchNum).trim()) {
                 fetchedBatchFees[bf.course_name] = bf;
               }
             });
+          } else {
+             // If student has no batch number, just use defaults
+             allBatchFees.forEach(bf => {
+               if (String(bf.batch_number).trim().toUpperCase() === 'DEFAULT') {
+                 fetchedBatchFees[bf.course_name] = bf;
+               }
+             });
           }
         }
       } catch (e) {
