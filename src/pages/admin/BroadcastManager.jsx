@@ -6,6 +6,7 @@ import {
   Bold, Italic, List, Paperclip, Loader, User, Radio, File, Layers, GraduationCap
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
+import { useModal } from '../../components/BFIModal';
 import './BroadcastManager.css';
 
 const API_BASE = '/api/admin/broadcast';
@@ -390,6 +391,7 @@ function NoticeDetailView({ broadcastId, onClose, onDeleteNotice }) {
 
 // ─── Teacher Permissions Panel ──────────────────────────────────────
 function PermissionsPanel() {
+  const { showConfirm } = useModal();
   const [open, setOpen] = useState(false);
   const [teachers, setTeachers] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -430,7 +432,7 @@ function PermissionsPanel() {
   };
 
   const handleRevoke = async (teacherId, name) => {
-    if (!window.confirm(`Revoke broadcast access for ${name}?`)) return;
+    if (!await showConfirm('Revoke Access', `Revoke broadcast access for ${name}?`, 'danger')) return;
     await fetch(`${API_BASE}/permissions/${teacherId}`, { method: 'DELETE', headers: authHeader() });
     fetchTeachers();
   };
@@ -548,6 +550,7 @@ function PermissionsPanel() {
 
 // ─── Unified Broadcast & Announcements Manager ───────────────────────
 export default function BroadcastManager() {
+  const { showConfirm } = useModal();
   const { currentUser } = useAuth();
   const textareaRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -946,7 +949,7 @@ export default function BroadcastManager() {
 
   // ─── Delete Standard Notice ───────────────────────────────────────
   const handleDeleteNotice = async (id, title) => {
-    if (!window.confirm(`Are you sure you want to delete the notice "${title}"?`)) return;
+    if (!await showConfirm('Delete Notice', `Are you sure you want to delete the notice "${title}"?`, 'danger')) return;
     try {
       const res = await fetch(`/api/admin/announcements/${id}`, {
         method: 'DELETE',
@@ -1140,10 +1143,48 @@ export default function BroadcastManager() {
             <div className="bc-field">
               <label className="bc-label">Message *</label>
               <div className="bc-textarea-wrapper">
-                <div className="bc-textarea-toolbar">
-                  <button type="button" onClick={() => insertMarkdown('**', '**')} title="Bold"><Bold size={14} /></button>
-                  <button type="button" onClick={() => insertMarkdown('*', '*')} title="Italic"><Italic size={14} /></button>
-                  <button type="button" onClick={() => insertMarkdown('- ')} title="Bullet list"><List size={14} /></button>
+                <div className="bc-textarea-toolbar" style={{
+                  display: 'flex',
+                  gap: '4px',
+                  padding: '6px 8px',
+                  background: 'rgba(255, 255, 255, 0.04)',
+                  borderBottom: '1px solid rgba(255, 255, 255, 0.08)'
+                }}>
+                  {[
+                    ['**', '**', 'Bold', <Bold size={14} />],
+                    ['*', '*', 'Italic', <Italic size={14} />],
+                    ['- ', '', 'Bullet list', <List size={14} />]
+                  ].map(([before, after, title, icon], idx) => (
+                    <button
+                      key={idx}
+                      type="button"
+                      onClick={() => insertMarkdown(before, after)}
+                      title={title}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        width: '30px',
+                        height: '30px',
+                        background: 'transparent',
+                        border: 'none',
+                        borderRadius: '6px',
+                        color: 'var(--text-secondary)',
+                        cursor: 'pointer',
+                        transition: 'all 0.2s ease',
+                      }}
+                      onMouseEnter={e => {
+                        e.currentTarget.style.background = 'rgba(255, 255, 255, 0.08)';
+                        e.currentTarget.style.color = 'var(--text-primary)';
+                      }}
+                      onMouseLeave={e => {
+                        e.currentTarget.style.background = 'transparent';
+                        e.currentTarget.style.color = 'var(--text-secondary)';
+                      }}
+                    >
+                      {icon}
+                    </button>
+                  ))}
                 </div>
                 <textarea
                   ref={textareaRef}
@@ -1343,10 +1384,36 @@ export default function BroadcastManager() {
                     e.preventDefault();
                     handleFileSelect(e.dataTransfer.files);
                   }}
+                  style={{
+                    border: '2px dashed rgba(255, 255, 255, 0.15)',
+                    borderRadius: '12px',
+                    padding: '1.75rem',
+                    textAlign: 'center',
+                    cursor: 'pointer',
+                    transition: 'all 0.2s ease',
+                    background: 'rgba(255, 255, 255, 0.02)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '0.5rem',
+                  }}
+                  onMouseEnter={e => {
+                    e.currentTarget.style.borderColor = 'rgba(124, 58, 237, 0.6)';
+                    e.currentTarget.style.background = 'rgba(124, 58, 237, 0.04)';
+                  }}
+                  onMouseLeave={e => {
+                    e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.15)';
+                    e.currentTarget.style.background = 'rgba(255, 255, 255, 0.02)';
+                  }}
                 >
-                  <Paperclip size={24} style={{ marginBottom: 8, opacity: 0.5 }} />
-                  <span className="bc-upload-area-text">Attach Files — drag & drop or click to upload</span>
-                  <small className="bc-upload-area-sub">Images, PDF, Word, Excel - Max 10MB per file</small>
+                  <Paperclip size={24} style={{ marginBottom: 4, opacity: 0.5, color: '#a78bfa' }} />
+                  <span className="bc-upload-area-text" style={{ fontSize: '0.88rem', fontWeight: 500, color: 'var(--text-primary)', margin: 0 }}>
+                    Attach Files — drag & drop or click to upload
+                  </span>
+                  <small className="bc-upload-area-sub" style={{ fontSize: '0.76rem', color: 'var(--text-secondary)', margin: 0 }}>
+                    Images, PDF, Word, Excel - Max 10MB per file
+                  </small>
                 </div>
                 <input
                   ref={fileInputRef}
@@ -1454,8 +1521,16 @@ export default function BroadcastManager() {
         <div className="glass-panel" style={{ padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
           <div className="bc-panel-title"><History size={16} /> Broadcast History</div>
 
-          <div className="bc-history-filters-row">
-            <div className="bc-filter-tabs">
+          <div className="bc-history-filters-row" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap', marginBottom: '0.5rem' }}>
+            <div className="bc-filter-tabs" style={{
+              display: 'flex',
+              gap: '0.25rem',
+              background: 'rgba(255, 255, 255, 0.04)',
+              border: '1px solid rgba(255, 255, 255, 0.06)',
+              borderRadius: '10px',
+              padding: '3px',
+              width: 'fit-content'
+            }}>
               {[
                 ['all', 'All'],
                 ['broadcasts', 'Broadcasts'],
@@ -1468,6 +1543,21 @@ export default function BroadcastManager() {
                   type="button"
                   className={`bc-filter-tab ${historyFilter === id ? 'active' : ''}`}
                   onClick={() => setHistoryFilter(id)}
+                  style={{
+                    background: historyFilter === id ? 'rgba(124, 58, 237, 0.2)' : 'transparent',
+                    border: 'none',
+                    color: historyFilter === id ? '#a78bfa' : 'var(--text-secondary)',
+                    cursor: 'pointer',
+                    padding: '0.35rem 0.8rem',
+                    borderRadius: '7px',
+                    fontSize: '0.78rem',
+                    fontWeight: 600,
+                    transition: 'all 0.15s ease',
+                    outline: 'none',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
                 >
                   {label}
                 </button>

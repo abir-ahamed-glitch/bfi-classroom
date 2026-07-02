@@ -562,21 +562,31 @@ export default function BatchDetail() {
   const getAcademicValidationError = () => {
     if (!academicStudent) return null;
     const isOnlineFilmmaking = academicStudent.enrollment?.course_name === 'Online Filmmaking Course';
+
+    const attendanceStr = academicFormData.attendance_classes;
+    const totalAttendanceStr = academicFormData.attendance_total;
+    
+    if (attendanceStr === '' || attendanceStr === undefined || attendanceStr === null) return 'Classes Attended is required.';
+    if (totalAttendanceStr === '' || totalAttendanceStr === undefined || totalAttendanceStr === null) return 'Total Classes is required.';
+    
+    const attendance = parseInt(attendanceStr) || 0;
+    const totalAttendance = parseInt(totalAttendanceStr) || 0;
+
+    if (attendance > totalAttendance) return 'Attended classes cannot exceed total classes.';
+    if (attendance < 0) return 'Attended classes cannot be negative.';
+    if (totalAttendance < 1) return 'Total classes must be at least 1.';
+
     if (!isOnlineFilmmaking) {
-      const exam = parseInt(academicFormData.exam_written) || 0;
+      const examStr = academicFormData.exam_written;
+      if (examStr === '' || examStr === undefined || examStr === null) return 'Written exam score is required.';
+      const exam = parseInt(examStr) || 0;
       if (exam > 100) return 'Written exam score cannot exceed 100.';
       if (exam < 0) return 'Written exam score cannot be negative.';
     } else {
-      const attendance = parseInt(academicFormData.attendance_classes) || 0;
-      const totalAttendance = parseInt(academicFormData.attendance_total) || 22;
       const exam = parseInt(academicFormData.exam_written) || 0;
       const screenplay = parseInt(academicFormData.assignment_screenplay) || 0;
       const shootingScript = parseInt(academicFormData.assignment_shooting_script) || 0;
 
-      if (attendance > totalAttendance) return 'Attended classes cannot exceed total classes.';
-      if (attendance < 0) return 'Attended classes cannot be negative.';
-      if (totalAttendance < 1) return 'Total classes must be at least 1.';
-      
       if (exam > 80) return 'Written exam score cannot exceed 80.';
       if (exam < 0) return 'Written exam score cannot be negative.';
       
@@ -1762,18 +1772,18 @@ export default function BatchDetail() {
                                   </button>
                                   {(() => {
                                     const examScore = parseInt(e.exam_written) || 0;
-                                    const hasExam = examScore > 0;
+                                    const hasExam = examScore > 0 || (e.exam_written !== null && e.exam_written !== undefined && e.exam_written !== '');
                                     const hasPassed = e.step2_completed === 1;
                                     const hasFailed = hasExam && examScore < 33 && !hasPassed;
                                     if (hasFailed) {
                                       return (
-                                        <button onClick={() => toggleProgress(s.id, e.id, 'step2_completed', e.step2_completed, e.course_name)} title={`Failed Exam (Score: ${examScore})`} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444' }}>
+                                        <button onClick={() => toggleProgress(s.id, e.id, 'step2_completed', e.step2_completed, e.course_name)} title={`Course Failed (Score: ${examScore})`} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444' }}>
                                           <XCircle size={18} />
                                         </button>
                                       );
                                     }
                                     return (
-                                      <button onClick={() => toggleProgress(s.id, e.id, 'step2_completed', e.step2_completed, e.course_name)} title={hasPassed ? `Passed Exam (Score: ${examScore})` : 'Exam Not Yet Taken'} style={{ background: 'none', border: 'none', cursor: 'pointer', color: hasPassed ? '#10b981' : 'var(--text-muted)' }}>
+                                      <button onClick={() => toggleProgress(s.id, e.id, 'step2_completed', e.step2_completed, e.course_name)} title={hasPassed ? `Course Completed (Score: ${examScore})` : 'Course Not Completed'} style={{ background: 'none', border: 'none', cursor: 'pointer', color: hasPassed ? '#10b981' : 'var(--text-muted)' }}>
                                         {hasPassed ? <CheckSquare size={18} /> : <Square size={18} />}
                                       </button>
                                     );
@@ -2272,19 +2282,23 @@ export default function BatchDetail() {
                 </>
               )}
 
-              {(academicError || getAcademicValidationError()) && (
-                <div className="error-alert" style={{ 
-                  marginTop: '0.75rem', 
-                  color: '#f87171', 
-                  background: 'rgba(239, 68, 68, 0.1)', 
-                  border: '1px solid rgba(239, 68, 68, 0.2)',
-                  padding: '0.5rem 0.75rem',
-                  borderRadius: '6px',
-                  fontSize: '0.85rem'
-                }}>
-                  ⚠️ {academicError || getAcademicValidationError()}
-                </div>
-              )}
+              <div className="error-alert" style={{ 
+                marginTop: '0.75rem', 
+                color: '#f87171', 
+                background: 'rgba(239, 68, 68, 0.1)', 
+                border: '1px solid rgba(239, 68, 68, 0.2)',
+                padding: '0.5rem 0.75rem',
+                borderRadius: '6px',
+                fontSize: '0.85rem',
+                opacity: (academicError || getAcademicValidationError()) ? 1 : 0,
+                visibility: (academicError || getAcademicValidationError()) ? 'visible' : 'hidden',
+                minHeight: '36px',
+                display: 'flex',
+                alignItems: 'center',
+                transition: 'opacity 0.2s'
+              }}>
+                {(academicError || getAcademicValidationError()) ? `⚠️ ${academicError || getAcademicValidationError()}` : ''}
+              </div>
             </div>
 
             <div className="modern-modal-footer" style={{ display: 'flex', gap: '1rem' }}>

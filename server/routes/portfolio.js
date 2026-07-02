@@ -1,6 +1,7 @@
 import express from 'express';
 import db from '../db/database.js';
 import { authenticateToken, sanitizeInput } from '../middleware/auth.js';
+import { logTrashAction } from '../utils/trashLogger.js';
 
 const router = express.Router();
 
@@ -193,11 +194,13 @@ router.put('/:id', authenticateToken, sanitizeInput, (req, res) => {
 // Delete a project
 router.delete('/:id', authenticateToken, (req, res) => {
   try {
-    const result = db.prepare('DELETE FROM projects WHERE id = ? AND user_id = ?').run(req.params.id, req.user.id);
+    const project = db.prepare('SELECT title FROM projects WHERE id = ? AND user_id = ?').get(req.params.id, req.user.id);
+    const result = db.prepare("UPDATE projects SET deleted_at = datetime('now'), deleted_by_admin_id = ? WHERE id = ? AND user_id = ?").run(req.user.id, req.params.id, req.user.id);
     if (result.changes === 0) {
       return res.status(404).json({ error: 'Project not found or unauthorized' });
     }
-    res.json({ message: 'Project deleted successfully' });
+    if (project) logTrashAction('projects', req.params.id, project.title, 'deleted', req.user.id);
+    res.json({ message: 'Project moved to Trash' });
   } catch (error) {
     console.error('Delete project error:', error);
     res.status(500).json({ error: 'Internal server error' });

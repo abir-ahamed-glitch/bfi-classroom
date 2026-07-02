@@ -6,6 +6,7 @@ import BatchFeeManager from './BatchFeeManager';
 import FeeTracker from './FeeTracker';
 import BulkRegisteredStudentImport from '../../components/admin/BulkRegisteredStudentImport';
 import LeadsTable from '../../components/admin/LeadsTable';
+import TrashManager from './TrashManager';
 import { resolveMediaUrl } from '../../utils/mediaUtils';
 
 export default function AdditionalOptions() {
@@ -565,6 +566,56 @@ export default function AdditionalOptions() {
               </p>
             </div>
           </button>
+
+          <button
+            onClick={() => setCurrentView('trash')}
+            style={{
+              background: 'rgba(255, 255, 255, 0.02)',
+              border: '1px solid var(--glass-border)',
+              borderRadius: '16px',
+              padding: '2rem',
+              textAlign: 'left',
+              cursor: 'pointer',
+              transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '1rem',
+              position: 'relative',
+              overflow: 'hidden',
+              color: 'inherit'
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = 'rgba(255, 255, 255, 0.04)';
+              e.currentTarget.style.borderColor = 'var(--accent-primary)';
+              e.currentTarget.style.boxShadow = '0 12px 30px rgba(0, 0, 0, 0.4)';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = 'rgba(255, 255, 255, 0.02)';
+              e.currentTarget.style.borderColor = 'var(--glass-border)';
+              e.currentTarget.style.boxShadow = 'none';
+            }}
+          >
+            <div style={{
+              background: 'rgba(239, 68, 68, 0.1)',
+              color: '#ef4444',
+              width: '48px',
+              height: '48px',
+              borderRadius: '12px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center'
+            }}>
+              <Trash2 size={24} />
+            </div>
+            <div>
+              <h3 style={{ fontSize: '1.2rem', fontWeight: 600, marginBottom: '0.4rem', color: 'var(--text-primary)' }}>
+                Trash Manager
+              </h3>
+              <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', lineHeight: '1.4' }}>
+                View, restore, or permanently delete soft-deleted records across the system.
+              </p>
+            </div>
+          </button>
         </div>
       ) : (
         <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid var(--glass-border)', borderRadius: '16px', minHeight: '600px', display: 'flex', flexDirection: 'column' }}>
@@ -604,6 +655,7 @@ export default function AdditionalOptions() {
                currentView === 'settings' ? 'Global Settings' : 
                currentView === 'certificates' ? 'Certificate Generator' :
                currentView === 'bulk-register' ? 'Bulk Import Registrations' :
+               currentView === 'trash' ? 'Trash Manager' :
                currentView === 'batch-fees' ? 'Batch Fee Manager' :
                currentView === 'fee-tracker' ? 'Fee Tracker' : ''}
             </h2>
@@ -1417,6 +1469,12 @@ export default function AdditionalOptions() {
               </div>
             )}
 
+          {currentView === 'trash' && (
+            <div className="admin-card">
+              <TrashManager />
+            </div>
+          )}
+
           {currentView === 'batch-fees' && (
             <BatchFeeManager />
           )}
@@ -2007,7 +2065,7 @@ function CustomSmsSender() {
                             <button
                               type="button"
                               onClick={async () => {
-                                if (confirm('Are you sure you want to cancel this scheduled SMS?')) {
+                                if (await showConfirm('Cancel SMS', 'Are you sure you want to cancel this scheduled SMS?', 'warning')) {
                                   const res = await fetch(`/api/admin/sms/scheduled/${item.id}`, {
                                     method: 'DELETE',
                                     headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }

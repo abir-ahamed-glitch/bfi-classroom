@@ -1,6 +1,7 @@
 import express from 'express';
 import db from '../db/database.js';
 import { authenticateToken, sanitizeInput } from '../middleware/auth.js';
+import { logTrashAction } from '../utils/trashLogger.js';
 
 const router = express.Router();
 
@@ -720,7 +721,7 @@ router.get('/posts', authenticateToken, (req, res) => {
       JOIN users u ON p.user_id = u.id
       LEFT JOIN projects proj ON p.shared_project_id = proj.id
       LEFT JOIN instructor_profiles ip ON p.user_id = ip.user_id
-      WHERE (p.scheduled_at IS NULL OR datetime(p.scheduled_at) <= datetime('now') OR p.user_id = :viewerId)
+      WHERE p.deleted_at IS NULL AND (p.scheduled_at IS NULL OR datetime(p.scheduled_at) <= datetime('now') OR p.user_id = :viewerId)
       ORDER BY p.is_pinned DESC, p.created_at DESC, p.id DESC
       LIMIT 100
     `).all({ viewerId: req.user.id });
@@ -1242,7 +1243,7 @@ router.delete('/posts/:id', authenticateToken, (req, res) => {
     }
 
     // Check if user is owner or admin
-    const post = db.prepare('SELECT user_id, shared_project_id FROM community_posts WHERE id = ?').get(postId);
+    const post = db.prepare('SELECT user_id, shared_project_id, content FROM community_posts WHERE id = ?').get(postId);
     
     if (!post) {
       return res.status(404).json({ error: 'Post not found.' });
@@ -1258,10 +1259,11 @@ router.delete('/posts/:id', authenticateToken, (req, res) => {
         db.prepare('UPDATE projects SET show_on_community = 0 WHERE id = ?').run(post.shared_project_id);
       }
       
-      db.prepare('DELETE FROM community_posts WHERE id = ?').run(postId);
+      db.prepare("UPDATE community_posts SET deleted_at = datetime('now'), deleted_by_admin_id = ? WHERE id = ?").run(req.user.id, postId);
     });
 
     transaction();
+    logTrashAction('posts', postId, String(post.content || '').substring(0, 50) + '...', 'deleted', req.user.id);
     console.log(`Successfully deleted post ${postId} and updated associated project visibility`);
     
     const io = req.app.get('io');

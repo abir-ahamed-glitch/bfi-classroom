@@ -2,6 +2,7 @@ import express from 'express';
 import bcrypt from 'bcryptjs';
 import db from '../db/database.js';
 import { authenticateToken, requireRole, sanitizeInput, validateEmail } from '../middleware/auth.js';
+import { logTrashAction } from '../utils/trashLogger.js';
 
 const router = express.Router();
 
@@ -646,6 +647,37 @@ router.post('/students/leads/:id/admit', authenticateToken, requireRole('admin')
   }
 });
 
+// Soft Delete a lead student
+router.delete('/students/leads/:id', authenticateToken, requireRole('admin'), (req, res) => {
+  try {
+    const userId = req.params.id;
+
+    // Check if the user exists and is indeed a student lead (not admitted)
+    const user = db.prepare("SELECT * FROM users WHERE id = ? AND role = 'student'").get(userId);
+    if (!user) {
+      return res.status(404).json({ error: 'Student lead not found.' });
+    }
+
+    const profile = db.prepare('SELECT batch_number FROM student_profiles WHERE user_id = ?').get(userId);
+    if (profile && profile.batch_number && profile.batch_number !== '') {
+      return res.status(400).json({ error: 'Cannot delete an admitted student from here.' });
+    }
+
+    // Soft Delete instead of physical delete
+    db.prepare("UPDATE users SET deleted_at = datetime('now'), deleted_by_admin_id = ? WHERE id = ?").run(req.user.id, userId);
+    logTrashAction('leads', userId, `${user.first_name || ''} ${user.last_name || ''}`.trim(), 'deleted', req.user.id);
+    
+    // Note: We don't need to update cascaded tables because if the user is restored, 
+    // we want all their profile and enrollment data to come back with them.
+    // The GET queries will filter based on users.deleted_at IS NULL.
+
+    res.status(200).json({ success: true, message: 'Registered student moved to Trash.' });
+  } catch (error) {
+    console.error('Error deleting lead:', error);
+    res.status(500).json({ error: 'Internal server error while moving lead to trash.' });
+  }
+});
+
 // Save bulk import history manually (used when importing sequentially from frontend)
 router.post('/imports/save-history', authenticateToken, requireRole('admin'), sanitizeInput, (req, res) => {
   try {
@@ -1116,49 +1148,25 @@ router.get('/teachers', authenticateToken, requireRole('admin'), (req, res) => {
 
 // Note: The student update logic is handled by the PUT /students/:id route defined above.
 
-// Route to delete a student account
+// Route to soft-delete a student account
 router.delete('/students/:id', authenticateToken, requireRole('admin'), (req, res) => {
   try {
     const studentIdNum = parseInt(req.params.id, 10);
 
     // Verify it's actually a student
-    const student = db.prepare("SELECT id FROM users WHERE id = ? AND role = 'student'").get(studentIdNum);
+    const student = db.prepare("SELECT * FROM users WHERE id = ? AND role = 'student'").get(studentIdNum);
     if (!student) {
       return res.status(404).json({ error: 'Student not found.' });
     }
 
-    // Manually clean up all related records in a transaction.
-    // This handles databases created before CASCADE rules were in place.
-    const deleteStudent = db.transaction((id) => {
-      db.prepare('DELETE FROM sessions WHERE user_id = ?').run(id);
-      db.prepare('DELETE FROM password_reset_tokens WHERE user_id = ?').run(id);
-      db.prepare('DELETE FROM notifications WHERE user_id = ?').run(id);
-      db.prepare('DELETE FROM post_likes WHERE user_id = ?').run(id);
-      db.prepare('DELETE FROM post_comments WHERE user_id = ?').run(id);
-      db.prepare('DELETE FROM friendships WHERE requester_id = ? OR addressee_id = ?').run(id, id);
-      db.prepare('DELETE FROM message_reactions WHERE user_id = ?').run(id);
-      db.prepare('DELETE FROM message_reports WHERE reporter_id = ? OR reported_user_id = ?').run(id, id);
-      db.prepare('DELETE FROM message_hidden_for_users WHERE user_id = ?').run(id);
-      db.prepare('DELETE FROM messages WHERE sender_id = ? OR receiver_id = ?').run(id, id);
-      db.prepare('DELETE FROM social_links WHERE user_id = ?').run(id);
-      db.prepare('DELETE FROM awards WHERE user_id = ?').run(id);
-      db.prepare('DELETE FROM project_credits WHERE project_id IN (SELECT id FROM projects WHERE user_id = ?)').run(id);
-      db.prepare('DELETE FROM projects WHERE user_id = ?').run(id);
-      db.prepare('DELETE FROM student_experiences WHERE user_id = ?').run(id);
-      db.prepare('DELETE FROM community_posts WHERE user_id = ?').run(id);
-      db.prepare('DELETE FROM student_course_enrollments WHERE user_id = ?').run(id);
-      db.prepare('DELETE FROM batch_students WHERE student_id = ?').run(id);
-      db.prepare('DELETE FROM bfiaa_members WHERE user_id = ?').run(id);
-      db.prepare('DELETE FROM student_profiles WHERE user_id = ?').run(id);
-      db.prepare('DELETE FROM users WHERE id = ?').run(id);
-    });
+    // Soft delete the user. Related cascaded tables do not need to be physically deleted.
+    db.prepare("UPDATE users SET deleted_at = datetime('now'), deleted_by_admin_id = ? WHERE id = ?").run(req.user.id, studentIdNum);
+    logTrashAction('students', studentIdNum, `${student.first_name || ''} ${student.last_name || ''}`.trim(), 'deleted', req.user.id);
 
-    deleteStudent(studentIdNum);
-
-    res.json({ message: 'Student account deleted successfully' });
+    res.json({ message: 'Student account moved to Trash' });
   } catch (error) {
-    console.error('Error deleting student:', error);
-    res.status(500).json({ error: 'Internal server error while deleting student account.' });
+    console.error('Error moving student to trash:', error);
+    res.status(500).json({ error: 'Internal server error while moving student account to trash.' });
   }
 });
 
@@ -1209,47 +1217,25 @@ router.put('/teachers/:id', authenticateToken, requireRole('admin'), sanitizeInp
   }
 });
 
-// Route to delete a teacher account
+// Route to soft-delete a teacher account
 router.delete('/teachers/:id', authenticateToken, requireRole('admin'), (req, res) => {
   try {
     const teacherIdNum = parseInt(req.params.id, 10);
 
     // Verify it's actually a teacher
-    const teacher = db.prepare("SELECT id FROM users WHERE id = ? AND role = 'instructor'").get(teacherIdNum);
+    const teacher = db.prepare("SELECT id, first_name, last_name FROM users WHERE id = ? AND role = 'instructor'").get(teacherIdNum);
     if (!teacher) {
       return res.status(404).json({ error: 'Teacher not found.' });
     }
 
-    // Manually clean up all related records in a transaction to prevent orphaned rows.
-    const deleteTeacher = db.transaction((id) => {
-      db.prepare('DELETE FROM sessions WHERE user_id = ?').run(id);
-      db.prepare('DELETE FROM password_reset_tokens WHERE user_id = ?').run(id);
-      db.prepare('DELETE FROM notifications WHERE user_id = ?').run(id);
-      db.prepare('DELETE FROM post_likes WHERE user_id = ?').run(id);
-      db.prepare('DELETE FROM post_comments WHERE user_id = ?').run(id);
-      db.prepare('DELETE FROM friendships WHERE requester_id = ? OR addressee_id = ?').run(id, id);
-      db.prepare('DELETE FROM message_reactions WHERE user_id = ?').run(id);
-      db.prepare('DELETE FROM message_reports WHERE reporter_id = ? OR reported_user_id = ?').run(id, id);
-      db.prepare('DELETE FROM message_hidden_for_users WHERE user_id = ?').run(id);
-      db.prepare('DELETE FROM messages WHERE sender_id = ? OR receiver_id = ?').run(id, id);
-      db.prepare('DELETE FROM social_links WHERE user_id = ?').run(id);
-      db.prepare('DELETE FROM awards WHERE user_id = ?').run(id);
-      db.prepare('DELETE FROM project_credits WHERE project_id IN (SELECT id FROM projects WHERE user_id = ?)').run(id);
-      db.prepare('DELETE FROM projects WHERE user_id = ?').run(id);
-      db.prepare('DELETE FROM community_posts WHERE user_id = ?').run(id);
-      db.prepare('DELETE FROM course_materials WHERE uploaded_by = ?').run(id);
-      db.prepare('DELETE FROM batch_students WHERE student_id = ?').run(id);
-      db.prepare('DELETE FROM bfiaa_members WHERE user_id = ?').run(id);
-      db.prepare('DELETE FROM instructor_profiles WHERE user_id = ?').run(id);
-      db.prepare('DELETE FROM users WHERE id = ?').run(id);
-    });
+    // Soft delete
+    db.prepare("UPDATE users SET deleted_at = datetime('now'), deleted_by_admin_id = ? WHERE id = ?").run(req.user.id, teacherIdNum);
+    logTrashAction('teachers', teacherIdNum, `${teacher.first_name || ''} ${teacher.last_name || ''}`.trim(), 'deleted', req.user.id);
 
-    deleteTeacher(teacherIdNum);
-
-    res.json({ message: 'Teacher account deleted successfully' });
+    res.json({ message: 'Teacher account moved to Trash' });
   } catch (error) {
-    console.error('Error deleting teacher:', error);
-    res.status(500).json({ error: 'Internal server error while deleting teacher account.' });
+    console.error('Error moving teacher to trash:', error);
+    res.status(500).json({ error: 'Internal server error while moving teacher account to trash.' });
   }
 });
 
@@ -1365,7 +1351,7 @@ router.put('/students/:id/academic-records/:courseId', authenticateToken, requir
       }
     }
 
-    // Film Appreciation / other workshops: exam out of 100, pass mark 33, no attendance required
+    // Film Appreciation / other workshops: exam out of 100, pass mark 33, attendance required
     if (enrollment.course_name !== 'Online Filmmaking Course') {
       const exam = parseInt(exam_written) || 0;
       if (exam > 100) {
@@ -1376,16 +1362,21 @@ router.put('/students/:id/academic-records/:courseId', authenticateToken, requir
       }
       const passed = exam >= 33 ? 1 : 0;
       
+      const att_classes = parseInt(attendance_classes) || 0;
+      const att_total = parseInt(attendance_total) || 0;
+
       db.prepare(`
         UPDATE student_course_enrollments
         SET exam_written = ?, 
+            attendance_classes = ?,
+            attendance_total = ?,
             assignment_screenplay = 0, 
             assignment_shooting_script = 0,
             step2_completed = ?,
             step4_completed = ?,
             updated_at = datetime('now')
         WHERE id = ? AND user_id = ?
-      `).run(exam, passed, passed, courseId, studentId);
+      `).run(exam, att_classes, att_total, passed, passed, courseId, studentId);
 
       const io = req.app.get('io');
       if (io) {
@@ -1612,25 +1603,33 @@ router.post('/announcements', authenticateToken, requireRole('admin'), sanitizeI
   }
 });
 
-// Delete global announcement
+// Soft Delete global announcement
 router.delete('/announcements/:id', authenticateToken, requireRole('admin'), (req, res) => {
   try {
-    const stmt = db.prepare('DELETE FROM announcements WHERE id = ?');
-    stmt.run(req.params.id);
-    res.json({ message: 'Announcement deleted successfully.' });
+    const announcement = db.prepare("SELECT title FROM announcements WHERE id = ?").get(req.params.id);
+    if (!announcement) {
+      return res.status(404).json({ error: 'Announcement not found.' });
+    }
+
+    const stmt = db.prepare("UPDATE announcements SET deleted_at = datetime('now'), deleted_by_admin_id = ? WHERE id = ?");
+    const result = stmt.run(req.user.id, req.params.id);
+    logTrashAction('announcements', req.params.id, announcement.title, 'deleted', req.user.id);
+
+    res.json({ message: 'Announcement moved to Trash successfully.' });
   } catch (error) {
-    console.error('Error deleting announcement:', error);
-    res.status(500).json({ error: 'Internal server error while deleting announcement.' });
+    console.error('Error moving announcement to trash:', error);
+    res.status(500).json({ error: 'Internal server error while moving announcement to trash.' });
   }
 });
 
-// Get all announcements
+// Get all active announcements
 router.get('/announcements', authenticateToken, requireRole('admin'), (req, res) => {
   try {
     const announcements = db.prepare(`
       SELECT a.*, u.first_name || ' ' || u.last_name as admin_name 
       FROM announcements a
       JOIN users u ON a.admin_id = u.id
+      WHERE a.deleted_at IS NULL
       ORDER BY a.created_at DESC
     `).all();
     res.json({ announcements });

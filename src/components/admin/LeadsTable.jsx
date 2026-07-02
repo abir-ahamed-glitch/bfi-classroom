@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { Search, Loader2, Users, Download, UserPlus, CheckCircle2, Copy, Send, X, MessageSquare } from 'lucide-react';
-import * as XLSX from 'xlsx';
+import { Search, Loader2, Users, Download, UserPlus, CheckCircle2, Copy, Send, X, MessageSquare, Trash2 } from 'lucide-react';
 import BulkSmsModal from './BulkSmsModal';
+import { useModal } from '../BFIModal';
 
 export default function LeadsTable({ refreshTrigger }) {
   const [leads, setLeads] = useState([]);
@@ -27,6 +27,12 @@ export default function LeadsTable({ refreshTrigger }) {
   // SMS State
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [smsModalOpen, setSmsModalOpen] = useState(false);
+
+  // Delete Modal State
+  const [deleteModalOpen, setDeleteModalOpen] = useState(false);
+  const [leadToDelete, setLeadToDelete] = useState(null);
+
+  const { showConfirm } = useModal();
 
   useEffect(() => {
     fetchLeads();
@@ -142,6 +148,34 @@ export default function LeadsTable({ refreshTrigger }) {
   const smsRecipients = filteredLeads
     .filter(l => selectedIds.has(l.user_id))
     .map(l => ({ name: l.full_name || '', phone: l.mobile_number || '' }));
+
+  const handleDeleteClick = (lead) => {
+    setLeadToDelete(lead);
+    setDeleteModalOpen(true);
+  };
+
+  const confirmDelete = async () => {
+    if (!leadToDelete) return;
+    try {
+      const res = await fetch(`/api/admin/students/leads/${leadToDelete.user_id}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
+        }
+      });
+      if (res.ok) {
+        setDeleteModalOpen(false);
+        setLeadToDelete(null);
+        fetchLeads();
+      } else {
+        const err = await res.json();
+        alert(err.error || 'Failed to delete student lead.');
+      }
+    } catch (err) {
+      console.error(err);
+      alert('An error occurred while deleting the student lead.');
+    }
+  };
 
   const handleAdmitClick = (lead) => {
     setSelectedLead(lead);
@@ -364,10 +398,10 @@ export default function LeadsTable({ refreshTrigger }) {
                   <td style={{ padding: '1.25rem 1.5rem' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
                       <div style={{ width: '36px', height: '36px', borderRadius: '50%', background: 'linear-gradient(135deg, var(--accent-primary), var(--accent-secondary))', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold', fontSize: '1rem', flexShrink: 0 }}>
-                        {lead.full_name.charAt(0).toUpperCase()}
+                        {(lead.full_name || '?').charAt(0).toUpperCase()}
                       </div>
                       <div>
-                        <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{lead.full_name}</div>
+                        <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{lead.full_name || 'Unnamed Lead'}</div>
                         {lead.gender && <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{lead.gender}</div>}
                       </div>
                     </div>
@@ -382,13 +416,20 @@ export default function LeadsTable({ refreshTrigger }) {
                   <td style={{ padding: '1.25rem 1.5rem', color: 'var(--text-secondary)' }}>{lead.profession || '-'}</td>
                   <td style={{ padding: '1.25rem 1.5rem', color: 'var(--text-secondary)' }}>{lead.educational_qualification || '-'}</td>
                   <td style={{ padding: '1.25rem 1.5rem', color: 'var(--text-secondary)' }}>{new Date(lead.created_at).toLocaleDateString()}</td>
-                  <td style={{ padding: '1.25rem 1.5rem', textAlign: 'right' }}>
+                  <td style={{ padding: '1.25rem 1.5rem', textAlign: 'right', display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
                     <button 
                       onClick={() => handleAdmitClick(lead)}
                       className="btn-glass" 
                       style={{ padding: '0.5rem 1rem', fontSize: '0.85rem', display: 'inline-flex', alignItems: 'center', gap: '0.5rem', borderRadius: '8px', cursor: 'pointer', background: 'rgba(14, 165, 233, 0.1)', color: 'var(--accent-primary)', border: '1px solid rgba(14, 165, 233, 0.2)' }}
                     >
                       <UserPlus size={14} /> Admit
+                    </button>
+                    <button 
+                      onClick={() => handleDeleteClick(lead)}
+                      className="btn-glass" 
+                      style={{ padding: '0.5rem 1rem', fontSize: '0.85rem', display: 'inline-flex', alignItems: 'center', gap: '0.5rem', borderRadius: '8px', cursor: 'pointer', background: 'rgba(239, 68, 68, 0.1)', color: '#f87171', border: '1px solid rgba(239, 68, 68, 0.2)' }}
+                    >
+                      <Trash2 size={14} /> Delete
                     </button>
                   </td>
                 </tr>
@@ -413,7 +454,7 @@ export default function LeadsTable({ refreshTrigger }) {
 
             <div className="modern-modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '1rem', maxHeight: '60vh', minHeight: '300px', overflowY: 'auto', position: 'relative' }}>
               <p style={{ color: 'var(--text-secondary)', margin: '0 0 0.5rem 0', fontSize: '0.95rem', lineHeight: '1.5' }}>
-                You are about to admit <strong style={{ color: 'var(--accent-primary)' }}>{selectedLead.full_name}</strong>. Provide batch details to generate their credentials.
+                You are about to admit <strong style={{ color: 'var(--accent-primary)' }}>{selectedLead?.full_name || 'Unnamed Lead'}</strong>. Provide batch details to generate their credentials.
               </p>
 
               {admitError && (
@@ -523,6 +564,50 @@ export default function LeadsTable({ refreshTrigger }) {
           recipients={smsRecipients}
           onClose={() => setSmsModalOpen(false)}
         />
+      )}
+
+      {/* ── Custom Delete Confirmation Modal ───────────────────────────────── */}
+      {deleteModalOpen && leadToDelete && (
+        <div className="modern-modal-overlay" onClick={() => setDeleteModalOpen(false)}>
+          <div className="modern-modal-content glass-panel shadow-2xl" style={{ width: '100%', maxWidth: '420px', margin: 'auto' }} onClick={(e) => e.stopPropagation()}>
+            <div className="modern-modal-header">
+              <h3 className="font-display" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#f87171', margin: 0 }}>
+                <Trash2 className="text-danger" size={20} /> Delete Registration
+              </h3>
+              <button type="button" className="icon-btn-ghost" onClick={() => setDeleteModalOpen(false)} aria-label="Close">
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="modern-modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '1rem', padding: '1rem 0' }}>
+              <p style={{ color: 'var(--text-secondary)', margin: 0, fontSize: '0.95rem', lineHeight: '1.5' }}>
+                Are you sure you want to delete <strong style={{ color: 'var(--text-primary)' }}>{leadToDelete.full_name || 'this registered student'}</strong>? This action cannot be undone and will permanently remove their registration entry.
+              </p>
+            </div>
+
+            <div className="modern-modal-footer" style={{ display: 'flex', gap: '0.75rem', marginTop: '0.5rem' }}>
+              <button type="button" onClick={() => setDeleteModalOpen(false)} className="modern-btn modern-btn--secondary" style={{ flex: 1 }}>
+                Cancel
+              </button>
+              <button 
+                onClick={confirmDelete} 
+                className="modern-btn" 
+                style={{ 
+                  flex: 1, 
+                  display: 'flex', 
+                  justifyContent: 'center', 
+                  alignItems: 'center', 
+                  gap: '0.5rem',
+                  background: 'rgba(239, 68, 68, 0.15)',
+                  color: '#f87171',
+                  border: '1px solid rgba(239, 68, 68, 0.3)'
+                }}
+              >
+                Delete Student
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

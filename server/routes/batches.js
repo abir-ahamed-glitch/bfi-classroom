@@ -3,6 +3,7 @@ import db from '../db/database.js';
 import { authenticateToken, requireRole } from '../middleware/auth.js';
 import { runBatchStatusAutomation } from '../utils/batchStatusAutomation.js';
 import { getBatchFee } from '../utils/feeResolver.js';
+import { logTrashAction } from '../utils/trashLogger.js';
 
 const router = express.Router();
 
@@ -50,7 +51,8 @@ router.get('/', authenticateToken, requireRole('admin'), (req, res) => {
         (SELECT COUNT(*) FROM batch_students WHERE batch_id = b.id) as student_count
       FROM batches b
       WHERE 
-        (:status IS NULL OR b.status = :status)
+        b.deleted_at IS NULL
+        AND (:status IS NULL OR b.status = :status)
         AND (:course IS NULL OR b.course_name = :course)
         AND (
           :search IS NULL OR 
@@ -93,8 +95,8 @@ router.get('/', authenticateToken, requireRole('admin'), (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/:id', authenticateToken, requireRole('admin'), (req, res) => {
   try {
-    const slug = req.params.id;
-    const batchRecordLookup = db.prepare('SELECT id FROM batches WHERE slug = ?').get(slug);
+    const slugOrId = req.params.id;
+    const batchRecordLookup = db.prepare('SELECT id FROM batches WHERE id = ? OR slug = ?').get(slugOrId, slugOrId);
     if (!batchRecordLookup) return res.status(404).json({ error: 'Batch not found' });
     const batchId = batchRecordLookup.id;
     const batch = db.prepare(`
@@ -198,11 +200,14 @@ router.post('/', authenticateToken, requireRole('admin'), (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 router.patch('/:id', authenticateToken, requireRole('admin'), (req, res) => {
   try {
-    const slug = req.params.id;
-    const batchRecordLookup = db.prepare('SELECT id FROM batches WHERE slug = ?').get(slug);
+    const slugOrId = req.params.id;
+    console.log(`[PATCH /:id] slugOrId = ${slugOrId}`);
+    const batchRecordLookup = db.prepare('SELECT id FROM batches WHERE id = ? OR slug = ?').get(slugOrId, slugOrId);
+    console.log(`[PATCH /:id] batchRecordLookup =`, batchRecordLookup);
     if (!batchRecordLookup) return res.status(404).json({ error: 'Batch not found' });
     const batchId = batchRecordLookup.id;
     const current = db.prepare('SELECT * FROM batches WHERE id = ?').get(batchId);
+    console.log(`[PATCH /:id] current =`, current);
     if (!current) {
       return res.status(404).json({ error: 'Batch not found' });
     }
@@ -289,8 +294,8 @@ router.patch('/:id', authenticateToken, requireRole('admin'), (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 router.delete('/:id', authenticateToken, requireRole('admin'), (req, res) => {
   try {
-    const slug = req.params.id;
-    const batchRecordLookup = db.prepare('SELECT id FROM batches WHERE slug = ?').get(slug);
+    const slugOrId = req.params.id;
+    const batchRecordLookup = db.prepare('SELECT id FROM batches WHERE id = ? OR slug = ?').get(slugOrId, slugOrId);
     if (!batchRecordLookup) return res.status(404).json({ error: 'Batch not found' });
     const batchId = batchRecordLookup.id;
     const batch = db.prepare('SELECT * FROM batches WHERE id = ?').get(batchId);
@@ -299,23 +304,11 @@ router.delete('/:id', authenticateToken, requireRole('admin'), (req, res) => {
       return res.status(404).json({ error: 'Batch not found' });
     }
 
-    // Get all students enrolled in this batch before deleting
-    const studentsInBatch = db.prepare('SELECT student_id FROM batch_students WHERE batch_id = ?').all(batchId);
-
-    const deleteTransaction = db.transaction(() => {
-      // 1. Clear batch_number for all students in this batch
-      const clearBatchNumStmt = db.prepare('UPDATE student_profiles SET batch_number = NULL WHERE user_id = ?');
-      for (const s of studentsInBatch) {
-        clearBatchNumStmt.run(s.student_id);
-      }
-      
-      // 2. Delete the batch (cascades to batch_students)
-      db.prepare('DELETE FROM batches WHERE id = ?').run(batchId);
-    });
-
-    deleteTransaction();
+    // Soft Delete the batch
+    db.prepare("UPDATE batches SET deleted_at = datetime('now'), deleted_by_admin_id = ? WHERE id = ?").run(req.user.id, batchId);
+    logTrashAction('batches', batchId, batch.batch_name, 'deleted', req.user.id);
     
-    res.json({ success: true });
+    res.json({ success: true, message: 'Batch moved to Trash.' });
   } catch (error) {
     console.error('[Batches] DELETE /:id error:', error);
     res.status(500).json({ error: 'Internal server error while deleting batch.' });

@@ -16,6 +16,7 @@ import {
   CheckSquare, Square, Edit, Lock, Clapperboard, MessageSquare, XCircle
 } from 'lucide-react';
 import { getOrdinalSuffix } from '../../utils/formatUtils';
+import { useModal } from '../../components/BFIModal';
 import './Analytics.css';
 
 
@@ -766,6 +767,7 @@ const CustomTooltip = ({ active, payload, label }) => {
 // Main Component
 // ─────────────────────────────────────────────────────────────────────────────
 export default function Analytics() {
+  const { showConfirm } = useModal();
   const [urgent, setUrgent]           = useState(null);
   const [stats, setStats]             = useState(null);
   const [batchData, setBatchData]     = useState(null);
@@ -879,7 +881,7 @@ export default function Analytics() {
   }, [activeDrawer]);
 
   const handleIssueCertificate = async (userId, enrollmentId) => {
-    if (!window.confirm('Are you sure you want to issue the certificate for this student?')) {
+    if (!await showConfirm('Issue Certificate', 'Are you sure you want to issue the certificate for this student?')) {
       return;
     }
     try {

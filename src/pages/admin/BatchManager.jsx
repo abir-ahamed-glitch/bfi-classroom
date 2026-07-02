@@ -1352,14 +1352,12 @@ export default function BatchManager() {
                                 <Archive size={14} /> Archive Batch
                               </button>
                             )}
-                            {b.status === 'archived' ? (
-                              <button 
-                                onClick={() => handleDeleteBatch(b.id)}
-                                className="dropdown-item-custom danger"
-                              >
-                                <Trash2 size={14} /> Delete Batch
-                              </button>
-                            ) : null}
+                            <button 
+                              onClick={() => handleDeleteBatch(b.id)}
+                              className="dropdown-item-custom danger"
+                            >
+                              <Trash2 size={14} /> Delete Batch
+                            </button>
                           </div>
                         )}
 

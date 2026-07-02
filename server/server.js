@@ -31,6 +31,7 @@ import bfiaaRoutes from './routes/bfiaa.js';
 import certificationRoutes from './routes/certification.js';
 import experienceRoutes from './routes/experience.js';
 import registryRoutes from './routes/registry.js';
+import { trashEvents } from './utils/trashLogger.js';
 import notificationsRoutes from './routes/notifications.js';
 import analyticsRoutes from './routes/analytics.js';
 import reportsRoutes from './routes/reports.js';
@@ -40,6 +41,7 @@ import batchRoutes from './routes/batches.js';
 import studentExportRoutes from './routes/student-export.js';
 import { runBatchStatusAutomation } from './utils/batchStatusAutomation.js';
 import broadcastRoutes from './routes/broadcast.js';
+import trashRoutes from './routes/trash.js';
 import { checkScheduledBroadcasts } from './utils/broadcastScheduler.js';
 
 import { getJwtRefreshSecret, getJwtSecret } from './config/security.js';
@@ -402,6 +404,7 @@ app.use('/api/reports', reportsRoutes);
 app.use('/api/admin/batches', batchRoutes);
 app.use('/api/student-export', studentExportRoutes);
 app.use('/api/admin/broadcast', broadcastRoutes);
+app.use('/api/admin/trash', trashRoutes);
 
 app.use('/api', (req, res) => {
   res.status(404).json({ error: `API route not found: ${req.method} ${req.originalUrl}` });
@@ -425,6 +428,11 @@ io.use((socket, next) => {
 });
 
 const userConnections = new Map(); // userId -> Set of socketIds
+
+// Listen for trash updates and broadcast them
+trashEvents.on('update', (payload) => {
+  io.emit('trash_updated', payload);
+});
 
 io.on('connection', (socket) => {
   const userId = socket.user.id;

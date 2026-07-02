@@ -3,6 +3,7 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
+import { logTrashAction } from '../utils/trashLogger.js';
 import db from '../db/database.js';
 import { authenticateToken, requireRole } from '../middleware/auth.js';
 
@@ -60,7 +61,7 @@ router.get('/', authenticateToken, (req, res) => {
       SELECT m.*, u.first_name || ' ' || u.last_name AS instructor_name
       FROM course_materials m
       JOIN users u ON m.uploaded_by = u.id
-      WHERE m.batch_number = ? OR m.batch_number = 'All'
+      WHERE m.deleted_at IS NULL AND (m.batch_number = ? OR m.batch_number = 'All')
       ORDER BY m.created_at DESC
     `).all(batch);
 
@@ -78,6 +79,7 @@ router.get('/admin/all', authenticateToken, requireRole('admin'), (req, res) => 
       SELECT m.*, u.first_name || ' ' || u.last_name AS instructor_name
       FROM course_materials m
       JOIN users u ON m.uploaded_by = u.id
+      WHERE m.deleted_at IS NULL
       ORDER BY m.created_at DESC
     `).all();
     res.json({ materials });
@@ -189,14 +191,9 @@ router.delete('/:id', authenticateToken, requireRole('admin'), (req, res) => {
     const material = db.prepare('SELECT * FROM course_materials WHERE id = ?').get(id);
     if (!material) return res.status(404).json({ error: 'Material not found' });
 
-    // Delete local file if exists
-    if (material.file_url && material.file_url.startsWith('/media/')) {
-      const filePath = path.join(__dirname, '../../uploads', material.file_url.replace('/media/', ''));
-      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-    }
-
-    db.prepare('DELETE FROM course_materials WHERE id = ?').run(id);
-    res.json({ message: 'Material deleted successfully' });
+    db.prepare("UPDATE course_materials SET deleted_at = datetime('now'), deleted_by_admin_id = ? WHERE id = ?").run(req.user.id, id);
+    logTrashAction('materials', id, material.title, 'deleted', req.user.id);
+    res.json({ message: 'Material moved to Trash' });
   } catch (error) {
     console.error('Delete error:', error);
     res.status(500).json({ error: error.message || 'Delete failed' });

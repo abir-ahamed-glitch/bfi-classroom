@@ -1,6 +1,7 @@
 import express from 'express';
 import fs from 'fs';
 import path from 'path';
+import { logTrashAction } from '../utils/trashLogger.js';
 import multer from 'multer';
 import { fileURLToPath } from 'url';
 import db from '../db/database.js';
@@ -504,7 +505,7 @@ router.get('/', authenticateToken, broadcastAuth, (req, res) => {
     const { status, search, page = 1, limit = 20 } = req.query;
     const offset = (Number(page) - 1) * Number(limit);
     const params = [];
-    let where = 'WHERE 1=1';
+    let where = 'WHERE b.deleted_at IS NULL';
 
     if (req.user.role !== 'admin') {
       where += ' AND b.sender_id = ?';
@@ -644,15 +645,9 @@ router.delete('/:id', authenticateToken, requireRole('admin'), (req, res) => {
     if (broadcast.status !== 'draft') {
       return res.status(400).json({ error: 'Only draft broadcasts can be deleted' });
     }
-    const attachments = db.prepare('SELECT * FROM broadcast_attachments WHERE broadcast_id = ?').all(broadcast.id);
-    for (const att of attachments) {
-      const filePath = path.join(__dirname, '../../', att.file_path.replace(/^\//, ''));
-      if (fs.existsSync(filePath)) {
-        try { fs.unlinkSync(filePath); } catch { /* ignore */ }
-      }
-    }
-    db.prepare('DELETE FROM broadcasts WHERE id = ?').run(broadcast.id);
-    res.json({ success: true });
+    db.prepare("UPDATE broadcasts SET deleted_at = datetime('now'), deleted_by_admin_id = ? WHERE id = ?").run(req.user.id, broadcast.id);
+    logTrashAction('broadcasts', broadcast.id, broadcast.title, 'deleted', req.user.id);
+    res.json({ success: true, message: 'Broadcast moved to Trash.' });
   } catch (error) {
     console.error('[Broadcast] delete error:', error);
     res.status(500).json({ error: 'Failed to delete broadcast' });

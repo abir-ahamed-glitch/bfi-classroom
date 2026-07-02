@@ -3,6 +3,7 @@ import {
   DollarSign, Plus, Trash2, RefreshCw, Save, AlertCircle, CheckCircle2,
   Film, GraduationCap, Edit3, X, ChevronDown, Search, ArrowUpDown
 } from 'lucide-react';
+import { useModal } from '../../components/BFIModal';
 import './BatchFeeManager.css';
 
 const API_BASE = '/api/admin';
@@ -53,6 +54,7 @@ function Toast({ message, type, onClose }) {
 }
 
 export default function BatchFeeManager() {
+  const { showConfirm } = useModal();
   const [fees, setFees] = useState([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -249,7 +251,7 @@ export default function BatchFeeManager() {
   };
 
   const handleDelete = async (id) => {
-    if (!window.confirm('Delete this batch fee definition? This cannot be undone.')) return;
+    if (!await showConfirm('Delete Fee Definition', 'Delete this batch fee definition? This cannot be undone.', 'danger')) return;
     setDeletingId(id);
     try {
       await apiFetch(`/batch-fees/${id}`, { method: 'DELETE' });

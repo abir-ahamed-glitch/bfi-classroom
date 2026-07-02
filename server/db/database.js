@@ -1106,6 +1106,46 @@ export function initializeDatabase() {
   } catch (error) {
     // Column already exists — safe to ignore
   }
+
+  // Soft-delete feature: Add deleted_at columns
+  const tablesForSoftDelete = [
+    'users', 'community_posts', 'course_materials', 'batches', 'announcements', 
+    'broadcasts', 'custom_subjects', 'student_experiences', 'projects'
+  ];
+  for (const table of tablesForSoftDelete) {
+    try {
+      db.prepare(`ALTER TABLE ${table} ADD COLUMN deleted_at TEXT DEFAULT NULL`).run();
+      console.log(`✅ Added deleted_at column to ${table}`);
+    } catch (error) {
+      // Column already exists — safe to ignore
+    }
+    try {
+      db.prepare(`ALTER TABLE ${table} ADD COLUMN deleted_by_admin_id INTEGER DEFAULT NULL`).run();
+      console.log(`✅ Added deleted_by_admin_id column to ${table}`);
+    } catch (error) {
+      // Column already exists — safe to ignore
+    }
+  }
+
+  // Create trash_audit_log table
+  try {
+    db.prepare(`
+      CREATE TABLE IF NOT EXISTS trash_audit_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        entity_type TEXT NOT NULL,
+        entity_id INTEGER NOT NULL,
+        entity_label TEXT NOT NULL,
+        action TEXT NOT NULL,
+        performed_by_admin_id INTEGER NOT NULL,
+        performed_by_admin_name TEXT NOT NULL,
+        performed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        notes TEXT
+      )
+    `).run();
+    console.log('✅ Ensured trash_audit_log table exists');
+  } catch (error) {
+    console.error('Error creating trash_audit_log table:', error);
+  }
 }
 
 export default db;
