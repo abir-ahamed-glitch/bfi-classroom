@@ -741,6 +741,7 @@ export default function BroadcastManager() {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyFilter, setHistoryFilter] = useState('all'); // 'all', 'broadcasts', 'notices', 'scheduled', 'drafts'
   const [historySearch, setHistorySearch] = useState('');
+  const [selectedHistoryItems, setSelectedHistoryItems] = useState([]);
 
   // ─── UI Actions ────────────────────────────────────────────────────
   const [previewOpen, setPreviewOpen] = useState(false);
@@ -774,6 +775,33 @@ export default function BroadcastManager() {
   const showToast = (msg, type = 'success') => {
     setToast({ msg, type });
     setTimeout(() => setToast(null), 4000);
+  };
+
+  const handleBulkDelete = async () => {
+    if (selectedHistoryItems.length === 0) return;
+    const confirm = await showConfirm(
+      `Are you sure you want to delete the ${selectedHistoryItems.length} selected broadcasts/notices?`,
+      { title: 'Bulk Delete', confirmLabel: 'Delete All', cancelLabel: 'Cancel' }
+    );
+    if (!confirm) return;
+
+    try {
+      const res = await fetch(`${API_BASE}/bulk-delete`, {
+        method: 'POST',
+        headers: authHeader(),
+        body: JSON.stringify({ items: selectedHistoryItems })
+      });
+      const data = await res.json();
+      if (data.success) {
+        showToast('Selected items moved to Trash.');
+        setSelectedHistoryItems([]);
+        fetchHistory();
+      } else {
+        showToast(data.error || 'Failed to delete selected items', 'error');
+      }
+    } catch {
+      showToast('An error occurred during deletion', 'error');
+    }
   };
 
   // Fetch targeting options for standard notices
@@ -1899,6 +1927,50 @@ export default function BroadcastManager() {
             />
           </div>
 
+          {currentUser?.role === 'admin' && filteredHistory.length > 0 && (
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              background: 'rgba(255, 255, 255, 0.02)',
+              border: '1px solid rgba(255, 255, 255, 0.05)',
+              borderRadius: '10px',
+              padding: '0.6rem 0.8rem',
+              marginBottom: '0.2rem',
+              fontSize: '0.8rem',
+              gap: '1rem',
+              flexWrap: 'wrap'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <input
+                  type="checkbox"
+                  style={{ cursor: 'pointer' }}
+                  checked={selectedHistoryItems.length === filteredHistory.length && filteredHistory.length > 0}
+                  onChange={(e) => {
+                    if (e.target.checked) {
+                      setSelectedHistoryItems(filteredHistory.map(h => ({ id: h.id, unified_type: h.unified_type })));
+                    } else {
+                      setSelectedHistoryItems([]);
+                    }
+                  }}
+                />
+                <span style={{ color: 'var(--text-secondary)' }}>
+                  {selectedHistoryItems.length} selected of {filteredHistory.length}
+                </span>
+              </div>
+              {selectedHistoryItems.length > 0 && (
+                <button
+                  type="button"
+                  className="bc-btn bc-btn-danger"
+                  style={{ padding: '0.35rem 0.75rem', fontSize: '0.75rem', height: 'auto', background: '#ef4444', color: '#fff' }}
+                  onClick={handleBulkDelete}
+                >
+                  <Trash2 size={12} /> Delete Selected
+                </button>
+              )}
+            </div>
+          )}
+
           <div className="bc-history-list custom-scrollbar">
             {historyLoading ? (
               <div className="bc-empty-state"><div className="bc-spinner" /></div>
@@ -1908,52 +1980,75 @@ export default function BroadcastManager() {
                 <p>No broadcasts found. Compose one on the left!</p>
               </div>
             ) : (
-              filteredHistory.map(item => (
-                <div
-                  key={item.unified_id}
-                  className="bc-history-row card-hover"
-                  onClick={() => {
-                    setActiveDrawerId(item.id);
-                    setActiveDrawerType(item.unified_type);
-                  }}
-                >
-                  <div className="bc-history-main">
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.2rem' }}>
-                      <span className={`bc-unified-type-badge ${item.unified_type === 'notice' ? 'badge-notice' : 'badge-broadcast'}`}>
-                        {item.display_badge}
-                      </span>
-                      <strong className="bc-history-title">{item.display_title}</strong>
-                    </div>
-                    <div className="bc-history-meta">
-                      <span>By {item.display_sender}</span>
-                      <span>·</span>
-                      <span>{new Date(item.display_date).toLocaleDateString()}</span>
-                      {item.unified_type === 'broadcast' ? (
-                        <>
-                          <span>·</span>
-                          <span>{audienceBadgeLabel(item.audience_type, item.audience_value)}</span>
-                        </>
-                      ) : (
-                        (item.target_course || item.target_batch) && (
+              filteredHistory.map(item => {
+                const isSelected = selectedHistoryItems.some(x => x.id === item.id && x.unified_type === item.unified_type);
+                return (
+                  <div
+                    key={item.unified_id}
+                    className="bc-history-row card-hover"
+                    onClick={() => {
+                      setActiveDrawerId(item.id);
+                      setActiveDrawerType(item.unified_type);
+                    }}
+                    style={{ display: 'flex', alignItems: 'center' }}
+                  >
+                    {currentUser?.role === 'admin' && (
+                      <div
+                        onClick={e => e.stopPropagation()}
+                        style={{ display: 'flex', alignItems: 'center', marginRight: '0.75rem' }}
+                      >
+                        <input
+                          type="checkbox"
+                          style={{ cursor: 'pointer' }}
+                          checked={isSelected}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setSelectedHistoryItems(prev => [...prev, { id: item.id, unified_type: item.unified_type }]);
+                            } else {
+                              setSelectedHistoryItems(prev => prev.filter(x => !(x.id === item.id && x.unified_type === item.unified_type)));
+                            }
+                          }}
+                        />
+                      </div>
+                    )}
+                    <div className="bc-history-main" style={{ flex: 1 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.2rem' }}>
+                        <span className={`bc-unified-type-badge ${item.unified_type === 'notice' ? 'badge-notice' : 'badge-broadcast'}`}>
+                          {item.display_badge}
+                        </span>
+                        <strong className="bc-history-title">{item.display_title}</strong>
+                      </div>
+                      <div className="bc-history-meta">
+                        <span>By {item.display_sender}</span>
+                        <span>·</span>
+                        <span>{new Date(item.display_date).toLocaleDateString()}</span>
+                        {item.unified_type === 'broadcast' ? (
                           <>
                             <span>·</span>
-                            <span>Target: {item.target_course ? item.target_course : ''} {item.target_batch ? `(${item.target_batch}th Batch)` : ''}</span>
+                            <span>{audienceBadgeLabel(item.audience_type, item.audience_value)}</span>
                           </>
-                        )
+                        ) : (
+                          (item.target_course || item.target_batch) && (
+                            <>
+                              <span>·</span>
+                              <span>Target: {item.target_course ? item.target_course : ''} {item.target_batch ? `(${item.target_batch}th Batch)` : ''}</span>
+                            </>
+                          )
+                        )}
+                      </div>
+                    </div>
+
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                      {item.unified_type === 'broadcast' && item.status !== 'draft' && item.status !== 'scheduled' && (
+                        <span className="bc-history-stats-pill">
+                          ✓ {item.delivered_count || 0} / 𐄂 {item.failed_count || 0}
+                        </span>
                       )}
+                      <span className={`bc-status-badge ${getStatusClass(item.status)}`}>{item.status}</span>
                     </div>
                   </div>
-
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                    {item.unified_type === 'broadcast' && item.status !== 'draft' && item.status !== 'scheduled' && (
-                      <span className="bc-history-stats-pill">
-                        ✓ {item.delivered_count || 0} / 𐄂 {item.failed_count || 0}
-                      </span>
-                    )}
-                    <span className={`bc-status-badge ${getStatusClass(item.status)}`}>{item.status}</span>
-                  </div>
-                </div>
-              ))
+                );
+              })
             )}
           </div>
         </div>

@@ -7,7 +7,8 @@ export async function checkScheduledBroadcasts(io) {
   const dueBroadcasts = db.prepare(`
     SELECT * FROM broadcasts
     WHERE status = 'scheduled'
-    AND scheduled_at <= ?
+      AND deleted_at IS NULL
+      AND scheduled_at <= ?
   `).all(now);
 
   for (const broadcast of dueBroadcasts) {

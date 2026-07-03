@@ -744,4 +744,33 @@ router.get('/search-students', authenticateToken, requireRole('admin'), (req, re
   }
 });
 
+// ── Endpoint 13: Bulk Delete Announcements / Broadcasts ──────────────────────
+router.post('/bulk-delete', authenticateToken, requireRole('admin'), (req, res) => {
+  try {
+    const { items } = req.body;
+    if (!items || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: 'No items selected for deletion' });
+    }
+
+    db.transaction(() => {
+      for (const item of items) {
+        if (item.unified_type === 'broadcast') {
+          db.prepare("UPDATE broadcasts SET deleted_at = datetime('now'), deleted_by_admin_id = ? WHERE id = ?").run(req.user.id, item.id);
+          const b = db.prepare('SELECT title FROM broadcasts WHERE id = ?').get(item.id);
+          logTrashAction('broadcasts', item.id, b?.title || `Broadcast #${item.id}`, 'deleted', req.user.id);
+        } else if (item.unified_type === 'notice') {
+          db.prepare("UPDATE announcements SET deleted_at = datetime('now'), deleted_by_admin_id = ? WHERE id = ?").run(req.user.id, item.id);
+          const a = db.prepare('SELECT title FROM announcements WHERE id = ?').get(item.id);
+          logTrashAction('announcements', item.id, a?.title || `Notice #${item.id}`, 'deleted', req.user.id);
+        }
+      }
+    })();
+
+    res.json({ success: true, message: 'Selected items moved to Trash.' });
+  } catch (error) {
+    console.error('[Broadcast] bulk delete error:', error);
+    res.status(500).json({ error: 'Failed to delete selected items' });
+  }
+});
+
 export default router;
