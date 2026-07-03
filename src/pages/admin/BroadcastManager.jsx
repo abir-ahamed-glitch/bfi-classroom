@@ -342,13 +342,93 @@ function BroadcastDrawer({ broadcastId, unifiedType, onClose, onDuplicate, onDel
 
                   {data.failed_recipients?.length > 0 && (
                     <div>
-                      <div className="bc-label" style={{ marginBottom: '0.5rem', color: '#f87171' }}>Failed Deliveries</div>
+                      <div className="bc-label" style={{ marginBottom: '0.5rem', color: '#f87171' }}>Failed Deliveries ({data.failed_recipients.length})</div>
                       {data.failed_recipients.map(fr => (
-                        <div key={fr.student_id} style={{ padding: '0.5rem 0.75rem', background: 'rgba(239,68,68,0.06)', border: '1px solid rgba(239,68,68,0.15)', borderRadius: 8, fontSize: '0.8rem', marginBottom: '0.4rem' }}>
-                          <strong style={{ color: 'var(--text-primary)' }}>{fr.name}</strong>
-                          {fr.failed_reason && <span style={{ color: 'var(--text-secondary)', marginLeft: 8 }}>— {fr.failed_reason}</span>}
+                        <div key={fr.student_id} style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          padding: '0.5rem 0.75rem',
+                          background: 'rgba(239,68,68,0.06)',
+                          border: '1px solid rgba(239,68,68,0.15)',
+                          borderRadius: 8,
+                          fontSize: '0.8rem',
+                          marginBottom: '0.4rem',
+                          gap: '0.5rem'
+                        }}>
+                          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            <strong style={{ color: 'var(--text-primary)' }}>{fr.name}</strong>
+                            {fr.failed_reason && <span style={{ color: 'var(--text-secondary)', marginLeft: 8 }}>— {fr.failed_reason}</span>}
+                          </div>
+                          <button
+                            type="button"
+                            className="bc-btn bc-btn-outline"
+                            style={{
+                              padding: '2px 8px',
+                              fontSize: '0.68rem',
+                              height: 'auto',
+                              borderColor: 'rgba(239,68,68,0.3)',
+                              color: '#f87171',
+                              background: 'transparent'
+                            }}
+                            onClick={async () => {
+                              try {
+                                const res = await fetch(`${API_BASE}/${broadcastId}/retry-single`, {
+                                  method: 'POST',
+                                  headers: { ...authHeader(), 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({ student_id: fr.student_id })
+                                });
+                                const rData = await res.json();
+                                if (rData.success) {
+                                  const fresh = await fetch(`${API_BASE}/${broadcastId}`, { headers: authHeader() });
+                                  setData(await fresh.json());
+                                }
+                              } catch (err) {
+                                console.error('Failed to retry student', err);
+                              }
+                            }}
+                          >
+                            Resend
+                          </button>
                         </div>
                       ))}
+                    </div>
+                  )}
+
+                  {data.delivered_recipients?.length > 0 && (
+                    <div style={{ marginTop: '1rem' }}>
+                      <div className="bc-label" style={{ marginBottom: '0.5rem', color: '#34d399' }}>Delivered Recipients ({data.delivered_recipients.length})</div>
+                      <div style={{ maxHeight: '180px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '0.4rem', paddingRight: '4px' }}>
+                        {data.delivered_recipients.map(dr => {
+                          const channelsList = [];
+                          if (dr.inbox_delivered) channelsList.push('Inbox');
+                          if (dr.notification_delivered) channelsList.push('Notif');
+                          if (dr.notice_delivered) channelsList.push('Notice');
+
+                          return (
+                            <div key={dr.student_id} style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              padding: '0.5rem 0.75rem',
+                              background: 'rgba(52,211,153,0.04)',
+                              border: '1px solid rgba(52,211,153,0.12)',
+                              borderRadius: 8,
+                              fontSize: '0.8rem'
+                            }}>
+                              <div>
+                                <strong style={{ color: 'var(--text-primary)' }}>{dr.name}</strong>
+                                <span style={{ color: 'var(--text-secondary)', fontSize: '0.72rem', marginLeft: 8 }}>
+                                  via {channelsList.join(', ')}
+                                </span>
+                              </div>
+                              <span style={{ fontSize: '0.68rem', color: 'var(--text-secondary)' }}>
+                                {dr.delivered_at ? new Date(dr.delivered_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
                     </div>
                   )}
 
@@ -645,6 +725,10 @@ export default function BroadcastManager() {
 
   const [noticeAttachment, setNoticeAttachment] = useState(null); // for notices
 
+  const [studentSearch, setStudentSearch] = useState('');
+  const [searchResults, setSearchResults] = useState([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+
   const [targetCourse, setTargetCourse] = useState('');
   const [targetBatch, setTargetBatch] = useState('');
   const [broadcastCourse, setBroadcastCourse] = useState('');
@@ -667,6 +751,25 @@ export default function BroadcastManager() {
   const [toast, setToast] = useState(null);
   const [audiencePreview, setAudiencePreview] = useState(null);
   const [checkingAudience, setCheckingAudience] = useState(false);
+
+  useEffect(() => {
+    if (!studentSearch || studentSearch.trim() === '') {
+      setSearchResults([]);
+      return;
+    }
+    const delayDebounce = setTimeout(() => {
+      setSearchLoading(true);
+      fetch(`${API_BASE}/search-students?q=${encodeURIComponent(studentSearch)}`, { headers: { Authorization: `Bearer ${token()}` } })
+        .then(r => r.json())
+        .then(d => {
+          setSearchResults(d.students || []);
+          setSearchLoading(false);
+        })
+        .catch(() => setSearchLoading(false));
+    }, 300);
+
+    return () => clearTimeout(delayDebounce);
+  }, [studentSearch]);
 
   const showToast = (msg, type = 'success') => {
     setToast({ msg, type });
@@ -1126,9 +1229,91 @@ export default function BroadcastManager() {
     }
     if (form.audience_type === 'specific') {
       return (
-        <input className="bc-input" placeholder="Enter student usernames, student IDs, or user IDs separated by commas (e.g. sujon.672u, 566)"
-          value={form.audience_value}
-          onChange={e => setForm(f => ({ ...f, audience_value: e.target.value }))} />
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem', position: 'relative' }}>
+          {/* comma-separated input list */}
+          <input className="bc-input" placeholder="Enter student usernames, student IDs, or user IDs separated by commas (e.g. sujon.672u, 566)"
+            value={form.audience_value}
+            onChange={e => setForm(f => ({ ...f, audience_value: e.target.value }))} />
+
+          {/* search option */}
+          <div style={{ position: 'relative' }}>
+            <input
+              type="text"
+              className="bc-input"
+              style={{ fontSize: '0.82rem', padding: '0.4rem 0.75rem' }}
+              placeholder="🔍 Search student to add (by name, username, ID, or email)..."
+              value={studentSearch}
+              onChange={e => setStudentSearch(e.target.value)}
+            />
+            {searchLoading && (
+              <div style={{ position: 'absolute', right: '10px', top: '50%', transform: 'translateY(-50%)' }}>
+                <div className="bc-spinner" style={{ width: 14, height: 14 }} />
+              </div>
+            )}
+
+            {/* floating search results dropdown list */}
+            {searchResults.length > 0 && (
+              <div style={{
+                position: 'absolute',
+                top: '100%',
+                left: 0,
+                right: 0,
+                background: 'rgba(23, 23, 37, 0.98)',
+                border: '1px solid rgba(255, 255, 255, 0.1)',
+                borderRadius: '8px',
+                marginTop: '4px',
+                maxHeight: '220px',
+                overflowY: 'auto',
+                zIndex: 999,
+                boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
+                backdropFilter: 'blur(10px)'
+              }}>
+                {searchResults.map(s => (
+                  <div
+                    key={s.id}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.6rem',
+                      padding: '0.5rem 0.75rem',
+                      cursor: 'pointer',
+                      borderBottom: '1px solid rgba(255,255,255,0.05)',
+                      transition: 'background 0.2s'
+                    }}
+                    onMouseEnter={e => e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)'}
+                    onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                    onClick={() => {
+                      const valToAdd = s.username || s.student_id || String(s.id);
+                      setForm(f => {
+                        const current = f.audience_value ? f.audience_value.split(',').map(x => x.trim()).filter(Boolean) : [];
+                        if (!current.includes(valToAdd)) {
+                          current.push(valToAdd);
+                        }
+                        return { ...f, audience_value: current.join(', ') };
+                      });
+                      setStudentSearch('');
+                      setSearchResults([]);
+                    }}
+                  >
+                    <img
+                      src={resolveMediaUrl(s.profile_picture) || `https://ui-avatars.com/name=${encodeURIComponent(s.first_name + ' ' + s.last_name)}`}
+                      alt=""
+                      style={{ width: '28px', height: '28px', borderRadius: '50%', objectFit: 'cover' }}
+                    />
+                    <div style={{ flex: 1, overflow: 'hidden' }}>
+                      <div style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--text-primary)', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
+                        {s.first_name} {s.last_name}
+                      </div>
+                      <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
+                        ID: {s.student_id || s.id} · @{s.username} · {s.batch_number ? `${s.batch_number}th Batch` : 'No Batch'}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
       );
     }
     return null;

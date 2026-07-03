@@ -596,7 +596,17 @@ router.get('/:id', authenticateToken, broadcastAuth, (req, res) => {
         AND br.inbox_delivered = 0 AND br.notification_delivered = 0 AND br.notice_delivered = 0
     `).all(broadcast.id);
 
-    res.json({ broadcast, attachments, delivery_stats, failed_recipients });
+    const delivered_recipients = db.prepare(`
+      SELECT br.student_id, br.delivered_at,
+        (u.first_name || ' ' || u.last_name) AS name,
+        br.inbox_delivered, br.notification_delivered, br.notice_delivered
+      FROM broadcast_recipients br
+      JOIN users u ON u.id = br.student_id
+      WHERE br.broadcast_id = ?
+        AND (br.inbox_delivered = 1 OR br.notification_delivered = 1 OR br.notice_delivered = 1)
+    `).all(broadcast.id);
+
+    res.json({ broadcast, attachments, delivery_stats, failed_recipients, delivered_recipients });
   } catch (error) {
     console.error('[Broadcast] get-one error:', error);
     res.status(500).json({ error: 'Failed to fetch broadcast' });
@@ -660,6 +670,77 @@ router.delete('/:id', authenticateToken, requireRole('admin'), (req, res) => {
   } catch (error) {
     console.error('[Broadcast] delete error:', error);
     res.status(500).json({ error: 'Failed to delete broadcast' });
+  }
+});
+
+// ── Endpoint 11: Retry Single Failed Delivery ───────────────────────────────
+router.post('/:id/retry-single', authenticateToken, requireRole('admin'), async (req, res) => {
+  try {
+    const broadcast = db.prepare('SELECT * FROM broadcasts WHERE id = ?').get(req.params.id);
+    if (!broadcast) return res.status(404).json({ error: 'Broadcast not found' });
+
+    const { student_id } = req.body;
+    if (!student_id) return res.status(400).json({ error: 'student_id is required' });
+
+    // Delete or reset the previous recipient entry
+    db.prepare(`
+      DELETE FROM broadcast_recipients
+      WHERE broadcast_id = ? AND student_id = ?
+    `).run(broadcast.id, student_id);
+
+    const student = db.prepare(`
+      SELECT u.id, u.first_name, u.last_name, sp.batch_number
+      FROM users u
+      LEFT JOIN student_profiles sp ON sp.user_id = u.id
+      WHERE u.id = ?
+    `).get(student_id);
+
+    if (!student) return res.status(404).json({ error: 'Student not found' });
+
+    res.json({ success: true, message: 'Retrying delivery...' });
+
+    const io = req.app.get('io');
+    setImmediate(() => {
+      deliverBroadcast(broadcast.id, [student], io).catch(err =>
+        console.error('[Broadcast] retry single error:', err)
+      );
+    });
+  } catch (error) {
+    console.error('[Broadcast] retry single error:', error);
+    if (!res.headersSent) res.status(500).json({ error: 'Failed to retry delivery' });
+  }
+});
+
+// ── Endpoint 12: Search Students for Specific Broadcast ───────────────────────
+router.get('/search-students', authenticateToken, requireRole('admin'), (req, res) => {
+  try {
+    const { q } = req.query;
+    if (!q || q.trim() === '') {
+      return res.json({ students: [] });
+    }
+    const searchQuery = `%${q}%`;
+    const students = db.prepare(`
+      SELECT 
+        u.id, u.first_name, u.last_name, u.username, u.profile_picture, u.email,
+        sp.student_id, sp.batch_number
+      FROM users u
+      LEFT JOIN student_profiles sp ON u.id = sp.user_id
+      WHERE u.role = 'student' AND u.is_active = 1
+        AND (
+          u.first_name LIKE ? OR
+          u.last_name LIKE ? OR
+          u.username LIKE ? OR
+          u.email LIKE ? OR
+          sp.student_id LIKE ? OR
+          CAST(u.id AS TEXT) = ?
+        )
+      ORDER BY u.first_name ASC
+      LIMIT 15
+    `).all(searchQuery, searchQuery, searchQuery, searchQuery, searchQuery, q);
+    res.json({ students });
+  } catch (error) {
+    console.error('[Broadcast] student search error:', error);
+    res.status(500).json({ error: 'Failed to search students' });
   }
 });
 
