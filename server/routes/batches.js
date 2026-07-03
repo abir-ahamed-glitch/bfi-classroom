@@ -643,8 +643,7 @@ router.get('/:id/progress', authenticateToken, requireRole('admin'), (req, res) 
         sce.step4_completed,
         sce.attendance_classes,
         sce.attendance_total,
-        sce.assignment_screenplay,
-        sce.assignment_shooting_script,
+        sce.assignment_scores,
         sce.phase2_shooting_attended,
         sce.phase2_editing_attended,
         sce.exam_written,
@@ -659,16 +658,33 @@ router.get('/:id/progress', authenticateToken, requireRole('admin'), (req, res) 
     const totalStudents = students.length;
 
     // 1. Initialize stats structures
+    let courseSettings = null;
+    try {
+      courseSettings = db.prepare('SELECT * FROM course_settings WHERE course_name = ? AND batch_number = ?').get(batch.course_name, batch.batch_number);
+      if (!courseSettings) {
+        courseSettings = db.prepare('SELECT * FROM course_settings WHERE course_name = ? AND batch_number = ?').get(batch.course_name, 'DEFAULT');
+      }
+    } catch (e) {}
+
     const phase1 = {
       admitted: 0,
       attendance_qualified: 0,
       attendance_not_qualified: 0,
-      screenplay_submitted: 0,
-      shooting_script_submitted: 0,
       exam_passed: 0,
       exam_failed: 0,
-      completed: 0
+      completed: 0,
+      assignments: {}
     };
+    
+    let definedAssignments = [];
+    if (courseSettings && courseSettings.has_assignment) {
+      try {
+        definedAssignments = JSON.parse(courseSettings.assignments || '[]');
+        definedAssignments.forEach(def => {
+          phase1.assignments[def.id] = 0;
+        });
+      } catch (e) {}
+    }
 
     const phase2 = {
       admitted: 0,
@@ -705,15 +721,24 @@ router.get('/:id/progress', authenticateToken, requireRole('admin'), (req, res) 
           }
         }
         
-        const isQualified = s.attendance_total > 0 && (s.attendance_classes / s.attendance_total >= 0.8);
+        const attTotal = s.attendance_total || courseSettings?.total_classes || 22;
+        const isQualified = attTotal > 0 && (s.attendance_classes / attTotal >= 0.8);
         if (isQualified) {
           phase1.attendance_qualified++;
         } else {
           phase1.attendance_not_qualified++;
         }
 
-        if (s.assignment_screenplay > 0) phase1.screenplay_submitted++;
-        if (s.assignment_shooting_script > 0) phase1.shooting_script_submitted++;
+        if (courseSettings && courseSettings.has_assignment) {
+          try {
+            const scores = JSON.parse(s.assignment_scores || '{}');
+            definedAssignments.forEach(def => {
+              if (parseFloat(scores[def.id]) > 0) {
+                phase1.assignments[def.id]++;
+              }
+            });
+          } catch(e) {}
+        }
         
         if (s.step2_completed === 1) {
           phase1.exam_passed++;
@@ -729,7 +754,12 @@ router.get('/:id/progress', authenticateToken, requireRole('admin'), (req, res) 
         // For Film Appreciation: all enrolled students are "admitted" (no attendance gate)
         single_phase.admitted++;
         if (s.attendance_classes > 0) single_phase.attendance++;
-        if (s.assignment_screenplay > 0 || s.assignment_shooting_script > 0) single_phase.assignment_submitted++;
+        let hasAnyAssignment = false;
+        try {
+          const scores = JSON.parse(s.assignment_scores || '{}');
+          hasAnyAssignment = Object.values(scores).some(v => parseFloat(v) > 0);
+        } catch(e) {}
+        if (hasAnyAssignment) single_phase.assignment_submitted++;
         if (s.step2_completed === 1) {
           single_phase.exam_passed++;
           single_phase.completed++;

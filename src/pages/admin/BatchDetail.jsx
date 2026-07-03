@@ -11,6 +11,7 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell 
 } from 'recharts';
 import './BatchDetail.css';
+import { useCourseSettings } from '../../hooks/useCourseSettings';
 import BatchFormModal from '../../components/admin/BatchFormModal';
 import AddStudentsModal from '../../components/admin/AddStudentsModal';
 import EditStudentModal from '../../components/admin/EditStudentModal';
@@ -147,6 +148,12 @@ export default function BatchDetail() {
   const [progressData, setProgressData] = useState(null);
   const [selectedStatFilter, setSelectedStatFilter] = useState(null);
   const [recentlyToggledIds, setRecentlyToggledIds] = useState([]);
+
+  const { courseSettings, getSetting, loading: settingsLoading } = useCourseSettings();
+  const currentCourseSetting = useMemo(() => {
+    if (!batchData || settingsLoading) return null;
+    return getSetting(batchData.course_name, batchData.batch_number);
+  }, [batchData, courseSettings, settingsLoading, getSetting]);
   const [studentsData, setStudentsData] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
 
@@ -1739,7 +1746,15 @@ export default function BatchDetail() {
                                   </button>
                                   {(() => {
                                     const isGraded = e.exam_written !== null && e.exam_written !== undefined && e.exam_written !== '';
-                                    const totalScore = (parseInt(e.exam_written) || 0) + (parseInt(e.assignment_screenplay) || 0) + (parseInt(e.assignment_shooting_script) || 0);
+                                    let eAssignmentsTotal = 0;
+                                    if (currentCourseSetting?.has_assignment) {
+                                      try {
+                                        const pScores = JSON.parse(e.assignment_scores || '{}');
+                                        const defs = JSON.parse(currentCourseSetting.assignments || '[]');
+                                        defs.forEach(d => { eAssignmentsTotal += parseFloat(pScores[d.id]) || 0; });
+                                      } catch(err) {}
+                                    }
+                                    const totalScore = (parseInt(e.exam_written) || 0) + eAssignmentsTotal;
                                     const attClasses = e.attendance_classes || 0;
                                     const attTotal = e.attendance_total || 22;
                                     const qualifiesAttendance = attTotal > 0 ? (attClasses / attTotal) >= 0.8 : false;
@@ -2141,19 +2156,19 @@ export default function BatchDetail() {
                       </div>
                       <div>
                         <label style={{ display: 'block', marginBottom: '0.4rem', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Total Classes</label>
-                        <input type="number" name="attendance_total" value={academicFormData.attendance_total} onChange={handleAcademicChange} min="0" className="input-glass" style={{ paddingLeft: '1rem' }} />
+                        <input type="number" name="attendance_total" value={academicFormData.attendance_total} onChange={handleAcademicChange} min="0" className="input-glass" style={{ paddingLeft: '1rem', cursor: 'not-allowed', opacity: 0.6 }} disabled />
                       </div>
                     </div>
                   </div>
                   <div style={{ padding: '1rem', background: 'rgba(255,255,255,0.02)', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.05)' }}>
-                    <h3 style={{ fontSize: '1rem', marginBottom: '1rem', color: 'var(--text-primary)' }}>Exam Result (Total: 100)</h3>
+                    <h3 style={{ fontSize: '1rem', marginBottom: '1rem', color: 'var(--text-primary)' }}>Exam Result (Total: {currentCourseSetting?.exam_max_score || 100})</h3>
                     <div>
-                      <label style={{ display: 'block', marginBottom: '0.4rem', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Written Exam Score (Max: 100)</label>
-                      <input type="number" name="exam_written" value={academicFormData.exam_written} onChange={handleAcademicChange} min="0" max="100" className="input-glass" style={{ paddingLeft: '1rem' }} required />
+                      <label style={{ display: 'block', marginBottom: '0.4rem', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Written Exam Score (Max: {currentCourseSetting?.exam_max_score || 100})</label>
+                      <input type="number" name="exam_written" value={academicFormData.exam_written} onChange={handleAcademicChange} min="0" max={currentCourseSetting?.exam_max_score || 100} className="input-glass" style={{ paddingLeft: '1rem' }} required />
                     </div>
                   {(() => {
                     const totalGained = parseInt(academicFormData.exam_written) || 0;
-                    const isPassed = totalGained >= 33;
+                    const isPassed = totalGained >= (currentCourseSetting?.exam_pass_mark || 33);
                     return (
                       <div style={{ 
                         marginTop: '1.25rem', 
@@ -2167,12 +2182,12 @@ export default function BatchDetail() {
                       }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                           <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Passing Requirement:</span>
-                          <span style={{ fontSize: '0.85rem', color: 'var(--text-primary)', fontWeight: '500' }}>33+ marks</span>
+                          <span style={{ fontSize: '0.85rem', color: 'var(--text-primary)', fontWeight: '500' }}>{currentCourseSetting?.exam_pass_mark || 33}+ marks</span>
                         </div>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                           <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Total Score Gained:</span>
                           <span style={{ fontSize: '1rem', fontWeight: '700', color: 'var(--text-primary)' }}>
-                            {totalGained} <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 'normal' }}>/ 100</span>
+                            {totalGained} <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 'normal' }}>/ {currentCourseSetting?.exam_max_score || 100}</span>
                           </span>
                         </div>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid rgba(255, 255, 255, 0.05)', paddingTop: '0.75rem' }}>
@@ -2204,7 +2219,7 @@ export default function BatchDetail() {
                       <h3 style={{ fontSize: '1rem', color: 'var(--text-primary)', margin: 0 }}>Attendance</h3>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                         <label style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', whiteSpace: 'nowrap' }}>Total classes:</label>
-                        <input type="number" name="attendance_total" value={academicFormData.attendance_total} onChange={handleAcademicChange} min="1" className="input-glass" style={{ width: '100px', paddingLeft: '0.5rem', fontSize: '0.9rem' }} required />
+                        <input type="number" name="attendance_total" value={academicFormData.attendance_total} onChange={handleAcademicChange} min="1" className="input-glass" style={{ width: '100px', paddingLeft: '0.5rem', fontSize: '0.9rem', cursor: 'not-allowed', opacity: 0.6 }} required disabled />
                       </div>
                     </div>
                     <div>
@@ -2251,7 +2266,7 @@ export default function BatchDetail() {
                         }}>
                           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                             <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Passing Requirement:</span>
-                            <span style={{ fontSize: '0.85rem', color: 'var(--text-primary)', fontWeight: '500' }}>33+ total marks</span>
+                            <span style={{ fontSize: '0.85rem', color: 'var(--text-primary)', fontWeight: '500' }}>{currentCourseSetting.exam_pass_mark}+ total marks</span>
                           </div>
                           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                             <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Total Score Gained:</span>

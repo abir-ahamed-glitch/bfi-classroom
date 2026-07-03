@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useModal } from '../../components/BFIModal';
+import { resolveMediaUrl } from '../../utils/mediaUtils';
 import './BroadcastManager.css';
 
 const API_BASE = '/api/admin/broadcast';
@@ -169,9 +170,12 @@ function PreviewModal({ form, deliveryType, noticeAttachment, onClose }) {
 }
 
 // ─── Broadcast Detail Drawer ────────────────────────────────────────
-function BroadcastDrawer({ broadcastId, unifiedType, onClose, onDuplicate, onDeleteNotice }) {
+function BroadcastDrawer({ broadcastId, unifiedType, onClose, onDuplicate, onDeleteNotice, onSendSuccess }) {
+  const { showAlert, showConfirm } = useModal();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [sendingDraft, setSendingDraft] = useState(false);
+  const [deletingDraft, setDeletingDraft] = useState(false);
 
   useEffect(() => {
     if (!broadcastId) return;
@@ -198,6 +202,59 @@ function BroadcastDrawer({ broadcastId, unifiedType, onClose, onDuplicate, onDel
     if (!data?.broadcast) return;
     await fetch(`${API_BASE}/${broadcastId}/cancel`, { method: 'POST', headers: authHeader() });
     onClose();
+  };
+
+  const handleSendDraft = async () => {
+    if (!data?.broadcast) return;
+    setSendingDraft(true);
+    try {
+      const sendRes = await fetch(`${API_BASE}/${broadcastId}/send`, {
+        method: 'POST',
+        headers: authHeader(),
+      });
+      const sendData = await sendRes.json();
+      if (sendData.success) {
+        const r = await fetch(`${API_BASE}/${broadcastId}`, { headers: authHeader() });
+        setData(await r.json());
+        if (onSendSuccess) {
+          onSendSuccess(`Sending to ${sendData.total_recipients} students... ✓`);
+        }
+      } else {
+        await showAlert(sendData.error || 'Failed to send broadcast', { title: 'Broadcast Failed' });
+      }
+    } catch {
+      await showAlert('Failed to send broadcast', { title: 'Broadcast Failed' });
+    }
+    setSendingDraft(false);
+  };
+
+  const handleDeleteDraft = async () => {
+    if (!data?.broadcast) return;
+    const confirm = await showConfirm(
+      `Are you sure you want to delete the draft "${data.broadcast.title}"?`,
+      { title: 'Delete Draft', confirmLabel: 'Delete', cancelLabel: 'Cancel' }
+    );
+    if (!confirm) return;
+
+    setDeletingDraft(true);
+    try {
+      const res = await fetch(`${API_BASE}/${broadcastId}`, {
+        method: 'DELETE',
+        headers: authHeader(),
+      });
+      const resData = await res.json();
+      if (resData.success) {
+        onClose();
+        if (onSendSuccess) {
+          onSendSuccess('Draft deleted successfully.');
+        }
+      } else {
+        await showAlert(resData.error || 'Failed to delete draft', { title: 'Delete Failed' });
+      }
+    } catch {
+      await showAlert('Failed to delete draft', { title: 'Delete Failed' });
+    }
+    setDeletingDraft(false);
   };
 
   return (
@@ -246,7 +303,7 @@ function BroadcastDrawer({ broadcastId, unifiedType, onClose, onDuplicate, onDel
                           <FileText size={14} />
                           <span className="bc-file-pill-name">{att.file_name}</span>
                           <span className="bc-file-pill-size">{formatBytes(att.file_size)}</span>
-                          <a href={att.file_path} download target="_blank" rel="noreferrer" style={{ color: 'var(--text-secondary)', display: 'flex' }}>
+                          <a href={resolveMediaUrl(att.file_path)} download target="_blank" rel="noreferrer" style={{ color: 'var(--text-secondary)', display: 'flex' }}>
                             <ChevronDown size={14} />
                           </a>
                         </div>
@@ -296,6 +353,16 @@ function BroadcastDrawer({ broadcastId, unifiedType, onClose, onDuplicate, onDel
                   )}
 
                   <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginTop: '1rem' }}>
+                    {data.broadcast.status === 'draft' && (
+                      <>
+                        <button type="button" className="bc-btn bc-btn-primary" onClick={handleSendDraft} disabled={sendingDraft || deletingDraft}>
+                          {sendingDraft ? <span className="bc-spinner" /> : <Send size={14} />} Send Broadcast Now
+                        </button>
+                        <button type="button" className="bc-btn bc-btn-danger" onClick={handleDeleteDraft} disabled={sendingDraft || deletingDraft}>
+                          {deletingDraft ? <span className="bc-spinner" /> : <Trash2 size={14} />} Delete Draft
+                        </button>
+                      </>
+                    )}
                     {data.delivery_stats?.failed > 0 && (
                       <button type="button" className="bc-btn bc-btn-outline" onClick={handleRetry}>
                         <RefreshCw size={14} /> Resend to Failed ({data.delivery_stats.failed})
@@ -1059,7 +1126,7 @@ export default function BroadcastManager() {
     }
     if (form.audience_type === 'specific') {
       return (
-        <input className="bc-input" placeholder="Enter user IDs separated by commas (e.g. 12,45,78)"
+        <input className="bc-input" placeholder="Enter student usernames, student IDs, or user IDs separated by commas (e.g. sujon.672u, 566)"
           value={form.audience_value}
           onChange={e => setForm(f => ({ ...f, audience_value: e.target.value }))} />
       );
@@ -1424,15 +1491,89 @@ export default function BroadcastManager() {
                 />
 
                 {attachments.length > 0 && (
-                  <div style={{ marginTop: '0.75rem', display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
-                    {attachments.map((att, idx) => (
-                      <div key={idx} className="bc-file-pill">
-                        <FileText size={14} />
-                        <span className="bc-file-pill-name">{att.file_name}</span>
-                        <span className="bc-file-pill-size">{formatBytes(att.file_size)}</span>
-                        <button type="button" className="bc-icon-btn" onClick={() => setAttachments(prev => prev.filter((_, i) => i !== idx))}><X size={12} /></button>
-                      </div>
-                    ))}
+                  <div style={{ marginTop: '0.75rem', display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: '0.75rem' }}>
+                    {attachments.map((att, idx) => {
+                      const isImage = att.file_type?.startsWith('image/') || /\.(jpg|jpeg|png|webp|gif)$/i.test(att.file_name);
+                      return (
+                        <div key={idx} className="bc-attachment-card" style={{
+                          position: 'relative',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          alignItems: 'center',
+                          padding: '0.6rem',
+                          background: 'rgba(255, 255, 255, 0.05)',
+                          borderRadius: '10px',
+                          border: '1px solid rgba(255, 255, 255, 0.1)',
+                          textAlign: 'center',
+                          gap: '0.5rem',
+                          overflow: 'hidden'
+                        }}>
+                          {isImage ? (
+                            <img
+                              src={resolveMediaUrl(att.file_path)}
+                              alt={att.file_name}
+                              style={{
+                                width: '100%',
+                                height: '90px',
+                                objectFit: 'cover',
+                                borderRadius: '6px',
+                                background: 'rgba(0,0,0,0.2)'
+                              }}
+                            />
+                          ) : (
+                            <div style={{
+                              width: '100%',
+                              height: '90px',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              background: 'rgba(255, 255, 255, 0.02)',
+                              borderRadius: '6px',
+                              color: 'var(--text-secondary)'
+                            }}>
+                              <FileText size={32} />
+                            </div>
+                          )}
+                          <div style={{ width: '100%', overflow: 'hidden' }}>
+                            <div style={{
+                              fontSize: '0.75rem',
+                              fontWeight: '500',
+                              color: 'var(--text-primary)',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap'
+                            }} title={att.file_name}>
+                              {att.file_name}
+                            </div>
+                            <div style={{ fontSize: '0.68rem', color: 'var(--text-secondary)', marginTop: '2px' }}>
+                              {formatBytes(att.file_size)}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            className="bc-icon-btn bc-delete-btn"
+                            style={{
+                              position: 'absolute',
+                              top: '6px',
+                              right: '6px',
+                              background: 'rgba(0, 0, 0, 0.6)',
+                              color: '#fff',
+                              borderRadius: '50%',
+                              width: '20px',
+                              height: '20px',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              border: 'none',
+                              cursor: 'pointer'
+                            }}
+                            onClick={() => setAttachments(prev => prev.filter((_, i) => i !== idx))}
+                          >
+                            <X size={12} />
+                          </button>
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
                 {uploading && <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginTop: '0.25rem' }}><div className="bc-spinner" style={{ display: 'inline-block', marginRight: 6 }} /> Uploading attachments...</div>}
@@ -1649,6 +1790,10 @@ export default function BroadcastManager() {
           onClose={() => { setActiveDrawerId(null); setActiveDrawerType(null); }}
           onDuplicate={handleDuplicate}
           onDeleteNotice={handleDeleteNotice}
+          onSendSuccess={(msg) => {
+            showToast(msg || 'Broadcast sent successfully!');
+            fetchHistory();
+          }}
         />
       )}
     </div>

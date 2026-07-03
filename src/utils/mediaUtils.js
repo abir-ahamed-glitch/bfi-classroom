@@ -31,11 +31,15 @@ export const resolveMediaUrl = (url) => {
   // Absolute paths (start with '/') are already root-relative — return as-is
   // e.g. '/bfi-classroom/avatars/male2.png' should NOT be re-prefixed
   if (url.startsWith('/')) {
-    const baseUrl = import.meta.env.BASE_URL.replace(/\/$/, '');
-    if (url.startsWith(baseUrl + '/') || url === baseUrl) {
-      return url;
+    let cleanUrl = url;
+    if (url.startsWith('/uploads/')) {
+      cleanUrl = url.replace('/uploads/', '/media/');
     }
-    return `${baseUrl}${url}`;
+    const baseUrl = import.meta.env.BASE_URL.replace(/\/$/, '');
+    if (cleanUrl.startsWith(baseUrl + '/') || cleanUrl === baseUrl) {
+      return cleanUrl;
+    }
+    return `${baseUrl}${cleanUrl}`;
   }
 
   // Handle relative local paths

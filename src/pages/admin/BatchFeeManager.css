@@ -519,9 +519,7 @@
   .bfm-table th:nth-child(3),
   .bfm-table td:nth-child(3),
   .bfm-table th:nth-child(4),
-  .bfm-table td:nth-child(4),
-  .bfm-table th:nth-child(5),
-  .bfm-table td:nth-child(5) {
+  .bfm-table td:nth-child(4) {
     display: none;
   }
 }
@@ -713,6 +711,19 @@
 [data-mode="light"] .bfm-suggestion-item.defined:hover {
   background: rgba(0, 0, 0, 0.02) !important;
   color: rgba(0, 0, 0, 0.35) !important;
+}
+
+.bfm-search-input {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 9px;
+  padding: 0.5rem 0.85rem;
+  color: var(--text-primary);
+  font-size: 0.85rem;
+  font-family: 'Inter', sans-serif;
+  transition: border-color 0.2s, background 0.2s;
+  box-sizing: border-box;
+  width: 220px;
 }
 
 /* Search input focus styles */

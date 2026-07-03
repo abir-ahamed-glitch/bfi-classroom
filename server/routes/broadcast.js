@@ -91,10 +91,19 @@ export function resolveAudience(audienceType, audienceValue, senderPermission) {
     )`;
     params.push(audienceValue);
   } else if (audienceType === 'specific') {
-    const ids = String(audienceValue || '').split(',').map(Number).filter(Boolean);
-    if (ids.length === 0) return [];
-    query += ` AND u.id IN (${ids.map(() => '?').join(',')})`;
-    params.push(...ids);
+    const items = String(audienceValue || '').split(',').map(s => s.trim()).filter(Boolean);
+    if (items.length === 0) return [];
+    const bindValues = items.map(val => {
+      const num = Number(val);
+      return (!isNaN(num) && String(num) === val) ? num : val;
+    });
+    const placeholders = items.map(() => '?').join(',');
+    query += ` AND (
+      u.id IN (${placeholders}) OR
+      u.username IN (${placeholders}) OR
+      sp.student_id IN (${placeholders})
+    )`;
+    params.push(...bindValues, ...bindValues, ...bindValues);
   }
   // 'all' — no additional filter
 
@@ -334,7 +343,7 @@ router.post('/upload', authenticateToken, broadcastAuth, (req, res) => {
     }
     const uploaded = req.files.map(file => ({
       file_name: file.originalname,
-      file_path: `/uploads/broadcast-attachments/${file.filename}`,
+      file_path: `/media/broadcast-attachments/${file.filename}`,
       file_type: file.mimetype,
       file_size: file.size,
     }));

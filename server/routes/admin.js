@@ -1332,7 +1332,7 @@ router.put('/students/:id/academic-records/:courseId', authenticateToken, requir
   try {
     const studentId = req.params.id;
     const courseId = req.params.courseId;
-    const { attendance_classes, attendance_total, exam_written, assignment_screenplay, assignment_shooting_script } = req.body;
+    const { attendance_classes, attendance_total, exam_written, assignment_scores } = req.body;
 
     // Verify the enrollment exists
     const enrollment = db.prepare(`SELECT * FROM student_course_enrollments WHERE id = ? AND user_id = ?`).get(courseId, studentId);
@@ -1341,57 +1341,62 @@ router.put('/students/:id/academic-records/:courseId', authenticateToken, requir
       return res.status(404).json({ error: 'Course enrollment not found.' });
     }
 
-    const isOnlineFilmmaking = enrollment.course_name === 'Online Filmmaking Course';
-    // For Online Filmmaking, phase 2 admission (step3) is required before entering academic records.
-    // For Film Appreciation / other workshops, any enrolled student can have exam results entered.
-    if (isOnlineFilmmaking) {
+    // Determine batch_number
+    let batchNumber = 'DEFAULT';
+    const batchRecord = db.prepare(`
+      SELECT b.batch_number 
+      FROM batch_students bs
+      JOIN batches b ON bs.batch_id = b.id
+      WHERE bs.student_id = ? AND b.course_name = ?
+    `).get(studentId, enrollment.course_name);
+    
+    if (batchRecord && batchRecord.batch_number) {
+      batchNumber = batchRecord.batch_number;
+    }
+
+    // Fetch course settings
+    let courseSetting = db.prepare('SELECT * FROM course_settings WHERE course_name = ? AND batch_number = ?').get(enrollment.course_name, batchNumber);
+    if (!courseSetting) {
+      courseSetting = db.prepare('SELECT * FROM course_settings WHERE course_name = ? AND batch_number = ?').get(enrollment.course_name, 'DEFAULT');
+    }
+
+    if (!courseSetting) {
+      // Fallback defaults if no setting found
+      courseSetting = {
+        total_classes: 22,
+        exam_max_score: 100,
+        exam_pass_mark: 33,
+        has_assignment: 0,
+        assignments: '[]',
+        has_phase2: 0
+      };
+    }
+
+    const hasPhase2 = courseSetting.has_phase2 === 1;
+    const hasAssignment = courseSetting.has_assignment === 1;
+    let definedAssignments = [];
+    try {
+      definedAssignments = JSON.parse(courseSetting.assignments || '[]');
+    } catch(e) {}
+
+    // Phase 2 admission check
+    if (hasPhase2) {
       const isPhase2Admitted = enrollment.step3_completed === 1;
       if (!isPhase2Admitted) {
         return res.status(400).json({ error: 'Cannot update academic records because Phase 2: Admitted is not yet completed.' });
       }
     }
 
-    // Film Appreciation / other workshops: exam out of 100, pass mark 33, attendance required
-    if (enrollment.course_name !== 'Online Filmmaking Course') {
-      const exam = parseInt(exam_written) || 0;
-      if (exam > 100) {
-        return res.status(400).json({ error: 'Written exam score cannot exceed 100.' });
-      }
-      if (exam < 0) {
-        return res.status(400).json({ error: 'Written exam score cannot be negative.' });
-      }
-      const passed = exam >= 33 ? 1 : 0;
-      
-      const att_classes = parseInt(attendance_classes) || 0;
-      const att_total = parseInt(attendance_total) || 0;
-
-      db.prepare(`
-        UPDATE student_course_enrollments
-        SET exam_written = ?, 
-            attendance_classes = ?,
-            attendance_total = ?,
-            assignment_screenplay = 0, 
-            assignment_shooting_script = 0,
-            step2_completed = ?,
-            step4_completed = ?,
-            updated_at = datetime('now')
-        WHERE id = ? AND user_id = ?
-      `).run(exam, att_classes, att_total, passed, passed, courseId, studentId);
-
-      const io = req.app.get('io');
-      if (io) {
-        io.emit('progression_updated', { studentId: parseInt(studentId, 10) });
-      }
-
-      return res.json({ success: true });
+    const attendance = parseInt(attendance_classes) || 0;
+    const totalAttendance = parseInt(attendance_total) || courseSetting.total_classes;
+    const exam = parseInt(exam_written) || 0;
+    
+    let parsedScores = {};
+    if (assignment_scores) {
+      parsedScores = typeof assignment_scores === 'string' ? JSON.parse(assignment_scores) : assignment_scores;
     }
 
-    const attendance = parseInt(attendance_classes) || 0;
-    const totalAttendance = parseInt(attendance_total) || 22;
-    const exam = parseInt(exam_written) || 0;
-    const screenplay = parseInt(assignment_screenplay) || 0;
-    const shootingScript = parseInt(assignment_shooting_script) || 0;
-
+    // Validations
     if (attendance > totalAttendance) {
       return res.status(400).json({ error: 'Attended classes cannot exceed total classes.' });
     }
@@ -1401,82 +1406,119 @@ router.put('/students/:id/academic-records/:courseId', authenticateToken, requir
     if (totalAttendance < 1) {
       return res.status(400).json({ error: 'Total classes must be at least 1.' });
     }
-    if (exam > 80) {
-      return res.status(400).json({ error: 'Written exam score cannot exceed 80.' });
+    if (exam > courseSetting.exam_max_score) {
+      return res.status(400).json({ error: `Written exam score cannot exceed ${courseSetting.exam_max_score}.` });
     }
     if (exam < 0) {
       return res.status(400).json({ error: 'Written exam score cannot be negative.' });
     }
-    if (screenplay > 10) {
-      return res.status(400).json({ error: 'Screenplay assignment score cannot exceed 10.' });
-    }
-    if (screenplay < 0) {
-      return res.status(400).json({ error: 'Screenplay assignment score cannot be negative.' });
-    }
-    if (shootingScript > 10) {
-      return res.status(400).json({ error: 'Shooting script assignment score cannot exceed 10.' });
-    }
-    if (shootingScript < 0) {
-      return res.status(400).json({ error: 'Shooting script assignment score cannot be negative.' });
+
+    let assignmentsTotal = 0;
+    if (hasAssignment) {
+      for (const def of definedAssignments) {
+        const score = parseFloat(parsedScores[def.id]) || 0;
+        if (score > def.max_score) {
+          return res.status(400).json({ error: `${def.name} score cannot exceed ${def.max_score}.` });
+        }
+        if (score < 0) {
+          return res.status(400).json({ error: `${def.name} score cannot be negative.` });
+        }
+        assignmentsTotal += score;
+      }
     }
 
     const transaction = db.transaction(() => {
-      // 1. Update the specific student's record with all the fields (except step2_completed)
+      // 1. Update the specific student's record
       db.prepare(`
         UPDATE student_course_enrollments
         SET attendance_classes = ?, 
             attendance_total = ?,
             exam_written = ?, 
-            assignment_screenplay = ?, 
-            assignment_shooting_script = ?,
+            assignment_scores = ?,
             updated_at = datetime('now')
         WHERE id = ? AND user_id = ?
-      `).run(attendance, totalAttendance, exam, screenplay, shootingScript, courseId, studentId);
+      `).run(attendance, totalAttendance, exam, JSON.stringify(parsedScores), courseId, studentId);
 
-      // 2. Sync the new attendance_total to EVERYONE in the same course
-      db.prepare(`
-        UPDATE student_course_enrollments
-        SET attendance_total = ?,
-            updated_at = datetime('now')
-        WHERE course_name = 'Online Filmmaking Course'
-      `).run(totalAttendance);
+      // 2. Sync the new attendance_total to EVERYONE in the same course (only if it's phase2 course logic)
+      if (hasPhase2) {
+        db.prepare(`
+          UPDATE student_course_enrollments
+          SET attendance_total = ?,
+              updated_at = datetime('now')
+          WHERE course_name = ?
+        `).run(totalAttendance, enrollment.course_name);
+      }
 
-      // 3. Recalculate pass/fail for EVERYONE in the course
+      // 3. Recalculate pass/fail for EVERYONE in the course (or just this student if it's not a synced course)
       const allEnrollments = db.prepare(`
-        SELECT id, user_id, attendance_classes, attendance_total, exam_written, assignment_screenplay, assignment_shooting_script, step2_completed
+        SELECT id, user_id, attendance_classes, attendance_total, exam_written, assignment_scores, step2_completed
         FROM student_course_enrollments
-        WHERE course_name = 'Online Filmmaking Course'
-      `).all();
+        WHERE course_name = ?
+      `).all(enrollment.course_name);
 
       let targetStudentPassed = 0;
 
       for (const e of allEnrollments) {
         const attClasses = e.attendance_classes || 0;
-        const attTotal = e.attendance_total || 22;
+        const attTotal = e.attendance_total || courseSetting.total_classes;
         const eExam = e.exam_written || 0;
-        const eScr = e.assignment_screenplay || 0;
-        const eShoot = e.assignment_shooting_script || 0;
+        
+        let eScores = {};
+        try {
+          eScores = JSON.parse(e.assignment_scores || '{}');
+        } catch(err) {}
+
+        let eAssTotal = 0;
+        if (hasAssignment) {
+          for (const def of definedAssignments) {
+            eAssTotal += parseFloat(eScores[def.id]) || 0;
+          }
+        }
         
         const attPercentage = attTotal > 0 ? (attClasses / attTotal) * 100 : 0;
-        const totalM = eExam + eScr + eShoot;
-        const pass = (attPercentage >= 80 && totalM >= 33) ? 1 : 0;
+        const totalM = eExam + eAssTotal;
+        
+        // Dynamic pass condition
+        let pass = 0;
+        if (hasPhase2) {
+          pass = (attPercentage >= 80 && totalM >= courseSetting.exam_pass_mark) ? 1 : 0;
+        } else {
+          // simple pass mark
+          pass = totalM >= courseSetting.exam_pass_mark ? 1 : 0;
+        }
 
         if (e.id === Number(courseId) && e.user_id === Number(studentId)) {
           targetStudentPassed = pass;
         }
 
         if (pass === 0) {
-          db.prepare(`
-            UPDATE student_course_enrollments
-            SET step2_completed = 0, step3_completed = 0, step4_completed = 0
-            WHERE id = ? AND user_id = ?
-          `).run(e.id, e.user_id);
+          if (hasPhase2) {
+            db.prepare(`
+              UPDATE student_course_enrollments
+              SET step2_completed = 0, step3_completed = 0, step4_completed = 0
+              WHERE id = ? AND user_id = ?
+            `).run(e.id, e.user_id);
+          } else {
+            db.prepare(`
+              UPDATE student_course_enrollments
+              SET step2_completed = 0
+              WHERE id = ? AND user_id = ?
+            `).run(e.id, e.user_id);
+          }
         } else {
-          db.prepare(`
-            UPDATE student_course_enrollments
-            SET step2_completed = 1
-            WHERE id = ? AND user_id = ?
-          `).run(e.id, e.user_id);
+          if (hasPhase2) {
+            db.prepare(`
+              UPDATE student_course_enrollments
+              SET step2_completed = 1
+              WHERE id = ? AND user_id = ?
+            `).run(e.id, e.user_id);
+          } else {
+            db.prepare(`
+              UPDATE student_course_enrollments
+              SET step2_completed = 1, step4_completed = 1
+              WHERE id = ? AND user_id = ?
+            `).run(e.id, e.user_id);
+          }
         }
       }
       

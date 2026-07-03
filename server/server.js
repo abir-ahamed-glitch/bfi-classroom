@@ -39,6 +39,7 @@ import feesRoutes from './routes/fees.js';
 import feeTrackerRoutes from './routes/fee-tracker.js';
 import batchRoutes from './routes/batches.js';
 import studentExportRoutes from './routes/student-export.js';
+import courseSettingsRoutes from './routes/course-settings.js';
 import { runBatchStatusAutomation } from './utils/batchStatusAutomation.js';
 import broadcastRoutes from './routes/broadcast.js';
 import trashRoutes from './routes/trash.js';
@@ -405,6 +406,7 @@ app.use('/api/admin/batches', batchRoutes);
 app.use('/api/student-export', studentExportRoutes);
 app.use('/api/admin/broadcast', broadcastRoutes);
 app.use('/api/admin/trash', trashRoutes);
+app.use('/api/admin/course-settings', courseSettingsRoutes);
 
 app.use('/api', (req, res) => {
   res.status(404).json({ error: `API route not found: ${req.method} ${req.originalUrl}` });

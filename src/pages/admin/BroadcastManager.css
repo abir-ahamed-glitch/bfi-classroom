@@ -1466,3 +1466,24 @@
   border-radius: 12px;
   font-weight: 500;
 }
+
+/* ─── Attachment Preview Cards ─────────────────────────────────── */
+.bc-attachment-card {
+  transition: transform 0.2s, border-color 0.2s, box-shadow 0.2s;
+}
+
+.bc-attachment-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(124, 58, 237, 0.4);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+}
+
+.bc-attachment-card .bc-delete-btn {
+  opacity: 0.8;
+  transition: opacity 0.2s, background-color 0.2s;
+}
+
+.bc-attachment-card .bc-delete-btn:hover {
+  opacity: 1;
+  background-color: #ef4444 !important;
+}
