@@ -697,7 +697,7 @@ function PermissionsPanel() {
 
 // ─── Unified Broadcast & Announcements Manager ───────────────────────
 export default function BroadcastManager() {
-  const { showConfirm } = useModal();
+  const { showAlert, showConfirm } = useModal();
   const { currentUser } = useAuth();
   const textareaRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -1037,12 +1037,12 @@ export default function BroadcastManager() {
         });
 
         if (res.ok) {
-          showToast(scheduledAt ? 'Standard Notice scheduled successfully!' : 'Standard Notice posted successfully!');
+          await showAlert(scheduledAt ? 'Standard Notice scheduled successfully!' : 'Standard Notice posted successfully!', { title: 'Success' });
           resetForm();
           fetchHistory();
         } else {
           const err = await res.json();
-          showToast(err.error || 'Failed to post standard notice', 'error');
+          await showAlert(err.error || 'Failed to post standard notice', { title: 'Notice Failed' });
         }
       } else {
         // Submit Multi-channel Broadcast
@@ -1073,7 +1073,7 @@ export default function BroadcastManager() {
         const data = await res.json();
 
         if (!data.broadcast) {
-          showToast(data.error || 'Failed to create broadcast', 'error');
+          await showAlert(data.error || 'Failed to create broadcast', { title: 'Broadcast Failed' });
           setSending(false);
           return;
         }
@@ -1081,7 +1081,7 @@ export default function BroadcastManager() {
         const broadcastId = data.broadcast.id;
 
         if (scheduledAt) {
-          showToast('Broadcast scheduled successfully!');
+          await showAlert('Broadcast scheduled successfully!', { title: 'Success' });
           resetForm();
           fetchHistory();
         } else {
@@ -1092,16 +1092,16 @@ export default function BroadcastManager() {
           });
           const sendData = await sendRes.json();
           if (sendData.success) {
-            showToast(`Sending to ${sendData.total_recipients} students... ✓`);
+            await showAlert(`Broadcast sent successfully to ${sendData.total_recipients} students!`, { title: 'Broadcast Sent' });
             resetForm();
-            setTimeout(fetchHistory, 3000);
+            fetchHistory();
           } else {
-            showToast(sendData.error || 'Failed to send', 'error');
+            await showAlert(sendData.error || 'Failed to send', { title: 'Broadcast Failed' });
           }
         }
       }
     } catch {
-      showToast('An error occurred', 'error');
+      await showAlert('An error occurred', { title: 'Error' });
     }
     setSending(false);
   };
@@ -1133,14 +1133,14 @@ export default function BroadcastManager() {
       });
       const data = await res.json();
       if (data.broadcast) {
-        showToast('Draft saved successfully!');
+        await showAlert('Draft saved successfully!', { title: 'Success' });
         resetForm();
         fetchHistory();
       } else {
-        showToast(data.error || 'Failed to save draft', 'error');
+        await showAlert(data.error || 'Failed to save draft', { title: 'Draft Failed' });
       }
     } catch {
-      showToast('An error occurred', 'error');
+      await showAlert('An error occurred while saving draft', { title: 'Draft Failed' });
     }
     setSavingDraft(false);
   };
