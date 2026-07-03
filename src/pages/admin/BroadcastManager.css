@@ -1487,3 +1487,16 @@
   opacity: 1;
   background-color: #ef4444 !important;
 }
+
+/* ─── GPU Compositing and Layer Stabilization ─────────────────────── */
+.bc-btn,
+.bc-btn-primary,
+.bc-btn-ghost,
+.bc-history-row,
+.bc-toggle,
+.glass-panel,
+input[type="checkbox"] {
+  transform: translate3d(0, 0, 0);
+  backface-visibility: hidden;
+  will-change: transform;
+}

@@ -1935,11 +1935,12 @@ export default function BroadcastManager() {
               background: 'rgba(255, 255, 255, 0.02)',
               border: '1px solid rgba(255, 255, 255, 0.05)',
               borderRadius: '10px',
-              padding: '0.6rem 0.8rem',
+              padding: '0 0.8rem',
+              height: '42px',
+              minHeight: '42px',
               marginBottom: '0.2rem',
               fontSize: '0.8rem',
-              gap: '1rem',
-              flexWrap: 'wrap'
+              boxSizing: 'border-box'
             }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                 <input
