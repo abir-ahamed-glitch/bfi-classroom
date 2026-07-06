@@ -871,6 +871,13 @@ export default function Profile() {
               </div>
             </div>
             <div className="input-group locked" title="Please contact the institute">
+              <label>Student ID <AlertCircle size={14} className="text-accent" style={{ verticalAlign: 'middle', marginLeft: '4px' }}/></label>
+              <div className="locked-input-container">
+                <input type="text" className="input-glass" readOnly value={profile?.student_id || profile?.studentId || 'Not Assigned'} disabled style={{ cursor: 'not-allowed' }} />
+                <Lock size={14} className="lock-icon" />
+              </div>
+            </div>
+            <div className="input-group locked" title="Please contact the institute">
               <label>Student Batch <AlertCircle size={14} className="text-accent" style={{ verticalAlign: 'middle', marginLeft: '4px' }}/></label>
               <div className="locked-input-container">
                 <input type="text" className="input-glass" readOnly value={profile?.batch_number ? `${getOrdinalSuffix(profile.batch_number)} Batch` : ''} disabled style={{ cursor: 'not-allowed' }} />

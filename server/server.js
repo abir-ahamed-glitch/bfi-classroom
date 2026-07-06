@@ -383,8 +383,33 @@ const serveReportScreenshot = (req, res) => {
 };
 app.get('/uploads/report-screenshots/:filename', authenticateToken, serveReportScreenshot);
 app.get('/bfi-classroom/uploads/report-screenshots/:filename', authenticateToken, serveReportScreenshot);
-app.use('/bfi-classroom/media', express.static(path.join(__dirname, '..', 'uploads')));
-app.use('/media', express.static(path.join(__dirname, '..', 'uploads'))); // Keep root for backwards compatibility
+const serveStaticOptions = {
+  setHeaders: (res, filePath) => {
+    const ext = path.extname(filePath).toLowerCase();
+    if (ext === '.pdf') {
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', 'inline');
+    } else if (['.png', '.jpg', '.jpeg', '.gif', '.webp'].includes(ext)) {
+      res.setHeader('Content-Disposition', 'inline');
+    }
+  }
+};
+
+app.use(['/bfi-classroom/media', '/media'], (req, res, next) => {
+  res.removeHeader('X-Frame-Options');
+  res.removeHeader('Content-Security-Policy');
+  
+  let urlPath = req.url || '/';
+  if (urlPath.split('?')[0].endsWith('/view')) {
+    const parts = urlPath.split('?');
+    parts[0] = parts[0].slice(0, -5);
+    req.url = parts.join('?');
+  }
+  
+  next();
+});
+app.use('/bfi-classroom/media', express.static(path.join(__dirname, '..', 'uploads'), serveStaticOptions));
+app.use('/media', express.static(path.join(__dirname, '..', 'uploads'), serveStaticOptions)); // Keep root for backwards compatibility
 
 app.use('/api/auth', authRoutes);
 app.use('/api/admin', adminRoutes);
@@ -575,7 +600,6 @@ app.use((err, req, res, _next) => {
   res.status(500).json({ error: 'Internal server error' });
 });
 
-// Start Server
 startCommunityScheduler(io);
 startAnnouncementScheduler(io);
 httpServer.listen(PORT, () => {

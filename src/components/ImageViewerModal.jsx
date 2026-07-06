@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { X, ChevronLeft, ChevronRight } from 'lucide-react';
+import { X, ChevronLeft, ChevronRight, ZoomIn, ZoomOut } from 'lucide-react';
 
 export default function ImageViewerModal({ imageViewer, setImageViewer, allImages }) {
   const [zoom, setZoom] = useState(1);
@@ -34,15 +34,34 @@ export default function ImageViewerModal({ imageViewer, setImageViewer, allImage
     }
   };
 
+  const zoomIn = (e) => {
+    if (e) e.stopPropagation();
+    setZoom(prev => Math.min(prev + 0.25, 5.0));
+  };
+
+  const zoomOut = (e) => {
+    if (e) e.stopPropagation();
+    setZoom(prev => {
+      const newZoom = Math.max(prev - 0.25, 0.5);
+      if (newZoom <= 1) {
+        setPan({ x: 0, y: 0 });
+      }
+      return newZoom;
+    });
+  };
+
+  const resetZoom = (e) => {
+    if (e) e.stopPropagation();
+    setZoom(1.0);
+    setPan({ x: 0, y: 0 });
+  };
+
   const handleWheel = (e) => {
     e.preventDefault();
     setZoom(prevZoom => {
-      // Sensitivity of zoom
       const zoomFactor = 0.05;
       const delta = e.deltaY > 0 ? -zoomFactor : zoomFactor;
       const newZoom = Math.max(0.5, Math.min(prevZoom + delta, 5));
-      
-      // If zooming out to 1, reset pan
       if (newZoom <= 1) {
         setPan({ x: 0, y: 0 });
       }
@@ -229,7 +248,7 @@ export default function ImageViewerModal({ imageViewer, setImageViewer, allImage
             style={{ 
               zIndex: 20,
               position: 'absolute',
-              bottom: hasMultiple ? '100px' : '40px',
+              bottom: hasMultiple ? '150px' : '80px',
               color: 'white',
               background: 'rgba(0,0,0,0.6)',
               padding: '8px 16px',
@@ -242,6 +261,40 @@ export default function ImageViewerModal({ imageViewer, setImageViewer, allImage
             {imageViewer.caption}
           </div>
         )}
+
+        {/* Floating Zoom Toolbar */}
+        <div 
+          style={{
+            position: 'absolute',
+            bottom: hasMultiple ? '90px' : '20px',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            background: 'rgba(0, 0, 0, 0.75)',
+            border: '1px solid rgba(255, 255, 255, 0.15)',
+            padding: '0.4rem 0.8rem',
+            borderRadius: '30px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.75rem',
+            boxShadow: '0 8px 32px rgba(0,0,0,0.3)',
+            zIndex: 30
+          }}
+          onClick={e => e.stopPropagation()}
+        >
+          <button onClick={zoomOut} disabled={zoom <= 0.5} style={{ background: 'none', border: 'none', color: '#fff', cursor: 'pointer', opacity: zoom <= 0.5 ? 0.4 : 1, display: 'flex', padding: '4px' }}>
+            <ZoomOut size={16} />
+          </button>
+          <span style={{ color: '#fff', fontSize: '0.8rem', fontWeight: 600, minWidth: '40px', textAlign: 'center', userSelect: 'none' }}>
+            {Math.round(zoom * 100)}%
+          </span>
+          <button onClick={zoomIn} disabled={zoom >= 5.0} style={{ background: 'none', border: 'none', color: '#fff', cursor: 'pointer', opacity: zoom >= 5.0 ? 0.4 : 1, display: 'flex', padding: '4px' }}>
+            <ZoomIn size={16} />
+          </button>
+          <div style={{ width: '1px', height: '14px', background: 'rgba(255,255,255,0.2)' }} />
+          <button onClick={resetZoom} style={{ background: 'none', border: 'none', color: '#fff', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 600, padding: '2px 6px' }}>
+            Reset
+          </button>
+        </div>
 
         {/* Next Button */}
         {hasMultiple && currentIndex < allImages.length - 1 && (

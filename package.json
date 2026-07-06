@@ -18,6 +18,8 @@
     "@emoji-mart/data": "^1.2.1",
     "@emoji-mart/react": "^1.1.1",
     "@mlc-ai/web-llm": "^0.2.82",
+    "@react-pdf-viewer/core": "^3.12.0",
+    "@react-pdf-viewer/default-layout": "^3.12.0",
     "bcryptjs": "^3.0.3",
     "better-sqlite3": "^12.8.0",
     "cookie-parser": "^1.4.7",
@@ -41,7 +43,7 @@
     "multer": "^2.1.1",
     "nodemailer": "^8.0.7",
     "pdf-parse": "^2.4.5",
-    "pdfjs-dist": "^6.0.227",
+    "pdfjs-dist": "^3.11.174",
     "pdfkit": "^0.19.1",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
@@ -53,7 +55,8 @@
     "recharts": "^3.8.1",
     "socket.io": "^4.8.3",
     "socket.io-client": "^4.8.3",
-    "xlsx": "^0.18.5"
+    "xlsx": "^0.18.5",
+    "yet-another-react-lightbox": "^3.32.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",

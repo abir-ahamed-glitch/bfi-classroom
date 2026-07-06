@@ -3,23 +3,53 @@ import { createPortal } from 'react-dom';
 import { useSearchParams } from 'react-router-dom';
 import { io } from 'socket.io-client';
 import { Megaphone, AlertTriangle, Clock, Calendar, ChevronDown, ChevronUp, Layers, GraduationCap, X, Download, FileText, File, Music, Video, Eye, Paperclip, Image as ImageIcon, Printer, ZoomIn, ZoomOut, RotateCcw } from 'lucide-react';
+import ImageViewer from '../components/ImageViewer';
+import PdfViewer from '../components/PdfViewer';
 import { resolveMediaUrl } from '../utils/mediaUtils';
 import { renderAsync } from 'docx-preview';
+import Lightbox from "yet-another-react-lightbox";
+import "yet-another-react-lightbox/styles.css";
+import Zoom from "yet-another-react-lightbox/plugins/zoom";
+import Fullscreen from "yet-another-react-lightbox/plugins/fullscreen";
+import DownloadPlugin from "yet-another-react-lightbox/plugins/download";
+
+const parseServerDate = (dateStr) => {
+  if (!dateStr) return null;
+  if (typeof dateStr === 'string' && !dateStr.endsWith('Z') && !dateStr.includes('+')) {
+    return new Date(dateStr.replace(' ', 'T') + 'Z');
+  }
+  return new Date(dateStr);
+};
 
 const parseAttachment = (value) => {
-  if (!value) return null;
-  if (typeof value === 'string' && value.trim().startsWith('{')) {
-    try {
-      return JSON.parse(value);
-    } catch (e) {
-      // ignore
+  if (!value) return [];
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed.startsWith('[')) {
+      try {
+        const arr = JSON.parse(trimmed);
+        return Array.isArray(arr) ? arr : [arr];
+      } catch (e) { /* ignore */ }
     }
+    if (trimmed.startsWith('{')) {
+      try {
+        return [JSON.parse(trimmed)];
+      } catch (e) { /* ignore */ }
+    }
+    const lower = trimmed.toLowerCase();
+    let name = 'notice_attachment';
+    let type = 'application/octet-stream';
+    if (lower.endsWith('.pdf')) { name += '.pdf'; type = 'application/pdf'; }
+    else if (lower.endsWith('.doc') || lower.endsWith('.docx')) { name += (lower.endsWith('.docx') ? '.docx' : '.doc'); type = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'; }
+    else if (lower.match(/\.(png|jpe?g|gif|webp|svg)$/)) { 
+      const ext = lower.split('.').pop(); 
+      name += `.${ext}`; 
+      type = `image/${ext === 'jpg' ? 'jpeg' : ext}`; 
+    }
+    else { name += '.png'; type = 'image/png'; } // fallback
+    return [{ name, type, url: value }];
   }
-  return {
-    name: 'notice_image.png',
-    type: 'image/png',
-    url: value
-  };
+  return [];
 };
 
 const FileIcon = ({ type, size = 22 }) => {
@@ -343,54 +373,38 @@ function DocxRenderer({ url, name, handleDownload, onClose }) {
   );
 }
 
+
+
 function LightboxContent({ attachment, handleDownload, onClose }) {
   const { type, url, name } = attachment;
 
   const isWordDoc = type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' || 
                     type === 'application/msword' || 
-                    (name && (name.endsWith('.docx') || name.endsWith('.doc')));
+                    type?.includes('word') ||
+                    type?.includes('document') ||
+                    (name && (name.toLowerCase().endsWith('.docx') || name.toLowerCase().endsWith('.doc')));
+
+  const isImage = type?.startsWith('image/') || (name && /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(name));
+  const isPdf = type === 'application/pdf' || (name && name.toLowerCase().endsWith('.pdf'));
+  const isVideo = type?.startsWith('video/') || (name && /\.(mp4|webm|ogg|mov)$/i.test(name));
+  const isAudio = type?.startsWith('audio/') || (name && /\.(mp3|wav|ogg|aac)$/i.test(name));
+  const isText = type === 'text/plain' || type?.startsWith('text/') || (name && name.toLowerCase().endsWith('.txt'));
 
   if (isWordDoc) {
     return <DocxRenderer url={resolveMediaUrl(url)} name={name} handleDownload={handleDownload} onClose={onClose} />;
   }
 
-  if (type.startsWith('image/')) {
-    return (
-      <img
-        className="lb-img"
-        src={resolveMediaUrl(url)}
-        alt={name}
-        style={{
-          maxWidth: '90%',
-          maxHeight: '80vh',
-          objectFit: 'contain',
-          borderRadius: '10px',
-          boxShadow: '0 24px 80px rgba(0,0,0,0.7)',
-          animation: 'lb-img-in 0.25s ease',
-          userSelect: 'none'
-        }}
-      />
-    );
+  if (isImage) {
+    return <ImageViewer url={url} name={name} onClose={onClose} />;
   }
 
-  if (type === 'application/pdf') {
-    return (
-      <iframe
-        src={resolveMediaUrl(url)}
-        title={name}
-        style={{
-          width: '85%',
-          height: '80vh',
-          border: '1px solid rgba(255,255,255,0.15)',
-          borderRadius: '8px',
-          boxShadow: '0 24px 80px rgba(0,0,0,0.7)',
-          backgroundColor: '#323639'
-        }}
-      />
-    );
+  if (isPdf) {
+    const base64Url = `/api/admin/broadcast/file/base64?path=${encodeURIComponent(url)}`;
+    return <PdfViewer url={base64Url} name={name} containerStyle={{ width: '85%', height: '80vh' }} />;
   }
 
-  if (type.startsWith('video/')) {
+
+  if (isVideo) {
     return (
       <video
         src={resolveMediaUrl(url)}
@@ -406,7 +420,7 @@ function LightboxContent({ attachment, handleDownload, onClose }) {
     );
   }
 
-  if (type.startsWith('audio/')) {
+  if (isAudio) {
     return (
       <div style={{
         background: 'var(--bg-secondary, #0e2238)',
@@ -430,7 +444,7 @@ function LightboxContent({ attachment, handleDownload, onClose }) {
     );
   }
 
-  if (type === 'text/plain' || type.startsWith('text/')) {
+  if (isText) {
     let textStr = '';
     const fileUrl = resolveMediaUrl(url);
     if (fileUrl.startsWith('data:')) {
@@ -465,6 +479,7 @@ function LightboxContent({ attachment, handleDownload, onClose }) {
       </div>
     );
   }
+
 
   return (
     <div style={{
@@ -569,6 +584,14 @@ export default function NoticeBoard() {
 
     socket.on('new_announcement', () => {
       // Re-fetch notices when admin broadcasts a new one
+      fetchNotices();
+    });
+
+    socket.on('notice_recalled', () => {
+      fetchNotices();
+    });
+
+    socket.on('broadcast_recalled', () => {
       fetchNotices();
     });
 
@@ -749,10 +772,10 @@ export default function NoticeBoard() {
                       </h3>
                       <div style={{ display: 'flex', gap: '1rem', marginTop: '0.4rem', opacity: 0.7, flexWrap: 'wrap' }}>
                         <span style={{ fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                          <Calendar size={14} /> {new Date(notice.scheduled_at || notice.created_at).toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
+                          <Calendar size={14} /> {parseServerDate(notice.scheduled_at || notice.created_at)?.toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
                         </span>
                         <span style={{ fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                          <Clock size={14} /> {new Date(notice.scheduled_at || notice.created_at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}
+                          <Clock size={14} /> {parseServerDate(notice.scheduled_at || notice.created_at)?.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}
                         </span>
                       </div>
                     </div>
@@ -822,88 +845,93 @@ export default function NoticeBoard() {
                   {notice.content}
                   
                   {notice.image_url && (() => {
-                    const attachment = parseAttachment(notice.image_url);
-                    if (!attachment || !attachment.url) return null;
-                    const isImage = attachment.type?.startsWith('image/');
-                    
-                    if (isImage) {
-                      return (
-                        <div 
-                          onClick={() => setLightbox(attachment)}
-                          style={{ 
-                            marginTop: '1.5rem', 
-                            borderRadius: '8px', 
-                            overflow: 'hidden', 
-                            maxWidth: '100%', 
-                            maxHeight: '450px', 
-                            border: '1px solid var(--glass-border)', 
-                            background: 'rgba(0,0,0,0.1)',
-                            cursor: 'zoom-in',
-                            transition: 'opacity 0.2s',
-                            display: 'flex',
-                            justifyContent: 'center',
-                            alignItems: 'center'
-                          }}
-                          onMouseEnter={e => e.currentTarget.style.opacity = 0.9}
-                          onMouseLeave={e => e.currentTarget.style.opacity = 1}
-                        >
-                          <img src={resolveMediaUrl(attachment.url)} alt={attachment.name} style={{ maxWidth: '100%', maxHeight: '450px', objectFit: 'contain', display: 'block' }} />
-                        </div>
-                      );
-                    } else {
-                      return (
-                        <div 
-                          onClick={() => setLightbox(attachment)}
-                          style={{ 
-                            marginTop: '1.5rem', 
-                            borderRadius: '10px', 
-                            border: '1px solid var(--glass-border)', 
-                            background: 'rgba(255,255,255,0.03)',
-                            padding: '1rem',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'space-between',
-                            cursor: 'pointer',
-                            transition: 'all 0.2s'
-                          }}
-                          onMouseEnter={e => {
-                            e.currentTarget.style.background = 'rgba(255,255,255,0.06)';
-                            e.currentTarget.style.borderColor = 'rgba(255,255,255,0.15)';
-                          }}
-                          onMouseLeave={e => {
-                            e.currentTarget.style.background = 'rgba(255,255,255,0.03)';
-                            e.currentTarget.style.borderColor = 'var(--glass-border)';
-                          }}
-                        >
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', minWidth: 0 }}>
-                            <div style={{ 
-                              width: '42px', 
-                              height: '42px', 
-                              borderRadius: '8px', 
-                              background: 'rgba(255,255,255,0.05)', 
-                              display: 'flex', 
-                              alignItems: 'center', 
-                              justifyContent: 'center',
-                              color: 'var(--accent-primary, #60a5fa)',
-                              flexShrink: 0
-                            }}>
-                              <FileIcon type={attachment.type} />
-                            </div>
-                            <div style={{ minWidth: 0 }}>
-                              <p style={{ margin: 0, fontWeight: 600, color: 'var(--text-primary)', fontSize: '0.95rem', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
-                                {attachment.name}
-                              </p>
-                              <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: '0.75rem', textTransform: 'uppercase' }}>
-                                {attachment.type.split('/')[1] || 'FILE'}
-                              </p>
-                            </div>
-                          </div>
-                          <span style={{ fontSize: '0.8rem', color: 'var(--accent-primary, #60a5fa)', fontWeight: 500, display: 'flex', alignItems: 'center', gap: '4px' }}>
-                            <Eye size={14} /> Preview
-                          </span>
-                        </div>
-                      );
-                    }
+                    const attachments = parseAttachment(notice.image_url);
+                    if (!attachments.length) return null;
+                    return (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', marginTop: '1.5rem' }}>
+                        {attachments.map((attachment, idx) => {
+                          const isImage = attachment.type?.startsWith('image/');
+                          if (isImage) {
+                            return (
+                              <div 
+                                key={idx}
+                                onClick={() => setLightbox(attachment)}
+                                style={{ 
+                                  borderRadius: '8px', 
+                                  overflow: 'hidden', 
+                                  maxWidth: '100%', 
+                                  maxHeight: '450px', 
+                                  border: '1px solid var(--glass-border)', 
+                                  background: 'rgba(0,0,0,0.1)',
+                                  cursor: 'zoom-in',
+                                  transition: 'opacity 0.2s',
+                                  display: 'flex',
+                                  justifyContent: 'center',
+                                  alignItems: 'center'
+                                }}
+                                onMouseEnter={e => e.currentTarget.style.opacity = 0.9}
+                                onMouseLeave={e => e.currentTarget.style.opacity = 1}
+                              >
+                                <img src={resolveMediaUrl(attachment.url)} alt={attachment.name} style={{ maxWidth: '100%', maxHeight: '450px', objectFit: 'contain', display: 'block' }} />
+                              </div>
+                            );
+                          } else {
+                            return (
+                              <div 
+                                key={idx}
+                                onClick={() => setLightbox(attachment)}
+                                style={{ 
+                                  borderRadius: '10px', 
+                                  border: '1px solid var(--glass-border)', 
+                                  background: 'rgba(255,255,255,0.03)',
+                                  padding: '1rem',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'space-between',
+                                  cursor: 'pointer',
+                                  transition: 'all 0.2s'
+                                }}
+                                onMouseEnter={e => {
+                                  e.currentTarget.style.background = 'rgba(255,255,255,0.06)';
+                                  e.currentTarget.style.borderColor = 'rgba(255,255,255,0.15)';
+                                }}
+                                onMouseLeave={e => {
+                                  e.currentTarget.style.background = 'rgba(255,255,255,0.03)';
+                                  e.currentTarget.style.borderColor = 'var(--glass-border)';
+                                }}
+                              >
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', minWidth: 0 }}>
+                                  <div style={{ 
+                                    width: '42px', 
+                                    height: '42px', 
+                                    borderRadius: '8px', 
+                                    background: 'rgba(255,255,255,0.05)', 
+                                    display: 'flex', 
+                                    alignItems: 'center', 
+                                    justifyContent: 'center',
+                                    color: 'var(--accent-primary, #60a5fa)',
+                                    flexShrink: 0
+                                  }}>
+                                    <FileIcon type={attachment.type} />
+                                  </div>
+                                  <div style={{ minWidth: 0 }}>
+                                    <p style={{ margin: 0, fontWeight: 600, color: 'var(--text-primary)', fontSize: '0.95rem', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
+                                      {attachment.name}
+                                    </p>
+                                    <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: '0.75rem', textTransform: 'uppercase' }}>
+                                      {attachment.type.split('/')[1] || 'FILE'}
+                                    </p>
+                                  </div>
+                                </div>
+                                <span style={{ fontSize: '0.8rem', color: 'var(--accent-primary, #60a5fa)', fontWeight: 500, display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                  <Eye size={14} /> Preview
+                                </span>
+                              </div>
+                            );
+                          }
+                        })}
+                      </div>
+                    );
                   })()}
                 </div>
                 
@@ -968,6 +996,19 @@ export default function NoticeBoard() {
       {/* ── Lightbox Portal ── */}
       {lightbox && (() => {
         const attachment = typeof lightbox === 'string' ? { name: 'notice_image.png', type: 'image/png', url: lightbox } : lightbox;
+        const isImage = attachment.type?.startsWith('image/') || (attachment.name && /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(attachment.name));
+        
+        if (isImage) {
+          return (
+            <Lightbox
+              open={true}
+              close={() => setLightbox(null)}
+              slides={[{ src: resolveMediaUrl(attachment.url), alt: attachment.name, downloadUrl: resolveMediaUrl(attachment.url) }]}
+              plugins={[Zoom, Fullscreen, DownloadPlugin]}
+            />
+          );
+        }
+
         const isDoc = attachment.type === 'application/pdf' || 
                       attachment.type?.includes('word') || 
                       attachment.type?.includes('document') || 
@@ -975,12 +1016,12 @@ export default function NoticeBoard() {
         return createPortal(
           <div
             className="lb-backdrop"
-            onClick={e => { if (e.target === e.currentTarget) setLightbox(null); }}
+            onClick={() => setLightbox(null)}
           >
             {/* Top bar */}
             <div 
               className="lb-topbar"
-              onClick={e => { if (e.target === e.currentTarget) setLightbox(null); }}
+              onClick={e => e.stopPropagation()}
               style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '1rem', width: '100%', boxSizing: 'border-box' }}
             >
               <span style={{ color: '#fff', fontSize: '1.1rem', fontWeight: 600, marginLeft: '1rem', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap', maxWidth: '70%' }}>
@@ -1037,7 +1078,7 @@ export default function NoticeBoard() {
             {/* Main image area */}
             <div 
               className="lb-main"
-              onClick={e => { if (e.target === e.currentTarget) setLightbox(null); }}
+              onClick={e => e.stopPropagation()}
               style={{
                 position: 'relative',
                 width: '100%', 
@@ -1081,6 +1122,10 @@ export default function NoticeBoard() {
         @keyframes lb-img-in {
           from { opacity: 0; transform: scale(0.96); }
           to   { opacity: 1; transform: scale(1); }
+        }
+        @keyframes spin {
+          from { transform: rotate(0deg); }
+          to   { transform: rotate(360deg); }
         }
       `}</style>
     </div>

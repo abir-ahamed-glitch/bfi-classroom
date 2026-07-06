@@ -73,11 +73,16 @@ function broadcastAuth(req, res, next) {
 
 // ── resolveAudience helper ──────────────────────────────────────────────────
 export function resolveAudience(audienceType, audienceValue, senderPermission) {
+  // Only target ADMITTED students — those who have been assigned a batch.
+  // Registered-only students (no batch_number) are leads and must never receive broadcasts.
   let query = `
     SELECT DISTINCT u.id, u.first_name, u.last_name, sp.batch_number
     FROM users u
     LEFT JOIN student_profiles sp ON sp.user_id = u.id
-    WHERE u.role = 'student' AND u.is_active = 1
+    WHERE u.role = 'student'
+      AND u.is_active = 1
+      AND sp.batch_number IS NOT NULL
+      AND sp.batch_number != ''
   `;
   const params = [];
 
@@ -105,7 +110,7 @@ export function resolveAudience(audienceType, audienceValue, senderPermission) {
     )`;
     params.push(...bindValues, ...bindValues, ...bindValues);
   }
-  // 'all' — no additional filter
+  // 'all' — admitted filter already in base WHERE clause above
 
   if (senderPermission && senderPermission.can_send_to === 'own_batch') {
     const teacherProfile = db.prepare(
@@ -137,24 +142,68 @@ export async function deliverBroadcast(broadcastId, students, io) {
   let deliveredCount = 0;
   let failedCount = 0;
 
+  // Pre-compute attachment metadata for delivery
+  const firstImageAttachment = attachments.find(a => a.file_type?.startsWith('image/'));
+  const firstAttachment = attachments[0] || null;
+  // JSON-serialized list for inbox messages (all attachments)
+  const attachmentsJson = attachments.length > 0 ? JSON.stringify(attachments.map(a => ({
+    id: a.id,
+    file_name: a.file_name,
+    file_path: a.file_path,
+    file_type: a.file_type,
+    file_size: a.file_size,
+  }))) : null;
+  // JSON for notice board (all attachments in NoticeBrd parseAttachment format)
+  const noticeImageJson = attachments.length > 0 ? JSON.stringify(attachments.map(a => ({
+    name: a.file_name,
+    type: a.file_type,
+    url: a.file_path,
+  }))) : null;
+  // Notification link: prefer notice board if that channel is active
+  const notifLink = (broadcast.channels || '').includes('notice') ? '/notices' : '/inbox';
+  // Notification image: use first image attachment if available
+  const notifImageUrl = firstImageAttachment ? firstImageAttachment.file_path : null;
+
   for (const student of students) {
     let inboxOk = false;
     let notifOk = false;
     let noticeOk = false;
     let failedReason = null;
+    let announcementId = null;
 
     try {
-      // ── Channel 1: Inbox message ──────────────────────────────────────────
+      // ── Channel 1: Notice Board ───────────────────────────────────────────
+      if (sendNotice) {
+        const noticePriority = broadcast.priority === 'urgent' ? 'high' : 'normal';
+        const noticeResult = db.prepare(`
+          INSERT INTO announcements (admin_id, title, content, priority, visible_to_user_id, is_broadcast, image_url, broadcast_id)
+          VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+        `).run(broadcast.sender_id, broadcast.title, broadcast.message, noticePriority, student.id, noticeImageJson, broadcast.id);
+        announcementId = noticeResult.lastInsertRowid;
+
+        if (io) {
+          io.to(`user:${student.id}`).emit('new_announcement', {
+            title: broadcast.title,
+            priority: noticePriority,
+            is_broadcast: true,
+          });
+        }
+        noticeOk = true;
+      }
+
+      // ── Channel 2: Inbox message ──────────────────────────────────────────
       if (sendInbox) {
         const messageResult = db.prepare(`
-          INSERT INTO messages (sender_id, receiver_id, content, is_broadcast, broadcast_id, allow_reply)
-          VALUES (?, ?, ?, 1, ?, ?)
+          INSERT INTO messages (sender_id, receiver_id, content, is_broadcast, broadcast_id, allow_reply, attachment_url, attachment_type)
+          VALUES (?, ?, ?, 1, ?, ?, ?, ?)
         `).run(
           broadcast.sender_id,
           student.id,
           encryptMessageContent(broadcast.message),
           broadcast.id,
-          broadcast.allow_reply
+          broadcast.allow_reply,
+          attachmentsJson,
+          attachmentsJson ? 'broadcast_attachments' : null
         );
         const messageId = messageResult.lastInsertRowid;
 
@@ -167,22 +216,25 @@ export async function deliverBroadcast(broadcastId, students, io) {
             is_broadcast: 1,
             broadcast_id: broadcast.id,
             allow_reply: broadcast.allow_reply,
+            attachment_url: attachmentsJson,
+            attachment_type: attachmentsJson ? 'broadcast_attachments' : null,
             created_at: new Date().toISOString(),
           });
         }
         inboxOk = true;
       }
 
-      // ── Channel 2: Bell notification ──────────────────────────────────────
+      // ── Channel 3: Bell notification ──────────────────────────────────────
       if (sendNotification) {
         const notifType = broadcast.priority === 'urgent' ? 'urgent_broadcast' : 'broadcast';
         const truncatedMsg = broadcast.message.length > 120
           ? broadcast.message.substring(0, 120) + '...'
           : broadcast.message;
+        const currentNotifLink = announcementId ? `/notices?expand=${announcementId}` : notifLink;
 
         const notifResult = db.prepare(
-          `INSERT INTO notifications (user_id, type, title, message, link, image_url) VALUES (?, ?, ?, ?, ?, ?)`
-        ).run(student.id, notifType, broadcast.title, truncatedMsg, '/inbox', null);
+          `INSERT INTO notifications (user_id, type, title, message, link, image_url, broadcast_id) VALUES (?, ?, ?, ?, ?, ?, ?)`
+        ).run(student.id, notifType, broadcast.title, truncatedMsg, currentNotifLink, notifImageUrl, broadcast.id);
         const notifId = notifResult.lastInsertRowid;
 
         if (io) {
@@ -191,31 +243,13 @@ export async function deliverBroadcast(broadcastId, students, io) {
             type: notifType,
             title: broadcast.title,
             message: truncatedMsg,
-            link: '/inbox',
-            image_url: null,
+            link: currentNotifLink,
+            image_url: notifImageUrl,
             created_at: new Date().toISOString(),
           });
           io.emit('new_notification');
         }
         notifOk = true;
-      }
-
-      // ── Channel 3: Notice Board ───────────────────────────────────────────
-      if (sendNotice) {
-        const noticePriority = broadcast.priority === 'urgent' ? 'high' : 'normal';
-        db.prepare(`
-          INSERT INTO announcements (admin_id, title, content, priority, visible_to_user_id, is_broadcast)
-          VALUES (?, ?, ?, ?, ?, 1)
-        `).run(broadcast.sender_id, broadcast.title, broadcast.message, noticePriority, student.id);
-
-        if (io) {
-          io.to(`user:${student.id}`).emit('new_announcement', {
-            title: broadcast.title,
-            priority: noticePriority,
-            is_broadcast: true,
-          });
-        }
-        noticeOk = true;
       }
 
       deliveredCount++;
@@ -261,6 +295,45 @@ export async function deliverBroadcast(broadcastId, students, io) {
 // ════════════════════════════════════════════════════════════════════════════
 // ROUTES
 // ════════════════════════════════════════════════════════════════════════════
+
+// ── Attachment base64 by path (IDM-bypass: base64 JSON response) ──────────────
+// GET /api/admin/broadcast/file/base64?path=...
+// Serves any file inside uploads base64-encoded to bypass IDM interception.
+router.get('/file/base64', (req, res) => {
+  try {
+    const relPath = req.query.path;
+    if (!relPath) return res.status(400).json({ error: 'Path parameter is required' });
+
+    const sanitizedPath = relPath
+      .replace(/^\/bfi-classroom\/media\//, '')
+      .replace(/^\/media\//, '')
+      .replace(/^\/uploads\//, '')
+      .replace(/^\.?\//, '');
+    const filePath = path.resolve(__dirname, '../../uploads', sanitizedPath);
+
+    if (!filePath.startsWith(path.resolve(__dirname, '../../uploads'))) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: 'File not found' });
+    }
+
+    const fileBuffer = fs.readFileSync(filePath);
+    const base64Data = fileBuffer.toString('base64');
+    const ext = path.extname(filePath).toLowerCase();
+    const mimeType = ext === '.pdf' ? 'application/pdf' : 'application/octet-stream';
+
+    res.json({
+      base64: base64Data,
+      file_name: path.basename(filePath),
+      file_type: mimeType
+    });
+  } catch (err) {
+    console.error('[file base64]', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
 
 // ── Endpoint 11: Teacher Permission Management (MUST come before /:id routes) ──
 router.get('/permissions', authenticateToken, requireRole('admin'), (req, res) => {
@@ -404,8 +477,33 @@ router.post('/', authenticateToken, broadcastAuth, sanitizeInput, (req, res) => 
         VALUES (?, ?, ?, ?, ?)
       `);
       for (const f of attachment_files) {
-        if (f.file_name && f.file_path && f.file_type && f.file_size) {
-          insertAttachment.run(broadcastId, f.file_name, f.file_path, f.file_type, f.file_size);
+        let filePath = f.file_path;
+        let fileSize = f.file_size;
+
+        if (f.editedUrl && f.editedUrl.startsWith('data:')) {
+          try {
+            const matches = f.editedUrl.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+            if (matches && matches.length === 3) {
+              const mimeType = matches[1];
+              const buffer = Buffer.from(matches[2], 'base64');
+              
+              const filename = path.basename(f.file_path);
+              const ext = mimeType.split('/')[1] || 'png';
+              const baseName = filename.substring(0, filename.lastIndexOf('.')) || filename;
+              const newFilename = `${baseName}-cropped.${ext}`;
+              const newFilePathOnDisk = path.join(uploadDir, newFilename);
+              
+              fs.writeFileSync(newFilePathOnDisk, buffer);
+              filePath = `/media/broadcast-attachments/${newFilename}`;
+              fileSize = buffer.length;
+            }
+          } catch (err) {
+            console.error('[Broadcast] Failed to write edited image to disk:', err);
+          }
+        }
+
+        if (f.file_name && filePath && f.file_type && fileSize) {
+          insertAttachment.run(broadcastId, f.file_name, filePath, f.file_type, fileSize);
         }
       }
     }
@@ -452,16 +550,37 @@ router.post('/:id/send', authenticateToken, broadcastAuth, async (req, res) => {
     });
 
     const io = req.app.get('io');
+
+    // Notify sender's admin UI so it can refresh broadcast history in real time
+    if (io) {
+      io.to(`user:${req.user.id}`).emit('broadcast_status_update', {
+        broadcastId: broadcast.id,
+        status: 'sending',
+        total_recipients: students.length,
+      });
+    }
+
     setImmediate(() => {
-      deliverBroadcast(broadcast.id, students, io).catch(err =>
-        console.error('[Broadcast] deliverBroadcast error:', err)
-      );
+      deliverBroadcast(broadcast.id, students, io)
+        .then(() => {
+          // After delivery is fully done, notify sender again so history shows 'sent' status
+          if (io) {
+            io.to(`user:${req.user.id}`).emit('broadcast_status_update', {
+              broadcastId: broadcast.id,
+              status: 'sent',
+            });
+          }
+        })
+        .catch(err =>
+          console.error('[Broadcast] deliverBroadcast error:', err)
+        );
     });
   } catch (error) {
     console.error('[Broadcast] send error:', error);
     if (!res.headersSent) res.status(500).json({ error: 'Failed to send broadcast' });
   }
 });
+
 
 // ── Endpoint 5: Schedule Broadcast ───────────────────────────────────────────
 router.post('/:id/schedule', authenticateToken, requireRole('admin'), (req, res) => {
@@ -508,7 +627,74 @@ router.post('/:id/cancel', authenticateToken, requireRole('admin'), (req, res) =
   }
 });
 
-// ── Endpoint 7: Get All Broadcasts ───────────────────────────────────────────
+// ── Endpoint 7: Search Students (MUST be before /:id routes) ────────────────
+router.get('/search-students', authenticateToken, broadcastAuth, (req, res) => {
+  try {
+    const { q } = req.query;
+    if (!q) {
+      return res.json({ students: [] });
+    }
+    const trimmedQ = q.trim();
+    if (trimmedQ === '') {
+      return res.json({ students: [] });
+    }
+    const searchQuery = `%${trimmedQ}%`;
+    const students = db.prepare(`
+      SELECT 
+        u.id, u.first_name, u.last_name, u.username, u.profile_picture, u.email,
+        sp.student_id, sp.batch_number
+      FROM users u
+      LEFT JOIN student_profiles sp ON u.id = sp.user_id
+      WHERE u.role = 'student' AND u.is_active = 1
+        AND (
+          u.first_name LIKE ? OR
+          u.last_name LIKE ? OR
+          (u.first_name || ' ' || u.last_name) LIKE ? OR
+          u.username LIKE ? OR
+          u.email LIKE ? OR
+          sp.student_id LIKE ? OR
+          CAST(u.id AS TEXT) = ?
+        )
+      ORDER BY u.first_name ASC
+      LIMIT 15
+    `).all(searchQuery, searchQuery, searchQuery, searchQuery, searchQuery, searchQuery, trimmedQ);
+    res.json({ students });
+  } catch (error) {
+    console.error('[Broadcast] student search error:', error);
+    res.status(500).json({ error: 'Failed to search students' });
+  }
+});
+
+// ── Endpoint 8: Bulk Delete (MUST be before /:id routes) ─────────────────────
+router.post('/bulk-delete', authenticateToken, requireRole('admin'), (req, res) => {
+  try {
+    const { items } = req.body;
+    if (!items || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: 'No items selected for deletion' });
+    }
+
+    db.transaction(() => {
+      for (const item of items) {
+        if (item.unified_type === 'broadcast') {
+          db.prepare("UPDATE broadcasts SET deleted_at = datetime('now'), deleted_by_admin_id = ? WHERE id = ?").run(req.user.id, item.id);
+          const b = db.prepare('SELECT title FROM broadcasts WHERE id = ?').get(item.id);
+          logTrashAction('broadcasts', item.id, b?.title || `Broadcast #${item.id}`, 'deleted', req.user.id);
+        } else if (item.unified_type === 'notice') {
+          db.prepare("UPDATE announcements SET deleted_at = datetime('now'), deleted_by_admin_id = ? WHERE id = ?").run(req.user.id, item.id);
+          const a = db.prepare('SELECT title FROM announcements WHERE id = ?').get(item.id);
+          logTrashAction('announcements', item.id, a?.title || `Notice #${item.id}`, 'deleted', req.user.id);
+        }
+      }
+    })();
+
+    res.json({ success: true, message: 'Selected items moved to Trash.' });
+  } catch (error) {
+    console.error('[Broadcast] bulk delete error:', error);
+    res.status(500).json({ error: 'Failed to delete selected items' });
+  }
+});
+
+// ── Endpoint 9: Get All Broadcasts ───────────────────────────────────────────
 router.get('/', authenticateToken, broadcastAuth, (req, res) => {
   try {
     const { status, search, page = 1, limit = 20 } = req.query;
@@ -656,17 +842,28 @@ router.post('/:id/retry', authenticateToken, requireRole('admin'), async (req, r
   }
 });
 
-// ── Endpoint 10: Delete Draft ─────────────────────────────────────────────────
+// ── Endpoint 10: Delete/Unsend Broadcast (any status for admin) ─────────────
 router.delete('/:id', authenticateToken, requireRole('admin'), (req, res) => {
   try {
     const broadcast = db.prepare('SELECT * FROM broadcasts WHERE id = ?').get(req.params.id);
     if (!broadcast) return res.status(404).json({ error: 'Broadcast not found' });
-    if (broadcast.status !== 'draft') {
-      return res.status(400).json({ error: 'Only draft broadcasts can be deleted' });
-    }
+    
+    // Soft-delete the broadcast itself (move to trash)
     db.prepare("UPDATE broadcasts SET deleted_at = datetime('now'), deleted_by_admin_id = ? WHERE id = ?").run(req.user.id, broadcast.id);
     logTrashAction('broadcasts', broadcast.id, broadcast.title, 'deleted', req.user.id);
-    res.json({ success: true, message: 'Broadcast moved to Trash.' });
+
+    // Delete/unsend delivered messages, announcements, and notifications for all users
+    db.prepare("DELETE FROM messages WHERE broadcast_id = ?").run(broadcast.id);
+    db.prepare("DELETE FROM announcements WHERE broadcast_id = ?").run(broadcast.id);
+    db.prepare("DELETE FROM notifications WHERE broadcast_id = ?").run(broadcast.id);
+
+    // Emit Socket.io event for real-time unsend
+    const io = req.app.get('io');
+    if (io) {
+      io.emit('broadcast_recalled', { broadcastId: broadcast.id });
+    }
+
+    res.json({ success: true, message: 'Broadcast unsent and moved to Trash successfully.' });
   } catch (error) {
     console.error('[Broadcast] delete error:', error);
     res.status(500).json({ error: 'Failed to delete broadcast' });
@@ -711,66 +908,6 @@ router.post('/:id/retry-single', authenticateToken, requireRole('admin'), async 
   }
 });
 
-// ── Endpoint 12: Search Students for Specific Broadcast ───────────────────────
-router.get('/search-students', authenticateToken, requireRole('admin'), (req, res) => {
-  try {
-    const { q } = req.query;
-    if (!q || q.trim() === '') {
-      return res.json({ students: [] });
-    }
-    const searchQuery = `%${q}%`;
-    const students = db.prepare(`
-      SELECT 
-        u.id, u.first_name, u.last_name, u.username, u.profile_picture, u.email,
-        sp.student_id, sp.batch_number
-      FROM users u
-      LEFT JOIN student_profiles sp ON u.id = sp.user_id
-      WHERE u.role = 'student' AND u.is_active = 1
-        AND (
-          u.first_name LIKE ? OR
-          u.last_name LIKE ? OR
-          u.username LIKE ? OR
-          u.email LIKE ? OR
-          sp.student_id LIKE ? OR
-          CAST(u.id AS TEXT) = ?
-        )
-      ORDER BY u.first_name ASC
-      LIMIT 15
-    `).all(searchQuery, searchQuery, searchQuery, searchQuery, searchQuery, q);
-    res.json({ students });
-  } catch (error) {
-    console.error('[Broadcast] student search error:', error);
-    res.status(500).json({ error: 'Failed to search students' });
-  }
-});
-
-// ── Endpoint 13: Bulk Delete Announcements / Broadcasts ──────────────────────
-router.post('/bulk-delete', authenticateToken, requireRole('admin'), (req, res) => {
-  try {
-    const { items } = req.body;
-    if (!items || !Array.isArray(items) || items.length === 0) {
-      return res.status(400).json({ error: 'No items selected for deletion' });
-    }
-
-    db.transaction(() => {
-      for (const item of items) {
-        if (item.unified_type === 'broadcast') {
-          db.prepare("UPDATE broadcasts SET deleted_at = datetime('now'), deleted_by_admin_id = ? WHERE id = ?").run(req.user.id, item.id);
-          const b = db.prepare('SELECT title FROM broadcasts WHERE id = ?').get(item.id);
-          logTrashAction('broadcasts', item.id, b?.title || `Broadcast #${item.id}`, 'deleted', req.user.id);
-        } else if (item.unified_type === 'notice') {
-          db.prepare("UPDATE announcements SET deleted_at = datetime('now'), deleted_by_admin_id = ? WHERE id = ?").run(req.user.id, item.id);
-          const a = db.prepare('SELECT title FROM announcements WHERE id = ?').get(item.id);
-          logTrashAction('announcements', item.id, a?.title || `Notice #${item.id}`, 'deleted', req.user.id);
-        }
-      }
-    })();
-
-    res.json({ success: true, message: 'Selected items moved to Trash.' });
-  } catch (error) {
-    console.error('[Broadcast] bulk delete error:', error);
-    res.status(500).json({ error: 'Failed to delete selected items' });
-  }
-});
+// /search-students and /bulk-delete are defined above /:id routes (see Endpoints 7 & 8)
 
 export default router;

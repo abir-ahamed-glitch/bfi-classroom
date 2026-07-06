@@ -1566,7 +1566,16 @@ router.post('/announcements', authenticateToken, requireRole('admin'), sanitizeI
       // Insert into notifications table for relevant users
       let targetUsers = [];
       if (!targetCourse && !targetBatch) {
-        targetUsers = db.prepare('SELECT id FROM users').all();
+        // Only admitted students (assigned to a batch)
+        targetUsers = db.prepare(`
+          SELECT DISTINCT u.id
+          FROM users u
+          LEFT JOIN student_profiles p ON u.id = p.user_id
+          WHERE u.role = 'student'
+            AND u.is_active = 1
+            AND p.batch_number IS NOT NULL
+            AND p.batch_number != ''
+        `).all();
       } else {
         let query = `
           SELECT DISTINCT u.id 
@@ -1574,6 +1583,9 @@ router.post('/announcements', authenticateToken, requireRole('admin'), sanitizeI
           LEFT JOIN student_course_enrollments e ON u.id = e.user_id
           LEFT JOIN student_profiles p ON u.id = p.user_id
           WHERE u.role = 'student'
+            AND u.is_active = 1
+            AND p.batch_number IS NOT NULL
+            AND p.batch_number != ''
         `;
         const params = [];
         if (targetCourse) {
@@ -1657,6 +1669,18 @@ router.delete('/announcements/:id', authenticateToken, requireRole('admin'), (re
     const result = stmt.run(req.user.id, req.params.id);
     logTrashAction('announcements', req.params.id, announcement.title, 'deleted', req.user.id);
 
+    // Delete associated bell notifications
+    db.prepare("DELETE FROM notifications WHERE link = ? OR link = ?").run(
+      `/notices?expand=${req.params.id}`,
+      `/notice-board?expand=${req.params.id}`
+    );
+
+    // Emit Socket.io event for real-time notice recall
+    const io = req.app.get('io');
+    if (io) {
+      io.emit('notice_recalled', { noticeId: req.params.id });
+    }
+
     res.json({ message: 'Announcement moved to Trash successfully.' });
   } catch (error) {
     console.error('Error moving announcement to trash:', error);
@@ -1671,7 +1695,7 @@ router.get('/announcements', authenticateToken, requireRole('admin'), (req, res)
       SELECT a.*, u.first_name || ' ' || u.last_name as admin_name 
       FROM announcements a
       JOIN users u ON a.admin_id = u.id
-      WHERE a.deleted_at IS NULL
+      WHERE a.deleted_at IS NULL AND (a.is_broadcast = 0 OR a.is_broadcast IS NULL)
       ORDER BY a.created_at DESC
     `).all();
     res.json({ announcements });
@@ -2209,7 +2233,16 @@ export function startAnnouncementScheduler(io) {
           // Get target users
           let targetUsers = [];
           if (!ann.target_course && !ann.target_batch) {
-            targetUsers = db.prepare('SELECT id FROM users').all();
+            // Only admitted students (assigned to a batch)
+            targetUsers = db.prepare(`
+              SELECT DISTINCT u.id
+              FROM users u
+              LEFT JOIN student_profiles p ON u.id = p.user_id
+              WHERE u.role = 'student'
+                AND u.is_active = 1
+                AND p.batch_number IS NOT NULL
+                AND p.batch_number != ''
+            `).all();
           } else {
             let query = `
               SELECT DISTINCT u.id 
@@ -2217,6 +2250,9 @@ export function startAnnouncementScheduler(io) {
               LEFT JOIN student_course_enrollments e ON u.id = e.user_id
               LEFT JOIN student_profiles p ON u.id = p.user_id
               WHERE u.role = 'student'
+                AND u.is_active = 1
+                AND p.batch_number IS NOT NULL
+                AND p.batch_number != ''
             `;
             const params = [];
             if (ann.target_course) {

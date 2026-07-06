@@ -635,6 +635,7 @@ export default function Inbox() {
   
   const [decryptedAttachmentUrls, setDecryptedAttachmentUrls] = useState({});
   const [imageViewer, setImageViewer] = useState(null);
+  const [pdfViewer, setPdfViewer] = useState(null);
   const [activeMediaTab, setActiveMediaTab] = useState('media');
 
   const handleDownload = async (imageUrl) => {
@@ -1826,6 +1827,11 @@ export default function Inbox() {
       setReplyToMessage((prev) => (prev?.id === id ? null : prev));
       setEditingMessage((prev) => (prev?.id === id ? null : prev));
       // fetchConversations(null, { silent: true });
+    });
+
+    socket.on('broadcast_recalled', ({ broadcastId }) => {
+      setMessages((prev) => prev.filter((item) => item.broadcast_id !== broadcastId));
+      fetchConversations(null, { silent: true });
     });
 
     socket.on('inbox:message_pinned', ({ message_id, is_pinned }) => {
@@ -3251,6 +3257,65 @@ export default function Inbox() {
   const renderAttachment = (message) => {
     if (!message.attachment_url) return null;
 
+    if (message.attachment_type === 'broadcast_attachments') {
+      try {
+        const atts = JSON.parse(message.attachment_url);
+        if (Array.isArray(atts) && atts.length > 0) {
+          return (
+            <div className="broadcast-inbox-attachments" style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '0.5rem' }}>
+              {atts.map((att, idx) => {
+                const isImage = att.file_type?.startsWith('image/') || /\.(jpg|jpeg|png|webp|gif)$/i.test(att.file_name);
+                const isPdf = att.file_type === 'application/pdf' || att.file_name?.toLowerCase().endsWith('.pdf');
+                const fileUrl = resolveMediaUrl(att.file_path);
+                if (isImage) {
+                  return (
+                    <button
+                      key={idx}
+                      type="button"
+                      className="attachment-card image attachment-image-btn"
+                      onClick={() => setImageViewer({
+                        src: fileUrl,
+                        alt: att.file_name,
+                        caption: att.file_name,
+                      })}
+                      style={{ border: 'none', background: 'none', padding: 0, cursor: 'zoom-in', outline: 'none' }}
+                    >
+                      <img 
+                        src={fileUrl} 
+                        alt={att.file_name} 
+                        style={{ maxWidth: '240px', borderRadius: '8px', display: 'block', maxHeight: '180px', objectFit: 'contain' }}
+                      />
+                    </button>
+                  );
+                } else if (isPdf) {
+                  return (
+                    <div 
+                      key={idx} 
+                      className="attachment-card file" 
+                      onClick={() => setPdfViewer({ url: fileUrl, name: att.file_name })}
+                      style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'zoom-in' }}
+                    >
+                      <FileText size={18} />
+                      <span>{att.file_name} (Preview PDF)</span>
+                    </div>
+                  );
+                } else {
+                  return (
+                    <a key={idx} href={fileUrl} download={att.file_name} target="_blank" rel="noreferrer" className="attachment-card file" style={{ display: 'flex', alignItems: 'center', gap: '8px', textDecoration: 'none', color: 'inherit' }}>
+                      <FileText size={18} />
+                      <span>{att.file_name}</span>
+                    </a>
+                  );
+                }
+              })}
+            </div>
+          );
+        }
+      } catch (e) {
+        console.error('Failed to parse broadcast attachments:', e);
+      }
+    }
+
     const decryptedAttachment = decryptedAttachmentUrls[message.id] || null;
     const rawAttachmentType = message.attachment_type || '';
     const attachmentType = decryptedAttachment?.type || rawAttachmentType;
@@ -3320,6 +3385,23 @@ export default function Inbox() {
           </div>
         );
       }
+
+    const isPdf = attachmentType === 'application/pdf' || 
+                  (message.content && message.content.toLowerCase().endsWith('.pdf')) || 
+                  (message.attachment_url && message.attachment_url.toLowerCase().endsWith('.pdf'));
+
+    if (isPdf) {
+      return (
+        <div 
+          className="attachment-card file" 
+          onClick={() => setPdfViewer({ url: fileUrl, name: message.content || 'attachment.pdf' })}
+          style={{ cursor: 'zoom-in', display: 'flex', alignItems: 'center', gap: '8px' }}
+        >
+          <FileText size={18} />
+          <span>{message.content || 'Preview PDF'}</span>
+        </div>
+      );
+    }
 
     return (
       <a href={fileUrl} download={message.content || true} className="attachment-card file">
@@ -5566,6 +5648,98 @@ export default function Inbox() {
             <img src={imageViewer.src} alt={imageViewer.alt} className="image-viewer-photo" />
             {imageViewer.caption && <div className="image-viewer-caption">{imageViewer.caption}</div>}
           </div>
+        </div>,
+        document.body
+      )}
+
+      {pdfViewer && typeof document !== 'undefined' && createPortal(
+        <div 
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 100000,
+            background: 'rgba(0,0,0,0.92)',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '2rem'
+          }}
+          onClick={() => setPdfViewer(null)}
+        >
+          <div 
+            style={{ 
+              display: 'flex', 
+              justifyContent: 'space-between', 
+              alignItems: 'center', 
+              padding: '1rem', 
+              width: '100%', 
+              boxSizing: 'border-box',
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              right: 0,
+              zIndex: 100002
+            }}
+            onClick={e => e.stopPropagation()}
+          >
+            <span style={{ color: '#fff', fontSize: '1.1rem', fontWeight: 600, marginLeft: '1rem', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap', maxWidth: '70%' }}>
+              {pdfViewer.name}
+            </span>
+            <div style={{ display: 'flex', gap: '0.75rem' }}>
+              <a 
+                href={pdfViewer.url} 
+                download={pdfViewer.name} 
+                style={{ 
+                  background: 'rgba(255,255,255,0.12)', 
+                  border: '1px solid rgba(255,255,255,0.18)', 
+                  color: '#fff', 
+                  borderRadius: '30px', 
+                  padding: '0.5rem 1rem', 
+                  fontSize: '0.8rem', 
+                  fontWeight: 600, 
+                  textDecoration: 'none', 
+                  display: 'flex', 
+                  alignItems: 'center', 
+                  gap: '6px',
+                  cursor: 'pointer' 
+                }}
+              >
+                <Download size={16} /> Download
+              </a>
+              <button 
+                onClick={() => setPdfViewer(null)} 
+                style={{ 
+                  background: 'rgba(255,255,255,0.12)', 
+                  border: '1px solid rgba(255,255,255,0.18)', 
+                  color: '#fff', 
+                  borderRadius: '50%', 
+                  width: '36px', 
+                  height: '36px', 
+                  display: 'flex', 
+                  alignItems: 'center', 
+                  justifyContent: 'center', 
+                  cursor: 'pointer' 
+                }}
+              >
+                <X size={18} />
+              </button>
+            </div>
+          </div>
+          <iframe 
+            src={pdfViewer.url} 
+            title={pdfViewer.name} 
+            onClick={e => e.stopPropagation()}
+            style={{ 
+              width: '85%', 
+              height: '80vh', 
+              border: '1px solid rgba(255,255,255,0.15)', 
+              borderRadius: '8px', 
+              boxShadow: '0 24px 80px rgba(0,0,0,0.7)', 
+              backgroundColor: '#323639',
+              marginTop: '4rem'
+            }} 
+          />
         </div>,
         document.body
       )}

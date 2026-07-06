@@ -1,13 +1,19 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Megaphone, History, Send, Clock, ChevronDown, ChevronUp,
   X, Eye, Copy, Trash2, Users, BookOpen, Edit3, AlertTriangle,
   Bell, FileText, Inbox, Shield, Check, RefreshCw, Calendar,
-  Bold, Italic, List, Paperclip, Loader, User, Radio, File, Layers, GraduationCap
+  Bold, Italic, List, Paperclip, Loader, User, Radio, File, Layers, GraduationCap,
+  ZoomIn, ZoomOut, Download, ExternalLink, Pencil, Image as ImageIcon
 } from 'lucide-react';
+import { io } from 'socket.io-client';
 import { useAuth } from '../../context/AuthContext';
 import { useModal } from '../../components/BFIModal';
+import ImageViewer from '../../components/ImageViewer';
+import PdfViewer from '../../components/PdfViewer';
 import { resolveMediaUrl } from '../../utils/mediaUtils';
+import PhotoEditorModal from '../../components/PhotoEditorModal';
 import './BroadcastManager.css';
 
 const API_BASE = '/api/admin/broadcast';
@@ -20,9 +26,19 @@ function formatBytes(b) {
   return `${(b / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function parseServerDate(dateStr) {
+  if (!dateStr) return null;
+  // SQLite returns 'YYYY-MM-DD HH:MM:SS' without timezone. Add 'Z' so JS treats it as UTC.
+  if (typeof dateStr === 'string' && !dateStr.endsWith('Z') && !dateStr.includes('+')) {
+    return new Date(dateStr.replace(' ', 'T') + 'Z');
+  }
+  return new Date(dateStr);
+}
+
 function timeAgo(dateStr) {
   if (!dateStr) return '';
-  const d = new Date(dateStr);
+  const d = parseServerDate(dateStr);
+  if (!d) return '';
   const diff = (Date.now() - d.getTime()) / 1000;
   if (diff < 60) return 'just now';
   if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
@@ -53,19 +69,23 @@ function audienceBadgeLabel(type, value) {
 }
 
 const parseAttachment = (value) => {
-  if (!value) return null;
-  if (typeof value === 'string' && value.trim().startsWith('{')) {
-    try {
-      return JSON.parse(value);
-    } catch (e) {
-      // ignore
+  if (!value) return [];
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed.startsWith('[')) {
+      try {
+        const arr = JSON.parse(trimmed);
+        return Array.isArray(arr) ? arr : [arr];
+      } catch (e) { /* ignore */ }
     }
+    if (trimmed.startsWith('{')) {
+      try {
+        return [JSON.parse(trimmed)];
+      } catch (e) { /* ignore */ }
+    }
+    return [{ name: 'attachment.png', type: 'image/png', url: value }];
   }
-  return {
-    name: 'attachment.png',
-    type: 'image/png',
-    url: value
-  };
+  return [];
 };
 
 // ─── Preview Modal ─────────────────────────────────────────────────
@@ -170,7 +190,7 @@ function PreviewModal({ form, deliveryType, noticeAttachment, onClose }) {
 }
 
 // ─── Broadcast Detail Drawer ────────────────────────────────────────
-function BroadcastDrawer({ broadcastId, unifiedType, onClose, onDuplicate, onDeleteNotice, onSendSuccess }) {
+function BroadcastDrawer({ broadcastId, unifiedType, onClose, onDuplicate, onDeleteNotice, onSendSuccess, setAttLightbox }) {
   const { showAlert, showConfirm } = useModal();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -228,11 +248,11 @@ function BroadcastDrawer({ broadcastId, unifiedType, onClose, onDuplicate, onDel
     setSendingDraft(false);
   };
 
-  const handleDeleteDraft = async () => {
+  const handleDelete = async () => {
     if (!data?.broadcast) return;
     const confirm = await showConfirm(
-      `Are you sure you want to delete the draft "${data.broadcast.title}"?`,
-      { title: 'Delete Draft', confirmLabel: 'Delete', cancelLabel: 'Cancel' }
+      `Are you sure you want to delete "${data.broadcast.title}"?`,
+      { title: 'Delete Broadcast', confirmLabel: 'Delete', cancelLabel: 'Cancel' }
     );
     if (!confirm) return;
 
@@ -246,13 +266,13 @@ function BroadcastDrawer({ broadcastId, unifiedType, onClose, onDuplicate, onDel
       if (resData.success) {
         onClose();
         if (onSendSuccess) {
-          onSendSuccess('Draft deleted successfully.');
+          onSendSuccess('Broadcast deleted successfully.');
         }
       } else {
-        await showAlert(resData.error || 'Failed to delete draft', { title: 'Delete Failed' });
+        await showAlert(resData.error || 'Failed to delete broadcast', { title: 'Delete Failed' });
       }
     } catch {
-      await showAlert('Failed to delete draft', { title: 'Delete Failed' });
+      await showAlert('Failed to delete broadcast', { title: 'Delete Failed' });
     }
     setDeletingDraft(false);
   };
@@ -268,7 +288,7 @@ function BroadcastDrawer({ broadcastId, unifiedType, onClose, onDuplicate, onDel
         </div>
         <div className="bc-drawer-body">
           {unifiedType === 'notice' ? (
-            <NoticeDetailView broadcastId={broadcastId} onClose={onClose} onDeleteNotice={onDeleteNotice} />
+            <NoticeDetailView broadcastId={broadcastId} onClose={onClose} onDeleteNotice={onDeleteNotice} setAttLightbox={setAttLightbox} />
           ) : (
             <>
               {loading ? (
@@ -291,23 +311,83 @@ function BroadcastDrawer({ broadcastId, unifiedType, onClose, onDuplicate, onDel
                     </div>
                   </div>
 
-                  <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 12, padding: '1rem', fontSize: '0.88rem', color: 'var(--text-secondary)', lineHeight: 1.65, whiteSpace: 'pre-wrap' }}>
+                  <div style={{ background: 'var(--bg-tertiary, rgba(255,255,255,0.03))', border: '1px solid var(--glass-border, rgba(255,255,255,0.06))', borderRadius: 12, padding: '1rem', fontSize: '0.88rem', color: 'var(--text-secondary)', lineHeight: 1.65, whiteSpace: 'pre-wrap' }}>
                     {data.broadcast.message}
                   </div>
 
                   {data.attachments?.length > 0 && (
                     <div>
                       <div className="bc-label" style={{ marginBottom: '0.5rem' }}>Attachments</div>
-                      {data.attachments.map(att => (
-                        <div key={att.id} className="bc-file-pill">
-                          <FileText size={14} />
-                          <span className="bc-file-pill-name">{att.file_name}</span>
-                          <span className="bc-file-pill-size">{formatBytes(att.file_size)}</span>
-                          <a href={resolveMediaUrl(att.file_path)} download target="_blank" rel="noreferrer" style={{ color: 'var(--text-secondary)', display: 'flex' }}>
-                            <ChevronDown size={14} />
-                          </a>
-                        </div>
-                      ))}
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                        {data.attachments.map(att => {
+                          const isImage = att.file_type?.startsWith('image/') || /\.(jpg|jpeg|png|webp|gif)$/i.test(att.file_name);
+                          const isPdf = att.file_type === 'application/pdf' || att.file_name?.toLowerCase().endsWith('.pdf');
+                          const fileUrl = resolveMediaUrl(att.file_path);
+                          if (isImage) {
+                            return (
+                              <div key={att.id} style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', width: 'fit-content' }}>
+                                <button 
+                                  type="button" 
+                                  onClick={() => setAttLightbox({ type: 'image', url: fileUrl, name: att.file_name })}
+                                  style={{
+                                    border: 'none',
+                                    background: 'rgba(255,255,255,0.03)',
+                                    padding: '4px',
+                                    borderRadius: '8px',
+                                    cursor: 'zoom-in',
+                                    display: 'block'
+                                  }}
+                                >
+                                  <img 
+                                    src={fileUrl} 
+                                    alt={att.file_name} 
+                                    style={{
+                                      maxWidth: '240px',
+                                      maxHeight: '160px',
+                                      borderRadius: '6px',
+                                      display: 'block',
+                                      objectFit: 'contain'
+                                    }}
+                                  />
+                                </button>
+                                <div 
+                                  className="bc-file-pill"
+                                  onClick={() => setAttLightbox({ type: 'image', url: fileUrl, name: att.file_name })}
+                                  style={{ cursor: 'zoom-in', marginTop: '2px', width: '240px', boxSizing: 'border-box' }}
+                                >
+                                  <ImageIcon size={14} />
+                                  <span className="bc-file-pill-name">{att.file_name}</span>
+                                  <span className="bc-file-pill-size">{formatBytes(att.file_size)}</span>
+                                  <a href={fileUrl} download target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} style={{ color: 'var(--text-secondary)', display: 'flex' }}>
+                                    <ChevronDown size={14} />
+                                  </a>
+                                </div>
+                              </div>
+                            );
+                          }
+                          return (
+                            <div 
+                              key={att.id} 
+                              className="bc-file-pill"
+                              onClick={() => {
+                                if (isPdf) {
+                                  // Use /file/base64 endpoint to bypass IDM interception
+                                  const base64Url = `/api/admin/broadcast/file/base64?path=${encodeURIComponent(att.file_path)}`;
+                                  setAttLightbox({ type: 'pdf', url: base64Url, name: att.file_name });
+                                }
+                              }}
+                              style={{ cursor: isPdf ? 'zoom-in' : 'default' }}
+                            >
+                              <FileText size={14} />
+                              <span className="bc-file-pill-name">{att.file_name}</span>
+                              <span className="bc-file-pill-size">{formatBytes(att.file_size)}</span>
+                              <a href={fileUrl} download target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} style={{ color: 'var(--text-secondary)', display: 'flex' }}>
+                                <ChevronDown size={14} />
+                              </a>
+                            </div>
+                          );
+                        })}
+                      </div>
                     </div>
                   )}
 
@@ -434,14 +514,9 @@ function BroadcastDrawer({ broadcastId, unifiedType, onClose, onDuplicate, onDel
 
                   <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginTop: '1rem' }}>
                     {data.broadcast.status === 'draft' && (
-                      <>
-                        <button type="button" className="bc-btn bc-btn-primary" onClick={handleSendDraft} disabled={sendingDraft || deletingDraft}>
-                          {sendingDraft ? <span className="bc-spinner" /> : <Send size={14} />} Send Broadcast Now
-                        </button>
-                        <button type="button" className="bc-btn bc-btn-danger" onClick={handleDeleteDraft} disabled={sendingDraft || deletingDraft}>
-                          {deletingDraft ? <span className="bc-spinner" /> : <Trash2 size={14} />} Delete Draft
-                        </button>
-                      </>
+                      <button type="button" className="bc-btn bc-btn-primary" onClick={handleSendDraft} disabled={sendingDraft || deletingDraft}>
+                        {sendingDraft ? <span className="bc-spinner" /> : <Send size={14} />} Send Broadcast Now
+                      </button>
                     )}
                     {data.delivery_stats?.failed > 0 && (
                       <button type="button" className="bc-btn bc-btn-outline" onClick={handleRetry}>
@@ -453,6 +528,14 @@ function BroadcastDrawer({ broadcastId, unifiedType, onClose, onDuplicate, onDel
                         <X size={14} /> Cancel Schedule
                       </button>
                     )}
+                    {onDuplicate && (
+                      <button type="button" className="bc-btn bc-btn-outline" onClick={() => { onDuplicate(data.broadcast); onClose(); }}>
+                        <Copy size={14} /> Duplicate
+                      </button>
+                    )}
+                    <button type="button" className="bc-btn bc-btn-danger" onClick={handleDelete} disabled={sendingDraft || deletingDraft}>
+                      {deletingDraft ? <span className="bc-spinner" /> : <Trash2 size={14} />} Delete
+                    </button>
                   </div>
                 </>
               )}
@@ -465,7 +548,7 @@ function BroadcastDrawer({ broadcastId, unifiedType, onClose, onDuplicate, onDel
 }
 
 // ─── Notice Detail View Sub-component ───────────────────────────────
-function NoticeDetailView({ broadcastId, onClose, onDeleteNotice }) {
+function NoticeDetailView({ broadcastId, onClose, onDeleteNotice, setAttLightbox }) {
   const [notice, setNotice] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -486,15 +569,15 @@ function NoticeDetailView({ broadcastId, onClose, onDeleteNotice }) {
   if (loading) return <div className="bc-empty-state"><div className="bc-spinner" /></div>;
   if (!notice) return <div className="bc-empty-state"><p>Notice not found.</p></div>;
 
-  const att = parseAttachment(notice.image_url);
+  const atts = parseAttachment(notice.image_url);
 
   return (
     <>
       <div>
         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '0.5rem', marginBottom: '0.5rem' }}>
           <h3 style={{ margin: 0, fontSize: '1rem', color: 'var(--text-primary)' }}>{notice.title}</h3>
-          <span className={`bc-status-badge ${notice.scheduled_at && new Date(notice.scheduled_at) > new Date() ? 'bc-status-scheduled' : 'bc-status-sent'}`}>
-            {notice.scheduled_at && new Date(notice.scheduled_at) > new Date() ? 'scheduled' : 'published'}
+          <span className={`bc-status-badge ${notice.scheduled_at && parseServerDate(notice.scheduled_at) > new Date() ? 'bc-status-scheduled' : 'bc-status-sent'}`}>
+            {notice.scheduled_at && parseServerDate(notice.scheduled_at) > new Date() ? 'scheduled' : 'published'}
           </span>
         </div>
         <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
@@ -506,23 +589,41 @@ function NoticeDetailView({ broadcastId, onClose, onDeleteNotice }) {
           )}
           <span>Priority: <span style={{ color: notice.priority === 'high' ? '#f87171' : 'var(--text-secondary)' }}>{notice.priority}</span></span>
           {notice.created_at && <span>Posted: {timeAgo(notice.created_at)}</span>}
-          {notice.scheduled_at && <span>Scheduled: {new Date(notice.scheduled_at).toLocaleString()}</span>}
+          {notice.scheduled_at && <span>Scheduled: {parseServerDate(notice.scheduled_at).toLocaleString()}</span>}
         </div>
       </div>
 
-      <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 12, padding: '1rem', fontSize: '0.88rem', color: 'var(--text-secondary)', lineHeight: 1.65, whiteSpace: 'pre-wrap' }}>
+      <div style={{ background: 'var(--bg-tertiary, rgba(255,255,255,0.03))', border: '1px solid var(--glass-border, rgba(255,255,255,0.06))', borderRadius: 12, padding: '1rem', fontSize: '0.88rem', color: 'var(--text-secondary)', lineHeight: 1.65, whiteSpace: 'pre-wrap' }}>
         {notice.content}
       </div>
 
-      {att && (
+      {atts.length > 0 && (
         <div>
-          <div className="bc-label" style={{ marginBottom: '0.5rem' }}>Attachment</div>
-          <div className="bc-file-pill">
-            <FileText size={14} />
-            <span className="bc-file-pill-name">{att.name}</span>
-            <a href={att.url} download={att.name} target="_blank" rel="noreferrer" style={{ color: 'var(--text-secondary)', display: 'flex' }}>
-              <ChevronDown size={14} />
-            </a>
+          <div className="bc-label" style={{ marginBottom: '0.5rem' }}>Attachment{atts.length > 1 ? 's' : ''}</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+            {atts.map((att, i) => (
+              <div 
+                key={i}
+                className="bc-file-pill"
+                onClick={() => {
+                  const isImage = att.type?.startsWith('image/');
+                  const isPdf = att.type === 'application/pdf' || att.name?.toLowerCase().endsWith('.pdf');
+                  if (isPdf) {
+                    const base64Url = `/api/admin/broadcast/file/base64?path=${encodeURIComponent(att.url)}`;
+                    setAttLightbox({ type: 'pdf', url: base64Url, name: att.name });
+                  } else if (isImage) {
+                    setAttLightbox({ type: 'image', url: resolveMediaUrl(att.url), name: att.name });
+                  }
+                }}
+                style={{ cursor: (att.type?.startsWith('image/') || att.type === 'application/pdf' || att.name?.toLowerCase().endsWith('.pdf')) ? 'zoom-in' : 'default' }}
+              >
+                <FileText size={14} />
+                <span className="bc-file-pill-name">{att.name}</span>
+                <a href={resolveMediaUrl(att.url)} download={att.name} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} style={{ color: 'var(--text-secondary)', display: 'flex' }}>
+                  <ChevronDown size={14} />
+                </a>
+              </div>
+            ))}
           </div>
         </div>
       )}
@@ -695,6 +796,7 @@ function PermissionsPanel() {
   );
 }
 
+
 // ─── Unified Broadcast & Announcements Manager ───────────────────────
 export default function BroadcastManager() {
   const { showAlert, showConfirm } = useModal();
@@ -752,6 +854,11 @@ export default function BroadcastManager() {
   const [toast, setToast] = useState(null);
   const [audiencePreview, setAudiencePreview] = useState(null);
   const [checkingAudience, setCheckingAudience] = useState(false);
+
+  // ─── Attachment preview / editor ──────────────────────────────────
+  const [attLightbox, setAttLightbox] = useState(null); // { url, name } for full-screen view
+  const [photoEditorOpen, setPhotoEditorOpen] = useState(false);
+  const [photoEditorIdx, setPhotoEditorIdx] = useState(0);
 
   useEffect(() => {
     if (!studentSearch || studentSearch.trim() === '') {
@@ -878,6 +985,27 @@ export default function BroadcastManager() {
       fetchTargetingOptions();
     }
   }, [fetchHistory, fetchTargetingOptions, currentUser]);
+
+  // ── Socket.io real-time history refresh ──────────────────────────────
+  useEffect(() => {
+    const tkn = token();
+    if (!tkn) return;
+    const socket = io({ auth: { token: tkn }, transports: ['websocket'] });
+
+    // Refresh history whenever a broadcast status changes (sent/sending/recalled)
+    const handleBroadcastUpdate = () => {
+      fetchHistory();
+    };
+
+    socket.on('broadcast_status_update', handleBroadcastUpdate);
+    socket.on('broadcast_recalled', handleBroadcastUpdate);
+
+    return () => {
+      socket.off('broadcast_status_update', handleBroadcastUpdate);
+      socket.off('broadcast_recalled', handleBroadcastUpdate);
+      socket.disconnect();
+    };
+  }, [fetchHistory]);
 
   // Sync form options
   useEffect(() => {
@@ -1037,9 +1165,9 @@ export default function BroadcastManager() {
         });
 
         if (res.ok) {
-          await showAlert(scheduledAt ? 'Standard Notice scheduled successfully!' : 'Standard Notice posted successfully!', { title: 'Success' });
           resetForm();
-          fetchHistory();
+          fetchHistory(); // refresh immediately — don't wait for dialog dismiss
+          await showAlert(scheduledAt ? 'Standard Notice scheduled successfully!' : 'Standard Notice posted successfully!', { title: 'Success' });
         } else {
           const err = await res.json();
           await showAlert(err.error || 'Failed to post standard notice', { title: 'Notice Failed' });
@@ -1081,9 +1209,9 @@ export default function BroadcastManager() {
         const broadcastId = data.broadcast.id;
 
         if (scheduledAt) {
-          await showAlert('Broadcast scheduled successfully!', { title: 'Success' });
           resetForm();
-          fetchHistory();
+          fetchHistory(); // refresh immediately
+          await showAlert('Broadcast scheduled successfully!', { title: 'Success' });
         } else {
           // Send now
           const sendRes = await fetch(`${API_BASE}/${broadcastId}/send`, {
@@ -1092,9 +1220,9 @@ export default function BroadcastManager() {
           });
           const sendData = await sendRes.json();
           if (sendData.success) {
-            await showAlert(`Broadcast sent successfully to ${sendData.total_recipients} students!`, { title: 'Broadcast Sent' });
             resetForm();
-            fetchHistory();
+            fetchHistory(); // refresh immediately — history updates while alert is shown
+            await showAlert(`Broadcast sent successfully to ${sendData.total_recipients} students!`, { title: 'Broadcast Sent' });
           } else {
             await showAlert(sendData.error || 'Failed to send', { title: 'Broadcast Failed' });
           }
@@ -1377,7 +1505,7 @@ export default function BroadcastManager() {
 
       <div className="broadcast-panels">
         {/* LEFT PANEL: COMPOSER */}
-        <div className="glass-panel" style={{ padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+        <div className="glass-panel" style={{ padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1.25rem', overflowY: 'auto', maxHeight: 'calc(100vh - 220px)' }}>
           <div className="bc-panel-title"><Edit3 size={16} /> Compose Broadcast</div>
 
           {/* Delivery Type selector (only shown to admin) */}
@@ -1556,14 +1684,14 @@ export default function BroadcastManager() {
               <div style={{ display: 'flex', gap: '0.75rem' }}>
                 <button
                   type="button"
-                  className={`bc-priority-btn ${form.priority === 'normal' || form.priority === 'low' ? 'active normal' : ''}`}
+                  className={`bc-priority-btn ${form.priority === 'normal' || form.priority === 'low' ? 'active-normal' : ''}`}
                   onClick={() => setForm(f => ({ ...f, priority: 'normal' }))}
                 >
                   <Check size={14} /> Normal
                 </button>
                 <button
                   type="button"
-                  className={`bc-priority-btn ${form.priority === 'urgent' || form.priority === 'high' ? 'active urgent' : ''}`}
+                  className={`bc-priority-btn ${form.priority === 'urgent' || form.priority === 'high' ? 'active-urgent' : ''}`}
                   onClick={() => setForm(f => ({ ...f, priority: deliveryType === 'notice' ? 'high' : 'urgent' }))}
                 >
                   <AlertTriangle size={14} /> High / Urgent
@@ -1704,9 +1832,10 @@ export default function BroadcastManager() {
                 />
 
                 {attachments.length > 0 && (
-                  <div style={{ marginTop: '0.75rem', display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: '0.75rem' }}>
+                  <div style={{ marginTop: '0.75rem', display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: '0.75rem' }}>
                     {attachments.map((att, idx) => {
                       const isImage = att.file_type?.startsWith('image/') || /\.(jpg|jpeg|png|webp|gif)$/i.test(att.file_name);
+                      const displaySrc = att.editedUrl || resolveMediaUrl(att.file_path);
                       return (
                         <div key={idx} className="bc-attachment-card" style={{
                           position: 'relative',
@@ -1722,29 +1851,52 @@ export default function BroadcastManager() {
                           overflow: 'hidden'
                         }}>
                           {isImage ? (
-                            <img
-                              src={resolveMediaUrl(att.file_path)}
-                              alt={att.file_name}
+                            <div
+                              onClick={() => setAttLightbox({ url: displaySrc, name: att.file_name, type: att.file_type })}
+                              style={{ width: '100%', cursor: 'zoom-in', borderRadius: '6px', overflow: 'hidden', background: 'rgba(0,0,0,0.2)' }}
+                            >
+                              <img
+                                src={displaySrc}
+                                alt={att.file_name}
+                                style={{
+                                  width: '100%',
+                                  maxHeight: '180px',
+                                  objectFit: 'contain',
+                                  display: 'block',
+                                  borderRadius: '6px',
+                                }}
+                              />
+                            </div>
+                          ) : (
+                            <div
+                              onClick={() => {
+                                if (att.file_type === 'application/pdf' || att.file_name?.toLowerCase().endsWith('.pdf')) {
+                                  const base64Url = `/api/admin/broadcast/file/base64?path=${encodeURIComponent(att.file_path)}`;
+                                  setAttLightbox({ url: base64Url, name: att.file_name, type: 'pdf' });
+                                } else {
+                                  window.open(resolveMediaUrl(att.file_path), '_blank');
+                                }
+                              }}
+                              title="Click to open file"
                               style={{
                                 width: '100%',
                                 height: '90px',
-                                objectFit: 'cover',
+                                display: 'flex',
+                                flexDirection: 'column',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                gap: '0.35rem',
+                                background: 'rgba(255, 255, 255, 0.02)',
                                 borderRadius: '6px',
-                                background: 'rgba(0,0,0,0.2)'
+                                color: 'var(--text-secondary)',
+                                cursor: 'pointer',
+                                transition: 'background 0.15s',
                               }}
-                            />
-                          ) : (
-                            <div style={{
-                              width: '100%',
-                              height: '90px',
-                              display: 'flex',
-                              alignItems: 'center',
-                              justifyContent: 'center',
-                              background: 'rgba(255, 255, 255, 0.02)',
-                              borderRadius: '6px',
-                              color: 'var(--text-secondary)'
-                            }}>
-                              <FileText size={32} />
+                              onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.06)'}
+                              onMouseLeave={e => e.currentTarget.style.background = 'rgba(255,255,255,0.02)'}
+                            >
+                              <FileText size={28} />
+                              <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>Click to open</span>
                             </div>
                           )}
                           <div style={{ width: '100%', overflow: 'hidden' }}>
@@ -1762,6 +1914,8 @@ export default function BroadcastManager() {
                               {formatBytes(att.file_size)}
                             </div>
                           </div>
+
+                          {/* Remove button */}
                           <button
                             type="button"
                             className="bc-icon-btn bc-delete-btn"
@@ -1769,21 +1923,53 @@ export default function BroadcastManager() {
                               position: 'absolute',
                               top: '6px',
                               right: '6px',
-                              background: 'rgba(0, 0, 0, 0.6)',
+                              background: 'rgba(0, 0, 0, 0.65)',
                               color: '#fff',
                               borderRadius: '50%',
-                              width: '20px',
-                              height: '20px',
+                              width: '22px',
+                              height: '22px',
                               display: 'flex',
                               alignItems: 'center',
                               justifyContent: 'center',
                               border: 'none',
-                              cursor: 'pointer'
+                              cursor: 'pointer',
+                              zIndex: 2,
                             }}
                             onClick={() => setAttachments(prev => prev.filter((_, i) => i !== idx))}
                           >
                             <X size={12} />
                           </button>
+
+                          {/* Edit button for images */}
+                          {isImage && (
+                            <button
+                              type="button"
+                              title="Edit image"
+                              style={{
+                                position: 'absolute',
+                                top: '6px',
+                                left: '6px',
+                                background: 'rgba(124,58,237,0.85)',
+                                color: '#fff',
+                                borderRadius: '50%',
+                                width: '22px',
+                                height: '22px',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                border: 'none',
+                                cursor: 'pointer',
+                                zIndex: 2,
+                              }}
+                              onClick={e => {
+                                e.stopPropagation();
+                                setPhotoEditorIdx(idx);
+                                setPhotoEditorOpen(true);
+                              }}
+                            >
+                              <Pencil size={11} />
+                            </button>
+                          )}
                         </div>
                       );
                     })}
@@ -1972,7 +2158,7 @@ export default function BroadcastManager() {
             </div>
           )}
 
-          <div className="bc-history-list custom-scrollbar">
+          <div className="bc-history-table">
             {historyLoading ? (
               <div className="bc-empty-state"><div className="bc-spinner" /></div>
             ) : filteredHistory.length === 0 ? (
@@ -2022,7 +2208,7 @@ export default function BroadcastManager() {
                       <div className="bc-history-meta">
                         <span>By {item.display_sender}</span>
                         <span>·</span>
-                        <span>{new Date(item.display_date).toLocaleDateString()}</span>
+                        <span>{parseServerDate(item.display_date)?.toLocaleDateString() || ''}</span>
                         {item.unified_type === 'broadcast' ? (
                           <>
                             <span>·</span>
@@ -2075,8 +2261,85 @@ export default function BroadcastManager() {
             showToast(msg || 'Broadcast sent successfully!');
             fetchHistory();
           }}
+          setAttLightbox={setAttLightbox}
         />
       )}
+
+      {/* ── Attachment Image Lightbox ── */}
+      {attLightbox && (attLightbox.type === 'image' || attLightbox.type?.startsWith('image/')) && (
+        <ImageViewer url={attLightbox.url} name={attLightbox.name} onClose={() => setAttLightbox(null)} />
+      )}
+
+      {/* ── Attachment PDF Lightbox ─────────────────────────── */}
+      {attLightbox && (attLightbox.type === 'pdf' || attLightbox.type === 'application/pdf') && typeof document !== 'undefined' && createPortal(
+        <div
+          onClick={() => setAttLightbox(null)}
+          style={{
+            position: 'fixed', inset: 0, zIndex: 100005,
+            background: 'rgba(0,0,0,0.92)',
+            display: 'flex', flexDirection: 'column',
+            alignItems: 'center', justifyContent: 'center',
+            padding: '2rem',
+          }}
+        >
+          <div style={{ position: 'absolute', top: '1rem', right: '1rem', display: 'flex', gap: '0.5rem', zIndex: 100008 }}>
+            <a
+              href={attLightbox.url}
+              download={attLightbox.name}
+              onClick={e => e.stopPropagation()}
+              style={{
+                padding: '0.5rem 1rem', background: 'rgba(255,255,255,0.12)',
+                color: '#fff', borderRadius: '8px', fontSize: '0.82rem',
+                display: 'flex', alignItems: 'center', gap: '6px',
+                textDecoration: 'none', border: '1px solid rgba(255,255,255,0.15)',
+              }}
+            >
+              <Download size={14} /> Download
+            </a>
+            <button
+              onClick={() => setAttLightbox(null)}
+              style={{
+                padding: '0.5rem', background: 'rgba(255,255,255,0.12)',
+                color: '#fff', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.15)',
+                cursor: 'pointer', display: 'flex', alignItems: 'center',
+              }}
+            >
+              <X size={18} />
+            </button>
+          </div>
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+          >
+            <PdfViewer url={attLightbox.url || ''} name={attLightbox.name} containerStyle={{ width: '85%', height: '80vh' }} />
+          </div>
+          <p style={{ marginTop: '1rem', color: 'rgba(255,255,255,0.5)', fontSize: '0.8rem', textAlign: 'center', position: 'absolute', bottom: '0.5rem' }}>
+            {attLightbox.name}
+          </p>
+        </div>,
+        document.body
+      )}
+
+      {/* ── Photo Editor for broadcast image attachments ─────────── */}
+      {photoEditorOpen && attachments[photoEditorIdx] && (() => {
+        const att = attachments[photoEditorIdx];
+        const editorImages = [{ url: att.editedUrl || resolveMediaUrl(att.file_path), caption: att.file_name }];
+        return (
+          <PhotoEditorModal
+            images={editorImages}
+            initialIndex={0}
+            onSave={(updatedImages) => {
+              if (updatedImages[0]?.editedUrl) {
+                setAttachments(prev => prev.map((a, i) =>
+                  i === photoEditorIdx ? { ...a, editedUrl: updatedImages[0].editedUrl } : a
+                ));
+              }
+              setPhotoEditorOpen(false);
+            }}
+            onClose={() => setPhotoEditorOpen(false)}
+          />
+        );
+      })()}
     </div>
   );
 }

@@ -64,20 +64,32 @@ const hasPendingDueOrPartialPayment = (course) => {
   }
 };
 
-const parseAttachment = (value) => {
-  if (!value) return null;
-  if (typeof value === 'string' && value.trim().startsWith('{')) {
-    try {
-      return JSON.parse(value);
-    } catch (e) {
-      // ignore
-    }
+const parseServerDate = (dateStr) => {
+  if (!dateStr) return null;
+  if (typeof dateStr === 'string' && !dateStr.endsWith('Z') && !dateStr.includes('+')) {
+    return new Date(dateStr.replace(' ', 'T') + 'Z');
   }
-  return {
-    name: 'notice_image.png',
-    type: 'image/png',
-    url: value
-  };
+  return new Date(dateStr);
+};
+
+const parseAttachment = (value) => {
+  if (!value) return [];
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed.startsWith('[')) {
+      try {
+        const arr = JSON.parse(trimmed);
+        return Array.isArray(arr) ? arr : [arr];
+      } catch (e) { /* ignore */ }
+    }
+    if (trimmed.startsWith('{')) {
+      try {
+        return [JSON.parse(trimmed)];
+      } catch (e) { /* ignore */ }
+    }
+    return [{ name: 'notice_image.png', type: 'image/png', url: value }];
+  }
+  return [];
 };
 
 const FileIcon = ({ type, size = 22 }) => {
@@ -401,6 +413,138 @@ function DocxRenderer({ url, name, handleDownload, onClose }) {
   );
 }
 
+function ZoomableImage({ url, name, onClose }) {
+  const [scale, setScale] = useState(1.0);
+  const [position, setPosition] = useState({ x: 0, y: 0 });
+  const [isDragging, setIsDragging] = useState(false);
+  const dragStart = useRef({ x: 0, y: 0 });
+  const hasDragged = useRef(false);
+
+  const zoomIn = (e) => {
+    e.stopPropagation();
+    setScale(prev => Math.min(prev + 0.25, 4.0));
+  };
+  const zoomOut = (e) => {
+    e.stopPropagation();
+    setScale(prev => Math.max(prev - 0.25, 0.5));
+  };
+  const resetZoom = (e) => {
+    e.stopPropagation();
+    setScale(1.0);
+    setPosition({ x: 0, y: 0 });
+  };
+
+  const handleMouseDown = (e) => {
+    e.preventDefault();
+    hasDragged.current = false;
+    if (scale <= 1.0) return;
+    setIsDragging(true);
+    dragStart.current = { x: e.clientX - position.x, y: e.clientY - position.y };
+  };
+
+  const handleMouseMove = (e) => {
+    if (!isDragging) return;
+    hasDragged.current = true;
+    setPosition({
+      x: e.clientX - dragStart.current.x,
+      y: e.clientY - dragStart.current.y
+    });
+  };
+
+  const handleMouseUp = () => {
+    setIsDragging(false);
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem', width: '100%', height: '100%', justifyContent: 'center', position: 'relative' }}>
+      <div 
+        style={{ 
+          overflow: 'hidden', 
+          cursor: scale > 1.0 ? (isDragging ? 'grabbing' : 'grab') : 'zoom-in',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          width: '100%',
+          height: '75vh'
+        }}
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        onMouseLeave={handleMouseUp}
+        onClick={(e) => {
+          if (hasDragged.current) {
+            e.stopPropagation();
+          }
+        }}
+      >
+        <img
+          className="lb-img"
+          src={resolveMediaUrl(url)}
+          alt={name}
+          onClick={(e) => e.stopPropagation()}
+          style={{
+            maxWidth: '90%',
+            maxHeight: '75vh',
+            objectFit: 'contain',
+            borderRadius: '10px',
+            boxShadow: '0 24px 80px rgba(0,0,0,0.7)',
+            transform: `translate(${position.x}px, ${position.y}px) scale(${scale})`,
+            transition: isDragging ? 'none' : 'transform 0.15s ease-out',
+            animation: 'lb-img-in 0.25s ease',
+            userSelect: 'none'
+          }}
+        />
+      </div>
+      
+      {/* Zoom Toolbar */}
+      <div 
+        style={{
+          position: 'absolute',
+          bottom: '1rem',
+          left: '50%',
+          transform: 'translateX(-50%)',
+          background: 'rgba(0, 0, 0, 0.75)',
+          border: '1px solid rgba(255, 255, 255, 0.15)',
+          padding: '0.4rem 0.8rem',
+          borderRadius: '30px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '0.75rem',
+          boxShadow: '0 8px 32px rgba(0,0,0,0.3)',
+          zIndex: 100001
+        }}
+        onClick={e => e.stopPropagation()}
+      >
+        <button onClick={zoomOut} disabled={scale <= 0.5} style={{ background: 'none', border: 'none', color: '#fff', cursor: 'pointer', opacity: scale <= 0.5 ? 0.4 : 1, display: 'flex', padding: '4px' }}>
+          <ZoomOut size={16} />
+        </button>
+        <span style={{ color: '#fff', fontSize: '0.8rem', fontWeight: 600, minWidth: '40px', textAlign: 'center', userSelect: 'none' }}>
+          {Math.round(scale * 100)}%
+        </span>
+        <button onClick={zoomIn} disabled={scale >= 4.0} style={{ background: 'none', border: 'none', color: '#fff', cursor: 'pointer', opacity: scale >= 4.0 ? 0.4 : 1, display: 'flex', padding: '4px' }}>
+          <ZoomIn size={16} />
+        </button>
+        <div style={{ width: '1px', height: '14px', background: 'rgba(255,255,255,0.2)' }} />
+        <button onClick={resetZoom} style={{ background: 'none', border: 'none', color: '#fff', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 600, padding: '2px 6px' }}>
+          Reset
+        </button>
+        {onClose && (
+          <>
+            <div style={{ width: '1px', height: '14px', background: 'rgba(255,255,255,0.2)' }} />
+            <button 
+              onClick={(e) => { e.stopPropagation(); onClose(); }} 
+              style={{ background: 'none', border: 'none', color: '#f43f5e', cursor: 'pointer', display: 'flex', alignItems: 'center', padding: '4px' }}
+              title="Close Lightbox"
+            >
+              <X size={16} />
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function LightboxContent({ attachment, handleDownload, onClose }) {
   const { type, url, name } = attachment;
 
@@ -413,22 +557,7 @@ function LightboxContent({ attachment, handleDownload, onClose }) {
   }
 
   if (type.startsWith('image/')) {
-    return (
-      <img
-        className="lb-img"
-        src={resolveMediaUrl(url)}
-        alt={name}
-        style={{
-          maxWidth: '90%',
-          maxHeight: '80vh',
-          objectFit: 'contain',
-          borderRadius: '10px',
-          boxShadow: '0 24px 80px rgba(0,0,0,0.7)',
-          animation: 'lb-img-in 0.25s ease',
-          userSelect: 'none'
-        }}
-      />
-    );
+    return <ZoomableImage url={url} name={name} onClose={onClose} />;;
   }
 
   if (type === 'application/pdf') {
@@ -635,6 +764,12 @@ export default function Dashboard() {
     const socket = io(socketUrl, { auth: { token }, transports: ['websocket', 'polling'] });
     socketRef.current = socket;
     socket.on('new_announcement', () => {
+      fetchDashboardData();
+    });
+    socket.on('notice_recalled', () => {
+      fetchDashboardData();
+    });
+    socket.on('broadcast_recalled', () => {
       fetchDashboardData();
     });
     socket.on('progression_updated', (payload) => {
@@ -984,7 +1119,7 @@ export default function Dashboard() {
               ) : announcements.slice(0, 2).map(ann => {
                 const priorityColor = ann.priority === 'high' ? 'var(--danger)' : ann.priority === 'normal' ? 'var(--warning)' : 'var(--success)';
                 const priorityLabel = ann.priority === 'high' ? 'Urgent' : ann.priority === 'normal' ? 'Notice' : 'Info';
-                const annDate = new Date(ann.scheduled_at || ann.created_at);
+                const annDate = parseServerDate(ann.scheduled_at || ann.created_at);
                 const words = ann.content ? ann.content.trim().split(/\s+/) : [];
                 const isLong = words.length > 60;
                 const truncatedContent = isLong ? words.slice(0, 60).join(' ') + '…' : ann.content;
@@ -1036,88 +1171,93 @@ export default function Dashboard() {
                   <p style={{ margin: 0, color: 'var(--text-secondary)', fontSize: '0.95rem', lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>{truncatedContent}</p>
                   
                   {ann.image_url && (() => {
-                    const attachment = parseAttachment(ann.image_url);
-                    if (!attachment || !attachment.url) return null;
-                    const isImage = attachment.type?.startsWith('image/');
-                    
-                    if (isImage) {
-                      return (
-                        <div 
-                          onClick={(e) => { e.stopPropagation(); setLightbox(attachment); }}
-                          style={{ 
-                            marginTop: '1rem', 
-                            borderRadius: '8px', 
-                            overflow: 'hidden', 
-                            maxWidth: '100%', 
-                            maxHeight: '200px', 
-                            border: '1px solid var(--glass-border)', 
-                            background: 'rgba(0,0,0,0.1)',
-                            cursor: 'zoom-in',
-                            transition: 'opacity 0.2s',
-                            display: 'flex',
-                            justifyContent: 'center',
-                            alignItems: 'center'
-                          }}
-                          onMouseEnter={e => e.currentTarget.style.opacity = 0.9}
-                          onMouseLeave={e => e.currentTarget.style.opacity = 1}
-                        >
-                          <img src={resolveMediaUrl(attachment.url)} alt={attachment.name} style={{ maxWidth: '100%', maxHeight: '200px', objectFit: 'contain', display: 'block' }} />
-                        </div>
-                      );
-                    } else {
-                      return (
-                        <div 
-                          onClick={(e) => { e.stopPropagation(); setLightbox(attachment); }}
-                          style={{ 
-                            marginTop: '1rem', 
-                            borderRadius: '10px', 
-                            border: '1px solid var(--glass-border)', 
-                            background: 'rgba(255,255,255,0.03)',
-                            padding: '0.75rem 1rem',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'space-between',
-                            cursor: 'pointer',
-                            transition: 'all 0.2s'
-                          }}
-                          onMouseEnter={e => {
-                            e.currentTarget.style.background = 'rgba(255,255,255,0.06)';
-                            e.currentTarget.style.borderColor = 'rgba(255,255,255,0.15)';
-                          }}
-                          onMouseLeave={e => {
-                            e.currentTarget.style.background = 'rgba(255,255,255,0.03)';
-                            e.currentTarget.style.borderColor = 'var(--glass-border)';
-                          }}
-                        >
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', minWidth: 0 }}>
-                            <div style={{ 
-                              width: '36px', 
-                              height: '36px', 
-                              borderRadius: '8px', 
-                              background: 'rgba(255,255,255,0.05)', 
-                              display: 'flex', 
-                              alignItems: 'center', 
-                              justifyContent: 'center',
-                              color: 'var(--accent-primary, #60a5fa)',
-                              flexShrink: 0
-                            }}>
-                              <FileIcon type={attachment.type} size={18} />
-                            </div>
-                            <div style={{ minWidth: 0 }}>
-                              <p style={{ margin: 0, fontWeight: 600, color: 'var(--text-primary)', fontSize: '0.9rem', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
-                                {attachment.name}
-                              </p>
-                              <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: '0.7rem', textTransform: 'uppercase' }}>
-                                {attachment.type ? (attachment.type.split('/')[1] || 'FILE') : 'FILE'}
-                              </p>
-                            </div>
-                          </div>
-                          <span style={{ fontSize: '0.8rem', color: 'var(--accent-primary, #60a5fa)', fontWeight: 500, display: 'flex', alignItems: 'center', gap: '4px' }}>
-                            <Eye size={14} /> Preview
-                          </span>
-                        </div>
-                      );
-                    }
+                    const attachments = parseAttachment(ann.image_url);
+                    if (!attachments.length) return null;
+                    return (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', marginTop: '1rem' }}>
+                        {attachments.map((attachment, idx) => {
+                          const isImage = attachment.type?.startsWith('image/');
+                          if (isImage) {
+                            return (
+                              <div 
+                                key={idx}
+                                onClick={(e) => { e.stopPropagation(); setLightbox(attachment); }}
+                                style={{ 
+                                  borderRadius: '8px', 
+                                  overflow: 'hidden', 
+                                  maxWidth: '100%', 
+                                  maxHeight: '200px', 
+                                  border: '1px solid var(--glass-border)', 
+                                  background: 'rgba(0,0,0,0.1)',
+                                  cursor: 'zoom-in',
+                                  transition: 'opacity 0.2s',
+                                  display: 'flex',
+                                  justifyContent: 'center',
+                                  alignItems: 'center'
+                                }}
+                                onMouseEnter={e => e.currentTarget.style.opacity = 0.9}
+                                onMouseLeave={e => e.currentTarget.style.opacity = 1}
+                              >
+                                <img src={resolveMediaUrl(attachment.url)} alt={attachment.name} style={{ maxWidth: '100%', maxHeight: '200px', objectFit: 'contain', display: 'block' }} />
+                              </div>
+                            );
+                          } else {
+                            return (
+                              <div 
+                                key={idx}
+                                onClick={(e) => { e.stopPropagation(); setLightbox(attachment); }}
+                                style={{ 
+                                  borderRadius: '10px', 
+                                  border: '1px solid var(--glass-border)', 
+                                  background: 'rgba(255,255,255,0.03)',
+                                  padding: '0.75rem 1rem',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'space-between',
+                                  cursor: 'pointer',
+                                  transition: 'all 0.2s'
+                                }}
+                                onMouseEnter={e => {
+                                  e.currentTarget.style.background = 'rgba(255,255,255,0.06)';
+                                  e.currentTarget.style.borderColor = 'rgba(255,255,255,0.15)';
+                                }}
+                                onMouseLeave={e => {
+                                  e.currentTarget.style.background = 'rgba(255,255,255,0.03)';
+                                  e.currentTarget.style.borderColor = 'var(--glass-border)';
+                                }}
+                              >
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', minWidth: 0 }}>
+                                  <div style={{ 
+                                    width: '36px', 
+                                    height: '36px', 
+                                    borderRadius: '8px', 
+                                    background: 'rgba(255,255,255,0.05)', 
+                                    display: 'flex', 
+                                    alignItems: 'center', 
+                                    justifyContent: 'center',
+                                    color: 'var(--accent-primary, #60a5fa)',
+                                    flexShrink: 0
+                                  }}>
+                                    <FileIcon type={attachment.type} size={18} />
+                                  </div>
+                                  <div style={{ minWidth: 0 }}>
+                                    <p style={{ margin: 0, fontWeight: 600, color: 'var(--text-primary)', fontSize: '0.9rem', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
+                                      {attachment.name}
+                                    </p>
+                                    <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: '0.7rem', textTransform: 'uppercase' }}>
+                                      {attachment.type ? (attachment.type.split('/')[1] || 'FILE') : 'FILE'}
+                                    </p>
+                                  </div>
+                                </div>
+                                <span style={{ fontSize: '0.8rem', color: 'var(--accent-primary, #60a5fa)', fontWeight: 500, display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                  <Eye size={14} /> Preview
+                                </span>
+                              </div>
+                            );
+                          }
+                        })}
+                      </div>
+                    );
                   })()}
 
                   {isLong && (
@@ -1905,12 +2045,12 @@ export default function Dashboard() {
         return createPortal(
           <div
             className="lb-backdrop"
-            onClick={e => { if (e.target === e.currentTarget) setLightbox(null); }}
+            onClick={() => setLightbox(null)}
           >
             {/* Top bar */}
             <div 
               className="lb-topbar"
-              onClick={e => { if (e.target === e.currentTarget) setLightbox(null); }}
+              onClick={e => e.stopPropagation()}
               style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '1rem', width: '100%', boxSizing: 'border-box' }}
             >
               <span style={{ color: '#fff', fontSize: '1.1rem', fontWeight: 600, marginLeft: '1rem', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap', maxWidth: '70%' }}>
@@ -1967,7 +2107,6 @@ export default function Dashboard() {
             {/* Main image area */}
             <div 
               className="lb-main"
-              onClick={e => { if (e.target === e.currentTarget) setLightbox(null); }}
               style={{
                 position: 'relative',
                 width: '100%', 

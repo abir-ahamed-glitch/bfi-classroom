@@ -218,10 +218,22 @@ export default function Sidebar({ isNotifOpen, setIsNotifOpen }) {
 
     socket.on('new_notification', () => {
       fetchUnreadNotificationCount();
+      window.dispatchEvent(new CustomEvent('refreshNotifications'));
     });
 
     socket.on('notification_received', (notification) => {
       window.dispatchEvent(new CustomEvent('showNotificationToast', { detail: notification }));
+      window.dispatchEvent(new CustomEvent('refreshNotifications'));
+    });
+
+    socket.on('notice_recalled', () => {
+      fetchUnreadNotificationCount();
+      window.dispatchEvent(new CustomEvent('refreshNotifications'));
+    });
+
+    socket.on('broadcast_recalled', () => {
+      fetchUnreadNotificationCount();
+      window.dispatchEvent(new CustomEvent('refreshNotifications'));
     });
 
     return () => {

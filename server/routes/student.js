@@ -316,6 +316,7 @@ router.get('/dashboard', authenticateToken, (req, res) => {
           )
         )
       ) AND (a.scheduled_at IS NULL OR datetime(a.scheduled_at) <= datetime('now'))
+        AND a.deleted_at IS NULL
         AND a.created_at >= datetime('now', '-14 days')
       ORDER BY a.created_at DESC
       LIMIT 20
@@ -351,16 +352,17 @@ router.get('/notices', authenticateToken, (req, res) => {
     let announcements;
 
     if (req.user.role === 'admin') {
-      // Admins see all announcements
+      // Admins see all active announcements
       announcements = db.prepare(`
         SELECT a.id, a.title, a.content, a.priority, a.target_course, a.target_batch, a.image_url, a.created_at, a.scheduled_at, a.is_broadcast, u.first_name as admin_name
         FROM announcements a
         JOIN users u ON a.admin_id = u.id
+        WHERE a.deleted_at IS NULL
         ORDER BY a.created_at DESC
         LIMIT 50
       `).all();
     } else {
-      // Students/instructors see global + targeted announcements
+      // Students/instructors see global + targeted active announcements
       let batchFilter = null;
       if (req.user.role === 'student') {
         const profile = db.prepare('SELECT batch_number FROM student_profiles WHERE user_id = ?').get(req.user.id);
@@ -391,6 +393,7 @@ router.get('/notices', authenticateToken, (req, res) => {
             )
           )
         ) AND (a.scheduled_at IS NULL OR datetime(a.scheduled_at) <= datetime('now'))
+          AND a.deleted_at IS NULL
         ORDER BY a.created_at DESC
         LIMIT 50
       `).all(req.user.id, req.user.id, batchFilter);

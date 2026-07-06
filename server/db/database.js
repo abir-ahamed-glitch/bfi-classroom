@@ -976,6 +976,22 @@ export function initializeDatabase() {
     // Column probably already exists
   }
 
+  // Announcements broadcast_id migration
+  try {
+    db.prepare("ALTER TABLE announcements ADD COLUMN broadcast_id INTEGER DEFAULT NULL").run();
+    console.log('✅ Migrated announcements: added broadcast_id column');
+  } catch (error) {
+    // Column probably already exists
+  }
+
+  // Notifications broadcast_id migration
+  try {
+    db.prepare("ALTER TABLE notifications ADD COLUMN broadcast_id INTEGER DEFAULT NULL").run();
+    console.log('✅ Migrated notifications: added broadcast_id column');
+  } catch (error) {
+    // Column probably already exists
+  }
+
   // Custom subjects sort_order migration
   try {
     db.prepare("ALTER TABLE custom_subjects ADD COLUMN sort_order INTEGER DEFAULT 0").run();

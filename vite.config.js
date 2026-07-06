@@ -1,11 +1,71 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import path from 'path'
+import fs from 'fs'
+import { lookup as mimeLookup } from 'mime-types'
+
+// Vite plugin: in dev mode, serve files from ./uploads/ directly for /bfi-classroom/media/**
+// This bypasses the http-proxy layer which silently returns 204 for binary file responses
+// when a real browser (with sec-fetch-* headers + cookies) makes the request.
+const serveUploadsPlugin = {
+  name: 'serve-uploads-media',
+  configureServer(server) {
+    const uploadsDir = path.resolve('./uploads');
+    server.middlewares.use('/bfi-classroom/media', (req, res, next) => {
+      try {
+        console.log(`[serveUploadsPlugin] HIT: req.url = ${req.url}`);
+        let urlPath = req.url || '/';
+        if (urlPath.split('?')[0].endsWith('/view')) {
+          const parts = urlPath.split('?');
+          parts[0] = parts[0].slice(0, -5);
+          urlPath = parts.join('?');
+        }
+        // Strip query string and decode percent-encoded chars
+        const relPath = decodeURIComponent(urlPath.split('?')[0]);
+        const fullPath = path.resolve(uploadsDir, '.' + relPath);
+        console.log(`[serveUploadsPlugin] fullPath = ${fullPath}`);
+
+        // Security: no path traversal outside uploads dir
+        if (!fullPath.startsWith(uploadsDir)) {
+          console.log(`[serveUploadsPlugin] Path traversal check failed`);
+          return next();
+        }
+
+        let stat;
+        try { 
+          stat = fs.statSync(fullPath); 
+        } catch(e) { 
+          console.log(`[serveUploadsPlugin] Stat failed: ${e.message}`);
+          return next(); 
+        }
+        if (!stat.isFile()) {
+          console.log(`[serveUploadsPlugin] Not a file`);
+          return next();
+        }
+
+        const mimeType = mimeLookup(fullPath) || 'application/octet-stream';
+        const inline = mimeType.startsWith('image/') || mimeType === 'application/pdf';
+
+        res.setHeader('Content-Type', mimeType);
+        res.setHeader('Content-Length', stat.size);
+        res.setHeader('Content-Disposition', inline ? 'inline' : `attachment; filename="${path.basename(fullPath)}"`);
+        res.setHeader('Cache-Control', 'public, max-age=0');
+        res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.statusCode = 200;
+        fs.createReadStream(fullPath).pipe(res);
+      } catch (err) {
+        console.error(`[serveUploadsPlugin] ERROR:`, err);
+        next();
+      }
+    });
+  },
+};
 
 // https://vite.dev/config/
 export default defineConfig({
   base: '/bfi-classroom/',
-  plugins: [react()],
+  plugins: [react(), serveUploadsPlugin],
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
@@ -27,7 +87,6 @@ export default defineConfig({
   },
   server: {
     port: 5174,
-    strictPort: true,
     proxy: {
       // Direct /api calls (from production paths that don't include base)
       '/api': {
@@ -45,12 +104,9 @@ export default defineConfig({
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/bfi-classroom\/api/, '/api'),
       },
-      // Media/uploads proxied from dev server to backend
-      '/bfi-classroom/media': {
-        target: 'http://localhost:3001',
-        changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/bfi-classroom\/media/, '/media'),
-      },
+      // NOTE: /bfi-classroom/media is intentionally NOT proxied here.
+      // The serveUploadsPlugin (above) intercepts these requests and serves
+      // files directly from ./uploads/ to avoid the 204 proxy issue.
       '/socket.io': {
         target: 'http://localhost:3001',
         changeOrigin: true,
