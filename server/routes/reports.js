@@ -17,9 +17,12 @@ const VALID_ACTIONS = new Set(['reviewed', 'resolved', 'dismissed']);
 const HISTORY_MARKER = '\n\n[REPORT_HISTORY]';
 
 fs.mkdirSync(screenshotDirectory, { recursive: true });
-const reportColumns = db.prepare('PRAGMA table_info(reports)').all();
-if (!reportColumns.some((column) => column.name === 'screenshot_path')) {
-  db.exec('ALTER TABLE reports ADD COLUMN screenshot_path TEXT');
+const reportTableExists = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='reports'").get();
+if (reportTableExists) {
+  const reportColumns = db.prepare('PRAGMA table_info(reports)').all();
+  if (!reportColumns.some((column) => column.name === 'screenshot_path')) {
+    db.exec('ALTER TABLE reports ADD COLUMN screenshot_path TEXT');
+  }
 }
 
 const reportLimiter = rateLimit({

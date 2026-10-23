@@ -287,6 +287,8 @@ const VoiceMessagePlayer = ({ src, isMine, avatarUrl }) => {
       .catch(() => {});
   }, [src]);
 
+  const updateProgressLoopRef = useRef(null);
+
   // Smooth progress loop using requestAnimationFrame instead of timeupdate
   const updateProgressLoop = useCallback(() => {
     const audio = audioRef.current;
@@ -296,8 +298,12 @@ const VoiceMessagePlayer = ({ src, isMine, avatarUrl }) => {
     const cur = audio.currentTime;
     setCurrentTime(cur);
     setProgress(dur > 0 ? Math.min((cur / dur) * 100, 100) : 0);
-    rafRef.current = requestAnimationFrame(updateProgressLoop);
+    rafRef.current = requestAnimationFrame(updateProgressLoopRef.current);
   }, []);
+
+  useEffect(() => {
+    updateProgressLoopRef.current = updateProgressLoop;
+  }, [updateProgressLoop]);
 
   const togglePlay = () => {
     const audio = audioRef.current;
@@ -500,10 +506,15 @@ export default function Inbox() {
       const token = localStorage.getItem('token');
       if (!token) return;
       try {
-        const response = await fetch('/api/admin/broadcast?limit=1', {
+        const response = await fetch('/api/admin/broadcast/my-permission', {
           headers: { Authorization: `Bearer ${token}` }
         });
-        setHasBroadcastPermission(response.ok);
+        if (response.ok) {
+          const data = await response.json();
+          setHasBroadcastPermission(Boolean(data.hasPermission));
+        } else {
+          setHasBroadcastPermission(false);
+        }
       } catch (err) {
         console.error('Failed to check broadcast permission', err);
         setHasBroadcastPermission(false);
@@ -2129,7 +2140,12 @@ export default function Inbox() {
           const response = await fetch(fileUrl, {
             headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
           });
-          if (!response.ok) throw new Error(`Attachment fetch failed (${response.status})`);
+          if (response.status === 204 || !response.ok) {
+            if (!cancelled) {
+              setDecryptedAttachmentUrls(prev => ({ ...prev, [message.id]: { url: null, type: 'missing', missing: true } }));
+            }
+            return;
+          }
 
           const isEncryptedFile = (message.attachment_type || '').startsWith('e2e-file:');
           if (isEncryptedFile && !privateKey) return;

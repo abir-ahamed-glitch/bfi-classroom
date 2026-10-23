@@ -262,7 +262,7 @@ export default function BulkStudentImport({ onImportComplete }) {
         if (/(winter|spring|summer|fall|autumn|july|august|january|february|march|april|may|june|september|october|november|december)[\s\-\u2013]+\d{4}/i.test(val)) return false;
         const words = val.trim().split(/\s+/);
         if (words.length < 2 || words.length > 6) return false;
-        return words.every(w => /^[A-Za-z\u0080-\uFFFF][a-zA-Z\u0080-\uFFFF.'()\-]{0,30}$/.test(w));
+        return words.every(w => /^[A-Za-z\u0080-\uFFFF][a-zA-Z\u0080-\uFFFF.'()-]{0,30}$/.test(w));
       };
 
       // Detect if a row is a section/page header (not a real student)

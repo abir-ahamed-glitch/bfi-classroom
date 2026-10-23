@@ -16,56 +16,10 @@ import BatchFormModal from '../../components/admin/BatchFormModal';
 import AddStudentsModal from '../../components/admin/AddStudentsModal';
 import EditStudentModal from '../../components/admin/EditStudentModal';
 import UploadResultsModal from '../../components/admin/UploadResultsModal';
+import DefinedCourseProgressModal from '../../components/admin/DefinedCourseProgressModal';
+import { resolveClientDiscount, resolveFeeAccounting, isCourseFeeUnpaid } from '../../utils/feeUtils';
 
-const hasPendingDueOrPartialPayment = (course) => {
-  if (!course || !course.fee_details) return false;
-  
-  let feeDetails = {};
-  try {
-    feeDetails = typeof course.fee_details === 'string' 
-      ? JSON.parse(course.fee_details) 
-      : course.fee_details;
-  } catch (e) {
-    console.error('Error parsing course fee details:', e);
-    return false;
-  }
-
-  if (!feeDetails) return false;
-  
-  const isUnpaid = (phase) => {
-    if (!phase) return false;
-    
-    // If installments exist, they are the source of truth
-    if (phase.installments && phase.installments.length > 0) {
-      return phase.installments.some(inst => inst.status === 'Pending' || inst.status === 'Due');
-    }
-
-    // Status checks (when no installments)
-    const status = phase.status;
-    if (status === 'Paid Full' || status === 'Waived') {
-      return false;
-    }
-    if (status === 'Partial' || status === 'Pending' || status === 'Due') {
-      return true;
-    }
-    
-    // Fallback numerical check
-    const fullFee = parseFloat((phase.full_fee || '').toString().replace(/[^\d.]/g, '')) || 0;
-    if (fullFee === 0) return false;
-    
-    const amountPaid = parseFloat((phase.amount_paid || '').toString().replace(/[^\d.]/g, '')) || 0;
-    const discount = parseFloat((phase.discount || '').toString().replace(/[^\d.]/g, '')) || 0;
-    const remainingDue = Math.max(0, fullFee - discount - amountPaid);
-    
-    return remainingDue > 0;
-  };
-
-  if (course.course_name === 'Online Filmmaking Course') {
-    return isUnpaid(feeDetails.phase1) || isUnpaid(feeDetails.phase2);
-  } else {
-    return isUnpaid(feeDetails);
-  }
-};
+const hasPendingDueOrPartialPayment = (course) => isCourseFeeUnpaid(course);
 import { getOrdinalSuffix } from '../../utils/formatUtils';
 
 // Reusable Stat Card
@@ -152,7 +106,7 @@ export default function BatchDetail() {
   const { courseSettings, getSetting, loading: settingsLoading } = useCourseSettings();
   const currentCourseSetting = useMemo(() => {
     if (!batchData || settingsLoading) return null;
-    return getSetting(batchData.course_name, batchData.batch_number);
+    return getSetting(batchData.course_name, batchData.batch_number, batchData.id);
   }, [batchData, courseSettings, settingsLoading, getSetting]);
   const [studentsData, setStudentsData] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
@@ -187,6 +141,27 @@ export default function BatchDetail() {
   });
   const [isPhase2Saving, setIsPhase2Saving] = useState(false);
   const [phase2Error, setPhase2Error] = useState('');
+
+  // Defined Course Progress Modal State
+  const [definedProgressModal, setDefinedProgressModal] = useState({
+    isOpen: false,
+    student: null,
+    enrollment: null,
+    initialPhaseIndex: 0
+  });
+
+  const openDefinedProgress = (student, enrollment, phaseIndex = 0) => {
+    setDefinedProgressModal({
+      isOpen: true,
+      student,
+      enrollment,
+      initialPhaseIndex: phaseIndex
+    });
+  };
+
+  const closeDefinedProgress = () => {
+    setDefinedProgressModal(prev => ({ ...prev, isOpen: false }));
+  };
 
   // Confirmation Modal State
   const [deleteConfirmId, setDeleteConfirmId] = useState(null);
@@ -255,60 +230,55 @@ export default function BatchDetail() {
       let totalFee = 0;
       let collected = 0;
 
-      const cleanNum = (val) => {
-        if (val === undefined || val === null) return 0;
-        return parseFloat(String(val).replace(/[^\d.]/g, '')) || 0;
-      };
+      let studentCollected = 0;
+      let studentOutstanding = 0;
+      let studentTotalFee = 0;
 
-      if (isOnlineFilmmaking) {
-        // Phase 1
+      if (e?.defined_progress?.phases && Array.isArray(e.defined_progress.phases) && e.defined_progress.phases.length > 0) {
+        e.defined_progress.phases.forEach((p, idx) => {
+          const phaseData = feeDetails?.phases?.[idx] || feeDetails?.[`phase${idx + 1}`];
+          const acct = resolveFeeAccounting(phaseData || {}, {
+            expectedFee: p.feeAmount || p.fee || 0,
+            courseDiscount: feeDetails?.discount
+          });
+          studentTotalFee += acct.grossFee;
+          studentCollected += acct.cashCollected;
+          studentOutstanding += acct.remainingDue;
+        });
+      } else if (isOnlineFilmmaking) {
         const p1 = feeDetails?.phase1 || {};
-        const p1Full = cleanNum(p1.full_fee) || defaultP1;
-        const p1Paid = cleanNum(p1.amount_paid);
-        const p1Discount = cleanNum(p1.discount);
-        const p1Insts = p1.installments || [];
-        const p1InstPaidSum = p1Insts
-          .filter(inst => (inst.status || '').toLowerCase() === 'paid')
-          .reduce((sum, inst) => sum + cleanNum(inst.amount), 0);
-        const p1Collected = Math.min(p1Paid + p1InstPaidSum + p1Discount, p1Full);
-
-        // Phase 2
+        const p1Acct = resolveFeeAccounting(p1, {
+          expectedFee: defaultP1,
+          courseDiscount: feeDetails?.discount
+        });
         const p2 = feeDetails?.phase2 || {};
-        const p2Full = cleanNum(p2.full_fee) || defaultP2;
-        const p2Paid = cleanNum(p2.amount_paid);
-        const p2Discount = cleanNum(p2.discount);
-        const p2Insts = p2.installments || [];
-        const p2InstPaidSum = p2Insts
-          .filter(inst => (inst.status || '').toLowerCase() === 'paid')
-          .reduce((sum, inst) => sum + cleanNum(inst.amount), 0);
-        const p2Collected = Math.min(p2Paid + p2InstPaidSum + p2Discount, p2Full);
+        const p2Acct = resolveFeeAccounting(p2, {
+          expectedFee: defaultP2,
+          courseDiscount: feeDetails?.discount
+        });
 
-        totalFee = p1Full + p2Full;
-        collected = p1Collected + p2Collected;
+        studentTotalFee = p1Acct.grossFee + p2Acct.grossFee;
+        studentCollected = p1Acct.cashCollected + p2Acct.cashCollected;
+        studentOutstanding = p1Acct.remainingDue + p2Acct.remainingDue;
       } else {
-        // Workshop
         const p = feeDetails || {};
-        const full = cleanNum(p.full_fee) || defaultFee;
-        const paid = cleanNum(p.amount_paid);
-        const discount = cleanNum(p.discount);
-        const insts = p.installments || [];
-        const instPaidSum = insts
-          .filter(inst => (inst.status || '').toLowerCase() === 'paid')
-          .reduce((sum, inst) => sum + cleanNum(inst.amount), 0);
-        
-        totalFee = full;
-        collected = Math.min(paid + instPaidSum + discount, full);
+        const acct = resolveFeeAccounting(p, {
+          expectedFee: defaultFee,
+          courseDiscount: feeDetails?.discount
+        });
+
+        studentTotalFee = acct.grossFee;
+        studentCollected = acct.cashCollected;
+        studentOutstanding = acct.remainingDue;
       }
 
-      const outstanding = Math.max(0, totalFee - collected);
-
-      collectedSum += collected;
-      outstandingSum += outstanding;
+      collectedSum += studentCollected;
+      outstandingSum += studentOutstanding;
 
       // Classify for progress bar segments
-      if (totalFee > 0 && outstanding === 0) {
+      if (studentTotalFee > 0 && studentOutstanding === 0) {
         paidCount++;
-      } else if (collected > 0) {
+      } else if (studentCollected > 0) {
         partialCount++;
       } else {
         dueCount++;
@@ -399,24 +369,13 @@ export default function BatchDetail() {
         }
       }
       const phase1 = feeDetails?.phase1 || {};
-      const fullFeeNum = parseFloat((phase1.full_fee || '').replace(/[^\d.]/g, '')) || 0;
-      const amountPaidNum = parseFloat((phase1.amount_paid || '').replace(/[^\d.]/g, '')) || 0;
-      const discountNum = parseFloat((phase1.discount || '').replace(/[^\d.]/g, '')) || 0;
-      const rawRemainingDue = Math.max(0, fullFeeNum - discountNum - amountPaidNum);
-      
-      const phase1Installments = phase1.installments || [];
-      const remainingDue = phase1Installments.length > 0
-        ? phase1Installments.filter(inst => (inst.status || '').toLowerCase() !== 'paid').reduce((sum, inst) => sum + (parseFloat((inst.amount || '').toString().replace(/[^\d.]/g, '')) || 0), 0)
-        : rawRemainingDue;
-      
-      const phase1PaidAny = amountPaidNum > 0 || phase1Installments.some(inst => inst.status === 'Paid' && parseFloat((inst.amount || '').replace(/[^\d.]/g, '')) > 0);
-      const phase1FullyPaid = (fullFeeNum > 0 && amountPaidNum + discountNum >= fullFeeNum) ||
-        (fullFeeNum > 0 && rawRemainingDue > 0 && phase1Installments.length > 0 && phase1Installments.every(inst => inst.status === 'Paid')) ||
-        (fullFeeNum > 0 && remainingDue === 0);
+      const p1Acct = resolveFeeAccounting(phase1);
+      const phase1PaidAny = p1Acct.cashCollected > 0 || p1Acct.isPaid;
+      const phase1FullyPaid = p1Acct.isPaid;
 
       const phase2 = feeDetails?.phase2 || {};
-      const phase2PaidAny = (parseFloat((phase2.amount_paid || '').replace(/[^\d.]/g, '')) || 0) > 0 ||
-        (phase2.installments || []).some(inst => inst.status === 'Paid' && parseFloat((inst.amount || '').replace(/[^\d.]/g, '')) > 0);
+      const p2Acct = resolveFeeAccounting(phase2);
+      const phase2PaidAny = p2Acct.cashCollected > 0 || p2Acct.isPaid;
 
       if (stepField === 'step2_completed') {
         if (!phase1PaidAny) {
@@ -1072,7 +1031,7 @@ export default function BatchDetail() {
               const p1 = feeDetails?.phase1 || {};
               const p1Full = cleanNum(p1.full_fee) || defaultP1;
               const p1Paid = cleanNum(p1.amount_paid);
-              const p1Discount = cleanNum(p1.discount);
+              const p1Discount = resolveClientDiscount(p1.discount, p1Full, p1.discount_amount);
               const p1Insts = p1.installments || [];
               const p1InstPaidSum = p1Insts
                 .filter(inst => (inst.status || '').toLowerCase() === 'paid')
@@ -1082,7 +1041,7 @@ export default function BatchDetail() {
               const p2 = feeDetails?.phase2 || {};
               const p2Full = cleanNum(p2.full_fee) || defaultP2;
               const p2Paid = cleanNum(p2.amount_paid);
-              const p2Discount = cleanNum(p2.discount);
+              const p2Discount = resolveClientDiscount(p2.discount, p2Full, p2.discount_amount);
               const p2Insts = p2.installments || [];
               const p2InstPaidSum = p2Insts
                 .filter(inst => (inst.status || '').toLowerCase() === 'paid')
@@ -1095,7 +1054,7 @@ export default function BatchDetail() {
               const p = feeDetails || {};
               const full = cleanNum(p.full_fee) || defaultFee;
               const paid = cleanNum(p.amount_paid);
-              const discount = cleanNum(p.discount);
+              const discount = resolveClientDiscount(p.discount, full, p.discount_amount);
               const insts = p.installments || [];
               const instPaidSum = insts
                 .filter(inst => (inst.status || '').toLowerCase() === 'paid')
@@ -1121,7 +1080,7 @@ export default function BatchDetail() {
               const p1 = feeDetails?.phase1 || {};
               const p1Full = cleanNum(p1.full_fee) || defaultP1;
               const p1Paid = cleanNum(p1.amount_paid);
-              const p1Discount = cleanNum(p1.discount);
+              const p1Discount = resolveClientDiscount(p1.discount, p1Full, p1.discount_amount);
               const p1Insts = p1.installments || [];
               const p1InstPaidSum = p1Insts
                 .filter(inst => (inst.status || '').toLowerCase() === 'paid')
@@ -1131,7 +1090,7 @@ export default function BatchDetail() {
               const p2 = feeDetails?.phase2 || {};
               const p2Full = cleanNum(p2.full_fee) || defaultP2;
               const p2Paid = cleanNum(p2.amount_paid);
-              const p2Discount = cleanNum(p2.discount);
+              const p2Discount = resolveClientDiscount(p2.discount, p2Full, p2.discount_amount);
               const p2Insts = p2.installments || [];
               const p2InstPaidSum = p2Insts
                 .filter(inst => (inst.status || '').toLowerCase() === 'paid')
@@ -1144,7 +1103,7 @@ export default function BatchDetail() {
               const p = feeDetails || {};
               const full = cleanNum(p.full_fee) || defaultFee;
               const paid = cleanNum(p.amount_paid);
-              const discount = cleanNum(p.discount);
+              const discount = resolveClientDiscount(p.discount, full, p.discount_amount);
               const insts = p.installments || [];
               const instPaidSum = insts
                 .filter(inst => (inst.status || '').toLowerCase() === 'paid')
@@ -1170,7 +1129,7 @@ export default function BatchDetail() {
               const p1 = feeDetails?.phase1 || {};
               const p1Full = cleanNum(p1.full_fee) || defaultP1;
               const p1Paid = cleanNum(p1.amount_paid);
-              const p1Discount = cleanNum(p1.discount);
+              const p1Discount = resolveClientDiscount(p1.discount, p1Full, p1.discount_amount);
               const p1Insts = p1.installments || [];
               const p1InstPaidSum = p1Insts
                 .filter(inst => (inst.status || '').toLowerCase() === 'paid')
@@ -1180,7 +1139,7 @@ export default function BatchDetail() {
               const p2 = feeDetails?.phase2 || {};
               const p2Full = cleanNum(p2.full_fee) || defaultP2;
               const p2Paid = cleanNum(p2.amount_paid);
-              const p2Discount = cleanNum(p2.discount);
+              const p2Discount = resolveClientDiscount(p2.discount, p2Full, p2.discount_amount);
               const p2Insts = p2.installments || [];
               const p2InstPaidSum = p2Insts
                 .filter(inst => (inst.status || '').toLowerCase() === 'paid')
@@ -1193,7 +1152,7 @@ export default function BatchDetail() {
               const p = feeDetails || {};
               const full = cleanNum(p.full_fee) || defaultFee;
               const paid = cleanNum(p.amount_paid);
-              const discount = cleanNum(p.discount);
+              const discount = resolveClientDiscount(p.discount, full, p.discount_amount);
               const insts = p.installments || [];
               const instPaidSum = insts
                 .filter(inst => (inst.status || '').toLowerCase() === 'paid')
@@ -1387,6 +1346,56 @@ export default function BatchDetail() {
           </p>
         )}
       </div>
+
+      {/* SECTION 1B: Defined Course Structure & Operational Routines */}
+      {batchData.course_definition && (
+        <div className="glass-panel" style={{ padding: '1.25rem', marginBottom: '1.5rem', borderRadius: '10px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.85rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+            <div>
+              <h3 style={{ margin: 0, fontSize: '1.1rem', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <Film size={18} className="text-accent" /> {batchData.course_definition.name} (Curriculum v{batchData.course_definition.version})
+              </h3>
+              <p style={{ margin: '0.2rem 0 0 0', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                {batchData.course_definition.phase_count} Structured Phase{batchData.course_definition.phase_count > 1 ? 's' : ''} • Operational Class Routines
+              </p>
+            </div>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 240px), 1fr))', gap: '1rem' }}>
+            {batchData.course_definition.definition?.phases?.map((p, idx) => (
+              <div key={idx} style={{ background: 'rgba(255,255,255,0.03)', padding: '0.85rem', borderRadius: '8px', border: '1px solid var(--glass-border)' }}>
+                <div style={{ fontWeight: '600', color: 'var(--text-primary)', fontSize: '0.9rem', marginBottom: '0.35rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.3rem' }}>
+                  <span>Phase {idx + 1}: {p.title || p.name}</span>
+                  {p.routineSource === 'batch_override' ? (
+                    <span style={{ fontSize: '0.68rem', padding: '0.1rem 0.35rem', borderRadius: '4px', background: 'rgba(59,130,246,0.15)', color: '#60a5fa', border: '1px solid rgba(59,130,246,0.3)' }}>
+                      Batch Schedule
+                    </span>
+                  ) : (
+                    <span style={{ fontSize: '0.68rem', padding: '0.1rem 0.35rem', borderRadius: '4px', background: 'rgba(255,255,255,0.05)', color: 'var(--text-muted)' }}>
+                      Course Default
+                    </span>
+                  )}
+                </div>
+                <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '0.4rem' }}>
+                  {p.classes ? `${p.classes.length} Classes` : `${p.classCount || 0} Classes`}
+                </div>
+                {p.routine && p.routine.length > 0 ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                    {p.routine.map((slot, rIdx) => (
+                      <div key={rIdx} style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                        <Calendar size={11} /> {slot.weekday}: {slot.startTime}–{slot.endTime}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontStyle: 'italic' }}>
+                    No routine scheduled
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* SECTION 2: Progress Dashboard */}
       {progressData && (
@@ -1673,7 +1682,7 @@ export default function BatchDetail() {
                     if (enrollment.fee_details) {
                       try {
                         feeDetails = typeof enrollment.fee_details === 'string' ? JSON.parse(enrollment.fee_details) : enrollment.fee_details;
-                      } catch (err) {}
+                      } catch (err) { /* ignore parse error */ }
                     }
                     const defaultFee = batchData.course_fee || 8000;
                     const defaultP1 = batchData.phase1_fee || 4000;
@@ -1683,7 +1692,7 @@ export default function BatchDetail() {
                       const p1 = feeDetails?.phase1 || {};
                       const p1Full = cleanNum(p1.full_fee) || defaultP1;
                       const p1Paid = cleanNum(p1.amount_paid);
-                      const p1Discount = cleanNum(p1.discount);
+                      const p1Discount = resolveClientDiscount(p1.discount, p1Full, p1.discount_amount);
                       const p1Insts = p1.installments || [];
                       const p1InstPaidSum = p1Insts
                         .filter(inst => (inst.status || '').toLowerCase() === 'paid')
@@ -1693,7 +1702,7 @@ export default function BatchDetail() {
                       const p2 = feeDetails?.phase2 || {};
                       const p2Full = cleanNum(p2.full_fee) || defaultP2;
                       const p2Paid = cleanNum(p2.amount_paid);
-                      const p2Discount = cleanNum(p2.discount);
+                      const p2Discount = resolveClientDiscount(p2.discount, p2Full, p2.discount_amount);
                       const p2Insts = p2.installments || [];
                       const p2InstPaidSum = p2Insts
                         .filter(inst => (inst.status || '').toLowerCase() === 'paid')
@@ -1706,7 +1715,7 @@ export default function BatchDetail() {
                       const p = feeDetails || {};
                       const full = cleanNum(p.full_fee) || defaultFee;
                       const paid = cleanNum(p.amount_paid);
-                      const discount = cleanNum(p.discount);
+                      const discount = resolveClientDiscount(p.discount, full, p.discount_amount);
                       const insts = p.installments || [];
                       const instPaidSum = insts
                         .filter(inst => (inst.status || '').toLowerCase() === 'paid')
@@ -1739,78 +1748,158 @@ export default function BatchDetail() {
                               {e.course_name}
                             </div>
                             <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
-                              {e.course_type === 'filmmaking' || e.course_name === 'Online Filmmaking Course' ? (
-                                <>
-                                  <button onClick={() => toggleProgress(s.id, e.id, 'step1_completed', e.step1_completed, e.course_name)} title="Phase 1: Admitted" style={{ background: 'none', border: 'none', cursor: 'pointer', color: e.step1_completed ? '#10b981' : 'var(--text-muted)' }}>
-                                    {e.step1_completed ? <CheckSquare size={18} /> : <Square size={18} />}
-                                  </button>
-                                  {(() => {
-                                    const isGraded = e.exam_written !== null && e.exam_written !== undefined && e.exam_written !== '';
-                                    let eAssignmentsTotal = 0;
-                                    if (currentCourseSetting?.has_assignment) {
-                                      try {
-                                        const pScores = JSON.parse(e.assignment_scores || '{}');
-                                        const defs = JSON.parse(currentCourseSetting.assignments || '[]');
-                                        defs.forEach(d => { eAssignmentsTotal += parseFloat(pScores[d.id]) || 0; });
-                                      } catch(err) {}
-                                    }
-                                    const totalScore = (parseInt(e.exam_written) || 0) + eAssignmentsTotal;
-                                    const attClasses = e.attendance_classes || 0;
-                                    const attTotal = e.attendance_total || 22;
-                                    const qualifiesAttendance = attTotal > 0 ? (attClasses / attTotal) >= 0.8 : false;
-                                    const hasFailed = isGraded && e.step1_completed === 1 && e.step2_completed !== 1 && (!qualifiesAttendance || totalScore < 33);
-                                    if (hasFailed) {
+                              {e.course_definition_id && e.defined_progress ? (
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+                                  <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap', alignItems: 'center' }}>
+                                    {e.defined_progress.phases?.map((p, pIdx) => {
+                                      const isPassed = p.status === 'passed';
+                                      const isFailed = p.status === 'failed';
+                                      const isInProgress = p.status === 'in_progress';
+                                      const badgeBg = isPassed ? 'rgba(16, 185, 129, 0.15)' : isFailed ? 'rgba(239, 68, 68, 0.15)' : isInProgress ? 'rgba(59, 130, 246, 0.15)' : 'rgba(255, 255, 255, 0.05)';
+                                      const badgeColor = isPassed ? '#10b981' : isFailed ? '#ef4444' : isInProgress ? '#60a5fa' : 'var(--text-muted)';
+                                      const badgeBorder = isPassed ? 'rgba(16, 185, 129, 0.3)' : isFailed ? 'rgba(239, 68, 68, 0.3)' : isInProgress ? 'rgba(59, 130, 246, 0.3)' : 'var(--glass-border)';
                                       return (
-                                        <button onClick={() => toggleProgress(s.id, e.id, 'step2_completed', e.step2_completed, e.course_name)} title={`Phase 1: Failed (Score: ${totalScore})`} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444' }}>
-                                          <XCircle size={18} />
+                                        <button
+                                          key={p.phaseNumber || pIdx}
+                                          type="button"
+                                          onClick={() => openDefinedProgress(s, e, pIdx)}
+                                          title={`Phase ${p.phaseNumber}: ${p.phaseName || ''} | Status: ${p.status} | Attendance: ${p.attendance?.percentage || 0}% | Click to record attendance, grades, or exam marks`}
+                                          style={{
+                                            padding: '0.2rem 0.55rem',
+                                            borderRadius: '5px',
+                                            fontSize: '0.72rem',
+                                            fontWeight: '600',
+                                            background: badgeBg,
+                                            color: badgeColor,
+                                            border: `1px solid ${badgeBorder}`,
+                                            display: 'inline-flex',
+                                            alignItems: 'center',
+                                            gap: '0.25rem',
+                                            cursor: 'pointer',
+                                            transition: 'background-color 0.2s, border-color 0.2s',
+                                            minHeight: '28px'
+                                          }}
+                                        >
+                                          P{p.phaseNumber} {isPassed ? '✓' : isFailed ? '✗' : isInProgress ? '⋯' : '–'}
                                         </button>
                                       );
-                                    }
-                                    return (
-                                      <button onClick={() => toggleProgress(s.id, e.id, 'step2_completed', e.step2_completed, e.course_name)} title="Phase 1: Passed Exam" style={{ background: 'none', border: 'none', cursor: 'pointer', color: e.step2_completed ? '#10b981' : 'var(--text-muted)' }}>
-                                        {e.step2_completed ? <CheckSquare size={18} /> : <Square size={18} />}
-                                      </button>
-                                    );
-                                  })()}
-                                  <div style={{ width: '1px', height: '14px', background: 'var(--glass-border)', margin: '0 0.2rem' }}></div>
-                                  <button onClick={() => toggleProgress(s.id, e.id, 'step3_completed', e.step3_completed, e.course_name)} title="Phase 2: Admitted" style={{ background: 'none', border: 'none', cursor: 'pointer', color: e.step3_completed ? '#10b981' : 'var(--text-muted)' }}>
-                                    {e.step3_completed ? <CheckSquare size={18} /> : <Square size={18} />}
-                                  </button>
-                                  <button onClick={() => toggleProgress(s.id, e.id, 'step4_completed', e.step4_completed, e.course_name)} title="Phase 2: Completed Course" style={{ background: 'none', border: 'none', cursor: 'pointer', color: e.step4_completed ? '#10b981' : 'var(--text-muted)' }}>
-                                    {e.step4_completed ? <CheckSquare size={18} /> : <Square size={18} />}
-                                  </button>
-                                </>
+                                    })}
+                                    {e.defined_progress.certificateEligible && (
+                                      <span
+                                        title="Certificate Eligible"
+                                        style={{
+                                          padding: '0.15rem 0.45rem',
+                                          borderRadius: '4px',
+                                          fontSize: '0.72rem',
+                                          fontWeight: '600',
+                                          background: 'rgba(234, 179, 8, 0.15)',
+                                          color: '#eab308',
+                                          border: '1px solid rgba(234, 179, 8, 0.3)',
+                                          display: 'inline-flex',
+                                          alignItems: 'center',
+                                          gap: '0.2rem'
+                                        }}
+                                      >
+                                        🏆 Cert
+                                      </span>
+                                    )}
+                                    {e.defined_progress.failedAnyPhase && e.defined_progress.reEnrollmentDiscount && (
+                                      <span
+                                        title={`Re-enrollment discount available: ${e.defined_progress.reEnrollmentDiscount.percent}%`}
+                                        style={{
+                                          padding: '0.15rem 0.45rem',
+                                          borderRadius: '4px',
+                                          fontSize: '0.72rem',
+                                          fontWeight: '600',
+                                          background: 'rgba(168, 85, 247, 0.15)',
+                                          color: '#c084fc',
+                                          border: '1px solid rgba(168, 85, 247, 0.3)'
+                                        }}
+                                      >
+                                        {e.defined_progress.reEnrollmentDiscount.percent}% Off
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                                    {e.defined_progress.phaseCount} Phase{e.defined_progress.phaseCount > 1 ? 's' : ''} (v{e.defined_progress.courseVersion})
+                                  </div>
+                                </div>
                               ) : (
                                 <>
-                                  <button onClick={() => toggleProgress(s.id, e.id, 'step1_completed', e.step1_completed, e.course_name)} title="Admission Confirmed" style={{ background: 'none', border: 'none', cursor: 'pointer', color: e.step1_completed ? '#10b981' : 'var(--text-muted)' }}>
-                                    {e.step1_completed ? <CheckSquare size={18} /> : <Square size={18} />}
-                                  </button>
-                                  {(() => {
-                                    const examScore = parseInt(e.exam_written) || 0;
-                                    const hasExam = examScore > 0 || (e.exam_written !== null && e.exam_written !== undefined && e.exam_written !== '');
-                                    const hasPassed = e.step2_completed === 1;
-                                    const hasFailed = hasExam && examScore < 33 && !hasPassed;
-                                    if (hasFailed) {
-                                      return (
-                                        <button onClick={() => toggleProgress(s.id, e.id, 'step2_completed', e.step2_completed, e.course_name)} title={`Course Failed (Score: ${examScore})`} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444' }}>
-                                          <XCircle size={18} />
-                                        </button>
-                                      );
-                                    }
-                                    return (
-                                      <button onClick={() => toggleProgress(s.id, e.id, 'step2_completed', e.step2_completed, e.course_name)} title={hasPassed ? `Course Completed (Score: ${examScore})` : 'Course Not Completed'} style={{ background: 'none', border: 'none', cursor: 'pointer', color: hasPassed ? '#10b981' : 'var(--text-muted)' }}>
-                                        {hasPassed ? <CheckSquare size={18} /> : <Square size={18} />}
+                                  {e.course_type === 'filmmaking' || e.course_name === 'Online Filmmaking Course' ? (
+                                    <>
+                                      <button onClick={() => toggleProgress(s.id, e.id, 'step1_completed', e.step1_completed, e.course_name)} title="Phase 1: Admitted" style={{ background: 'none', border: 'none', cursor: 'pointer', color: e.step1_completed ? '#10b981' : 'var(--text-muted)' }}>
+                                        {e.step1_completed ? <CheckSquare size={18} /> : <Square size={18} />}
                                       </button>
-                                    );
-                                  })()}
+                                      {(() => {
+                                        const isGraded = e.exam_written !== null && e.exam_written !== undefined && e.exam_written !== '';
+                                        let eAssignmentsTotal = 0;
+                                        if (currentCourseSetting?.has_assignment) {
+                                          try {
+                                            const pScores = JSON.parse(e.assignment_scores || '{}');
+                                            const defs = JSON.parse(currentCourseSetting.assignments || '[]');
+                                            defs.forEach(d => { eAssignmentsTotal += parseFloat(pScores[d.id]) || 0; });
+                                          } catch(err) { /* ignore parse error */ }
+                                        }
+                                        const totalScore = (parseInt(e.exam_written) || 0) + eAssignmentsTotal;
+                                        const attClasses = e.attendance_classes || 0;
+                                        const attTotal = e.attendance_total || 22;
+                                        const qualifiesAttendance = attTotal > 0 ? (attClasses / attTotal) >= 0.8 : false;
+                                        const hasFailed = isGraded && e.step1_completed === 1 && e.step2_completed !== 1 && (!qualifiesAttendance || totalScore < 33);
+                                        if (hasFailed) {
+                                          return (
+                                            <button onClick={() => toggleProgress(s.id, e.id, 'step2_completed', e.step2_completed, e.course_name)} title={`Phase 1: Failed (Score: ${totalScore})`} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444' }}>
+                                              <XCircle size={18} />
+                                            </button>
+                                          );
+                                        }
+                                        return (
+                                          <button onClick={() => toggleProgress(s.id, e.id, 'step2_completed', e.step2_completed, e.course_name)} title="Phase 1: Passed Exam" style={{ background: 'none', border: 'none', cursor: 'pointer', color: e.step2_completed ? '#10b981' : 'var(--text-muted)' }}>
+                                            {e.step2_completed ? <CheckSquare size={18} /> : <Square size={18} />}
+                                          </button>
+                                        );
+                                      })()}
+                                      <div style={{ width: '1px', height: '14px', background: 'var(--glass-border)', margin: '0 0.2rem' }}></div>
+                                      <button onClick={() => toggleProgress(s.id, e.id, 'step3_completed', e.step3_completed, e.course_name)} title="Phase 2: Admitted" style={{ background: 'none', border: 'none', cursor: 'pointer', color: e.step3_completed ? '#10b981' : 'var(--text-muted)' }}>
+                                        {e.step3_completed ? <CheckSquare size={18} /> : <Square size={18} />}
+                                      </button>
+                                      <button onClick={() => toggleProgress(s.id, e.id, 'step4_completed', e.step4_completed, e.course_name)} title="Phase 2: Completed Course" style={{ background: 'none', border: 'none', cursor: 'pointer', color: e.step4_completed ? '#10b981' : 'var(--text-muted)' }}>
+                                        {e.step4_completed ? <CheckSquare size={18} /> : <Square size={18} />}
+                                      </button>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <button onClick={() => toggleProgress(s.id, e.id, 'step1_completed', e.step1_completed, e.course_name)} title="Admission Confirmed" style={{ background: 'none', border: 'none', cursor: 'pointer', color: e.step1_completed ? '#10b981' : 'var(--text-muted)' }}>
+                                        {e.step1_completed ? <CheckSquare size={18} /> : <Square size={18} />}
+                                      </button>
+                                      {(() => {
+                                        const examScore = parseInt(e.exam_written) || 0;
+                                        const hasExam = examScore > 0 || (e.exam_written !== null && e.exam_written !== undefined && e.exam_written !== '');
+                                        const hasPassed = e.step2_completed === 1;
+                                        const hasFailed = hasExam && examScore < 33 && !hasPassed;
+                                        if (hasFailed) {
+                                          return (
+                                            <button onClick={() => toggleProgress(s.id, e.id, 'step2_completed', e.step2_completed, e.course_name)} title={`Course Failed (Score: ${examScore})`} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444' }}>
+                                              <XCircle size={18} />
+                                            </button>
+                                          );
+                                        }
+                                        return (
+                                          <button onClick={() => toggleProgress(s.id, e.id, 'step2_completed', e.step2_completed, e.course_name)} title={hasPassed ? `Course Completed (Score: ${examScore})` : 'Course Not Completed'} style={{ background: 'none', border: 'none', cursor: 'pointer', color: hasPassed ? '#10b981' : 'var(--text-muted)' }}>
+                                            {hasPassed ? <CheckSquare size={18} /> : <Square size={18} />}
+                                          </button>
+                                        );
+                                      })()}
+                                    </>
+                                  )}
+                                  {((e.course_name === 'Online Filmmaking Course' && e.step4_completed === 1) || (e.course_name !== 'Online Filmmaking Course' && e.step2_completed === 1)) && hasPendingDueOrPartialPayment(e) && (
+                                    <Lock 
+                                      size={14} 
+                                      style={{ color: '#f87171', display: 'inline-block', cursor: 'not-allowed', marginLeft: '0.2rem' }} 
+                                      title={`Certificate Locked (Outstanding: ৳${(totalFee - collected).toLocaleString('en-BD')})`} 
+                                    />
+                                  )}
                                 </>
-                              )}
-                              {((e.course_name === 'Online Filmmaking Course' && e.step4_completed === 1) || (e.course_name !== 'Online Filmmaking Course' && e.step2_completed === 1)) && hasPendingDueOrPartialPayment(e) && (
-                                <Lock 
-                                  size={14} 
-                                  style={{ color: '#f87171', display: 'inline-block', cursor: 'not-allowed', marginLeft: '0.2rem' }} 
-                                  title={`Certificate Locked (Outstanding: ৳${(totalFee - collected).toLocaleString('en-BD')})`} 
-                                />
                               )}
                             </div>
                           </div>
@@ -1844,12 +1933,12 @@ export default function BatchDetail() {
                           const isAppreciation = e.course_name !== 'Online Filmmaking Course';
                           return (
                             <button 
-                              onClick={() => openAcademicModal(s, e.id)}
+                              onClick={() => e.course_definition_id ? openDefinedProgress(s, e, 0) : openAcademicModal(s, e.id)}
                               className="btn" 
-                              style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0.5rem', background: 'rgba(16, 185, 129, 0.1)', color: '#10b981', border: '1px solid rgba(16, 185, 129, 0.2)', borderRadius: '8px', transition: 'all 0.2s' }} 
-                              onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(16, 185, 129, 0.2)'; e.currentTarget.style.transform = 'scale(1.05)'; }} 
-                              onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(16, 185, 129, 0.1)'; e.currentTarget.style.transform = 'scale(1)'; }} 
-                              title={isAppreciation ? 'Exam Result' : 'Academic Records'}
+                              style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0.5rem', background: e.course_definition_id ? 'rgba(99, 102, 241, 0.12)' : 'rgba(16, 185, 129, 0.1)', color: e.course_definition_id ? '#818cf8' : '#10b981', border: e.course_definition_id ? '1px solid rgba(99, 102, 241, 0.25)' : '1px solid rgba(16, 185, 129, 0.2)', borderRadius: '8px', transition: 'background-color 0.2s, border-color 0.2s', minWidth: '36px', minHeight: '36px' }} 
+                              onMouseEnter={(e) => { e.currentTarget.style.background = e.course_definition_id ? 'rgba(99, 102, 241, 0.22)' : 'rgba(16, 185, 129, 0.2)'; }} 
+                              onMouseLeave={(e) => { e.currentTarget.style.background = e.course_definition_id ? 'rgba(99, 102, 241, 0.12)' : 'rgba(16, 185, 129, 0.1)'; }} 
+                              title={e.course_definition_id ? 'Manage Defined Course Progress (Attendance, Grades, Exams)' : (isAppreciation ? 'Exam Result' : 'Academic Records')}
                             >
                               <GraduationCap size={16} />
                             </button>
@@ -1863,8 +1952,8 @@ export default function BatchDetail() {
                               onClick={() => openPhase2Modal(s, e.id)}
                               className="btn"
                               style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0.5rem', background: 'rgba(139, 92, 246, 0.1)', color: '#8b5cf6', border: '1px solid rgba(139, 92, 246, 0.2)', borderRadius: '8px', transition: 'all 0.2s' }}
-                              onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(139, 92, 246, 0.2)'; e.currentTarget.style.transform = 'scale(1.05)'; }}
-                              onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(139, 92, 246, 0.1)'; e.currentTarget.style.transform = 'scale(1)'; }}
+                              onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(139, 92, 246, 0.2)';  }}
+                              onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(139, 92, 246, 0.1)';  }}
                               title="Phase 2: Shooting & Editing Attendance"
                             >
                               <Clapperboard size={16} />
@@ -1875,8 +1964,8 @@ export default function BatchDetail() {
                           onClick={() => openEditModal(s)}
                           className="btn" 
                           style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0.5rem', background: 'rgba(56, 189, 248, 0.1)', color: '#0284c7', border: '1px solid rgba(56, 189, 248, 0.2)', borderRadius: '8px', transition: 'all 0.2s' }} 
-                          onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(56, 189, 248, 0.2)'; e.currentTarget.style.transform = 'scale(1.05)'; }} 
-                          onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(56, 189, 248, 0.1)'; e.currentTarget.style.transform = 'scale(1)'; }} 
+                          onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(56, 189, 248, 0.2)';  }} 
+                          onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(56, 189, 248, 0.1)';  }} 
                           title="Edit Student"
                         >
                           <Edit size={16} />
@@ -1885,8 +1974,8 @@ export default function BatchDetail() {
                           onClick={() => confirmDeleteStudent(s.id, s.full_name, s.batch_number)}
                           className="btn" 
                           style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0.5rem', background: 'rgba(239, 68, 68, 0.1)', color: '#ef4444', border: '1px solid rgba(239, 68, 68, 0.2)', borderRadius: '8px', transition: 'all 0.2s' }} 
-                          onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(239, 68, 68, 0.2)'; e.currentTarget.style.transform = 'scale(1.05)'; }} 
-                          onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(239, 68, 68, 0.1)'; e.currentTarget.style.transform = 'scale(1)'; }} 
+                          onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(239, 68, 68, 0.2)';  }} 
+                          onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(239, 68, 68, 0.1)';  }} 
                           title="Delete Student"
                         >
                           <Trash2 size={16} />
@@ -2073,9 +2162,27 @@ export default function BatchDetail() {
       )}
 
       {/* Edit Modal Overlay */}
+      {/* Defined Course Progress Modal */}
+      {definedProgressModal.isOpen && (
+        <DefinedCourseProgressModal
+          isOpen={definedProgressModal.isOpen}
+          onClose={closeDefinedProgress}
+          student={definedProgressModal.student}
+          enrollment={definedProgressModal.enrollment}
+          initialPhaseIndex={definedProgressModal.initialPhaseIndex}
+          onUpdated={() => {
+            if (batchData?.id) {
+              fetchStudents(batchData.id);
+              fetchProgress(batchData.id);
+            }
+          }}
+        />
+      )}
+
       {editingStudent && (
         <EditStudentModal 
           student={editingStudent} 
+          batchId={batchData?.id}
           onClose={() => setEditingStudent(null)} 
           onSaveSuccess={() => fetchStudents(batchData.id)} 
         />

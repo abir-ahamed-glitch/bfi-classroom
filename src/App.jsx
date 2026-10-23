@@ -39,6 +39,7 @@ import CourseMaterialsManager from './pages/admin/CourseMaterialsManager';
 import Analytics from './pages/admin/Analytics';
 import Reports from './pages/admin/Reports';
 import AdditionalOptions from './pages/admin/AdditionalOptions';
+import CourseMaker from './pages/admin/CourseMaker';
 import BroadcastManager from './pages/admin/BroadcastManager';
 import Certificates from './pages/Certificates';
 import StudentPortal from './pages/StudentPortal';
@@ -368,6 +369,12 @@ function App() {
               <Layout><BatchDetail /></Layout>
             </ProtectedRoute>
           } />
+          <Route path="/admin/batches/:slug" element={
+            <ProtectedRoute requiredRole={['admin']}>
+              <Layout><BatchDetail /></Layout>
+            </ProtectedRoute>
+          } />
+          <Route path="/admin/batches" element={<Navigate to="/admin/batchmanager" replace />} />
           <Route path="/admin/teachers" element={
             <ProtectedRoute requiredRole={['admin']}>
               <Layout><TeacherManager /></Layout>
@@ -415,6 +422,14 @@ function App() {
 
           <Route path="/admin/batch-fees" element={<Navigate to="/admin/additional-options?view=batch-fees" replace />} />
           <Route path="/admin/fee-tracker" element={<Navigate to="/admin/additional-options?view=fee-tracker" replace />} />
+
+          <Route path="/admin/course-maker" element={
+            <ProtectedRoute requiredRole={['admin']}>
+              <Layout>
+                <CourseMaker />
+              </Layout>
+            </ProtectedRoute>
+          } />
 
           <Route path="/admin/additional-options" element={
             <ProtectedRoute requiredRole={['admin']}>

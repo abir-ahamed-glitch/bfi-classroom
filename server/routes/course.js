@@ -51,19 +51,137 @@ const upload = multer({
 // ─── GET: All materials for logged-in student's batch ────────────────────────
 router.get('/', authenticateToken, (req, res) => {
   try {
-    let batch = 'All';
-    if (req.user.role !== 'admin') {
-      const student = db.prepare('SELECT batch_number FROM student_profiles WHERE user_id = ?').get(req.user.id);
-      batch = student?.batch_number || '85th';
+    const requestedBatchId = req.query.batch_id ? parseInt(req.query.batch_id, 10) : null;
+
+    if (req.user.role === 'admin') {
+      if (requestedBatchId) {
+        const materials = db.prepare(`
+          SELECT m.*, u.first_name || ' ' || u.last_name AS instructor_name
+          FROM course_materials m
+          JOIN users u ON m.uploaded_by = u.id
+          WHERE m.deleted_at IS NULL AND m.batch_id = ?
+          ORDER BY m.created_at DESC
+        `).all(requestedBatchId);
+        return res.json({ materials });
+      }
+      const materials = db.prepare(`
+        SELECT m.*, u.first_name || ' ' || u.last_name AS instructor_name
+        FROM course_materials m
+        JOIN users u ON m.uploaded_by = u.id
+        WHERE m.deleted_at IS NULL
+        ORDER BY m.created_at DESC
+      `).all();
+      return res.json({ materials });
     }
 
-    const materials = db.prepare(`
-      SELECT m.*, u.first_name || ' ' || u.last_name AS instructor_name
-      FROM course_materials m
-      JOIN users u ON m.uploaded_by = u.id
-      WHERE m.deleted_at IS NULL AND (m.batch_number = ? OR m.batch_number = 'All')
-      ORDER BY m.created_at DESC
-    `).all(batch);
+    // For students: collect all enrolled batch IDs and profile batch number
+    const enrolledBatches = db.prepare(`
+      SELECT DISTINCT batch_id FROM (
+        SELECT batch_id FROM student_course_enrollments WHERE user_id = ? AND batch_id IS NOT NULL
+        UNION
+        SELECT batch_id FROM batch_students WHERE student_id = ? AND batch_id IS NOT NULL
+      )
+    `).all(req.user.id, req.user.id).map(r => r.batch_id);
+
+    const studentProfile = db.prepare('SELECT batch_number FROM student_profiles WHERE user_id = ?').get(req.user.id);
+    const legacyBatch = studentProfile?.batch_number || null;
+
+    let materials;
+    if (requestedBatchId) {
+      // Authorize every requested batch_id against student's actual enrollment or batch membership
+      if (!enrolledBatches.includes(requestedBatchId)) {
+        return res.status(403).json({ error: 'Access denied: You are not enrolled in this batch.' });
+      }
+
+      // Check if requested batch is a defined course batch or legacy unlinked batch
+      const targetBatch = db.prepare('SELECT id, course_definition_id, course_name, batch_number FROM batches WHERE id = ?').get(requestedBatchId);
+
+      if (targetBatch && targetBatch.course_definition_id) {
+        // Defined course: strictly materials assigned to this specific batch_id!
+        materials = db.prepare(`
+          SELECT m.*, u.first_name || ' ' || u.last_name AS instructor_name
+          FROM course_materials m
+          JOIN users u ON m.uploaded_by = u.id
+          WHERE m.deleted_at IS NULL AND m.batch_id = ?
+          ORDER BY m.created_at DESC
+        `).all(requestedBatchId);
+      } else {
+        // Legacy unlinked batch: materials specifically linked to this batch_id, OR legacy unlinked materials
+        // for this exact course and batch number
+        const bName = targetBatch ? targetBatch.course_name : null;
+        const bNum = targetBatch ? targetBatch.batch_number : (legacyBatch || 'All');
+        materials = db.prepare(`
+          SELECT m.*, u.first_name || ' ' || u.last_name AS instructor_name
+          FROM course_materials m
+          JOIN users u ON m.uploaded_by = u.id
+          WHERE m.deleted_at IS NULL AND (
+            m.batch_id = ?
+            OR (
+              m.batch_id IS NULL
+              AND (? IS NULL OR m.course_name = ?)
+              AND (m.batch_number = ? OR m.batch_number = 'All')
+            )
+          )
+          ORDER BY m.created_at DESC
+        `).all(requestedBatchId, bName, bName, bNum);
+      }
+    } else if (enrolledBatches.length > 0) {
+      const placeholders = enrolledBatches.map(() => '?').join(',');
+
+      // Retrieve genuinely unlinked legacy courses enrolled by the student
+      const legacyCourses = db.prepare(`
+        SELECT DISTINCT course_name FROM student_course_enrollments 
+        WHERE user_id = ? AND batch_id IS NULL AND course_definition_id IS NULL
+      `).all(req.user.id).map(r => r.course_name);
+
+      if (legacyCourses.length > 0 && legacyBatch) {
+        const coursePlaceholders = legacyCourses.map(() => '?').join(',');
+        materials = db.prepare(`
+          SELECT m.*, u.first_name || ' ' || u.last_name AS instructor_name
+          FROM course_materials m
+          JOIN users u ON m.uploaded_by = u.id
+          WHERE m.deleted_at IS NULL AND (
+            m.batch_id IN (${placeholders})
+            OR (
+              m.batch_id IS NULL
+              AND m.course_name IN (${coursePlaceholders})
+              AND (m.batch_number = ? OR m.batch_number = 'All')
+            )
+          )
+          ORDER BY m.created_at DESC
+        `).all(...enrolledBatches, ...legacyCourses, legacyBatch);
+      } else {
+        materials = db.prepare(`
+          SELECT m.*, u.first_name || ' ' || u.last_name AS instructor_name
+          FROM course_materials m
+          JOIN users u ON m.uploaded_by = u.id
+          WHERE m.deleted_at IS NULL AND m.batch_id IN (${placeholders})
+          ORDER BY m.created_at DESC
+        `).all(...enrolledBatches);
+      }
+    } else {
+      // Student has no batch_id enrollments; only unlinked legacy enrollments
+      const legacyCourses = db.prepare(`
+        SELECT DISTINCT course_name FROM student_course_enrollments 
+        WHERE user_id = ? AND batch_id IS NULL AND course_definition_id IS NULL
+      `).all(req.user.id).map(r => r.course_name);
+
+      if (legacyCourses.length > 0) {
+        const coursePlaceholders = legacyCourses.map(() => '?').join(',');
+        materials = db.prepare(`
+          SELECT m.*, u.first_name || ' ' || u.last_name AS instructor_name
+          FROM course_materials m
+          JOIN users u ON m.uploaded_by = u.id
+          WHERE m.deleted_at IS NULL 
+            AND m.batch_id IS NULL
+            AND m.course_name IN (${coursePlaceholders})
+            AND (m.batch_number = ? OR m.batch_number = 'All')
+          ORDER BY m.created_at DESC
+        `).all(...legacyCourses, legacyBatch || '85th');
+      } else {
+        materials = [];
+      }
+    }
 
     res.json({ materials });
   } catch (error) {
@@ -75,13 +193,27 @@ router.get('/', authenticateToken, (req, res) => {
 // ─── GET (Admin): All materials across all batches ────────────────────────────
 router.get('/admin/all', authenticateToken, requireRole('admin'), (req, res) => {
   try {
-    const materials = db.prepare(`
-      SELECT m.*, u.first_name || ' ' || u.last_name AS instructor_name
-      FROM course_materials m
-      JOIN users u ON m.uploaded_by = u.id
-      WHERE m.deleted_at IS NULL
-      ORDER BY m.created_at DESC
-    `).all();
+    const requestedBatchId = req.query.batch_id ? parseInt(req.query.batch_id, 10) : null;
+    let materials;
+    if (requestedBatchId) {
+      materials = db.prepare(`
+        SELECT m.*, u.first_name || ' ' || u.last_name AS instructor_name, b.course_definition_id, b.batch_name
+        FROM course_materials m
+        JOIN users u ON m.uploaded_by = u.id
+        LEFT JOIN batches b ON m.batch_id = b.id
+        WHERE m.deleted_at IS NULL AND (m.batch_id = ? OR (m.batch_id IS NULL AND m.batch_number = (SELECT batch_number FROM batches WHERE id = ?)))
+        ORDER BY m.created_at DESC
+      `).all(requestedBatchId, requestedBatchId);
+    } else {
+      materials = db.prepare(`
+        SELECT m.*, u.first_name || ' ' || u.last_name AS instructor_name, b.course_definition_id, b.batch_name
+        FROM course_materials m
+        JOIN users u ON m.uploaded_by = u.id
+        LEFT JOIN batches b ON m.batch_id = b.id
+        WHERE m.deleted_at IS NULL
+        ORDER BY m.created_at DESC
+      `).all();
+    }
     res.json({ materials });
   } catch (error) {
     console.error('Admin course materials fetch error:', error);
@@ -92,9 +224,21 @@ router.get('/admin/all', authenticateToken, requireRole('admin'), (req, res) => 
 // ─── POST: Upload new material ────────────────────────────────────────────────
 router.post('/upload', authenticateToken, requireRole('admin'), upload.single('file'), (req, res) => {
   try {
-    const { title, description, course_name, batch_number, is_downloadable, external_url, file_type_override } = req.body;
+    const { title, description, course_name, batch_number, batch_id, is_downloadable, external_url, file_type_override } = req.body;
 
-    if (!title || !course_name || !batch_number) {
+    let effectiveBatchId = batch_id ? parseInt(batch_id, 10) : null;
+    let effectiveCourseName = course_name;
+    let effectiveBatchNumber = batch_number;
+
+    if (effectiveBatchId) {
+      const bRow = db.prepare('SELECT id, course_name, batch_number FROM batches WHERE id = ?').get(effectiveBatchId);
+      if (bRow) {
+        if (!effectiveCourseName) effectiveCourseName = bRow.course_name;
+        if (!effectiveBatchNumber) effectiveBatchNumber = bRow.batch_number;
+      }
+    }
+
+    if (!title || !effectiveCourseName || !effectiveBatchNumber) {
       return res.status(400).json({ error: 'Title, course name, and batch number are required.' });
     }
 
@@ -111,15 +255,16 @@ router.post('/upload', authenticateToken, requireRole('admin'), upload.single('f
     }
 
     const result = db.prepare(`
-      INSERT INTO course_materials (title, description, file_url, file_type, batch_number, course_name, uploaded_by, is_downloadable)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO course_materials (title, description, file_url, file_type, batch_id, batch_number, course_name, uploaded_by, is_downloadable)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       title,
       description || null,
       file_url,
       file_type,
-      batch_number,
-      course_name,
+      effectiveBatchId,
+      effectiveBatchNumber,
+      effectiveCourseName,
       req.user.id,
       is_downloadable === 'false' || is_downloadable === false ? 0 : 1
     );
@@ -139,7 +284,19 @@ router.put('/:id', authenticateToken, requireRole('admin'), upload.single('file'
     const existing = db.prepare('SELECT * FROM course_materials WHERE id = ?').get(id);
     if (!existing) return res.status(404).json({ error: 'Material not found' });
 
-    const { title, description, course_name, batch_number, is_downloadable, external_url } = req.body;
+    const { title, description, course_name, batch_number, batch_id, is_downloadable, external_url } = req.body;
+
+    let effectiveBatchId = batch_id !== undefined ? (batch_id ? parseInt(batch_id, 10) : null) : existing.batch_id;
+    let effectiveCourseName = course_name || existing.course_name;
+    let effectiveBatchNumber = batch_number || existing.batch_number;
+
+    if (batch_id && parseInt(batch_id, 10)) {
+      const bRow = db.prepare('SELECT id, course_name, batch_number FROM batches WHERE id = ?').get(parseInt(batch_id, 10));
+      if (bRow) {
+        if (!course_name) effectiveCourseName = bRow.course_name;
+        if (!batch_number) effectiveBatchNumber = bRow.batch_number;
+      }
+    }
 
     let file_url = existing.file_url;
     let file_type = existing.file_type;
@@ -163,15 +320,16 @@ router.put('/:id', authenticateToken, requireRole('admin'), upload.single('file'
 
     db.prepare(`
       UPDATE course_materials
-      SET title = ?, description = ?, file_url = ?, file_type = ?, batch_number = ?, course_name = ?, is_downloadable = ?
+      SET title = ?, description = ?, file_url = ?, file_type = ?, batch_id = ?, batch_number = ?, course_name = ?, is_downloadable = ?
       WHERE id = ?
     `).run(
       title || existing.title,
       description !== undefined ? description : existing.description,
       file_url,
       file_type,
-      batch_number || existing.batch_number,
-      course_name || existing.course_name,
+      effectiveBatchId,
+      effectiveBatchNumber,
+      effectiveCourseName,
       is_downloadable === 'false' || is_downloadable === false ? 0 : 1,
       id
     );

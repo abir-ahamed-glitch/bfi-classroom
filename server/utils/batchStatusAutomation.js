@@ -17,6 +17,8 @@ function checkAllStudentsCompleted(db, batch) {
 
   const students = db.prepare(`
     SELECT
+      sce.id as enrollment_id,
+      sce.course_definition_id,
       sce.step2_completed,
       sce.step4_completed,
       sce.course_name
@@ -31,6 +33,14 @@ function checkAllStudentsCompleted(db, batch) {
   if (students.length === 0) return false;
 
   return students.every(student => {
+    if (student.course_definition_id) {
+      const def = db.prepare('SELECT phase_count FROM course_definitions WHERE id = ?').get(student.course_definition_id);
+      if (def && def.phase_count) {
+        const passedCount = db.prepare('SELECT COUNT(*) as cnt FROM student_phase_results WHERE enrollment_id = ? AND is_passed = 1').get(student.enrollment_id)?.cnt || 0;
+        return passedCount >= def.phase_count;
+      }
+      return false;
+    }
     // Online Filmmaking Course: requires step4 (Phase 2) complete
     if (batch.course_name === 'Online Filmmaking Course') {
       return student.step4_completed === 1;

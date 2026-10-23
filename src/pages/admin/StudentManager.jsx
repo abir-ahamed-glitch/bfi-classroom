@@ -1,61 +1,15 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { useLocation } from 'react-router-dom';
 import { createPortal } from 'react-dom';
 import { UserPlus, Search, Copy, CheckCircle2, User, UserCheck, CheckSquare, Square, Edit, X, FileSpreadsheet, Trash2, GraduationCap, Clapperboard, Lock, Download, XCircle } from 'lucide-react';
 import BulkStudentImport from '../../components/admin/BulkStudentImport';
 import { getOrdinalSuffix } from '../../utils/formatUtils';
+import { resolveFeeAccounting, isCourseFeeUnpaid } from '../../utils/feeUtils';
 import EditStudentModal from '../../components/admin/EditStudentModal';
+import DefinedCourseProgressModal from '../../components/admin/DefinedCourseProgressModal';
 import './StudentManager.css';
 
-const hasPendingDueOrPartialPayment = (course) => {
-  if (!course || !course.fee_details) return false;
-  
-  let feeDetails = {};
-  try {
-    feeDetails = typeof course.fee_details === 'string' 
-      ? JSON.parse(course.fee_details) 
-      : course.fee_details;
-  } catch (e) {
-    console.error('Error parsing course fee details:', e);
-    return false;
-  }
-
-  if (!feeDetails) return false;
-  
-  const isUnpaid = (phase) => {
-    if (!phase) return false;
-    
-    // If installments exist, they are the source of truth
-    if (phase.installments && phase.installments.length > 0) {
-      return phase.installments.some(inst => inst.status === 'Pending' || inst.status === 'Due');
-    }
-
-    // Status checks (when no installments)
-    const status = phase.status;
-    if (status === 'Paid Full' || status === 'Waived') {
-      return false;
-    }
-    if (status === 'Partial' || status === 'Pending' || status === 'Due') {
-      return true;
-    }
-    
-    // Fallback numerical check
-    const fullFee = parseFloat((phase.full_fee || '').toString().replace(/[^\d.]/g, '')) || 0;
-    if (fullFee === 0) return false;
-    
-    const amountPaid = parseFloat((phase.amount_paid || '').toString().replace(/[^\d.]/g, '')) || 0;
-    const discount = parseFloat((phase.discount || '').toString().replace(/[^\d.]/g, '')) || 0;
-    const remainingDue = Math.max(0, fullFee - discount - amountPaid);
-    
-    return remainingDue > 0;
-  };
-
-  if (course.course_name === 'Online Filmmaking Course') {
-    return isUnpaid(feeDetails.phase1) || isUnpaid(feeDetails.phase2);
-  } else {
-    return isUnpaid(feeDetails);
-  }
-};
+const hasPendingDueOrPartialPayment = (course) => isCourseFeeUnpaid(course);
 
 export default function StudentManager() {
   const location = useLocation();
@@ -95,6 +49,27 @@ export default function StudentManager() {
   });
   const [isPhase2Saving, setIsPhase2Saving] = useState(false);
   const [phase2Error, setPhase2Error] = useState('');
+
+  // Defined Course Progress Modal State
+  const [definedProgressModal, setDefinedProgressModal] = useState({
+    isOpen: false,
+    student: null,
+    enrollment: null,
+    initialPhaseIndex: 0
+  });
+
+  const openDefinedProgress = (student, enrollment, phaseIndex = 0) => {
+    setDefinedProgressModal({
+      isOpen: true,
+      student,
+      enrollment,
+      initialPhaseIndex: phaseIndex
+    });
+  };
+
+  const closeDefinedProgress = () => {
+    setDefinedProgressModal(prev => ({ ...prev, isOpen: false }));
+  };
 
   // Confirmation Modal State
   const [confirmConfig, setConfirmConfig] = useState(null);
@@ -259,24 +234,13 @@ export default function StudentManager() {
         }
       }
       const phase1 = feeDetails?.phase1 || {};
-      const fullFeeNum = parseFloat((phase1.full_fee || '').replace(/[^\d.]/g, '')) || 0;
-      const amountPaidNum = parseFloat((phase1.amount_paid || '').replace(/[^\d.]/g, '')) || 0;
-      const discountNum = parseFloat((phase1.discount || '').replace(/[^\d.]/g, '')) || 0;
-      const rawRemainingDue = Math.max(0, fullFeeNum - discountNum - amountPaidNum);
-      
-      const phase1Installments = phase1.installments || [];
-      const remainingDue = phase1Installments.length > 0
-        ? phase1Installments.filter(inst => (inst.status || '').toLowerCase() !== 'paid').reduce((sum, inst) => sum + (parseFloat((inst.amount || '').toString().replace(/[^\d.]/g, '')) || 0), 0)
-        : rawRemainingDue;
-      
-      const phase1PaidAny = amountPaidNum > 0 || phase1Installments.some(inst => inst.status === 'Paid' && parseFloat((inst.amount || '').replace(/[^\d.]/g, '')) > 0);
-      const phase1FullyPaid = (fullFeeNum > 0 && amountPaidNum + discountNum >= fullFeeNum) ||
-        (fullFeeNum > 0 && rawRemainingDue > 0 && phase1Installments.length > 0 && phase1Installments.every(inst => inst.status === 'Paid')) ||
-        (fullFeeNum > 0 && remainingDue === 0);
+      const p1Acct = resolveFeeAccounting(phase1, { courseDiscount: feeDetails?.discount });
+      const phase1PaidAny = p1Acct.hasPayment;
+      const phase1FullyPaid = p1Acct.isPaid;
 
       const phase2 = feeDetails?.phase2 || {};
-      const phase2PaidAny = (parseFloat((phase2.amount_paid || '').replace(/[^\d.]/g, '')) || 0) > 0 ||
-        (phase2.installments || []).some(inst => inst.status === 'Paid' && parseFloat((inst.amount || '').replace(/[^\d.]/g, '')) > 0);
+      const p2Acct = resolveFeeAccounting(phase2, { courseDiscount: feeDetails?.discount });
+      const phase2PaidAny = p2Acct.hasPayment;
 
       if (stepField === 'step2_completed') {
         openAcademicModal(student, enrollmentId);
@@ -366,9 +330,8 @@ export default function StudentManager() {
             console.error(err);
           }
         }
-        const amountPaidNum = parseFloat((feeDetails.amount_paid || '').toString().replace(/[^\d.]/g, '')) || 0;
-        const installments = feeDetails.installments || [];
-        const paidAny = amountPaidNum > 0 || installments.some(inst => inst.status === 'Paid' && parseFloat((inst.amount || '').toString().replace(/[^\d.]/g, '')) > 0);
+        const acct = resolveFeeAccounting(feeDetails);
+        const paidAny = acct.cashCollected > 0 || acct.isPaid;
         
         if (stepField === 'step1_completed' && paidAny) {
           setConfirmConfig({ title: 'Action Restricted', message: 'Cannot uncheck "Admission Confirmed" because a payment has already been made. Please change the payment to 0 first.', confirmText: 'OK', isAlert: true, onConfirm: () => {} });
@@ -444,6 +407,17 @@ export default function StudentManager() {
 
   const handleChange = (e) => {
     setFormData({ ...formData, [e.target.name]: e.target.value });
+  };
+
+  const handleCourseChange = (courseName) => {
+    setFormData(prev => {
+      const current = prev.courses || [];
+      if (current.includes(courseName)) {
+        return { ...prev, courses: current.filter(c => c !== courseName) };
+      } else {
+        return { ...prev, courses: [...current, courseName] };
+      }
+    });
   };
 
   const handleCreateStudent = async (e) => {
@@ -1055,65 +1029,145 @@ export default function StudentManager() {
                               {e.course_name}
                             </div>
                             <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
-                              {e.course_type === 'filmmaking' ? (
-                                <>
-                                  <button onClick={() => toggleProgress(s.id, e.id, 'step1_completed', e.step1_completed, e.course_name)} title="Phase 1: Admitted" style={{ background: 'none', border: 'none', cursor: 'pointer', color: e.step1_completed ? '#10b981' : 'var(--text-muted)' }}>
-                                    {e.step1_completed ? <CheckSquare size={18} /> : <Square size={18} />}
-                                  </button>
-                                  {(() => {
-                                    const isGraded = e.exam_written !== null && e.exam_written !== undefined && e.exam_written !== '';
-                                    const totalScore = (parseInt(e.exam_written) || 0) + (parseInt(e.assignment_screenplay) || 0) + (parseInt(e.assignment_shooting_script) || 0);
-                                    const attClasses = e.attendance_classes || 0;
-                                    const attTotal = e.attendance_total || 22;
-                                    const qualifiesAttendance = attTotal > 0 ? (attClasses / attTotal) >= 0.8 : false;
-                                    const hasFailed = isGraded && e.step1_completed === 1 && e.step2_completed !== 1 && (!qualifiesAttendance || totalScore < 33);
-                                    if (hasFailed) {
+                              {e.course_definition_id && e.defined_progress ? (
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+                                  <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap', alignItems: 'center' }}>
+                                    {e.defined_progress.phases?.map((p, pIdx) => {
+                                      const isPassed = p.status === 'passed';
+                                      const isFailed = p.status === 'failed';
+                                      const isInProgress = p.status === 'in_progress';
+                                      const badgeBg = isPassed ? 'rgba(16, 185, 129, 0.15)' : isFailed ? 'rgba(239, 68, 68, 0.15)' : isInProgress ? 'rgba(59, 130, 246, 0.15)' : 'rgba(255, 255, 255, 0.05)';
+                                      const badgeColor = isPassed ? '#10b981' : isFailed ? '#ef4444' : isInProgress ? '#60a5fa' : 'var(--text-muted)';
+                                      const badgeBorder = isPassed ? 'rgba(16, 185, 129, 0.3)' : isFailed ? 'rgba(239, 68, 68, 0.3)' : isInProgress ? 'rgba(59, 130, 246, 0.3)' : 'var(--glass-border)';
                                       return (
-                                        <button onClick={() => toggleProgress(s.id, e.id, 'step2_completed', e.step2_completed, e.course_name)} title={`Phase 1: Failed (Score: ${totalScore})`} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444' }}>
-                                          <XCircle size={18} />
+                                        <button
+                                          key={p.phaseNumber || pIdx}
+                                          type="button"
+                                          onClick={() => openDefinedProgress(s, e, pIdx)}
+                                          title={`Phase ${p.phaseNumber}: ${p.phaseName || ''} | Status: ${p.status} | Attendance: ${p.attendance?.percentage || 0}% | Click to record attendance, grades, or exam marks`}
+                                          style={{
+                                            padding: '0.2rem 0.55rem',
+                                            borderRadius: '5px',
+                                            fontSize: '0.72rem',
+                                            fontWeight: '600',
+                                            background: badgeBg,
+                                            color: badgeColor,
+                                            border: `1px solid ${badgeBorder}`,
+                                            display: 'inline-flex',
+                                            alignItems: 'center',
+                                            gap: '0.25rem',
+                                            cursor: 'pointer',
+                                            transition: 'background-color 0.2s, border-color 0.2s',
+                                            minHeight: '28px'
+                                          }}
+                                        >
+                                          P{p.phaseNumber} {isPassed ? '✓' : isFailed ? '✗' : isInProgress ? '⋯' : '–'}
                                         </button>
                                       );
-                                    }
-                                    return (
-                                      <button onClick={() => toggleProgress(s.id, e.id, 'step2_completed', e.step2_completed, e.course_name)} title="Phase 1: Passed Exam" style={{ background: 'none', border: 'none', cursor: 'pointer', color: e.step2_completed ? '#10b981' : 'var(--text-muted)' }}>
-                                        {e.step2_completed ? <CheckSquare size={18} /> : <Square size={18} />}
-                                      </button>
-                                    );
-                                  })()}
-                                  <div style={{ width: '1px', height: '14px', background: 'var(--glass-border)', margin: '0 0.2rem' }}></div>
-                                  <button onClick={() => toggleProgress(s.id, e.id, 'step3_completed', e.step3_completed, e.course_name)} title="Phase 2: Admitted" style={{ background: 'none', border: 'none', cursor: 'pointer', color: e.step3_completed ? '#10b981' : 'var(--text-muted)' }}>
-                                    {e.step3_completed ? <CheckSquare size={18} /> : <Square size={18} />}
-                                  </button>
-                                  <button onClick={() => toggleProgress(s.id, e.id, 'step4_completed', e.step4_completed, e.course_name)} title="Phase 2: Completed Course" style={{ background: 'none', border: 'none', cursor: 'pointer', color: e.step4_completed ? '#10b981' : 'var(--text-muted)' }}>
-                                    {e.step4_completed ? <CheckSquare size={18} /> : <Square size={18} />}
-                                  </button>
-                                </>
+                                    })}
+                                    {e.defined_progress.certificateEligible && (
+                                      <span
+                                        title="Certificate Eligible"
+                                        style={{
+                                          padding: '0.15rem 0.45rem',
+                                          borderRadius: '4px',
+                                          fontSize: '0.72rem',
+                                          fontWeight: '600',
+                                          background: 'rgba(234, 179, 8, 0.15)',
+                                          color: '#eab308',
+                                          border: '1px solid rgba(234, 179, 8, 0.3)',
+                                          display: 'inline-flex',
+                                          alignItems: 'center',
+                                          gap: '0.2rem'
+                                        }}
+                                      >
+                                        🏆 Cert
+                                      </span>
+                                    )}
+                                    {e.defined_progress.failedAnyPhase && e.defined_progress.reEnrollmentDiscount && (
+                                      <span
+                                        title={`Re-enrollment discount available: ${e.defined_progress.reEnrollmentDiscount.percent}%`}
+                                        style={{
+                                          padding: '0.15rem 0.45rem',
+                                          borderRadius: '4px',
+                                          fontSize: '0.72rem',
+                                          fontWeight: '600',
+                                          background: 'rgba(168, 85, 247, 0.15)',
+                                          color: '#c084fc',
+                                          border: '1px solid rgba(168, 85, 247, 0.3)'
+                                        }}
+                                      >
+                                        {e.defined_progress.reEnrollmentDiscount.percent}% Off
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                                    {e.defined_progress.phaseCount} Phase{e.defined_progress.phaseCount > 1 ? 's' : ''} (v{e.defined_progress.courseVersion})
+                                  </div>
+                                </div>
                               ) : (
                                 <>
-                                  <button onClick={() => toggleProgress(s.id, e.id, 'step1_completed', e.step1_completed, e.course_name)} title="Admitted" style={{ background: 'none', border: 'none', cursor: 'pointer', color: e.step1_completed ? '#10b981' : 'var(--text-muted)' }}>
-                                    {e.step1_completed ? <CheckSquare size={18} /> : <Square size={18} />}
-                                  </button>
-                                  {(() => {
-                                    const examScore = parseInt(e.exam_written) || 0;
-                                    const isGraded = e.exam_written !== null && e.exam_written !== undefined && e.exam_written !== '';
-                                    const hasFailed = isGraded && e.step1_completed === 1 && examScore < 33 && e.step4_completed !== 1;
-                                    if (hasFailed) {
-                                      return (
-                                        <button onClick={() => toggleProgress(s.id, e.id, 'step4_completed', e.step4_completed, e.course_name)} title={`Failed (Score: ${e.exam_written})`} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444' }}>
-                                          <XCircle size={18} />
-                                        </button>
-                                      );
-                                    }
-                                    return (
-                                      <button onClick={() => toggleProgress(s.id, e.id, 'step4_completed', e.step4_completed, e.course_name)} title="Completed Course" style={{ background: 'none', border: 'none', cursor: 'pointer', color: e.step4_completed ? '#10b981' : 'var(--text-muted)' }}>
+                                  {e.course_type === 'filmmaking' ? (
+                                    <>
+                                      <button onClick={() => toggleProgress(s.id, e.id, 'step1_completed', e.step1_completed, e.course_name)} title="Phase 1: Admitted" style={{ background: 'none', border: 'none', cursor: 'pointer', color: e.step1_completed ? '#10b981' : 'var(--text-muted)' }}>
+                                        {e.step1_completed ? <CheckSquare size={18} /> : <Square size={18} />}
+                                      </button>
+                                      {(() => {
+                                        const isGraded = e.exam_written !== null && e.exam_written !== undefined && e.exam_written !== '';
+                                        const totalScore = (parseInt(e.exam_written) || 0) + (parseInt(e.assignment_screenplay) || 0) + (parseInt(e.assignment_shooting_script) || 0);
+                                        const attClasses = e.attendance_classes || 0;
+                                        const attTotal = e.attendance_total || 22;
+                                        const qualifiesAttendance = attTotal > 0 ? (attClasses / attTotal) >= 0.8 : false;
+                                        const hasFailed = isGraded && e.step1_completed === 1 && e.step2_completed !== 1 && (!qualifiesAttendance || totalScore < 33);
+                                        if (hasFailed) {
+                                          return (
+                                            <button onClick={() => toggleProgress(s.id, e.id, 'step2_completed', e.step2_completed, e.course_name)} title={`Phase 1: Failed (Score: ${totalScore})`} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444' }}>
+                                              <XCircle size={18} />
+                                            </button>
+                                          );
+                                        }
+                                        return (
+                                          <button onClick={() => toggleProgress(s.id, e.id, 'step2_completed', e.step2_completed, e.course_name)} title="Phase 1: Passed Exam" style={{ background: 'none', border: 'none', cursor: 'pointer', color: e.step2_completed ? '#10b981' : 'var(--text-muted)' }}>
+                                            {e.step2_completed ? <CheckSquare size={18} /> : <Square size={18} />}
+                                          </button>
+                                        );
+                                      })()}
+                                      <div style={{ width: '1px', height: '14px', background: 'var(--glass-border)', margin: '0 0.2rem' }}></div>
+                                      <button onClick={() => toggleProgress(s.id, e.id, 'step3_completed', e.step3_completed, e.course_name)} title="Phase 2: Admitted" style={{ background: 'none', border: 'none', cursor: 'pointer', color: e.step3_completed ? '#10b981' : 'var(--text-muted)' }}>
+                                        {e.step3_completed ? <CheckSquare size={18} /> : <Square size={18} />}
+                                      </button>
+                                      <button onClick={() => toggleProgress(s.id, e.id, 'step4_completed', e.step4_completed, e.course_name)} title="Phase 2: Completed Course" style={{ background: 'none', border: 'none', cursor: 'pointer', color: e.step4_completed ? '#10b981' : 'var(--text-muted)' }}>
                                         {e.step4_completed ? <CheckSquare size={18} /> : <Square size={18} />}
                                       </button>
-                                    );
-                                  })()}
+                                    </>
+                                  ) : (
+                                    <>
+                                      <button onClick={() => toggleProgress(s.id, e.id, 'step1_completed', e.step1_completed, e.course_name)} title="Admitted" style={{ background: 'none', border: 'none', cursor: 'pointer', color: e.step1_completed ? '#10b981' : 'var(--text-muted)' }}>
+                                        {e.step1_completed ? <CheckSquare size={18} /> : <Square size={18} />}
+                                      </button>
+                                      {(() => {
+                                        const examScore = parseInt(e.exam_written) || 0;
+                                        const isGraded = e.exam_written !== null && e.exam_written !== undefined && e.exam_written !== '';
+                                        const hasFailed = isGraded && e.step1_completed === 1 && examScore < 33 && e.step4_completed !== 1;
+                                        if (hasFailed) {
+                                          return (
+                                            <button onClick={() => toggleProgress(s.id, e.id, 'step4_completed', e.step4_completed, e.course_name)} title={`Failed (Score: ${e.exam_written})`} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444' }}>
+                                              <XCircle size={18} />
+                                            </button>
+                                          );
+                                        }
+                                        return (
+                                          <button onClick={() => toggleProgress(s.id, e.id, 'step4_completed', e.step4_completed, e.course_name)} title="Completed Course" style={{ background: 'none', border: 'none', cursor: 'pointer', color: e.step4_completed ? '#10b981' : 'var(--text-muted)' }}>
+                                            {e.step4_completed ? <CheckSquare size={18} /> : <Square size={18} />}
+                                          </button>
+                                        );
+                                      })()}
+                                    </>
+                                  )}
+                                  {e.step4_completed === 1 && hasPendingDueOrPartialPayment(e) && (
+                                    <Lock size={14} style={{ color: '#f87171', display: 'inline-block', cursor: 'not-allowed', marginLeft: '0.2rem' }} title="Certificate Locked (Pending/Due/Partial Payment)" />
+                                  )}
                                 </>
-                              )}
-                              {e.step4_completed === 1 && hasPendingDueOrPartialPayment(e) && (
-                                <Lock size={14} style={{ color: '#f87171', display: 'inline-block', cursor: 'not-allowed', marginLeft: '0.2rem' }} title="Certificate Locked (Pending/Due/Partial Payment)" />
                               )}
                             </div>
                           </div>
@@ -1127,15 +1181,16 @@ export default function StudentManager() {
                       <div className="student-table-actions" style={{ display: 'flex', gap: '0.5rem', justifyContent: 'center' }}>
                         {s.enrollments && s.enrollments.length > 0 && (() => {
                           const e = s.enrollments[0];
+                          const isDefinedCourse = !!e.course_definition_id;
                           const isAppreciation = e.course_name !== 'Online Filmmaking Course';
                           return (
                             <button 
-                              onClick={() => openAcademicModal(s, e.id)}
+                              onClick={() => isDefinedCourse ? openDefinedProgress(s, e, 0) : openAcademicModal(s, e.id)}
                               className="btn" 
-                              style={{ padding: '0.5rem', background: 'rgba(16, 185, 129, 0.1)', color: '#10b981', border: '1px solid rgba(16, 185, 129, 0.2)', borderRadius: '8px', transition: 'all 0.2s' }} 
-                              onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(16, 185, 129, 0.2)'; e.currentTarget.style.transform = 'scale(1.05)'; }} 
-                              onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(16, 185, 129, 0.1)'; e.currentTarget.style.transform = 'scale(1)'; }} 
-                              title={isAppreciation ? 'Exam Result' : 'Academic Records'}
+                              style={{ padding: '0.5rem', background: isDefinedCourse ? 'rgba(99, 102, 241, 0.12)' : 'rgba(16, 185, 129, 0.1)', color: isDefinedCourse ? '#818cf8' : '#10b981', border: isDefinedCourse ? '1px solid rgba(99, 102, 241, 0.25)' : '1px solid rgba(16, 185, 129, 0.2)', borderRadius: '8px', transition: 'background-color 0.2s, border-color 0.2s', minWidth: '36px', minHeight: '36px' }} 
+                              onMouseEnter={(e) => { e.currentTarget.style.background = isDefinedCourse ? 'rgba(99, 102, 241, 0.22)' : 'rgba(16, 185, 129, 0.2)'; }} 
+                              onMouseLeave={(e) => { e.currentTarget.style.background = isDefinedCourse ? 'rgba(99, 102, 241, 0.12)' : 'rgba(16, 185, 129, 0.1)'; }} 
+                              title={isDefinedCourse ? 'Manage Defined Course Progress (Attendance, Grades, Exams)' : (isAppreciation ? 'Exam Result' : 'Academic Records')}
                             >
                               <GraduationCap size={16} />
                             </button>
@@ -1145,9 +1200,9 @@ export default function StudentManager() {
                           <button
                             onClick={() => openPhase2Modal(s, s.enrollments.find(e => e.course_name === 'Online Filmmaking Course').id)}
                             className="btn"
-                            style={{ padding: '0.5rem', background: 'rgba(139, 92, 246, 0.1)', color: '#8b5cf6', border: '1px solid rgba(139, 92, 246, 0.2)', borderRadius: '8px', transition: 'all 0.2s' }}
-                            onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(139, 92, 246, 0.2)'; e.currentTarget.style.transform = 'scale(1.05)'; }}
-                            onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(139, 92, 246, 0.1)'; e.currentTarget.style.transform = 'scale(1)'; }}
+                            style={{ padding: '0.5rem', background: 'rgba(139, 92, 246, 0.1)', color: '#8b5cf6', border: '1px solid rgba(139, 92, 246, 0.2)', borderRadius: '8px', transition: 'background-color 0.2s, border-color 0.2s', minWidth: '36px', minHeight: '36px' }}
+                            onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(139, 92, 246, 0.2)'; }}
+                            onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(139, 92, 246, 0.1)'; }}
                             title="Phase 2: Shooting & Editing Attendance"
                           >
                             <Clapperboard size={16} />
@@ -1155,7 +1210,7 @@ export default function StudentManager() {
                         )}
 
 
-                        <button onClick={() => openEditModal(s)} className="btn" style={{ padding: '0.5rem', background: 'rgba(56, 189, 248, 0.1)', color: '#0284c7', border: '1px solid rgba(56, 189, 248, 0.2)', borderRadius: '8px', transition: 'all 0.2s' }} onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(56, 189, 248, 0.2)'; e.currentTarget.style.transform = 'scale(1.05)'; }} onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(56, 189, 248, 0.1)'; e.currentTarget.style.transform = 'scale(1)'; }} title="Edit Student">
+                        <button onClick={() => openEditModal(s)} className="btn" style={{ padding: '0.5rem', background: 'rgba(56, 189, 248, 0.1)', color: '#0284c7', border: '1px solid rgba(56, 189, 248, 0.2)', borderRadius: '8px', transition: 'background-color 0.2s, border-color 0.2s', minWidth: '36px', minHeight: '36px' }} onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(56, 189, 248, 0.2)'; }} onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(56, 189, 248, 0.1)'; }} title="Edit Student">
                           <Edit size={16} />
                         </button>
                         <button onClick={() => confirmDeleteStudent(s.id, s.full_name, s.batch_number)} className="btn" style={{ padding: '0.5rem', background: 'rgba(239, 68, 68, 0.1)', color: '#ef4444', border: '1px solid rgba(239, 68, 68, 0.2)', borderRadius: '8px', transition: 'all 0.2s' }} onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(239, 68, 68, 0.2)'; e.currentTarget.style.transform = 'scale(1.05)'; }} onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(239, 68, 68, 0.1)'; e.currentTarget.style.transform = 'scale(1)'; }} title="Delete Student">
@@ -1189,6 +1244,18 @@ export default function StudentManager() {
           student={editingStudent} 
           onClose={() => setEditingStudent(null)} 
           onSaveSuccess={fetchStudents} 
+        />
+      )}
+
+      {/* Defined Course Progress Modal */}
+      {definedProgressModal.isOpen && (
+        <DefinedCourseProgressModal
+          isOpen={definedProgressModal.isOpen}
+          onClose={closeDefinedProgress}
+          student={definedProgressModal.student}
+          enrollment={definedProgressModal.enrollment}
+          initialPhaseIndex={definedProgressModal.initialPhaseIndex}
+          onUpdated={fetchStudents}
         />
       )}
 

@@ -10,26 +10,48 @@ function getOrdinalSuffix(n) {
   return num + (s[(v-20)%10] || s[v] || s[0]) + " Batch";
 }
 
-export default function BatchFormModal({ mode, batch, isOpen, onClose, onSuccess }) {
+export default function BatchFormModal({ mode, batch, isOpen, onClose, onSuccess, initialCourseDef }) {
   const [form, setForm] = useState({
     batch_name: '',
     batch_number: '',
-    course_name: 'Online Filmmaking Course',
+    course_name: initialCourseDef?.name || 'Online Filmmaking Course',
     status: 'upcoming',
     start_date: '',
     end_date: '',
-    description: ''
+    description: '',
+    course_definition_id: initialCourseDef?.id || null
   });
 
   const [errors, setErrors] = useState({});
   const [apiError, setApiError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [publishedDefs, setPublishedDefs] = useState(initialCourseDef ? [initialCourseDef] : []);
 
   // Available courses
   const courseOptions = ['Online Filmmaking Course', 'Film Appreciation Course'];
 
   const [isCustom, setIsCustom] = useState(false);
   const [customCourseName, setCustomCourseName] = useState('');
+
+  // Fetch published course definitions
+  useEffect(() => {
+    if (isOpen) {
+      const token = localStorage.getItem('token');
+      fetch('/api/admin/course-definitions', {
+        headers: { Authorization: `Bearer ${token}` }
+      })
+        .then(r => r.ok ? r.json() : [])
+        .then(data => {
+          const list = Array.isArray(data) ? data : (data.definitions || []);
+          let filtered = list.filter(d => d.status === 'published');
+          if (initialCourseDef && !filtered.some(d => d.id === initialCourseDef.id)) {
+            filtered = [initialCourseDef, ...filtered];
+          }
+          setPublishedDefs(filtered);
+        })
+        .catch(err => console.error('Failed to load published course definitions', err));
+    }
+  }, [isOpen, initialCourseDef]);
 
   // Initialize form when modal opens or batch changes
   useEffect(() => {
@@ -45,26 +67,29 @@ export default function BatchFormModal({ mode, batch, isOpen, onClose, onSuccess
           status: batch.status || 'upcoming',
           start_date: batch.start_date ? batch.start_date.substring(0, 10) : '',
           end_date: batch.end_date ? batch.end_date.substring(0, 10) : '',
-          description: batch.description || ''
+          description: batch.description || '',
+          course_definition_id: batch.course_definition_id || null
         });
       } else {
+        const hasInitDef = !!initialCourseDef;
         setIsCustom(false);
         setCustomCourseName('');
         setForm({
           batch_name: '',
           batch_number: '',
-          course_name: 'Online Filmmaking Course',
+          course_name: initialCourseDef?.name || 'Online Filmmaking Course',
           status: 'upcoming',
           start_date: '',
           end_date: '',
-          description: ''
+          description: '',
+          course_definition_id: initialCourseDef?.id || null
         });
       }
       setErrors({});
       setApiError('');
       setIsSubmitting(false);
     }
-  }, [isOpen, mode, batch]);
+  }, [isOpen, mode, batch, initialCourseDef]);
 
   // Handle Escape key
   useEffect(() => {
@@ -92,7 +117,7 @@ export default function BatchFormModal({ mode, batch, isOpen, onClose, onSuccess
         if (!value) error = 'Please select a status';
         break;
       case 'end_date':
-      case 'start_date':
+      case 'start_date': {
         // If both are filled, end must be after start
         const start = name === 'start_date' ? value : currentForm.start_date;
         const end = name === 'end_date' ? value : currentForm.end_date;
@@ -100,6 +125,7 @@ export default function BatchFormModal({ mode, batch, isOpen, onClose, onSuccess
           error = 'End date must be after start date';
         }
         break;
+      }
       case 'description':
         if (value && value.length > 500) error = 'Description cannot exceed 500 characters';
         break;
@@ -290,6 +316,48 @@ export default function BatchFormModal({ mode, batch, isOpen, onClose, onSuccess
                   ⚙️ Custom Program
                 </button>
               </div>
+              {publishedDefs.length > 0 && mode !== 'edit' && (
+                <div style={{ marginTop: '0.65rem' }}>
+                  <label style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '0.25rem', display: 'block' }}>
+                    Or link to a defined course (Course Maker):
+                  </label>
+                  <select
+                    value={form.course_definition_id || ''}
+                    onChange={(e) => {
+                      const defId = parseInt(e.target.value, 10);
+                      if (defId) {
+                        const selectedDef = publishedDefs.find(d => d.id === defId);
+                        if (selectedDef) {
+                          setIsCustom(false);
+                          setForm(prev => ({
+                            ...prev,
+                            course_name: selectedDef.name,
+                            course_definition_id: selectedDef.id
+                          }));
+                        }
+                      } else {
+                        setForm(prev => ({ ...prev, course_definition_id: null }));
+                      }
+                    }}
+                    style={{
+                      width: '100%',
+                      padding: '0.5rem 0.75rem',
+                      background: 'rgba(255,255,255,0.05)',
+                      border: form.course_definition_id ? '1px solid var(--accent-primary)' : '1px solid var(--glass-border)',
+                      borderRadius: '6px',
+                      color: 'var(--text-primary)',
+                      fontSize: '0.85rem'
+                    }}
+                  >
+                    <option value="" style={{ background: '#18181b', color: '#fff' }}>-- Select Defined Course (1–5 Phases) --</option>
+                    {publishedDefs.map(d => (
+                      <option key={d.id} value={d.id} style={{ background: '#18181b', color: '#fff' }}>
+                        {d.name} ({d.phase_count} {d.phase_count === 1 ? 'Phase' : 'Phases'}) • v{d.version}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
               {isCustom && (
                 <div className="batch-form-field" style={{ marginTop: '0.5rem' }}>
                   <input

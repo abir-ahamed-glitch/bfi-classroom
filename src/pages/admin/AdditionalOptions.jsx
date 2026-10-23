@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Plus, Trash2, BookOpen, Settings, AlertCircle, CheckCircle, Edit2, Check, X, DollarSign, Wallet, ChevronUp, ChevronDown, Search, GripVertical, UploadCloud } from 'lucide-react';
+import { Plus, Trash2, BookOpen, Settings, AlertCircle, CheckCircle, Edit2, Check, X, DollarSign, Wallet, ChevronUp, ChevronDown, Search, GripVertical, UploadCloud, Layers } from 'lucide-react';
 import { useModal } from '../../components/BFIModal';
 import BatchFeeManager from './BatchFeeManager';
 import CourseSettingsManager from './CourseSettingsManager';
 import FeeTracker from './FeeTracker';
+import CourseMaker from './CourseMaker';
 import BulkRegisteredStudentImport from '../../components/admin/BulkRegisteredStudentImport';
 import LeadsTable from '../../components/admin/LeadsTable';
 import TrashManager from './TrashManager';
@@ -370,6 +371,56 @@ function AdditionalOptionsContent() {
       {currentView === 'dashboard' ? (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '1.5rem', marginTop: '1rem' }}>
           <button
+            onClick={() => setCurrentView('course-maker')}
+            style={{
+              background: 'rgba(255, 255, 255, 0.02)',
+              border: '1px solid var(--glass-border)',
+              borderRadius: '16px',
+              padding: '2rem',
+              textAlign: 'left',
+              cursor: 'pointer',
+              transition: 'background 0.2s, border-color 0.2s, box-shadow 0.2s',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '1rem',
+              position: 'relative',
+              overflow: 'hidden',
+              color: 'inherit'
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = 'rgba(255, 255, 255, 0.04)';
+              e.currentTarget.style.borderColor = 'var(--accent-primary)';
+              e.currentTarget.style.boxShadow = '0 12px 30px rgba(0, 0, 0, 0.4)';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = 'rgba(255, 255, 255, 0.02)';
+              e.currentTarget.style.borderColor = 'var(--glass-border)';
+              e.currentTarget.style.boxShadow = 'none';
+            }}
+          >
+            <div style={{
+              background: 'rgba(225, 29, 72, 0.1)',
+              color: 'var(--accent-primary)',
+              width: '48px',
+              height: '48px',
+              borderRadius: '12px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center'
+            }}>
+              <Layers size={24} />
+            </div>
+            <div>
+              <h3 style={{ fontSize: '1.2rem', fontWeight: 600, marginBottom: '0.4rem', color: 'var(--text-primary)' }}>
+                Course Maker
+              </h3>
+              <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', lineHeight: '1.4' }}>
+                Create and configure courses or workshops with 1–5 phases, routines, grading, and completion rules.
+              </p>
+            </div>
+          </button>
+
+          <button
             onClick={() => setCurrentView('subjects')}
             style={{
               background: 'rgba(255, 255, 255, 0.02)',
@@ -704,7 +755,8 @@ function AdditionalOptionsContent() {
               &larr; Back
             </button>
             <h2 style={{ fontSize: '1.25rem', fontWeight: 600, margin: 0, color: 'var(--text-primary)' }}>
-              {currentView === 'custom-subjects' ? 'Custom Subjects' :
+              {currentView === 'course-maker' ? 'Course Maker' :
+               currentView === 'custom-subjects' ? 'Custom Subjects' :
                currentView === 'settings' ? 'Global Settings' : 
                currentView === 'certificates' ? 'Certificate Generator' :
                currentView === 'bulk-register' ? 'Bulk Import Registrations' :
@@ -1541,6 +1593,10 @@ function AdditionalOptionsContent() {
           {currentView === 'fee-tracker' && (
             <FeeTracker />
           )}
+
+          {currentView === 'course-maker' && (
+            <CourseMaker />
+          )}
           </div>
         </div>
       )}
@@ -1553,7 +1609,7 @@ function AdditionalOptionsContent() {
 // Helper to calculate characters, SMS parts, and detect Unicode
 function calculateSmsInfo(text) {
   const len = text.length;
-  const isUnicode = /[^\x00-\x7F]/.test(text);
+  const isUnicode = [...text].some(char => char.charCodeAt(0) > 127);
   const singleLimit = isUnicode ? 70 : 160;
   const multiLimit  = isUnicode ? 67 : 153;
   
@@ -1573,6 +1629,7 @@ function calculateSmsInfo(text) {
 }
 
 function CustomSmsSender() {
+  const { showConfirm } = useModal();
   const [expanded,    setExpanded]    = useState(false);
   const [numbers,     setNumbers]     = useState('');
   const [message,     setMessage]     = useState('');
@@ -2186,11 +2243,18 @@ function TeacherSearchSelect({ teachers, selectedId, onChange, placeholder = "Se
   
   // Update search input when selected teacher changes
   useEffect(() => {
-    if (selectedTeacher) {
-      setSearch(selectedTeacher.full_name || `${selectedTeacher.first_name} ${selectedTeacher.last_name}`);
-    } else {
-      setSearch('');
-    }
+    let isMounted = true;
+    Promise.resolve().then(() => {
+      if (!isMounted) return;
+      if (selectedTeacher) {
+        setSearch(selectedTeacher.full_name || `${selectedTeacher.first_name} ${selectedTeacher.last_name}`);
+      } else {
+        setSearch('');
+      }
+    });
+    return () => {
+      isMounted = false;
+    };
   }, [selectedId, selectedTeacher]);
 
   const filtered = teachers.filter(t => {

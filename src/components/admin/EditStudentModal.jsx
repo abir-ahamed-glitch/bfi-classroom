@@ -1,92 +1,15 @@
 import { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { Edit, X, Lock } from 'lucide-react';
+import { resolveClientDiscount, resolveFeeAccounting } from '../../utils/feeUtils';
 
-// Helper function to dynamically sync installments and payment status based on fees
-const syncInstallmentsAndStatus = (target, forceAutoAdjust = false) => {
+// Helper function to dynamically sync installments and payment status based on fees without mutating installments
+const syncInstallmentsAndStatus = (target) => {
   if (!target) return;
-  const fullFeeNum    = parseFloat(String(target.full_fee    || '').replace(/[^\d.]/g, '')) || 0;
-  const amountPaidNum = parseFloat(String(target.amount_paid || '').replace(/[^\d.]/g, '')) || 0;
-  const discountNum   = parseFloat(String(target.discount    || '').replace(/[^\d.]/g, '')) || 0;
-  const remainingDue  = Math.max(0, fullFeeNum - discountNum - amountPaidNum);
-
-  // ── SMART ZERO-PAYMENT DETECTION ─────────────────────────────────────────
-  // If amount_paid is 0 AND no discount, reset all installment statuses to
-  // Pending and redistribute amounts evenly to sum to the full fee.
-  const effectivePayment = amountPaidNum + discountNum;
-  if (effectivePayment === 0 && (target.installments || []).length > 0) {
-    const count = target.installments.length;
-    if (forceAutoAdjust && fullFeeNum > 0 && count > 0) {
-      // Redistribute amounts evenly (remainder goes into first installment)
-      const baseAmount = Math.floor(fullFeeNum / count);
-      const remainder  = fullFeeNum - baseAmount * count;
-      target.installments = target.installments.map((inst, i) => ({
-        ...inst,
-        amount: String(i === 0 ? baseAmount + remainder : baseAmount),
-        status: 'Pending'
-      }));
-    } else {
-      // Just reset statuses, keep amounts
-      target.installments = target.installments.map(inst => ({
-        ...inst,
-        status: 'Pending'
-      }));
-    }
-    // Payment status → Due (no money received at all)
-    if (fullFeeNum > 0) target.status = 'Due';
-    return;
-  }
-  // ─────────────────────────────────────────────────────────────────────────
-
-
-  // 1. Auto-detect payment status
-  if (fullFeeNum > 0) {
-    if (amountPaidNum + discountNum >= fullFeeNum) {
-      target.status = 'Paid Full';
-    } else if (amountPaidNum > 0 || discountNum > 0) {
-      target.status = 'Partial';
-    } else {
-      if (target.status === 'Paid Full' || target.status === 'Partial' || !target.status) {
-        target.status = 'Due';
-      }
-    }
-  }
-
-  // 2. Auto-adjust installments
-  if (remainingDue <= 0) {
-    target.installments = [];
-  } else {
-    const currentInst = target.installments || [];
-    if (currentInst.length === 0) {
-      target.installments = [{ amount: String(remainingDue), dueDate: '', status: 'Pending' }];
-    } else if (forceAutoAdjust) {
-      const updatedInst = [];
-      let runningSum = 0;
-      for (let i = 0; i < currentInst.length; i++) {
-        const inst = currentInst[i];
-        const amountVal = parseFloat(String(inst.amount || '').replace(/[^\d.]/g, '')) || 0;
-        
-        if (runningSum >= remainingDue) {
-          break;
-        }
-        
-        if (runningSum + amountVal >= remainingDue) {
-          const leftover = remainingDue - runningSum;
-          updatedInst.push({ ...inst, amount: String(leftover) });
-          runningSum = remainingDue;
-          break;
-        } else {
-          updatedInst.push({ ...inst, amount: String(amountVal) });
-          runningSum += amountVal;
-        }
-      }
-      
-      if (runningSum < remainingDue) {
-        const leftover = remainingDue - runningSum;
-        updatedInst.push({ amount: String(leftover), dueDate: '', status: 'Pending' });
-      }
-      target.installments = updatedInst;
-    }
+  const acct = resolveFeeAccounting(target);
+  // Set authoritative status based on financial evidence
+  if (target.status !== 'Waived') {
+    target.status = acct.status;
   }
 };
 
@@ -113,24 +36,19 @@ function FeeRow({
   const courseFees = feeData?.[courseName] || {};
   const data = phaseKey ? (courseFees[phaseKey] || {}) : courseFees;
 
-  const fullFeeNum = parseFloat(String(data.full_fee || '').replace(/[^\d.]/g, '')) || 0;
-  const amountPaidNum = parseFloat(String(data.amount_paid || '').replace(/[^\d.]/g, '')) || 0;
-  const discountNum = parseFloat(String(data.discount || '').replace(/[^\d.]/g, '')) || 0;
-  const rawRemainingDue = Math.max(0, fullFeeNum - discountNum - amountPaidNum);
+  const acct = resolveFeeAccounting(data, {
+    grossFeeOverride: batchFeeValue
+  });
+  const fullFeeNum = acct.grossFee;
+  const amountPaidNum = acct.amountPaid;
+  const discountNum = acct.discount;
+  const netPayable = acct.netPayable;
+  const cashCollected = acct.cashCollected;
+  const remainingDue = acct.remainingDue;
+  const overpayment = acct.overpayment;
+  const isFullyCompleted = acct.isPaid;
 
   const installments = data.installments || [];
-  const remainingDue = installments.length > 0
-    ? installments.filter(inst => (inst.status || '').toLowerCase() !== 'paid').reduce((sum, inst) => sum + (parseFloat(String(inst.amount || '').replace(/[^\d.]/g, '')) || 0), 0)
-    : rawRemainingDue;
-  
-  const hasError = amountPaidNum > fullFeeNum;
-  const hasSumError = (amountPaidNum + discountNum) > fullFeeNum;
-
-  const isFullySatisfied = fullFeeNum > 0 && amountPaidNum + discountNum >= fullFeeNum;
-  const allInstallmentsPaid = rawRemainingDue > 0 && 
-    installments.length > 0 && 
-    installments.every(inst => inst.status === 'Paid');
-  const isFullyCompleted = isFullySatisfied || allInstallmentsPaid || remainingDue === 0;
 
   let completionMessage = '';
   if (label) {
@@ -162,7 +80,7 @@ function FeeRow({
           fontWeight: '500'
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-            <span>🔓</span> Force Unlocked (Bypassed Lock)
+            <span>🔓</span> Force Unlocked: Lock Overridden by Admin (Authorized)
           </div>
           {onUnlockClick && (
             <button
@@ -221,14 +139,14 @@ function FeeRow({
           )}
         </div>
       )}
-      {(label || (fullFeeNum > 0 && amountPaidNum + discountNum >= fullFeeNum)) && (
+      {(label || (fullFeeNum > 0 && isFullyCompleted)) && (
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.6rem' }}>
           {label ? (
             <p style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-muted)', margin: 0, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
               {disabled && <span>🔒</span>} {label}
             </p>
           ) : <div />}
-          {fullFeeNum > 0 && amountPaidNum + discountNum >= fullFeeNum && (
+          {fullFeeNum > 0 && isFullyCompleted && (
             <span style={{ 
               fontSize: '0.72rem', 
               fontWeight: '600', 
@@ -299,7 +217,7 @@ function FeeRow({
             style={{ 
               paddingLeft: '0.65rem', 
               fontSize: '0.83rem',
-              borderColor: (hasError || hasSumError) ? '#ef4444' : 'rgba(255,255,255,0.1)',
+              borderColor: overpayment > 0 ? '#34d399' : 'rgba(255,255,255,0.1)',
               opacity: disabled ? 0.5 : 1,
               cursor: disabled ? 'not-allowed' : 'text'
             }}
@@ -372,16 +290,72 @@ function FeeRow({
         </div>
       </div>
 
-      {(hasError || hasSumError) && (
-        <p style={{ color: '#ef4444', fontSize: '0.75rem', margin: '0.25rem 0 0.5rem 0' }}>
-          {hasError 
-            ? '⚠️ Amount paid cannot exceed the course fee.' 
-            : '⚠️ Amount paid + discount cannot exceed the course fee.'}
-        </p>
+      {/* Financial Reconciliation Summary */}
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(90px, 1fr))',
+        gap: '0.4rem',
+        padding: '0.5rem 0.65rem',
+        background: 'rgba(255, 255, 255, 0.03)',
+        borderRadius: '6px',
+        border: '1px solid rgba(255, 255, 255, 0.06)',
+        marginBottom: '0.6rem',
+        fontSize: '0.75rem'
+      }}>
+        <div>
+          <span style={{ color: 'var(--text-muted)', display: 'block', fontSize: '0.68rem' }}>Gross Fee</span>
+          <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>৳{fullFeeNum.toLocaleString()}</span>
+        </div>
+        {discountNum > 0 && (
+          <div>
+            <span style={{ color: '#10b981', display: 'block', fontSize: '0.68rem' }}>Discount</span>
+            <span style={{ fontWeight: 600, color: '#10b981' }}>-৳{discountNum.toLocaleString()}</span>
+          </div>
+        )}
+        <div>
+          <span style={{ color: 'var(--text-secondary)', display: 'block', fontSize: '0.68rem' }}>Net Payable</span>
+          <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>৳{netPayable.toLocaleString()}</span>
+        </div>
+        <div>
+          <span style={{ color: '#34d399', display: 'block', fontSize: '0.68rem' }}>Cash Collected</span>
+          <span style={{ fontWeight: 600, color: '#34d399' }}>৳{cashCollected.toLocaleString()}</span>
+        </div>
+        <div>
+          <span style={{ color: remainingDue > 0 ? '#fbbf24' : '#34d399', display: 'block', fontSize: '0.68rem' }}>Remaining Due</span>
+          <span style={{ fontWeight: 700, color: remainingDue > 0 ? '#fbbf24' : '#34d399' }}>
+            {remainingDue > 0 ? `৳${remainingDue.toLocaleString()}` : '৳0'}
+          </span>
+        </div>
+        {overpayment > 0 && (
+          <div>
+            <span style={{ color: '#60a5fa', display: 'block', fontSize: '0.68rem' }}>Overpayment</span>
+            <span style={{ fontWeight: 700, color: '#60a5fa' }}>+৳{overpayment.toLocaleString()}</span>
+          </div>
+        )}
+      </div>
+
+      {overpayment > 0 && (
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: '0.4rem',
+          padding: '0.4rem 0.65rem',
+          background: 'rgba(96, 165, 250, 0.08)',
+          border: '1px solid rgba(96, 165, 250, 0.25)',
+          borderRadius: '6px',
+          color: '#93c5fd',
+          fontSize: '0.75rem',
+          marginBottom: '0.6rem'
+        }}>
+          <span>✨</span>
+          <span>
+            <strong>Surplus Payment:</strong> ৳{overpayment.toLocaleString()} will be credited / recorded as overpayment.
+          </span>
+        </div>
       )}
 
       {/* Installment Section */}
-      {(rawRemainingDue > 0 || installments.length > 0) && (
+      {(remainingDue > 0 || installments.length > 0) && (
         <div style={{ 
           marginTop: '0.75rem', 
           padding: '0.75rem', 
@@ -390,8 +364,8 @@ function FeeRow({
           border: '1px dashed rgba(245, 158, 11, 0.3)' 
         }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.6rem' }}>
-            <span style={{ fontSize: '0.78rem', color: '#fbbf24', fontWeight: 600 }}>
-              📅 Installment Details (Due: {remainingDue.toLocaleString()} BDT)
+            <span style={{ fontSize: '0.78rem', color: overpayment > 0 ? '#34d399' : '#fbbf24', fontWeight: 600 }}>
+              📅 Installment Details {overpayment > 0 ? `(Overpaid: ৳${overpayment.toLocaleString()})` : `(Due: ৳${remainingDue.toLocaleString()})`}
             </span>
             <button
               type="button"
@@ -572,7 +546,7 @@ function FeeRow({
   );
 }
 
-const getInitialFormData = (student) => {
+const getInitialFormData = (student, explicitBatchId) => {
   if (!student) {
     return {
       firstName: '', lastName: '', email: '', username: '', batchNumber: '', mobileNumber: '',
@@ -628,32 +602,41 @@ const getInitialFormData = (student) => {
         console.error('Failed to parse fee_details', e);
       }
     }
-    if (cn === 'Online Filmmaking Course') {
+    const isMultiPhase = cn === 'Online Filmmaking Course' || (enr.course_definition_id && (enr.defined_progress?.phaseCount > 1 || enrFeeDetails?.phase2 || (Array.isArray(enrFeeDetails?.phases) && enrFeeDetails.phases.length > 1)));
+    const phaseCount = isMultiPhase ? (cn === 'Online Filmmaking Course' ? 2 : (enr.defined_progress?.phaseCount || (Array.isArray(enrFeeDetails?.phases) ? enrFeeDetails.phases.length : (enrFeeDetails?.phase2 ? 2 : 1)))) : 1;
+
+    if (isMultiPhase && phaseCount > 1) {
       builtFees[cn] = {
-        phase1: {
-          full_fee:    enrFeeDetails?.phase1?.full_fee    ?? '',
-          amount_paid: enrFeeDetails?.phase1?.amount_paid ?? '',
-          status:      enrFeeDetails?.phase1?.status      ?? '',
-          discount:    enrFeeDetails?.phase1?.discount    ?? '',
-          installments: enrFeeDetails?.phase1?.installments || []
-        },
-        phase2: {
-          full_fee:    enrFeeDetails?.phase2?.full_fee    ?? '',
-          amount_paid: enrFeeDetails?.phase2?.amount_paid ?? '',
-          status:      enrFeeDetails?.phase2?.status      ?? '',
-          discount:    enrFeeDetails?.phase2?.discount    ?? '',
-          installments: enrFeeDetails?.phase2?.installments || []
-        }
+        enrollment_id: enr.id,
+        batch_id: enr.batch_id
       };
-      syncInstallmentsAndStatus(builtFees[cn].phase1);
-      syncInstallmentsAndStatus(builtFees[cn].phase2);
+      for (let p = 1; p <= phaseCount; p++) {
+        const pKey = `phase${p}`;
+        const pData = enrFeeDetails?.[pKey] || (Array.isArray(enrFeeDetails?.phases) ? enrFeeDetails.phases[p - 1] : (p === 1 ? enrFeeDetails : null)) || {};
+        builtFees[cn][pKey] = {
+          full_fee:    pData.full_fee !== undefined ? String(pData.full_fee) : '',
+          amount_paid: pData.amount_paid !== undefined ? String(pData.amount_paid) : '',
+          status:      pData.status || '',
+          discount:    pData.discount !== undefined ? String(pData.discount) : (p === 1 && enrFeeDetails?.discount ? String(enrFeeDetails.discount) : ''),
+          discount_amount: pData.discount_amount !== undefined ? pData.discount_amount : (p === 1 ? enrFeeDetails?.discount_amount : undefined),
+          direct_payment: pData.direct_payment,
+          down_payment: pData.down_payment,
+          installments: Array.isArray(pData.installments) ? pData.installments : []
+        };
+        syncInstallmentsAndStatus(builtFees[cn][pKey]);
+      }
     } else {
       builtFees[cn] = {
-        full_fee:    enrFeeDetails?.full_fee    ?? '',
-        amount_paid: enrFeeDetails?.amount_paid ?? '',
-        status:      enrFeeDetails?.status      ?? '',
-        discount:    enrFeeDetails?.discount    ?? '',
-        installments: enrFeeDetails?.installments || []
+        enrollment_id: enr.id,
+        batch_id: enr.batch_id,
+        full_fee:    enrFeeDetails?.full_fee !== undefined ? String(enrFeeDetails.full_fee) : '',
+        amount_paid: enrFeeDetails?.amount_paid !== undefined ? String(enrFeeDetails.amount_paid) : '',
+        status:      enrFeeDetails?.status || '',
+        discount:    enrFeeDetails?.discount !== undefined ? String(enrFeeDetails.discount) : '',
+        discount_amount: enrFeeDetails?.discount_amount,
+        direct_payment: enrFeeDetails?.direct_payment,
+        down_payment: enrFeeDetails?.down_payment,
+        installments: Array.isArray(enrFeeDetails?.installments) ? enrFeeDetails.installments : []
       };
       syncInstallmentsAndStatus(builtFees[cn]);
     }
@@ -674,19 +657,27 @@ const getInitialFormData = (student) => {
     course_fees: builtFees,
     discount: student.discount || '',
     courses: student.enrollments ? student.enrollments.map(e => e.course_name) : (student.course_name ? [student.course_name] : []),
+    batch_id: explicitBatchId || student.batch_id || student.batchId || null,
+    enrollment_id: student.enrollment_id || student.enrollmentId || null,
   };
 };
 
-export default function EditStudentModal({ student, onClose, onSaveSuccess }) {
+export default function EditStudentModal({ student, batchId, onClose, onSaveSuccess }) {
   const needsFetch = !student || !student.email || !student.enrollments;
   const [loading, setLoading] = useState(needsFetch);
   const [fullStudent, setFullStudent] = useState(student && student.email && student.enrollments ? student : null);
-  const [editFormData, setEditFormData] = useState(() => getInitialFormData(student));
+  const [editFormData, setEditFormData] = useState(() => getInitialFormData(student, batchId));
   const [isEditing, setIsEditing] = useState(false);
-  const [overridePhase2Lock, setOverridePhase2Lock] = useState(false);
-  const [overridePhase1Lock, setOverridePhase1Lock] = useState(false);
+  const [phaseLockOverrides, setPhaseLockOverrides] = useState({});
   const [editError, setEditError] = useState('');
   const batchFeesRef = useRef({});
+
+  const togglePhaseLock = (courseName, phaseKey) => {
+    setPhaseLockOverrides(prev => ({
+      ...prev,
+      [`${courseName}:${phaseKey}`]: !prev[`${courseName}:${phaseKey}`]
+    }));
+  };
 
   const availableCourses = [
     { name: 'Online Filmmaking Course', type: 'filmmaking' },
@@ -704,8 +695,7 @@ export default function EditStudentModal({ student, onClose, onSaveSuccess }) {
 
     const initialize = async () => {
       setEditError('');
-      setOverridePhase1Lock(false);
-      setOverridePhase2Lock(false);
+      setPhaseLockOverrides({});
 
       let targetStudent = student;
       const studentId = student.id || student.user_id;
@@ -829,20 +819,36 @@ export default function EditStudentModal({ student, onClose, onSaveSuccess }) {
     const bfMap = batchFeesRef.current || {};
     if (!isRemoving && !newFees[courseName]) {
       // Build default empty fees
-      if (courseName === 'Online Filmmaking Course') {
+      const courseEnr = fullStudent?.enrollments?.find(e => e.course_name === courseName);
+      const isOFC = courseName === 'Online Filmmaking Course';
+      const isMultiPhase = isOFC || (courseEnr?.course_definition_id && (courseEnr?.defined_progress?.phaseCount > 1));
+      const phaseCount = isOFC ? 2 : (courseEnr?.defined_progress?.phaseCount || 1);
+
+      if (isMultiPhase && phaseCount > 1) {
         newFees[courseName] = {
-          phase1: { full_fee: '', amount_paid: '', status: '', discount: '', installments: [] },
-          phase2: { full_fee: '', amount_paid: '', status: '', discount: '', installments: [] }
+          enrollment_id: courseEnr?.id,
+          batch_id: courseEnr?.batch_id
         };
         const bf = bfMap[courseName];
-        if (bf) {
-          if (bf.phase1_fee) { newFees[courseName].phase1.full_fee = String(bf.phase1_fee); }
-          if (bf.phase2_fee) { newFees[courseName].phase2.full_fee = String(bf.phase2_fee); }
+        for (let p = 1; p <= phaseCount; p++) {
+          const pKey = `phase${p}`;
+          newFees[courseName][pKey] = { full_fee: '', amount_paid: '', status: '', discount: '', installments: [] };
+          if (bf) {
+            const pFee = p === 1 ? bf.phase1_fee : (p === 2 ? bf.phase2_fee : null);
+            if (pFee) { newFees[courseName][pKey].full_fee = String(pFee); }
+          }
+          syncInstallmentsAndStatus(newFees[courseName][pKey]);
         }
-        syncInstallmentsAndStatus(newFees[courseName].phase1);
-        syncInstallmentsAndStatus(newFees[courseName].phase2);
       } else {
-        newFees[courseName] = { full_fee: '', amount_paid: '', status: '', discount: '', installments: [] };
+        newFees[courseName] = { 
+          enrollment_id: courseEnr?.id,
+          batch_id: courseEnr?.batch_id,
+          full_fee: '', 
+          amount_paid: '', 
+          status: '', 
+          discount: '', 
+          installments: [] 
+        };
         const bf = bfMap[courseName];
         if (bf && bf.full_fee) { newFees[courseName].full_fee = String(bf.full_fee); }
         syncInstallmentsAndStatus(newFees[courseName]);
@@ -908,11 +914,19 @@ export default function EditStudentModal({ student, onClose, onSaveSuccess }) {
       const target = phaseKey ? fees[courseName]?.[phaseKey] : fees[courseName];
       if (target) {
         const currentInst = target.installments || [];
+        const batchFeeValue = (() => {
+          const r = batchFeesRef.current[courseName];
+          if (!r) return null;
+          if (phaseKey) return r[`${phaseKey}_fee`] || null;
+          return r.full_fee || null;
+        })();
+        const acct = resolveFeeAccounting(target, { grossFeeOverride: batchFeeValue });
+        const suggestedAmount = acct.remainingDue > 0 ? String(acct.remainingDue) : '';
         target.installments = [
           ...currentInst,
-          { amount: '', dueDate: '', status: 'Pending' }
+          { amount: suggestedAmount, dueDate: '', status: 'Pending' }
         ];
-        syncInstallmentsAndStatus(target, false);
+        syncInstallmentsAndStatus(target);
       }
       return { ...prev, course_fees: fees };
     });
@@ -945,13 +959,13 @@ export default function EditStudentModal({ student, onClose, onSaveSuccess }) {
       const checkRow = (data, label) => {
         const fullFee = parseFloat(String(data.full_fee || '').replace(/[^\d.]/g, '')) || 0;
         const amountPaid = parseFloat(String(data.amount_paid || '').replace(/[^\d.]/g, '')) || 0;
-        const discount = parseFloat(String(data.discount || '').replace(/[^\d.]/g, '')) || 0;
+        const discount = resolveClientDiscount(data.discount, fullFee, data.discount_amount);
         
-        if (amountPaid > fullFee) {
-          return `${label}: Amount Paid (${amountPaid.toLocaleString()} BDT) cannot exceed the Course Fee (${fullFee.toLocaleString()} BDT).`;
+        if (fullFee < 0) {
+          return `${label}: Course fee cannot be negative.`;
         }
-        if (amountPaid + discount > fullFee) {
-          return `${label}: Amount Paid + Discount cannot exceed the Course Fee.`;
+        if (amountPaid < 0) {
+          return `${label}: Amount paid cannot be negative.`;
         }
 
         // Validate that installments are chronological
@@ -967,11 +981,15 @@ export default function EditStudentModal({ student, onClose, onSaveSuccess }) {
         return null;
       };
 
-      if (isOFC) {
-        const err1 = checkRow(feeData.phase1 || {}, `${courseName} (Phase 1)`);
-        if (err1) return err1;
-        const err2 = checkRow(feeData.phase2 || {}, `${courseName} (Phase 2)`);
-        if (err2) return err2;
+      const courseEnr = fullStudent?.enrollments?.find(e => e.course_name === courseName);
+      const isMultiPhase = isOFC || (courseEnr?.course_definition_id && (courseEnr?.defined_progress?.phaseCount > 1 || feeData?.phase2));
+      const phaseCount = isOFC ? 2 : (courseEnr?.defined_progress?.phaseCount || (feeData?.phase2 ? 2 : 1));
+
+      if (isMultiPhase && phaseCount > 1) {
+        for (let p = 1; p <= phaseCount; p++) {
+          const err = checkRow(feeData[`phase${p}`] || {}, `${courseName} (Phase ${p})`);
+          if (err) return err;
+        }
       } else {
         const err = checkRow(feeData, courseName);
         if (err) return err;
@@ -1010,52 +1028,51 @@ export default function EditStudentModal({ student, onClose, onSaveSuccess }) {
       }
 
       const studentId = student.id || student.user_id;
+      const hasAnyOverride = Object.values(phaseLockOverrides).some(Boolean);
+      const overriddenPhases = Object.keys(phaseLockOverrides).filter(k => phaseLockOverrides[k]);
+      const payload = {
+        ...editFormData,
+        admin_override: hasAnyOverride,
+        admin_override_phases: overriddenPhases
+      };
+
       const res = await fetch(`/api/admin/students/${studentId}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${localStorage.getItem('token')}`
         },
-        body: JSON.stringify(editFormData)
+        body: JSON.stringify(payload)
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to update student profile');
 
-      // ── Auto-sync step1_completed based on payment amount ────────
-      // Rule: any payment made (> 0) → checked/admitted; payment amount zero → unchecked/not admitted.
+      // ── Auto-sync step1_completed based on authoritative cash collected ────────
+      // Rule: any cash collected (> 0) or fully paid/waived → admitted (1); 0 cash collected and unpaid → not admitted (0).
       const studentIdForProgress = student.id || student.user_id;
       const enrollmentsToCheck = fullStudent?.enrollments || student?.enrollments || [];
 
       const syncPromises = enrollmentsToCheck.map(async (enr) => {
+        // Prevent touching defined courses — they use student_phase_results and courseProgressService
+        if (enr.course_definition_id) return;
+
         const cn = enr.course_name;
         const courseFees = editFormData.course_fees?.[cn];
         if (!courseFees) return;
 
-        let effectiveAmountPaid = 0;
+        const batchFee = batchFeesRef.current[cn];
+        let hasPayment = false;
 
         if (cn === 'Online Filmmaking Course') {
           const ph1 = courseFees.phase1 || {};
-          const installments = ph1.installments || [];
-          if (installments.length > 0) {
-            // Sum all installments that are "Paid"
-            effectiveAmountPaid = installments
-              .filter(inst => (inst.status || '').toLowerCase() === 'paid')
-              .reduce((sum, inst) => sum + (parseFloat((inst.amount || '').toString().replace(/[^\d.]/g, '')) || 0), 0);
-          } else {
-            effectiveAmountPaid = parseFloat((ph1.amount_paid || '').toString().replace(/[^\d.]/g, '')) || 0;
-          }
+          const acct = resolveFeeAccounting(ph1, { grossFeeOverride: batchFee?.phase1_fee });
+          hasPayment = acct.cashCollected > 0 || acct.isPaid;
         } else {
-          const installments = courseFees.installments || [];
-          if (installments.length > 0) {
-            effectiveAmountPaid = installments
-              .filter(inst => (inst.status || '').toLowerCase() === 'paid')
-              .reduce((sum, inst) => sum + (parseFloat((inst.amount || '').toString().replace(/[^\d.]/g, '')) || 0), 0);
-          } else {
-            effectiveAmountPaid = parseFloat((courseFees.amount_paid || '').toString().replace(/[^\d.]/g, '')) || 0;
-          }
+          const acct = resolveFeeAccounting(courseFees, { grossFeeOverride: batchFee?.full_fee });
+          hasPayment = acct.cashCollected > 0 || acct.isPaid;
         }
 
-        const targetStep1Val = effectiveAmountPaid > 0 ? 1 : 0;
+        const targetStep1Val = hasPayment ? 1 : 0;
 
         if (enr.step1_completed !== targetStep1Val) {
           try {
@@ -1196,88 +1213,112 @@ export default function EditStudentModal({ student, onClose, onSaveSuccess }) {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
                   {(editFormData.courses || []).map(courseName => {
                     const isOFC = courseName === 'Online Filmmaking Course';
+                    const courseEnr = fullStudent?.enrollments?.find(e => e.course_name === courseName);
+                    const isMultiPhase = isOFC || (courseEnr?.course_definition_id && (courseEnr?.defined_progress?.phaseCount > 1 || editFormData.course_fees?.[courseName]?.phase2));
+                    const phaseCount = isOFC ? 2 : (courseEnr?.defined_progress?.phaseCount || (editFormData.course_fees?.[courseName]?.phase2 ? 2 : 1));
                     
-                    let isPhase1Paid = true;
-                    let isPhase2PaidOrPartial = false;
-                    let phase1LockMessage = '';
-                    let phase2LockMessage = '';
-                    
-                    if (isOFC) {
-                      const phase1Data = editFormData.course_fees?.[courseName]?.phase1 || {};
-                      const phase1PaidAmount = parseFloat(String(phase1Data.amount_paid || '').replace(/[^\d.]/g, '')) || 0;
-                      const phase1Discount = parseFloat(String(phase1Data.discount || '').replace(/[^\d.]/g, '')) || 0;
-                      const phase1FullFee = parseFloat(String(phase1Data.full_fee || '').replace(/[^\d.]/g, '')) || 0;
-                      const phase1Status = (phase1Data.status || '').toLowerCase();
-                      
-                      isPhase1Paid = phase1FullFee > 0 
-                        ? (phase1PaidAmount + phase1Discount >= phase1FullFee || phase1Status === 'paid full' || phase1Status === 'paid' || phase1Status === 'waived')
-                        : true;
-
-                      const phase2Data = editFormData.course_fees?.[courseName]?.phase2 || {};
-                      const phase2PaidAmount = parseFloat(String(phase2Data.amount_paid || '').replace(/[^\d.]/g, '')) || 0;
-                      const phase2Status = (phase2Data.status || '').toLowerCase();
-                      
-                      isPhase2PaidOrPartial = phase2PaidAmount > 0 || phase2Status === 'paid full' || phase2Status === 'partial' || phase2Status === 'paid';
-                      
-                      if (isPhase2PaidOrPartial) {
-                        phase1LockMessage = 'Locked: Phase 2 has payments';
-                      }
-                      
-                      const ofcEnr = fullStudent?.enrollments?.find(e => e.course_name === 'Online Filmmaking Course');
-                      const isPhase1Passed = ofcEnr ? ofcEnr.step2_completed === 1 : false;
-                      
-                      if (!isPhase1Passed && !isPhase1Paid) {
-                        phase2LockMessage = 'Locked: Phase 1 exam passed & Phase 1 payment fully paid required';
-                      } else if (!isPhase1Passed) {
-                        phase2LockMessage = 'Locked: Phase 1 exam passed required';
-                      } else if (!isPhase1Paid) {
-                        phase2LockMessage = 'Locked: Phase 1 payment fully paid required';
-                      }
-                    }
-
                     return (
                       <div key={courseName} style={{ padding: '0.8rem', background: 'rgba(255,255,255,0.025)', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.06)' }}>
                         <p style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--accent-primary)', marginBottom: '0.7rem', letterSpacing: '0.01em' }}>{courseName}</p>
-                        {isOFC ? (
+                        {(isMultiPhase && phaseCount > 1) ? (
                           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
-                            <FeeRow 
-                              courseName={courseName}
-                              label="Phase 1" 
-                              phaseKey="phase1" 
-                              feeData={editFormData.course_fees}
-                              onChange={handleCourseFeeChange}
-                              onDiscountBlur={handleDiscountBlur}
-                              onRemoveInstallment={handleRemoveInstallment}
-                              onAddInstallment={handleAddInstallment}
-                              onInstallmentChange={handleInstallmentChange}
-                              disabled={isPhase2PaidOrPartial}
-                              lockMessage={phase1LockMessage}
-                              onUnlockClick={() => setOverridePhase1Lock(prev => !prev)}
-                              isOverridden={overridePhase1Lock}
-                              batchFeeValue={(() => { const r = batchFeesRef.current[courseName]; return (r && r.phase1_fee > 0) ? r.phase1_fee : null; })()}
-                            />
-                            {(() => {
-                              const ofcEnr = fullStudent?.enrollments?.find(e => e.course_name === 'Online Filmmaking Course');
-                              const isPhase1Passed = ofcEnr ? ofcEnr.step2_completed === 1 : false;
+                            {Array.from({ length: phaseCount }, (_, i) => i + 1).map((pNum) => {
+                              const pKey = `phase${pNum}`;
+                              const overrideKey = `${courseName}:${pKey}`;
+                              const isOverridden = Boolean(phaseLockOverrides[overrideKey]);
+
+                              // 1. Downstream lock: if any phase k > pNum has recorded payments
+                              let downstreamLocked = false;
+                              let downstreamLockMsg = '';
+                              for (let k = pNum + 1; k <= phaseCount; k++) {
+                                const nextData = editFormData.course_fees?.[courseName]?.[`phase${k}`] || {};
+                                const nextBatchFee = (() => {
+                                  const r = batchFeesRef.current[courseName];
+                                  if (!r) return null;
+                                  return r[`phase${k}_fee`] || null;
+                                })();
+                                const nextAcct = resolveFeeAccounting(nextData, { grossFeeOverride: nextBatchFee });
+                                const hasDirectPayment = parseFloat(String(nextData.direct_payment ?? nextData.down_payment ?? 0).replace(/[^\d.]/g, '')) > 0;
+                                const hasRecordedPayment = nextAcct.cashCollected > 0 || hasDirectPayment || (nextData.installments || []).some(inst => (inst.status || '').toLowerCase() === 'paid' && parseFloat(String(inst.amount || '').replace(/[^\d.]/g, '')) > 0);
+                                if (hasRecordedPayment) {
+                                  downstreamLocked = true;
+                                  downstreamLockMsg = `Locked: Phase ${k} has recorded payments`;
+                                  break;
+                                }
+                              }
+
+                              // 2. Upstream lock: if pNum > 1, check previous phase eligibility & fee
+                              let upstreamLocked = false;
+                              let upstreamLockMsg = '';
+                              if (pNum > 1) {
+                                const prevPNum = pNum - 1;
+                                const prevData = editFormData.course_fees?.[courseName]?.[`phase${prevPNum}`] || {};
+                                const prevBatchFee = (() => {
+                                  const r = batchFeesRef.current[courseName];
+                                  if (!r) return null;
+                                  return r[`phase${prevPNum}_fee`] || null;
+                                })();
+                                const prevAcct = resolveFeeAccounting(prevData, { grossFeeOverride: prevBatchFee });
+                                // Authoritative: an underfunded phase with status "Paid" will return isPaid === false!
+                                const isPrevFeePaid = prevAcct.isPaid;
+
+                                let isPrevPassed = false;
+                                if (isOFC) {
+                                  isPrevPassed = courseEnr ? courseEnr.step2_completed === 1 : false;
+                                } else {
+                                  const defPhases = courseEnr?.defined_progress?.phases || [];
+                                  const prevDefPhase = defPhases[prevPNum - 1];
+                                  isPrevPassed = prevDefPhase ? Boolean(prevDefPhase.isPassed) : false;
+                                }
+
+                                const phaseGate = courseEnr?.defined_progress?.definition?.completion_policy?.phaseGates?.[`phase_${pNum}`] 
+                                  || courseEnr?.defined_progress?.definition?.completion_policy?.phaseGates?.[`phase${pNum}`];
+                                const requirePass = phaseGate ? phaseGate.previousPhasePassed !== false : true;
+                                const requireFee = phaseGate ? phaseGate.feePaid !== false : true;
+
+                                const passFailed = requirePass && !isPrevPassed;
+                                const feeFailed = requireFee && !isPrevFeePaid;
+
+                                if (passFailed && feeFailed) {
+                                  upstreamLocked = true;
+                                  upstreamLockMsg = `Locked: Phase ${prevPNum} passed & Phase ${prevPNum} fee fully paid required`;
+                                } else if (passFailed) {
+                                  upstreamLocked = true;
+                                  upstreamLockMsg = `Locked: Phase ${prevPNum} passed required`;
+                                } else if (feeFailed) {
+                                  upstreamLocked = true;
+                                  upstreamLockMsg = `Locked: Phase ${prevPNum} fee fully paid required`;
+                                }
+                              }
+
+                              const isLocked = downstreamLocked || upstreamLocked;
+                              const lockMessage = downstreamLockMsg || upstreamLockMsg;
+                              const isRowDisabled = isLocked && !isOverridden;
+
                               return (
                                 <FeeRow 
+                                  key={pKey}
                                   courseName={courseName}
-                                  label="Phase 2" 
-                                  phaseKey="phase2" 
+                                  label={`Phase ${pNum}`} 
+                                  phaseKey={pKey} 
                                   feeData={editFormData.course_fees}
                                   onChange={handleCourseFeeChange}
                                   onDiscountBlur={handleDiscountBlur}
                                   onRemoveInstallment={handleRemoveInstallment}
                                   onAddInstallment={handleAddInstallment}
                                   onInstallmentChange={handleInstallmentChange}
-                                  disabled={!isPhase1Passed || !isPhase1Paid}
-                                  lockMessage={phase2LockMessage}
-                                  onUnlockClick={() => setOverridePhase2Lock(prev => !prev)}
-                                  isOverridden={overridePhase2Lock}
-                                  batchFeeValue={(() => { const r = batchFeesRef.current[courseName]; return (r && r.phase2_fee > 0) ? r.phase2_fee : null; })()}
+                                  disabled={isRowDisabled}
+                                  lockMessage={lockMessage}
+                                  onUnlockClick={() => togglePhaseLock(courseName, pKey)}
+                                  isOverridden={isOverridden}
+                                  batchFeeValue={(() => {
+                                    const r = batchFeesRef.current[courseName];
+                                    if (!r) return null;
+                                    return r[`phase${pNum}_fee`] || null;
+                                  })()}
                                 />
                               );
-                            })()}
+                            })}
                           </div>
                         ) : (
                           <FeeRow 

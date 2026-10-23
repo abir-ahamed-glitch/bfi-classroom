@@ -210,7 +210,7 @@ export default function CourseMaterialsManager() {
     setEditTarget(mat);
     setForm({
       title: mat.title || '', description: mat.description || '',
-      course_name: mat.course_name || '', batch_number: mat.batch_number || '85th',
+      course_name: mat.course_name || '', batch_number: mat.batch_number || '85th', batch_id: mat.batch_id || '',
       is_downloadable: mat.is_downloadable === 1, file_type_override: mat.file_type || 'pdf',
       external_url: mat.file_url?.startsWith('/media/') ? '' : (mat.file_url || ''),
     });

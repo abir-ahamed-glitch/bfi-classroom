@@ -31,6 +31,7 @@ const COURSE_OPTIONS = [
 ];
 
 const DEFAULT_FORM = {
+  batch_id: null,
   course_name: 'Online Filmmaking Course',
   batch_number: '',
   phase1_fee: '',
@@ -206,6 +207,7 @@ export default function BatchFeeManager() {
     const isDef = fee.batch_number === 'DEFAULT';
     setFormMode(isDef ? 'default' : 'custom');
     setForm({
+      batch_id: fee.batch_id || null,
       course_name: fee.course_name,
       batch_number: String(fee.batch_number),
       phase1_fee: fee.phase1_fee ? String(fee.phase1_fee) : '',
@@ -230,6 +232,7 @@ export default function BatchFeeManager() {
     setSaving(true);
     try {
       const payload = {
+        batch_id: formMode === 'default' ? null : (form.batch_id || null),
         course_name: form.course_name,
         batch_number: formMode === 'default' ? 'DEFAULT' : form.batch_number.trim(),
         phase1_fee: isFilmmaking ? parseInt(form.phase1_fee, 10) || 0 : 0,
@@ -661,7 +664,9 @@ export default function BatchFeeManager() {
                             default course fee
                           </span>
                         ) : (
-                          <span className="bfm-batch-num">Batch {fee.batch_number}</span>
+                          <span className="bfm-batch-num">
+                            {fee.batch_name ? `${fee.batch_name} (#${fee.batch_number})` : `Batch ${fee.batch_number}`}
+                          </span>
                         )}
                       </td>
                       <td>{isFm ? formatCurrency(fee.phase1_fee) : '—'}</td>

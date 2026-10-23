@@ -482,7 +482,7 @@ router.post('/', authenticateToken, broadcastAuth, sanitizeInput, (req, res) => 
 
         if (f.editedUrl && f.editedUrl.startsWith('data:')) {
           try {
-            const matches = f.editedUrl.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+            const matches = f.editedUrl.match(new RegExp('^data:([A-Za-z0-9.+/-]+);base64,(.+)$'));
             if (matches && matches.length === 3) {
               const mimeType = matches[1];
               const buffer = Buffer.from(matches[2], 'base64');
@@ -625,6 +625,22 @@ router.post('/:id/cancel', authenticateToken, requireRole('admin'), (req, res) =
     console.error('[Broadcast] cancel error:', error);
     res.status(500).json({ error: 'Failed to cancel broadcast' });
   }
+});
+
+// ── Endpoint 6b: Check My Broadcast Permission (returns 200 OK without 403 noise) ─
+router.get('/my-permission', authenticateToken, (req, res) => {
+  if (!req.user) return res.json({ hasPermission: false, permission: null });
+  if (req.user.role === 'admin') {
+    return res.json({ hasPermission: true, permission: { can_send_to: 'all' } });
+  }
+  if (req.user.role === 'instructor') {
+    const permission = db.prepare(`
+      SELECT * FROM broadcast_permissions
+      WHERE teacher_id = ? AND is_active = 1 AND revoked_at IS NULL
+    `).get(req.user.id);
+    return res.json({ hasPermission: Boolean(permission), permission: permission || null });
+  }
+  return res.json({ hasPermission: false, permission: null });
 });
 
 // ── Endpoint 7: Search Students (MUST be before /:id routes) ────────────────

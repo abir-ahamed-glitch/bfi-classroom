@@ -12,6 +12,7 @@ import { io } from 'socket.io-client';
 import jsPDF from 'jspdf';
 import { useNavigate, Link } from 'react-router-dom';
 import { resolveMediaUrl } from '../utils/mediaUtils';
+import PdfViewer from '../components/PdfViewer';
 import { useModal } from '../components/BFIModal';
 
 const hasPendingDueOrPartialPayment = (course) => {
@@ -560,21 +561,10 @@ function LightboxContent({ attachment, handleDownload, onClose }) {
     return <ZoomableImage url={url} name={name} onClose={onClose} />;;
   }
 
-  if (type === 'application/pdf') {
-    return (
-      <iframe
-        src={resolveMediaUrl(url)}
-        title={name}
-        style={{
-          width: '85%',
-          height: '80vh',
-          border: '1px solid rgba(255,255,255,0.15)',
-          borderRadius: '8px',
-          boxShadow: '0 24px 80px rgba(0,0,0,0.7)',
-          backgroundColor: '#323639'
-        }}
-      />
-    );
+  const isPdf = type === 'application/pdf' || (name && name.toLowerCase().endsWith('.pdf'));
+  if (isPdf) {
+    const base64Url = `/api/admin/broadcast/file/base64?path=${encodeURIComponent(url)}`;
+    return <PdfViewer url={base64Url} name={name} containerStyle={{ width: '85%', height: '80vh' }} />;
   }
 
   if (type.startsWith('video/')) {

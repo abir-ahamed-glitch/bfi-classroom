@@ -82,6 +82,10 @@ export default function NotificationPanel({ isOpen, onClose }) {
     }
   };
 
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent('updateUnreadNotifications', { detail: unreadCount }));
+  }, [unreadCount]);
+
   const fetchUnreadCount = async () => {
     try {
       const token = localStorage.getItem('token');
@@ -93,7 +97,6 @@ export default function NotificationPanel({ isOpen, onClose }) {
         const data = await res.json();
         const count = data.unreadCount || 0;
         setUnreadCount(count);
-        window.dispatchEvent(new CustomEvent('updateUnreadNotifications', { detail: count }));
       }
     } catch (error) {
       console.error('Failed to fetch unread count', error);
@@ -108,11 +111,7 @@ export default function NotificationPanel({ isOpen, onClose }) {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       setNotifications(prev => prev.map(n => n.id === id ? { ...n, is_read: 1 } : n));
-      setUnreadCount(prev => {
-        const newCount = Math.max(0, prev - 1);
-        window.dispatchEvent(new CustomEvent('updateUnreadNotifications', { detail: newCount }));
-        return newCount;
-      });
+      setUnreadCount(prev => Math.max(0, prev - 1));
       
       if (link) {
         navigate(link);
@@ -138,7 +137,6 @@ export default function NotificationPanel({ isOpen, onClose }) {
       });
       setNotifications(prev => prev.map(n => ({ ...n, is_read: 1 })));
       setUnreadCount(0);
-      window.dispatchEvent(new CustomEvent('updateUnreadNotifications', { detail: 0 }));
     } catch (error) {
       console.error('Failed to mark all as read', error);
     }

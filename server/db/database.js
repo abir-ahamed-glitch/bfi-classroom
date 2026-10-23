@@ -3,11 +3,19 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import bcrypt from 'bcryptjs';
 import { encryptMessageContent, isEncryptedMessageContent } from '../utils/messageCrypto.js';
+import { createRequire } from 'module';
+
+const require = createRequire(import.meta.url);
+const { runEnrollmentConstraintMigration } = require('./migrations/20261019_enrollment_unique_constraint_fix.cjs');
+const { runBatchesConstraintMigration } = require('./migrations/20261022_batches_unique_constraint_fix.cjs');
+const { runDownstreamCollisionMigration } = require('./migrations/20261022_downstream_identity_collision_fix.cjs');
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const dbPath = path.join(__dirname, '..', 'bfi_classroom.db');
+const dbPath = process.env.DATABASE_PATH
+  ? path.resolve(process.env.DATABASE_PATH)
+  : path.join(__dirname, '..', 'bfi_classroom.db');
 const db = new Database(dbPath);
 
 // Enable WAL mode for better performance
@@ -22,7 +30,7 @@ export function initializeDatabase() {
       username TEXT UNIQUE NOT NULL,
       email TEXT UNIQUE NOT NULL,
       password_hash TEXT NOT NULL,
-      role TEXT NOT NULL DEFAULT 'student' CHECK(role IN ('admin', 'instructor', 'student')),
+      role TEXT NOT NULL DEFAULT 'student' CHECK(role IN ('admin', 'instructor', 'student', 'moderator')),
       first_name TEXT NOT NULL,
       last_name TEXT NOT NULL,
       profile_picture TEXT,
@@ -103,21 +111,40 @@ export function initializeDatabase() {
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
 
-    -- Student Course Enrollments (Multiple courses per student)
+    -- Student Course Enrollments (Multiple courses per student, batch-scoped)
     CREATE TABLE IF NOT EXISTS student_course_enrollments (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER NOT NULL,
       course_name TEXT NOT NULL,
-      course_type TEXT NOT NULL, -- 'filmmaking' (4 steps) or 'workshop' (2 steps)
+      course_type TEXT NOT NULL DEFAULT 'filmmaking', -- 'filmmaking' (4 steps) or 'workshop' (2 steps)
       step1_completed INTEGER DEFAULT 0,
       step2_completed INTEGER DEFAULT 0,
       step3_completed INTEGER DEFAULT 0,
       step4_completed INTEGER DEFAULT 0,
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now')),
-      UNIQUE(user_id, course_name),
+      attendance_classes TEXT,
+      exam_written INTEGER DEFAULT 0,
+      assignment_screenplay INTEGER DEFAULT 0,
+      assignment_shooting_script INTEGER DEFAULT 0,
+      attendance_total INTEGER DEFAULT 22,
+      phase2_shooting_attended INTEGER DEFAULT 0,
+      phase2_editing_attended INTEGER DEFAULT 0,
+      fee_details TEXT,
+      assignment_scores TEXT,
+      course_definition_id INTEGER,
+      course_version INTEGER,
+      batch_id INTEGER REFERENCES batches(id),
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_enr_user_course_no_batch
+      ON student_course_enrollments(user_id, course_name)
+      WHERE batch_id IS NULL;
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_enr_user_course_with_batch
+      ON student_course_enrollments(user_id, course_name, batch_id)
+      WHERE batch_id IS NOT NULL;
 
     -- Social media links
     CREATE TABLE IF NOT EXISTS social_links (
@@ -237,6 +264,7 @@ export function initializeDatabase() {
       description TEXT,
       file_url TEXT,
       file_type TEXT,
+      batch_id INTEGER REFERENCES batches(id) ON DELETE SET NULL,
       batch_number TEXT,
       course_name TEXT,
       uploaded_by INTEGER NOT NULL,
@@ -468,14 +496,14 @@ export function initializeDatabase() {
     -- Batch-Wise Course Fees
     CREATE TABLE IF NOT EXISTS batch_course_fees (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+      batch_id INTEGER REFERENCES batches(id) ON DELETE SET NULL,
       course_name TEXT NOT NULL,
       batch_number TEXT NOT NULL,
       phase1_fee INTEGER NOT NULL DEFAULT 0,
       phase2_fee INTEGER NOT NULL DEFAULT 0,
       full_fee INTEGER NOT NULL DEFAULT 0,
       created_at TEXT DEFAULT (datetime('now')),
-      updated_at TEXT DEFAULT (datetime('now')),
-      UNIQUE(course_name, batch_number)
+      updated_at TEXT DEFAULT (datetime('now'))
     );
 
     -- Indexes for performance
@@ -531,8 +559,18 @@ export function initializeDatabase() {
       created_by INTEGER,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      UNIQUE(batch_number, course_name)
+      slug TEXT,
+      deleted_at TEXT DEFAULT NULL,
+      deleted_by_admin_id INTEGER DEFAULT NULL,
+      course_definition_id INTEGER,
+      course_version INTEGER
     );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_batches_slug ON batches(slug) WHERE slug IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_batches_unlinked_unique ON batches(batch_number, course_name) WHERE course_definition_id IS NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_batches_defined_unique ON batches(batch_number, course_definition_id) WHERE course_definition_id IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_batches_defined_name_unique ON batches(batch_name, course_definition_id) WHERE course_definition_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_batches_course_def ON batches(course_definition_id);
 
     -- Batch students association table
     CREATE TABLE IF NOT EXISTS batch_students (
@@ -1163,23 +1201,55 @@ export function initializeDatabase() {
     console.error('Error creating trash_audit_log table:', error);
   }
 
-  // Create trigger to sync default attendance_total from course_settings on insert
+  // Course settings table
   try {
     db.prepare(`
-      CREATE TRIGGER IF NOT EXISTS set_default_attendance_total
+      CREATE TABLE IF NOT EXISTS course_settings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        batch_id INTEGER REFERENCES batches(id) ON DELETE SET NULL,
+        course_name TEXT NOT NULL,
+        batch_number TEXT NOT NULL DEFAULT 'DEFAULT',
+        total_classes INTEGER DEFAULT 22,
+        exam_max_score INTEGER DEFAULT 100,
+        exam_pass_mark INTEGER DEFAULT 33,
+        has_assignment INTEGER DEFAULT 0,
+        assignments TEXT DEFAULT '[]',
+        has_phase2 INTEGER DEFAULT 0,
+        created_at TEXT DEFAULT (datetime('now', 'localtime')),
+        updated_at TEXT DEFAULT (datetime('now', 'localtime'))
+      )
+    `).run();
+  } catch (error) {
+    console.error('Error ensuring course_settings table exists:', error);
+    throw error;
+  }
+
+  // Create trigger to sync default attendance_total from course_settings on insert
+  try {
+    db.prepare('DROP TRIGGER IF EXISTS set_default_attendance_total').run();
+    db.prepare(`
+      CREATE TRIGGER set_default_attendance_total
       AFTER INSERT ON student_course_enrollments
       FOR EACH ROW
-      WHEN NEW.attendance_total = 22
+      WHEN NEW.attendance_total IS NULL OR NEW.attendance_total = 22
       BEGIN
         UPDATE student_course_enrollments
         SET attendance_total = COALESCE(
-          (SELECT total_classes FROM course_settings WHERE course_name = NEW.course_name AND batch_number = (
-            SELECT b.batch_number 
-            FROM batch_students bs
-            JOIN batches b ON bs.batch_id = b.id
-            WHERE bs.student_id = NEW.user_id AND b.course_name = NEW.course_name
-            LIMIT 1
-          )),
+          CASE WHEN NEW.batch_id IS NOT NULL THEN (
+            SELECT total_classes FROM course_settings WHERE batch_id = NEW.batch_id LIMIT 1
+          ) ELSE NULL END,
+          CASE WHEN NEW.batch_id IS NULL AND NEW.course_definition_id IS NULL THEN (
+            SELECT total_classes FROM course_settings 
+            WHERE course_name = NEW.course_name 
+              AND batch_id IS NULL
+              AND batch_number = (
+                SELECT b.batch_number 
+                FROM batch_students bs
+                JOIN batches b ON bs.batch_id = b.id
+                WHERE bs.student_id = NEW.user_id AND b.course_name = NEW.course_name AND b.course_definition_id IS NULL
+                LIMIT 1
+              )
+          ) ELSE NULL END,
           (SELECT total_classes FROM course_settings WHERE course_name = NEW.course_name AND batch_number = 'DEFAULT'),
           22
         )
@@ -1189,7 +1259,200 @@ export function initializeDatabase() {
     console.log('✅ Registered set_default_attendance_total trigger');
   } catch (error) {
     console.error('Error registering set_default_attendance_total trigger:', error);
+    throw error;
   }
+
+  // Course Maker schema setup
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS course_definitions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        slug TEXT NOT NULL,
+        version INTEGER NOT NULL DEFAULT 1,
+        name TEXT NOT NULL,
+        course_type TEXT NOT NULL,
+        description TEXT,
+        duration_value INTEGER,
+        duration_unit TEXT DEFAULT 'months',
+        phase_count INTEGER NOT NULL DEFAULT 1,
+        status TEXT NOT NULL DEFAULT 'draft',
+        definition_json TEXT NOT NULL,
+        created_by INTEGER NOT NULL,
+        updated_by INTEGER NOT NULL,
+        created_at TEXT DEFAULT (datetime('now', 'localtime')),
+        updated_at TEXT DEFAULT (datetime('now', 'localtime')),
+        UNIQUE(slug, version)
+      );
+
+      CREATE TABLE IF NOT EXISTS course_routine_audits (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        course_definition_id INTEGER NOT NULL,
+        batch_id INTEGER,
+        phase_id TEXT NOT NULL,
+        old_routine TEXT,
+        new_routine TEXT NOT NULL,
+        changed_by INTEGER NOT NULL,
+        changed_at TEXT DEFAULT (datetime('now', 'localtime')),
+        reason TEXT,
+        FOREIGN KEY (course_definition_id) REFERENCES course_definitions(id),
+        FOREIGN KEY (changed_by) REFERENCES users(id)
+      );
+
+      CREATE TABLE IF NOT EXISTS student_phase_results (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        enrollment_id INTEGER NOT NULL,
+        phase_id TEXT NOT NULL,
+        attendance_classes INTEGER DEFAULT 0,
+        attendance_total INTEGER DEFAULT 0,
+        attendance_percentage REAL DEFAULT 0.0,
+        assignments_completed INTEGER DEFAULT 0,
+        assignments_total INTEGER DEFAULT 0,
+        exam_marks REAL DEFAULT NULL,
+        is_passed INTEGER DEFAULT 0,
+        calculated_at TEXT DEFAULT (datetime('now', 'localtime')),
+        UNIQUE(enrollment_id, phase_id),
+        FOREIGN KEY (enrollment_id) REFERENCES student_course_enrollments(id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS student_class_attendance (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        enrollment_id INTEGER NOT NULL,
+        class_id TEXT NOT NULL,
+        attended INTEGER NOT NULL DEFAULT 0,
+        attended_at TEXT,
+        updated_by INTEGER,
+        UNIQUE(enrollment_id, class_id),
+        FOREIGN KEY (enrollment_id) REFERENCES student_course_enrollments(id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS student_assignment_grades (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        enrollment_id INTEGER NOT NULL,
+        assignment_id TEXT NOT NULL,
+        marks_obtained REAL DEFAULT 0,
+        submission_status TEXT DEFAULT 'pending',
+        remarks TEXT,
+        graded_by INTEGER,
+        graded_at TEXT,
+        UNIQUE(enrollment_id, assignment_id),
+        FOREIGN KEY (enrollment_id) REFERENCES student_course_enrollments(id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS course_routine_overrides (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        course_definition_id INTEGER NOT NULL,
+        batch_id INTEGER DEFAULT 0,
+        phase_id TEXT NOT NULL,
+        routine_json TEXT NOT NULL,
+        updated_by INTEGER NOT NULL,
+        updated_at TEXT DEFAULT (datetime('now', 'localtime')),
+        FOREIGN KEY (course_definition_id) REFERENCES course_definitions(id),
+        FOREIGN KEY (updated_by) REFERENCES users(id)
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_course_routine_overrides
+        ON course_routine_overrides(course_definition_id, batch_id, phase_id);
+
+      CREATE TABLE IF NOT EXISTS legacy_enrollment_migrations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        enrollment_id INTEGER NOT NULL,
+        student_id INTEGER NOT NULL,
+        source_course_name TEXT NOT NULL,
+        target_course_definition_id INTEGER NOT NULL,
+        target_version INTEGER NOT NULL,
+        legacy_snapshot_json TEXT NOT NULL,
+        migrated_by INTEGER NOT NULL,
+        migrated_at TEXT DEFAULT (datetime('now', 'localtime')),
+        notes TEXT,
+        FOREIGN KEY (enrollment_id) REFERENCES student_course_enrollments(id),
+        FOREIGN KEY (target_course_definition_id) REFERENCES course_definitions(id),
+        FOREIGN KEY (migrated_by) REFERENCES users(id)
+      );
+
+      CREATE TABLE IF NOT EXISTS batch_moderators (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        batch_id INTEGER NOT NULL REFERENCES batches(id) ON DELETE CASCADE,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        assigned_by INTEGER REFERENCES users(id),
+        assigned_at TEXT DEFAULT (datetime('now', 'localtime')),
+        UNIQUE(batch_id, user_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS enrollment_migration_collisions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        course_name TEXT NOT NULL,
+        batch_id INTEGER,
+        primary_enrollment_id INTEGER NOT NULL,
+        duplicate_enrollment_id INTEGER NOT NULL,
+        resolution_action TEXT NOT NULL,
+        merged_details TEXT NOT NULL,
+        created_at TEXT DEFAULT (datetime('now', 'localtime'))
+      );
+
+      CREATE TABLE IF NOT EXISTS archived_duplicate_enrollments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        original_enrollment_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        course_name TEXT NOT NULL,
+        batch_id INTEGER,
+        full_row_json TEXT NOT NULL,
+        primary_enrollment_id INTEGER NOT NULL,
+        archived_at TEXT DEFAULT (datetime('now', 'localtime'))
+      );
+    `);
+
+    for (const col of ['course_definition_id', 'course_version']) {
+      try {
+        db.prepare(`ALTER TABLE batches ADD COLUMN ${col} INTEGER`).run();
+      } catch {
+        /* empty */
+      }
+      try {
+        db.prepare(`ALTER TABLE student_course_enrollments ADD COLUMN ${col} INTEGER`).run();
+      } catch {
+        /* empty */
+      }
+    }
+    try {
+      db.prepare(`ALTER TABLE student_course_enrollments ADD COLUMN batch_id INTEGER REFERENCES batches(id)`).run();
+    } catch {
+      /* empty */
+    }
+    try {
+      db.prepare(`CREATE INDEX IF NOT EXISTS idx_student_course_enrollments_batch ON student_course_enrollments(batch_id)`).run();
+    } catch {
+      /* empty */
+    }
+    try {
+      db.prepare(`ALTER TABLE student_phase_results ADD COLUMN admitted INTEGER DEFAULT 0`).run();
+    } catch {
+      /* empty */
+    }
+    try {
+      db.prepare(`ALTER TABLE student_phase_results ADD COLUMN admitted_at TEXT`).run();
+    } catch {
+      /* empty */
+    }
+
+    // Run lossless enrollment constraint migration to guarantee canonical schema
+    runEnrollmentConstraintMigration(db);
+
+    // Run lossless batches constraint migration to support same-title definitions
+    runBatchesConstraintMigration(db);
+
+    // Run lossless downstream identity collision migration (batch_course_fees, course_settings, course_materials)
+    runDownstreamCollisionMigration(db);
+
+    console.log('✅ Course Maker tables and columns verified');
+  } catch (err) {
+    console.error('Error initializing Course Maker schema:', err);
+    throw err;
+  }
+}
+
+export function getDbPath() {
+  return dbPath;
 }
 
 export default db;

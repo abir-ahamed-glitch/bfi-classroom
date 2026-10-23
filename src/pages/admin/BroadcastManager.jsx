@@ -199,16 +199,31 @@ function BroadcastDrawer({ broadcastId, unifiedType, onClose, onDuplicate, onDel
 
   useEffect(() => {
     if (!broadcastId) return;
+    let isMounted = true;
     if (unifiedType === 'notice') {
       // For standard notices, we already have details, or can fetch all or single
-      setLoading(false);
+      Promise.resolve().then(() => {
+        if (isMounted) setLoading(false);
+      });
       return;
     }
-    setLoading(true);
+    Promise.resolve().then(() => {
+      if (isMounted) setLoading(true);
+    });
     fetch(`${API_BASE}/${broadcastId}`, { headers: authHeader() })
       .then(r => r.json())
-      .then(d => { setData(d); setLoading(false); })
-      .catch(() => setLoading(false));
+      .then(d => {
+        if (isMounted) {
+          setData(d);
+          setLoading(false);
+        }
+      })
+      .catch(() => {
+        if (isMounted) setLoading(false);
+      });
+    return () => {
+      isMounted = false;
+    };
   }, [broadcastId, unifiedType]);
 
   const handleRetry = async () => {
@@ -553,17 +568,26 @@ function NoticeDetailView({ broadcastId, onClose, onDeleteNotice, setAttLightbox
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    setLoading(true);
+    let isMounted = true;
+    Promise.resolve().then(() => {
+      if (isMounted) setLoading(true);
+    });
     fetch('/api/admin/announcements', {
       headers: { Authorization: `Bearer ${token()}` }
     })
       .then(r => r.json())
       .then(d => {
+        if (!isMounted) return;
         const item = (d.announcements || []).find(a => a.id === broadcastId);
         setNotice(item);
         setLoading(false);
       })
-      .catch(() => setLoading(false));
+      .catch(() => {
+        if (isMounted) setLoading(false);
+      });
+    return () => {
+      isMounted = false;
+    };
   }, [broadcastId]);
 
   if (loading) return <div className="bc-empty-state"><div className="bc-spinner" /></div>;
@@ -658,7 +682,15 @@ function PermissionsPanel() {
   }, []);
 
   useEffect(() => {
-    if (open) fetchTeachers();
+    let isMounted = true;
+    if (open) {
+      Promise.resolve().then(() => {
+        if (isMounted) fetchTeachers();
+      });
+    }
+    return () => {
+      isMounted = false;
+    };
   }, [open, fetchTeachers]);
 
   const handleGrant = async () => {
@@ -861,8 +893,11 @@ export default function BroadcastManager() {
   const [photoEditorIdx, setPhotoEditorIdx] = useState(0);
 
   useEffect(() => {
+    let isMounted = true;
     if (!studentSearch || studentSearch.trim() === '') {
-      setSearchResults([]);
+      Promise.resolve().then(() => {
+        if (isMounted) setSearchResults([]);
+      });
       return;
     }
     const delayDebounce = setTimeout(() => {
@@ -870,19 +905,26 @@ export default function BroadcastManager() {
       fetch(`${API_BASE}/search-students?q=${encodeURIComponent(studentSearch)}`, { headers: { Authorization: `Bearer ${token()}` } })
         .then(r => r.json())
         .then(d => {
-          setSearchResults(d.students || []);
-          setSearchLoading(false);
+          if (isMounted) {
+            setSearchResults(d.students || []);
+            setSearchLoading(false);
+          }
         })
-        .catch(() => setSearchLoading(false));
+        .catch(() => {
+          if (isMounted) setSearchLoading(false);
+        });
     }, 300);
 
-    return () => clearTimeout(delayDebounce);
+    return () => {
+      isMounted = false;
+      clearTimeout(delayDebounce);
+    };
   }, [studentSearch]);
 
-  const showToast = (msg, type = 'success') => {
+  const showToast = useCallback((msg, type = 'success') => {
     setToast({ msg, type });
     setTimeout(() => setToast(null), 4000);
-  };
+  }, []);
 
   const handleBulkDelete = async () => {
     if (selectedHistoryItems.length === 0) return;
@@ -930,8 +972,24 @@ export default function BroadcastManager() {
   const fetchHistory = useCallback(async () => {
     setHistoryLoading(true);
     try {
+      if (currentUser?.role === 'instructor') {
+        const permRes = await fetch('/api/admin/broadcast/my-permission', { headers: authHeader() });
+        const permData = permRes.ok ? await permRes.json() : { hasPermission: false };
+        if (!permData.hasPermission) {
+          setHistory([]);
+          setFilteredHistory([]);
+          setHistoryLoading(false);
+          return;
+        }
+      }
       // 1. Fetch broadcasts
       const broadcastRes = await fetch(`/api/admin/broadcast`, { headers: authHeader() });
+      if (!broadcastRes.ok) {
+        setHistory([]);
+        setFilteredHistory([]);
+        setHistoryLoading(false);
+        return;
+      }
       const broadcastData = await broadcastRes.json();
       const bList = (broadcastData.broadcasts || []).map(b => ({
         ...b,
@@ -977,13 +1035,20 @@ export default function BroadcastManager() {
       showToast('Failed to load history', 'error');
     }
     setHistoryLoading(false);
-  }, [currentUser]);
+  }, [currentUser, showToast]);
 
   useEffect(() => {
-    fetchHistory();
-    if (currentUser?.role === 'admin') {
-      fetchTargetingOptions();
-    }
+    let isMounted = true;
+    Promise.resolve().then(() => {
+      if (!isMounted) return;
+      fetchHistory();
+      if (currentUser?.role === 'admin') {
+        fetchTargetingOptions();
+      }
+    });
+    return () => {
+      isMounted = false;
+    };
   }, [fetchHistory, fetchTargetingOptions, currentUser]);
 
   // ── Socket.io real-time history refresh ──────────────────────────────
@@ -1009,13 +1074,22 @@ export default function BroadcastManager() {
 
   // Sync form options
   useEffect(() => {
+    let isMounted = true;
     if (deliveryType === 'notice') {
-      setForm(f => ({ ...f, priority: 'normal' }));
+      Promise.resolve().then(() => {
+        if (isMounted) {
+          setForm(f => ({ ...f, priority: 'normal' }));
+        }
+      });
     }
+    return () => {
+      isMounted = false;
+    };
   }, [deliveryType]);
 
   // Apply history filter & search
   useEffect(() => {
+    let isMounted = true;
     let result = [...history];
 
     if (historyFilter === 'broadcasts') {
@@ -1036,12 +1110,25 @@ export default function BroadcastManager() {
       );
     }
 
-    setFilteredHistory(result);
+    Promise.resolve().then(() => {
+      if (isMounted) {
+        setFilteredHistory(result);
+      }
+    });
+
+    return () => {
+      isMounted = false;
+    };
   }, [history, historyFilter, historySearch]);
 
   // Preview audience count
   const checkAudienceSize = async () => {
     if (deliveryType === 'notice') return;
+    if (currentUser?.role === 'instructor') {
+      const permRes = await fetch('/api/admin/broadcast/my-permission', { headers: authHeader() });
+      const permData = permRes.ok ? await permRes.json() : { hasPermission: false };
+      if (!permData.hasPermission) return;
+    }
     setCheckingAudience(true);
     try {
       const res = await fetch(`${API_BASE}/resolve-audience`, {

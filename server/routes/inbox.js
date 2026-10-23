@@ -263,7 +263,10 @@ function getAuthorizedAttachment(filename, userId) {
 
   const filePath = path.join(uploadDir, safeFilename);
   if (!filePath.startsWith(uploadDir)) return null;
-  return fs.existsSync(filePath) ? filePath : null;
+  if (!fs.existsSync(filePath)) {
+    return { filePath: null, missingOnDisk: true };
+  }
+  return { filePath, missingOnDisk: false };
 }
 
 function createMessageRecord({ senderId, receiverId, content, replyToMessageId = null, forwardedFromMessageId = null, attachmentUrl = null, attachmentType = null }) {
@@ -512,12 +515,16 @@ router.get('/messages/:otherId', authenticateToken, (req, res) => {
 
 router.get('/attachments/:filename', authenticateToken, (req, res) => {
   try {
-    const filePath = getAuthorizedAttachment(req.params.filename, req.user.id);
-    if (!filePath) {
+    const authResult = getAuthorizedAttachment(req.params.filename, req.user.id);
+    if (!authResult) {
       return res.status(404).json({ error: 'Attachment not found.' });
     }
+    if (authResult.missingOnDisk) {
+      res.setHeader('X-Attachment-Missing', 'true');
+      return res.status(204).end();
+    }
 
-    return res.sendFile(filePath);
+    return res.sendFile(authResult.filePath);
   } catch (error) {
     console.error('Attachment fetch error:', error);
     return res.status(500).json({ error: 'Internal server error' });

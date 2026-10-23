@@ -465,7 +465,21 @@ const FeeTracker = () => {
               {data.students.map(student => (
                 <tr key={`${student.user_id}-${student.course_name}`} className={student.is_overdue ? 'ft-row-overdue' : ''}>
                   <td className="ft-cell-name">
-                    <img src={student.profile_picture || '/default-avatar.png'} alt="" className="ft-avatar" />
+                    <img
+                      src={
+                        !student.profile_picture
+                          ? `${import.meta.env.BASE_URL || '/'}avatars/male1.png`
+                          : student.profile_picture.startsWith('http') || student.profile_picture.startsWith('data:') || student.profile_picture.startsWith('/media/') || student.profile_picture.startsWith('/bfi-classroom/')
+                            ? student.profile_picture
+                            : `${import.meta.env.BASE_URL || '/'}${student.profile_picture.replace(/^\/+/, '')}`
+                      }
+                      onError={(e) => {
+                        e.currentTarget.onerror = null;
+                        e.currentTarget.src = `${import.meta.env.BASE_URL || '/'}avatars/male1.png`;
+                      }}
+                      alt=""
+                      className="ft-avatar"
+                    />
                     {student.full_name}
                   </td>
                   <td>{student.student_id || '-'}</td>

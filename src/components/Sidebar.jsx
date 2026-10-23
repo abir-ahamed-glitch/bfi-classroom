@@ -34,7 +34,8 @@ import {
   Flag,
   DollarSign,
   Wallet,
-  Sliders
+  Sliders,
+  Layers
 } from 'lucide-react';
 import './Sidebar.css';
 
@@ -133,10 +134,15 @@ export default function Sidebar({ isNotifOpen, setIsNotifOpen }) {
     const token = localStorage.getItem('token');
     if (!token) return;
     try {
-      const response = await fetch('/api/admin/broadcast?limit=1', {
+      const response = await fetch('/api/admin/broadcast/my-permission', {
         headers: { Authorization: `Bearer ${token}` }
       });
-      setHasBroadcastPermission(response.ok);
+      if (response.ok) {
+        const data = await response.json();
+        setHasBroadcastPermission(Boolean(data.hasPermission));
+      } else {
+        setHasBroadcastPermission(false);
+      }
     } catch (error) {
       console.error('Failed to check broadcast permission', error);
       setHasBroadcastPermission(false);
@@ -286,6 +292,9 @@ export default function Sidebar({ isNotifOpen, setIsNotifOpen }) {
       {isOpen && <div className="sidebar-backdrop" onClick={closeSidebar}></div>}
 
       <aside className={`sidebar glass-panel ${isOpen ? 'open' : ''}`}>
+        <button type="button" className="mobile-sidebar-close-btn" onClick={closeSidebar} aria-label="Close menu" title="Close menu">
+          <X size={20} />
+        </button>
         <button type="button" className="sidebar-brand brand-home-button" onClick={goToDashboard} title="Go to Dashboard">
           <div style={{
             background: 'linear-gradient(135deg, #0284c7 0%, #2563eb 100%)',
@@ -396,6 +405,9 @@ export default function Sidebar({ isNotifOpen, setIsNotifOpen }) {
                   </NavLink>
                   <NavLink to="/admin/course-materials" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
                     <BookOpen size={20} /> Course Materials
+                  </NavLink>
+                  <NavLink to="/admin/course-maker" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
+                    <Layers size={20} /> Course Maker
                   </NavLink>
                   <NavLink to="/admin/certificate-designer" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
                     <FileSignature size={20} /> Certificate Designer

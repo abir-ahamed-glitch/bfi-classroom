@@ -15,11 +15,16 @@ export default function PdfViewer({ url, name, containerStyle = {} }) {
   useEffect(() => {
     if (!url) return;
 
+    let isMounted = true;
+
     // Check if the URL is our custom base64 API endpoint
     if (url.includes('/base64')) {
-      let isMounted = true;
-      setLoading(true);
-      setError(null);
+      Promise.resolve().then(() => {
+        if (isMounted) {
+          setLoading(true);
+          setError(null);
+        }
+      });
       let objectUrl = null;
 
       fetch(url)
@@ -46,8 +51,10 @@ export default function PdfViewer({ url, name, containerStyle = {} }) {
           // Create Blob and local URL
           const blob = new Blob([bytes], { type: data.file_type || 'application/pdf' });
           objectUrl = URL.createObjectURL(blob);
-          setResolvedUrl(objectUrl);
-          setLoading(false);
+          if (isMounted) {
+            setResolvedUrl(objectUrl);
+            setLoading(false);
+          }
         })
         .catch(err => {
           console.error('[PdfViewer error]', err);
@@ -65,9 +72,16 @@ export default function PdfViewer({ url, name, containerStyle = {} }) {
       };
     } else {
       // Direct file URL
-      setResolvedUrl(url);
-      setLoading(false);
-      setError(null);
+      Promise.resolve().then(() => {
+        if (isMounted) {
+          setResolvedUrl(url);
+          setLoading(false);
+          setError(null);
+        }
+      });
+      return () => {
+        isMounted = false;
+      };
     }
   }, [url]);
 

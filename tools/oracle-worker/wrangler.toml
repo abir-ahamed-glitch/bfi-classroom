@@ -1,0 +1,11 @@
+name = "oracle-instance-claimer"
+main = "src/index.js"
+compatibility_date = "2024-10-01"
+account_id = "18f46e7d161d0b8ef1b25ec8ea97e27d"
+
+[triggers]
+crons = ["*/3 * * * *"]
+
+[[kv_namespaces]]
+binding = "ORACLE_STATE"
+id = "a539c647c74c49b6808f6e36e218a9ce"

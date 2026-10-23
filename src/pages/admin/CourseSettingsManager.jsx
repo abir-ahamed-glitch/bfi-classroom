@@ -41,6 +41,7 @@ function Toast({ message, type, onClose }) {
 }
 
 const DEFAULT_FORM = {
+  batch_id: null,
   course_name: 'Online Filmmaking Course',
   batch_number: '',
   total_classes: 22,
@@ -70,8 +71,8 @@ export default function CourseSettingsManager() {
     const fetchBatches = async () => {
       try {
         const res = await apiFetch('/batches');
-        setAvailableBatches(res.map(b => b.batch_number));
-      } catch (err) {}
+        setAvailableBatches(res);
+      } catch (err) { /* ignore batch fetch error */ }
     };
     fetchBatches();
   }, []);
@@ -81,15 +82,28 @@ export default function CourseSettingsManager() {
     const q = searchQuery.toLowerCase();
     const batchMatch = String(setting.batch_number).toLowerCase().includes(q);
     const courseMatch = String(setting.course_name).toLowerCase().includes(q);
-    return batchMatch || courseMatch;
+    const batchNameMatch = setting.batch_name ? String(setting.batch_name).toLowerCase().includes(q) : false;
+    return batchMatch || courseMatch || batchNameMatch;
   });
 
   const isBatchDefined = (batch) => {
+    if (typeof batch === 'object') {
+      return courseSettings.some(s => s.batch_id === batch.id);
+    }
     return courseSettings.some(s => s.course_name === form.course_name && String(s.batch_number) === String(batch));
   };
 
   const handleSelectBatch = (b) => {
-    setForm(prev => ({ ...prev, batch_number: b }));
+    if (typeof b === 'object') {
+      setForm(prev => ({
+        ...prev,
+        batch_id: b.id,
+        batch_number: b.batch_number,
+        course_name: b.course_name || prev.course_name
+      }));
+    } else {
+      setForm(prev => ({ ...prev, batch_id: null, batch_number: b }));
+    }
     setShowSuggestions(false);
   };
 
@@ -104,6 +118,7 @@ export default function CourseSettingsManager() {
 
   const handleEdit = (setting) => {
     setForm({
+      batch_id: setting.batch_id || null,
       course_name: setting.course_name,
       batch_number: setting.batch_number === 'DEFAULT' ? '' : setting.batch_number,
       total_classes: setting.total_classes,
@@ -125,12 +140,13 @@ export default function CourseSettingsManager() {
     }
     showConfirm({
       title: 'Delete Course Setting',
-      message: `Are you sure you want to delete the settings for ${setting.course_name} (Batch: ${setting.batch_number})?`,
+      message: `Are you sure you want to delete the settings for ${setting.course_name} (${setting.batch_name || `Batch: ${setting.batch_number}`})?`,
       confirmText: 'Delete',
       isAlert: true,
       onConfirm: async () => {
         try {
-          await apiFetch(`/course-settings/${encodeURIComponent(setting.course_name)}/${encodeURIComponent(setting.batch_number)}`, {
+          const queryParam = setting.batch_id ? `?batch_id=${setting.batch_id}` : '';
+          await apiFetch(`/course-settings/${encodeURIComponent(setting.course_name)}/${encodeURIComponent(setting.batch_number)}${queryParam}`, {
             method: 'DELETE'
           });
           showSuccess('Course setting deleted');
@@ -155,6 +171,7 @@ export default function CourseSettingsManager() {
         method: 'PUT',
         body: JSON.stringify({
           ...form,
+          batch_id: formMode === 'default' ? null : (form.batch_id || null),
           batch_number: formMode === 'default' ? 'DEFAULT' : form.batch_number.trim()
         })
       });
@@ -303,15 +320,19 @@ export default function CourseSettingsManager() {
                 </div>
                 {showSuggestions && availableBatches.length > 0 && (
                   <div className="bfm-suggestions-dropdown" style={{ display: 'block' }}>
-                    {availableBatches.map(b => {
+                    {availableBatches.filter(b => typeof b !== 'object' || !form.course_name || b.course_name === form.course_name).map(b => {
                       const defined = isBatchDefined(b);
+                      const key = typeof b === 'object' ? b.id : b;
+                      const label = typeof b === 'object' ? (b.batch_name || `Batch ${b.batch_number}`) : `Batch ${b}`;
+                      const sub = typeof b === 'object' ? b.course_name : '';
                       return (
                         <div 
-                          key={b} 
+                          key={key} 
                           className={`bfm-suggestion-item ${defined ? 'defined' : ''}`}
                           onMouseDown={() => handleSelectBatch(b)}
                         >
-                          {b}
+                          <span>{label}</span>
+                          {sub && <span style={{ fontSize: '0.75rem', opacity: 0.65, marginLeft: '6px' }}>({sub})</span>}
                           {defined && <span className="bfm-suggestion-tag">Defined</span>}
                         </div>
                       )
@@ -493,7 +514,9 @@ export default function CourseSettingsManager() {
                         {isDefault ? (
                           <span className="bfm-batch-num" style={{ color: '#818cf8', fontWeight: 600 }}>DEFAULT</span>
                         ) : (
-                          <span className="bfm-batch-num">Batch {setting.batch_number}</span>
+                          <span className="bfm-batch-num">
+                            {setting.batch_name ? `${setting.batch_name} (#${setting.batch_number})` : `Batch ${setting.batch_number}`}
+                          </span>
                         )}
                       </td>
                       <td>

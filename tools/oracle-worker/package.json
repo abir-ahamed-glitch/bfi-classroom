@@ -1,0 +1,12 @@
+{
+  "name": "oracle-instance-claimer",
+  "version": "1.0.0",
+  "description": "24/7 Automated Oracle Cloud Always Free Instance Claimer on Cloudflare Workers",
+  "main": "src/index.js",
+  "scripts": {
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^3.80.0"
+  }
+}

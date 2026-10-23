@@ -18,6 +18,7 @@ export default function Registry() {
   // States for student
   const [myCourses, setMyCourses] = useState([]);
   const [myBatchNumber, setMyBatchNumber] = useState(null);
+  const [myEnrollments, setMyEnrollments] = useState([]);
 
   // States for admin/teacher
   const [allCourses, setAllCourses] = useState([]);
@@ -29,7 +30,12 @@ export default function Registry() {
   });
   const [selectedBatch, setSelectedBatch] = useState(() => {
     const val = sessionStorage.getItem('registry_selected_batch');
-    return val ? JSON.parse(val) : null;
+    if (!val) return null;
+    try { return JSON.parse(val); } catch { return val; }
+  });
+  const [selectedBatchId, setSelectedBatchId] = useState(() => {
+    const val = sessionStorage.getItem('registry_selected_batch_id');
+    return val ? parseInt(val, 10) : null;
   });
   const [batchmates, setBatchmates] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
@@ -49,11 +55,19 @@ export default function Registry() {
 
   useEffect(() => {
     if (selectedBatch) {
-      sessionStorage.setItem('registry_selected_batch', JSON.stringify(selectedBatch));
+      sessionStorage.setItem('registry_selected_batch', typeof selectedBatch === 'object' ? JSON.stringify(selectedBatch) : selectedBatch);
     } else {
       sessionStorage.removeItem('registry_selected_batch');
     }
   }, [selectedBatch]);
+
+  useEffect(() => {
+    if (selectedBatchId) {
+      sessionStorage.setItem('registry_selected_batch_id', String(selectedBatchId));
+    } else {
+      sessionStorage.removeItem('registry_selected_batch_id');
+    }
+  }, [selectedBatchId]);
 
   const isStudent = currentUser?.role === 'student';
 
@@ -91,25 +105,31 @@ export default function Registry() {
       if (!isStudent) {
         setSelectedCourse(null);
         setSelectedBatch(null);
+        setSelectedBatchId(null);
         sessionStorage.removeItem('registry_selected_course');
         sessionStorage.removeItem('registry_selected_batch');
+        sessionStorage.removeItem('registry_selected_batch_id');
       }
       setSearchQuery('');
       setMasterSearchQuery('');
       
       if (isStudent) {
-        if (myCourses && myCourses.length === 1 && myBatchNumber) {
-          setSelectedCourse(myCourses[0]);
-          setSelectedBatch(myBatchNumber);
+        if (myEnrollments && myEnrollments.length === 1) {
+          const only = myEnrollments[0];
+          setSelectedCourse(only.course_name);
+          setSelectedBatch(only.batch_name || only.batch_number);
+          setSelectedBatchId(only.batch_id || null);
         } else {
           setSelectedCourse(null);
           setSelectedBatch(null);
+          setSelectedBatchId(null);
           sessionStorage.removeItem('registry_selected_course');
           sessionStorage.removeItem('registry_selected_batch');
+          sessionStorage.removeItem('registry_selected_batch_id');
         }
       }
     }
-  }, [location.state?.reset, isStudent, myCourses, myBatchNumber]);
+  }, [location.state?.reset, isStudent, myCourses, myBatchNumber, myEnrollments]);
 
 
   useEffect(() => {
@@ -125,11 +145,15 @@ export default function Registry() {
 
           setMyCourses(data.courses || []);
           setMyBatchNumber(data.batch_number);
+          const enrollments = data.enrollments || [];
+          setMyEnrollments(enrollments);
 
-          // Auto-select if only 1 course
-          if (data.courses && data.courses.length === 1 && data.batch_number) {
-            setSelectedCourse(data.courses[0]);
-            setSelectedBatch(data.batch_number);
+          // Auto-select if only 1 enrollment and none selected yet
+          if (enrollments.length === 1 && !selectedCourse && !selectedBatch && !selectedBatchId) {
+            const only = enrollments[0];
+            setSelectedCourse(only.course_name);
+            setSelectedBatch(only.batch_name || only.batch_number);
+            setSelectedBatchId(only.batch_id || null);
           }
         } else {
           const res = await fetch('/api/registry/courses', {
@@ -166,7 +190,7 @@ export default function Registry() {
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error);
-        setCourseBatches(data.batches || []);
+        setCourseBatches(data.batch_list || data.batches || []);
       } catch (err) {
         setError(err.message);
       } finally {
@@ -178,7 +202,7 @@ export default function Registry() {
 
   // Fetch batchmates when course and batch are selected
   useEffect(() => {
-    if (!selectedCourse || !selectedBatch) {
+    if (!selectedCourse || (!selectedBatch && !selectedBatchId)) {
       setBatchmates([]);
       return;
     }
@@ -186,7 +210,15 @@ export default function Registry() {
     const fetchStudents = async () => {
       setLoading(true);
       try {
-        const res = await fetch(`/api/registry/batchmates?course_name=${encodeURIComponent(selectedCourse)}&batch_number=${encodeURIComponent(selectedBatch)}`, {
+        let url = `/api/registry/batchmates?course_name=${encodeURIComponent(selectedCourse)}`;
+        if (selectedBatch) {
+          const bNum = typeof selectedBatch === 'object' ? (selectedBatch.batch_number || '') : selectedBatch;
+          url += `&batch_number=${encodeURIComponent(bNum)}`;
+        }
+        if (selectedBatchId) {
+          url += `&batch_id=${selectedBatchId}`;
+        }
+        const res = await fetch(url, {
           headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
         });
         const data = await res.json();
@@ -199,7 +231,7 @@ export default function Registry() {
       }
     };
     fetchStudents();
-  }, [selectedCourse, selectedBatch]);
+  }, [selectedCourse, selectedBatch, selectedBatchId]);
 
   // Filter batchmates
   const filteredBatchmates = batchmates.filter(s => {
@@ -215,28 +247,33 @@ export default function Registry() {
         if (!isStudent) {
           setSelectedCourse(null);
           setSelectedBatch(null);
-        } else if (myCourses.length > 1) {
+          setSelectedBatchId(null);
+        } else if (myEnrollments.length > 1 || myCourses.length > 1) {
           setSelectedCourse(null);
           setSelectedBatch(null);
+          setSelectedBatchId(null);
         }
       } else if (window.location.hash === '#course') {
         setSelectedBatch(null);
+        setSelectedBatchId(null);
       }
     };
     window.addEventListener('hashchange', handleHashChange);
     return () => window.removeEventListener('hashchange', handleHashChange);
-  }, [isStudent, myCourses]);
+  }, [isStudent, myCourses, myEnrollments]);
 
   const goBackToCourses = () => {
     window.location.hash = '';
     setSelectedCourse(null);
     setSelectedBatch(null);
+    setSelectedBatchId(null);
     setSearchQuery('');
   };
 
   const goBackToBatches = () => {
     window.location.hash = 'course';
     setSelectedBatch(null);
+    setSelectedBatchId(null);
     setSearchQuery('');
   };
 
@@ -274,6 +311,7 @@ export default function Registry() {
                 if (e.target.value.trim() !== '') {
                   setSelectedCourse(null);
                   setSelectedBatch(null);
+                  setSelectedBatchId(null);
                 }
               }}
             />
@@ -289,21 +327,25 @@ export default function Registry() {
         ) : (
           <>
             {/* Breadcrumb Navigation */}
-            {!isStudent && (selectedCourse || selectedBatch) && (
+            {(selectedCourse || selectedBatch || selectedBatchId) && (
               <div className="registry-breadcrumb glass-panel">
                 <span className="breadcrumb-item" onClick={goBackToCourses}>Courses</span>
                 {selectedCourse && (
                   <>
                     <ChevronRight size={16} />
-                    <span className={`breadcrumb-item ${!selectedBatch ? 'active' : ''}`} onClick={goBackToBatches}>
+                    <span className={`breadcrumb-item ${(!selectedBatch && !selectedBatchId) ? 'active' : ''}`} onClick={goBackToBatches}>
                       {selectedCourse}
                     </span>
                   </>
                 )}
-                {selectedBatch && (
+                {(selectedBatch || selectedBatchId) && (
                   <>
                     <ChevronRight size={16} />
-                    <span className="breadcrumb-item active">{getOrdinalSuffix(selectedBatch)} Batch</span>
+                    <span className="breadcrumb-item active">
+                      {typeof selectedBatch === 'string'
+                        ? selectedBatch
+                        : (selectedBatch?.batch_name || (selectedBatch?.batch_number ? `${getOrdinalSuffix(selectedBatch.batch_number)} Batch` : 'Batch'))}
+                    </span>
                   </>
                 )}
               </div>
@@ -312,27 +354,64 @@ export default function Registry() {
             {/* View 1: List of Courses */}
             {!selectedCourse && !masterSearchQuery.trim() && (
               <div className="registry-grid courses-grid">
-                {(isStudent ? myCourses : allCourses).map((course, idx) => (
-                  <div key={idx} className="registry-card glass-panel dashboard-highlight-outline" onClick={() => {
-                    setSelectedCourse(course);
-                    if (isStudent && myBatchNumber) {
-                      setSelectedBatch(myBatchNumber);
-                      window.location.hash = 'students';
-                    } else {
+                {isStudent ? (
+                  myEnrollments.map((enr, idx) => {
+                    const batchLabel = enr.batch_name || (enr.batch_number ? `Batch ${enr.batch_number}` : 'Batch');
+                    return (
+                      <div
+                        key={enr.enrollment_id || enr.batch_id || idx}
+                        className="registry-card glass-panel dashboard-highlight-outline"
+                        data-testid={`enrollment-card-${enr.batch_id || idx}`}
+                        data-batch-id={enr.batch_id}
+                        data-batch-name={batchLabel}
+                        onClick={() => {
+                          setSelectedCourse(enr.course_name);
+                          setSelectedBatch(batchLabel);
+                          setSelectedBatchId(enr.batch_id || null);
+                          window.location.hash = 'students';
+                        }}
+                      >
+                        <div className="card-icon"><BookOpen size={24} /></div>
+                        <div className="card-details">
+                          <h3>{enr.course_name}</h3>
+                          <p style={{ marginTop: '0.25rem', color: 'var(--text-muted)' }}>
+                            <span style={{ 
+                              display: 'inline-block', 
+                              padding: '2px 8px', 
+                              borderRadius: '4px', 
+                              fontSize: '0.8rem', 
+                              fontWeight: 600,
+                              background: 'rgba(235, 178, 47, 0.15)', 
+                              color: 'var(--primary-color, #ebb22f)' 
+                            }}>
+                              {batchLabel}
+                            </span>
+                          </p>
+                        </div>
+                        <div className="card-chevron-wrapper">
+                          <ChevronRight size={20} className="card-chevron" />
+                        </div>
+                      </div>
+                    );
+                  })
+                ) : (
+                  allCourses.map((course, idx) => (
+                    <div key={idx} className="registry-card glass-panel dashboard-highlight-outline" onClick={() => {
+                      setSelectedCourse(course);
                       window.location.hash = 'course';
-                    }
-                  }}>
-                    <div className="card-icon"><BookOpen size={24} /></div>
-                    <div className="card-details">
-                      <h3>{course}</h3>
-                      <p>View enrolled students</p>
+                    }}>
+                      <div className="card-icon"><BookOpen size={24} /></div>
+                      <div className="card-details">
+                        <h3>{course}</h3>
+                        <p>View enrolled students</p>
+                      </div>
+                      <div className="card-chevron-wrapper">
+                        <ChevronRight size={20} className="card-chevron" />
+                      </div>
                     </div>
-                    <div className="card-chevron-wrapper">
-                      <ChevronRight size={20} className="card-chevron" />
-                    </div>
-                  </div>
-                ))}
-                {(isStudent ? myCourses : allCourses).length === 0 && (
+                  ))
+                )}
+                {((isStudent ? myEnrollments : allCourses).length === 0) && (
                   <div className="empty-state glass-panel">
                     <p>No courses found.</p>
                   </div>
@@ -341,23 +420,36 @@ export default function Registry() {
             )}
 
             {/* View 2: List of Batches (Admin/Teacher only) */}
-            {selectedCourse && !selectedBatch && !isStudent && !masterSearchQuery.trim() && (
+            {selectedCourse && !selectedBatch && !selectedBatchId && !isStudent && !masterSearchQuery.trim() && (
               <div className="registry-grid batches-grid">
-                {courseBatches.map((batch, idx) => (
-                  <div key={idx} className="registry-card glass-panel dashboard-highlight-outline" onClick={() => {
-                    setSelectedBatch(batch);
-                    window.location.hash = 'batch';
-                  }}>
-                    <div className="card-icon"><Layers size={24} /></div>
-                    <div className="card-details">
-                      <h3>{getOrdinalSuffix(batch)} Batch</h3>
-                      <p>View batch details</p>
+                {courseBatches.map((batchItem, idx) => {
+                  const bId = typeof batchItem === 'object' ? batchItem.id : null;
+                  const bNumber = typeof batchItem === 'object' ? batchItem.batch_number : batchItem;
+                  const bName = typeof batchItem === 'object' ? (batchItem.batch_name || `${bNumber} Batch`) : `${getOrdinalSuffix(batchItem)} Batch`;
+
+                  return (
+                    <div
+                      key={bId || idx}
+                      className="registry-card glass-panel dashboard-highlight-outline"
+                      data-testid={`batch-card-${bId || idx}`}
+                      data-batch-id={bId}
+                      onClick={() => {
+                        setSelectedBatch(bName);
+                        setSelectedBatchId(bId);
+                        window.location.hash = 'batch';
+                      }}
+                    >
+                      <div className="card-icon"><Layers size={24} /></div>
+                      <div className="card-details">
+                        <h3>{bName}</h3>
+                        <p>{bId ? `Defined Batch #${bId}` : 'Legacy Batch'}</p>
+                      </div>
+                      <div className="card-chevron-wrapper">
+                        <ChevronRight size={20} className="card-chevron" />
+                      </div>
                     </div>
-                    <div className="card-chevron-wrapper">
-                      <ChevronRight size={20} className="card-chevron" />
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
                 {courseBatches.length === 0 && !loading && (
                   <div className="empty-state glass-panel">
                     <p>No batches found for this course.</p>
@@ -367,7 +459,7 @@ export default function Registry() {
             )}
 
             {/* View 3: List of Students / Master Search Results */}
-            {((selectedCourse && selectedBatch) || masterSearchQuery.trim()) && (
+            {((selectedCourse && (selectedBatch || selectedBatchId)) || masterSearchQuery.trim()) && (
               <div className="students-view">
                 <div className="students-toolbar">
                   {masterSearchQuery.trim() ? (

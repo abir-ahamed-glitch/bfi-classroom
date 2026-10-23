@@ -10,6 +10,9 @@ if %ERRORLEVEL% NEQ 0 (
     set "PM2_CMD=%APPDATA%\npm\pm2"
 )
 
+:: Wait 5 seconds to prevent startup contention with other services
+timeout /t 5 /nobreak >nul
+
 :: Start or update processes from ecosystem config
 call %PM2_CMD% start ecosystem.config.cjs
 

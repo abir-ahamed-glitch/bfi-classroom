@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Search, Loader2, Users, Download, UserPlus, CheckCircle2, Copy, Send, X, MessageSquare, Trash2 } from 'lucide-react';
+import * as XLSX from 'xlsx';
 import BulkSmsModal from './BulkSmsModal';
 import { useModal } from '../BFIModal';
 

@@ -16,6 +16,7 @@ import {
   CheckSquare, Square, Edit, Lock, Clapperboard, MessageSquare, XCircle
 } from 'lucide-react';
 import { getOrdinalSuffix } from '../../utils/formatUtils';
+import { resolveClientDiscount, resolveFeeAccounting, isCourseFeeUnpaid } from '../../utils/feeUtils';
 import { useModal } from '../../components/BFIModal';
 import './Analytics.css';
 
@@ -56,132 +57,16 @@ function formatCurrency(n) {
   return '৳' + n.toLocaleString('en-BD');
 }
 
-// Helper function to dynamically sync installments and payment status based on fees
+// Helper function to dynamically sync payment status based on authoritative fee accounting without mutating installments
 const syncInstallmentsAndStatus = (target) => {
   if (!target) return;
-  const fullFeeNum = parseFloat((target.full_fee || '').replace(/[^\d.]/g, '')) || 0;
-  const amountPaidNum = parseFloat((target.amount_paid || '').replace(/[^\d.]/g, '')) || 0;
-  const discountNum = parseFloat((target.discount || '').replace(/[^\d.]/g, '')) || 0;
-  const remainingDue = Math.max(0, fullFeeNum - discountNum - amountPaidNum);
-
-  // 1. Auto-detect payment status
-  if (fullFeeNum > 0) {
-    if (amountPaidNum + discountNum >= fullFeeNum) {
-      target.status = 'Paid Full';
-    } else {
-      if (target.status === 'Paid Full') {
-        if (amountPaidNum > 0 || discountNum > 0) {
-          target.status = 'Partial';
-        } else {
-          target.status = 'Due';
-        }
-      } else if (!target.status) {
-        if (amountPaidNum > 0 || discountNum > 0) {
-          target.status = 'Partial';
-        } else {
-          target.status = 'Due';
-        }
-      }
-    }
-  }
-
-  // 2. Auto-adjust installments
-  if (remainingDue <= 0) {
-    target.installments = [];
-  } else {
-    const currentInst = target.installments || [];
-    if (currentInst.length === 0) {
-      target.installments = [{ amount: String(remainingDue), dueDate: '', status: 'Pending' }];
-    } else {
-      const updatedInst = [];
-      let runningSum = 0;
-      for (let i = 0; i < currentInst.length; i++) {
-        const inst = currentInst[i];
-        const amountVal = parseFloat((inst.amount || '').replace(/[^\d.]/g, '')) || 0;
-        
-        if (runningSum >= remainingDue) {
-          break;
-        }
-        
-        if (runningSum + amountVal >= remainingDue) {
-          const leftover = remainingDue - runningSum;
-          updatedInst.push({
-            ...inst,
-            amount: String(leftover)
-          });
-          runningSum = remainingDue;
-          break;
-        } else {
-          updatedInst.push({
-            ...inst,
-            amount: String(amountVal)
-          });
-          runningSum += amountVal;
-        }
-      }
-      
-      if (runningSum < remainingDue) {
-        const leftover = remainingDue - runningSum;
-        updatedInst.push({
-          amount: String(leftover),
-          dueDate: '',
-          status: 'Pending'
-        });
-      }
-      target.installments = updatedInst;
-    }
+  const acct = resolveFeeAccounting(target);
+  if (target.status !== 'Waived') {
+    target.status = acct.status;
   }
 };
 
-const hasPendingDueOrPartialPayment = (course) => {
-  if (!course || !course.fee_details) return false;
-  
-  let feeDetails = {};
-  try {
-    feeDetails = typeof course.fee_details === 'string' 
-      ? JSON.parse(course.fee_details) 
-      : course.fee_details;
-  } catch (e) {
-    console.error('Error parsing course fee details:', e);
-    return false;
-  }
-
-  if (!feeDetails) return false;
-  
-  const isUnpaid = (phase) => {
-    if (!phase) return false;
-    
-    // If installments exist, they are the source of truth
-    if (phase.installments && phase.installments.length > 0) {
-      return phase.installments.some(inst => inst.status === 'Pending' || inst.status === 'Due');
-    }
-
-    // Status checks (when no installments)
-    const status = phase.status;
-    if (status === 'Paid Full' || status === 'Waived') {
-      return false;
-    }
-    if (status === 'Partial' || status === 'Pending' || status === 'Due') {
-      return true;
-    }
-    
-    // Fallback numerical check
-    const fullFee = parseFloat((phase.full_fee || '').toString().replace(/[^\d.]/g, '')) || 0;
-    if (fullFee === 0) return false;
-    
-    const amountPaid = parseFloat((phase.amount_paid || '').toString().replace(/[^\d.]/g, '')) || 0;
-    const discount = parseFloat((phase.discount || '').toString().replace(/[^\d.]/g, '')) || 0;
-    const remainingDue = Math.max(0, fullFee - discount - amountPaid);
-    
-    return remainingDue > 0;
-  };
-
-  if (course.course_type === 'filmmaking') {
-    return isUnpaid(feeDetails.phase1) || isUnpaid(feeDetails.phase2);
-  } else {
-    return isUnpaid(feeDetails);
-  }
-};
+const hasPendingDueOrPartialPayment = (course) => isCourseFeeUnpaid(course);
 
 // Helper subcomponent for rendering fee fields and installment details
 function FeeRow({ 
@@ -199,24 +84,16 @@ function FeeRow({
   const courseFees = feeData?.[courseName] || {};
   const data = phaseKey ? (courseFees[phaseKey] || {}) : courseFees;
 
-  const fullFeeNum = parseFloat((data.full_fee || '').replace(/[^\d.]/g, '')) || 0;
-  const amountPaidNum = parseFloat((data.amount_paid || '').replace(/[^\d.]/g, '')) || 0;
-  const discountNum = parseFloat((data.discount || '').replace(/[^\d.]/g, '')) || 0;
-  const rawRemainingDue = Math.max(0, fullFeeNum - discountNum - amountPaidNum);
-
+  const acct = resolveFeeAccounting(data);
+  const fullFeeNum = acct.grossFee;
+  const amountPaidNum = acct.amountPaid;
+  const discountNum = acct.discount;
+  const netPayable = acct.netPayable;
+  const cashCollected = acct.cashCollected;
+  const remainingDue = acct.remainingDue;
+  const overpayment = acct.overpayment;
+  const isFullyCompleted = acct.isPaid;
   const installments = data.installments || [];
-  const remainingDue = installments.length > 0
-    ? installments.filter(inst => (inst.status || '').toLowerCase() !== 'paid').reduce((sum, inst) => sum + (parseFloat((inst.amount || '').toString().replace(/[^\d.]/g, '')) || 0), 0)
-    : rawRemainingDue;
-  
-  const hasError = amountPaidNum > fullFeeNum;
-  const hasSumError = (amountPaidNum + discountNum) > fullFeeNum;
-
-  const isFullySatisfied = fullFeeNum > 0 && amountPaidNum + discountNum >= fullFeeNum;
-  const allInstallmentsPaid = rawRemainingDue > 0 && 
-    installments.length > 0 && 
-    installments.every(inst => inst.status === 'Paid');
-  const isFullyCompleted = isFullySatisfied || allInstallmentsPaid || remainingDue === 0;
 
   let completionMessage = '';
   if (label) {
@@ -250,14 +127,14 @@ function FeeRow({
           <span>⚠️</span> Locked until "Phase 1: Passed Exam" is checked
         </div>
       )}
-      {(label || (fullFeeNum > 0 && amountPaidNum + discountNum >= fullFeeNum)) && (
+      {(label || (fullFeeNum > 0 && isFullyCompleted)) && (
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.6rem' }}>
           {label ? (
             <p style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-muted)', margin: 0, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
               {disabled && <span>🔒</span>} {label}
             </p>
           ) : <div />}
-          {fullFeeNum > 0 && amountPaidNum + discountNum >= fullFeeNum && (
+          {fullFeeNum > 0 && isFullyCompleted && (
             <span style={{ 
               fontSize: '0.72rem', 
               fontWeight: '600', 
@@ -307,7 +184,7 @@ function FeeRow({
             style={{ 
               paddingLeft: '0.65rem', 
               fontSize: '0.83rem',
-              borderColor: (hasError || hasSumError) ? '#ef4444' : 'rgba(255,255,255,0.1)',
+              borderColor: overpayment > 0 ? '#34d399' : 'rgba(255,255,255,0.1)',
               opacity: disabled ? 0.5 : 1,
               cursor: disabled ? 'not-allowed' : 'text'
             }}
@@ -380,16 +257,14 @@ function FeeRow({
         </div>
       </div>
 
-      {(hasError || hasSumError) && (
-        <p style={{ color: '#ef4444', fontSize: '0.75rem', margin: '0.25rem 0 0.5rem 0' }}>
-          {hasError 
-            ? '⚠️ Amount paid cannot exceed the course fee.' 
-            : '⚠️ Amount paid + discount cannot exceed the course fee.'}
+      {overpayment > 0 && (
+        <p style={{ color: '#34d399', fontSize: '0.75rem', margin: '0.25rem 0 0.5rem 0' }}>
+          ✨ Overpayment: ৳{overpayment.toLocaleString()} recorded as surplus credit.
         </p>
       )}
 
       {/* Installment Section: only shows if rawRemainingDue > 0 or there are existing installments */}
-      {(rawRemainingDue > 0 || installments.length > 0) && (
+      {(remainingDue > 0 || installments.length > 0) && (
         <div style={{ 
           marginTop: '0.75rem', 
           padding: '0.75rem', 
@@ -943,22 +818,17 @@ export default function Analytics() {
       const phase1 = feeDetails?.phase1 || {};
       const fullFeeNum = parseFloat((phase1.full_fee || '').replace(/[^\d.]/g, '')) || 0;
       const amountPaidNum = parseFloat((phase1.amount_paid || '').replace(/[^\d.]/g, '')) || 0;
-      const discountNum = parseFloat((phase1.discount || '').replace(/[^\d.]/g, '')) || 0;
+      const discountNum = resolveClientDiscount(phase1.discount, fullFeeNum, phase1.discount_amount);
       const rawRemainingDue = Math.max(0, fullFeeNum - discountNum - amountPaidNum);
       
       const phase1Installments = phase1.installments || [];
-      const remainingDue = phase1Installments.length > 0
-        ? phase1Installments.filter(inst => (inst.status || '').toLowerCase() !== 'paid').reduce((sum, inst) => sum + (parseFloat((inst.amount || '').toString().replace(/[^\d.]/g, '')) || 0), 0)
-        : rawRemainingDue;
-      
-      const phase1PaidAny = amountPaidNum > 0 || phase1Installments.some(inst => inst.status === 'Paid' && parseFloat((inst.amount || '').replace(/[^\d.]/g, '')) > 0);
-      const phase1FullyPaid = (fullFeeNum > 0 && amountPaidNum + discountNum >= fullFeeNum) ||
-        (fullFeeNum > 0 && rawRemainingDue > 0 && phase1Installments.length > 0 && phase1Installments.every(inst => inst.status === 'Paid')) ||
-        (fullFeeNum > 0 && remainingDue === 0);
+      const p1Acct = resolveFeeAccounting(phase1);
+      const phase1PaidAny = p1Acct.cashCollected > 0 || p1Acct.isPaid;
+      const phase1FullyPaid = p1Acct.isPaid;
 
       const phase2 = feeDetails?.phase2 || {};
-      const phase2PaidAny = (parseFloat((phase2.amount_paid || '').replace(/[^\d.]/g, '')) || 0) > 0 ||
-        (phase2.installments || []).some(inst => inst.status === 'Paid' && parseFloat((inst.amount || '').replace(/[^\d.]/g, '')) > 0);
+      const p2Acct = resolveFeeAccounting(phase2);
+      const phase2PaidAny = p2Acct.cashCollected > 0 || p2Acct.isPaid;
 
       if (stepField === 'step2_completed') {
         openAcademicModal(student, enrollmentId);

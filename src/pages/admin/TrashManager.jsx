@@ -20,8 +20,32 @@ const TABS = [
 
 const getImageUrl = (url) => {
   if (!url) return null;
-  if (url.startsWith('http') || url.startsWith('data:')) return url;
-  return url.startsWith('/') ? url : `/${url}`;
+  let resolved = url;
+  if (typeof resolved === 'string') {
+    const trimmed = resolved.trim();
+    if (trimmed.startsWith('[')) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          resolved = typeof parsed[0] === 'string' ? parsed[0] : (parsed[0]?.url || parsed[0]?.file_path || '');
+        } else {
+          return null;
+        }
+      } catch {
+        return null;
+      }
+    } else if (trimmed.startsWith('{')) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        resolved = parsed?.url || parsed?.file_path || '';
+      } catch {
+        return null;
+      }
+    }
+  }
+  if (!resolved || typeof resolved !== 'string') return null;
+  if (resolved.startsWith('http') || resolved.startsWith('data:')) return resolved;
+  return resolved.startsWith('/') ? resolved : `/${resolved}`;
 };
 
 export default function TrashManager() {
@@ -88,7 +112,7 @@ export default function TrashManager() {
       });
       if (!res.ok) {
         let errText = '';
-        try { errText = await res.text(); } catch(e) {}
+        try { errText = await res.text(); } catch(e) { /* ignore error reading response body */ }
         throw new Error(`Failed to fetch (${res.status}): ${errText}`);
       }
       const data = await res.json();

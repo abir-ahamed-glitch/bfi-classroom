@@ -9,7 +9,7 @@ const MAX_SMS_PARTS  = 5;
 function charInfo(text) {
   const len = text.length;
   // Detect Unicode (e.g. Bengali characters or Emojis)
-  const isUnicode = /[^\x00-\x7F]/.test(text);
+  const isUnicode = [...text].some(char => char.charCodeAt(0) > 127);
   
   const singleLimit = isUnicode ? 70 : 160;
   const multiLimit  = isUnicode ? 67 : 153;

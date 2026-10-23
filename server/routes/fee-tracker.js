@@ -67,18 +67,22 @@ function getOverdueInfo(feeDetails, courseType) {
 function buildStudentDataset(filters = {}) {
   const enrollments = db.prepare(`
     SELECT 
+      sce.id AS enrollment_id,
       sce.user_id,
       sce.course_name,
       sce.course_type,
+      sce.course_definition_id,
       sce.fee_details,
+      sce.batch_id,
       u.first_name,
       u.last_name,
       u.profile_picture,
       sp.student_id,
-      sp.batch_number
+      COALESCE(b.batch_number, sp.batch_number) AS batch_number
     FROM student_course_enrollments sce
     JOIN users u ON u.id = sce.user_id
     JOIN student_profiles sp ON sp.user_id = u.id
+    LEFT JOIN batches b ON b.id = sce.batch_id
   `).all();
 
   let totalCollected = 0;
@@ -92,14 +96,22 @@ function buildStudentDataset(filters = {}) {
 
   for (const row of enrollments) {
     const feeDetails = parseFeeDetails(row.fee_details);
-    const batchFee = getBatchFee(row.course_name, row.batch_number);
-    const rawStatus = getFeeStatus(feeDetails, row.course_type, batchFee);
-    const amounts = extractFeeAmounts(feeDetails, row.course_type, batchFee);
+    const batchFee = getBatchFee(row.course_name, row.batch_number, db, row.batch_id);
+    const feeOpts = {
+      courseDefId: row.course_definition_id,
+      courseName: row.course_name,
+      batchNumber: row.batch_number,
+      batchId: row.batch_id
+    };
+    const rawStatus = getFeeStatus(feeDetails, row.course_type, batchFee, feeOpts);
+    const amounts = extractFeeAmounts(feeDetails, row.course_type, batchFee, feeOpts);
     const overdueInfo = getOverdueInfo(feeDetails, row.course_type);
 
     const total_fee = Math.round(amounts.total);
+    const discount = Math.round(amounts.discount || 0);
+    const net_payable = Math.round(amounts.netPayable ?? (total_fee - discount));
     const collected = Math.round(amounts.collected);
-    const outstanding = Math.max(0, total_fee - collected);
+    const outstanding = Math.round(amounts.outstanding ?? Math.max(0, net_payable - collected));
 
     // Get explicit status if defined in DB
     let explicitStatus = null;
@@ -109,19 +121,16 @@ function buildStudentDataset(filters = {}) {
       explicitStatus = feeDetails.status;
     }
 
-    // Map internal status names to display names
+    // Map internal status names to display names strictly based on financial evidence
+    // A status label alone ("Paid Full") can NEVER create cash or clear an unpaid balance!
     let status;
     const exp = (explicitStatus || '').toLowerCase();
     
-    if (exp === 'waived' || exp === 'waived / free') {
+    if (exp === 'waived' || exp === 'waived / free' || rawStatus === 'waived') {
       status = 'Waived / Free';
-    } else if (total_fee > 0 && outstanding === 0) {
-      status = 'Paid Full';
-    } else if (exp === 'paid full' || rawStatus === 'paid') {
-      status = 'Paid Full';
-    } else if (total_fee === 0) {
-      status = 'Waived / Free';
-    } else if (exp === 'partial' || exp === 'partial payment' || rawStatus === 'partial') {
+    } else if (rawStatus === 'paid' && outstanding === 0) {
+      status = (discount >= total_fee && collected === 0) ? 'Waived / Free' : 'Paid Full';
+    } else if (collected > 0) {
       status = 'Partial Payment';
     } else if (exp === 'pending') {
       status = 'Pending';

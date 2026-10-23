@@ -909,8 +909,8 @@ html {
   }
   
   /* Target any component that flex-wraps to ensure its children don't overflow
-     BUT exclude inbox elements */
-  div[style*="display: flex"]:not(.inbox-page) > * {
+     BUT exclude inbox elements and fixed mobile sidebar drawer */
+  div[style*="display: flex"]:not(.inbox-page) > *:not(.sidebar) {
     max-width: 100%;
   }
   .inbox-page div[style*="display: flex"] > *,
@@ -934,8 +934,8 @@ html {
   }
   
   /* Reduce glass-panel padding for mobile screens
-     BUT exclude inbox panels that manage their own padding */
-  .glass-panel:not(.inbox-sidebar):not(.inbox-main) {
+     BUT exclude inbox panels and sidebar that manage their own padding */
+  .glass-panel:not(.inbox-sidebar):not(.inbox-main):not(.sidebar) {
     padding: 1.25rem !important;
   }
 

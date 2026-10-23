@@ -21,20 +21,64 @@ export function ModalProvider({ children }) {
   // modal shape:
   //   { type: 'alert'|'confirm', title, message, icon, confirmLabel, cancelLabel, resolve }
 
-  const showAlert = useCallback((message, { title = 'Notice', icon = null } = {}) => {
+  const showAlert = useCallback((arg1, arg2 = {}) => {
+    let title = 'Notice';
+    let message = '';
+    let icon = null;
+    if (arg1 && typeof arg1 === 'object') {
+      title = arg1.title || 'Notice';
+      message = arg1.message || '';
+      icon = arg1.icon || null;
+    } else if (typeof arg2 === 'string') {
+      title = String(arg1 || 'Notice');
+      message = arg2;
+    } else {
+      message = String(arg1 ?? '');
+      title = arg2?.title || 'Notice';
+      icon = arg2?.icon || null;
+    }
     return new Promise(resolve => {
       setModal({ type: 'alert', title, message, icon, resolve });
     });
   }, []);
 
-  const showConfirm = useCallback((message, { title = 'Are you sure?', icon = null, confirmLabel = 'Confirm', cancelLabel = 'Cancel' } = {}) => {
+  const showConfirm = useCallback((arg1, arg2 = {}) => {
+    let title = 'Are you sure?';
+    let message = '';
+    let icon = null;
+    let confirmLabel = 'Confirm';
+    let cancelLabel = 'Cancel';
+    let onConfirm = null;
+
+    if (arg1 && typeof arg1 === 'object') {
+      title = arg1.title || 'Are you sure?';
+      message = arg1.message || '';
+      icon = arg1.icon || null;
+      confirmLabel = arg1.confirmLabel || arg1.confirmText || 'Confirm';
+      cancelLabel = arg1.cancelLabel || arg1.cancelText || 'Cancel';
+      onConfirm = typeof arg1.onConfirm === 'function' ? arg1.onConfirm : null;
+    } else if (typeof arg2 === 'string') {
+      title = String(arg1 || 'Are you sure?');
+      message = arg2;
+    } else {
+      message = String(arg1 ?? '');
+      title = arg2?.title || 'Are you sure?';
+      icon = arg2?.icon || null;
+      confirmLabel = arg2?.confirmLabel || arg2?.confirmText || 'Confirm';
+      cancelLabel = arg2?.cancelLabel || arg2?.cancelText || 'Cancel';
+      onConfirm = typeof arg2?.onConfirm === 'function' ? arg2.onConfirm : null;
+    }
+
     return new Promise(resolve => {
-      setModal({ type: 'confirm', title, message, icon, confirmLabel, cancelLabel, resolve });
+      setModal({ type: 'confirm', title, message, icon, confirmLabel, cancelLabel, onConfirm, resolve });
     });
   }, []);
 
   const close = useCallback((value) => {
     setModal(prev => {
+      if (value && typeof prev?.onConfirm === 'function') {
+        Promise.resolve(prev.onConfirm()).catch(err => console.error('Modal onConfirm error:', err));
+      }
       prev?.resolve(value);
       return null;
     });

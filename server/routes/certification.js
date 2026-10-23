@@ -1,6 +1,8 @@
 import express from 'express';
 import db from '../db/database.js';
 import { authenticateToken, requireRole } from '../middleware/auth.js';
+import courseProgressService from '../services/courseProgressService.js';
+import { resolvePhaseFee } from '../utils/feeResolver.js';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
@@ -108,64 +110,57 @@ router.post('/template', authenticateToken, requireRole('admin'), (req, res) => 
 });
 
 // Helper function to check if a student has any pending/due or partial payment for a specific course
-function hasPendingDueOrPartialPayment(feeDetailsStr, courseType) {
-  if (!feeDetailsStr) return false;
-  
-  let feeDetails;
-  try {
-    feeDetails = typeof feeDetailsStr === 'string' ? JSON.parse(feeDetailsStr) : feeDetailsStr;
-  } catch (e) {
-    console.error('Error parsing fee details in helper:', e);
-    return false;
+export function hasPendingDueOrPartialPayment(
+  feeDetailsStr,
+  courseType,
+  courseName = null,
+  batchNumber = null,
+  courseDefId = null,
+  customDb = null,
+  enrollment = null,
+  options = {}
+) {
+  const activeDb = customDb || db;
+  let phaseCount = 1;
+  let def = options.courseDefinition || null;
+
+  if (courseDefId && !def) {
+    try {
+      const defRow = activeDb.prepare('SELECT phase_count, definition_json FROM course_definitions WHERE id = ?').get(courseDefId);
+      if (defRow?.definition_json) {
+        def = typeof defRow.definition_json === 'string' ? JSON.parse(defRow.definition_json) : defRow.definition_json;
+        phaseCount = defRow.phase_count || (Array.isArray(def.phases) ? def.phases.length : 1);
+      }
+    } catch { /* empty */ }
+  } else if (def && Array.isArray(def.phases)) {
+    phaseCount = def.phases.length;
+  } else if (courseType === 'filmmaking' || (courseName && courseName.toLowerCase().includes('filmmaking'))) {
+    phaseCount = 2;
   }
 
-  if (!feeDetails) return false;
-
-  const isUnpaid = (phase) => {
-    if (!phase) return false;
-    
-    // Status checks
-    const status = phase.status;
-    if (status === 'Paid Full' || status === 'Waived') {
-      return false;
+  for (let idx = 0; idx < phaseCount; idx++) {
+    const feeRes = resolvePhaseFee({
+      feeDetailsRaw: feeDetailsStr,
+      phaseIndex: idx,
+      enrollment,
+      courseDefinition: def,
+      courseDefId,
+      courseName,
+      courseType,
+      batchNumber,
+      customDb: activeDb
+    });
+    if (!feeRes.isPaid || feeRes.remainingDue > 0) {
+      return true; // Pending, partial, or unpaid fee exists
     }
-    
-    // If there are installments, we determine status solely by installments
-    if (phase.installments && phase.installments.length > 0) {
-      return phase.installments.some(inst => inst.status === 'Pending' || inst.status === 'Due');
-    }
-    
-    if (status === 'Partial' || status === 'Pending' || status === 'Due') {
-      return true;
-    }
-    
-    // Fallback numerical check
-    const fullFee = parseFloat((phase.full_fee || '').toString().replace(/[^\d.]/g, '')) || 0;
-    if (fullFee === 0) return false; // If fee is 0, no payment due
-    
-    const amountPaid = parseFloat((phase.amount_paid || '').toString().replace(/[^\d.]/g, '')) || 0;
-    const discount = parseFloat((phase.discount || '').toString().replace(/[^\d.]/g, '')) || 0;
-    const remainingDue = Math.max(0, fullFee - discount - amountPaid);
-    
-    if (remainingDue > 0) {
-      return true;
-    }
-    
-    return false;
-  };
-
-  if (courseType === 'filmmaking') {
-    // Both Phase 1 and Phase 2 need to be checked for Online Filmmaking Course
-    return isUnpaid(feeDetails.phase1) || isUnpaid(feeDetails.phase2);
-  } else {
-    // Other course types have a flat fee structure
-    return isUnpaid(feeDetails);
   }
+
+  return false;
 }
 
 // GET My Certificates details (Student View)
 // Returns all completed courses and their certificate data (provided there is no pending payment)
-router.get('/my-certificates', authenticateToken, (req, res) => {
+router.get('/my-certificates', authenticateToken, async (req, res) => {
   try {
     const student = db.prepare(`
       SELECT p.full_name, p.student_id, p.batch_number
@@ -177,32 +172,70 @@ router.get('/my-certificates', authenticateToken, (req, res) => {
       return res.status(404).json({ error: 'Student profile not found.' });
     }
 
-    const completions = db.prepare(`
+    const allEnrollments = db.prepare(`
       SELECT * FROM student_course_enrollments 
-      WHERE user_id = ? AND step4_completed = 1
+      WHERE user_id = ?
     `).all(req.user.id);
+
+    const completions = [];
+    for (const enr of allEnrollments) {
+      if (enr.course_definition_id) {
+        const certCheck = await courseProgressService.evaluateCertificateEligibility(enr.id);
+        const progress = await courseProgressService.getEnrollmentProgress(enr.id);
+        const allPhasesPassed = progress && Array.isArray(progress.phases) && progress.phases.length > 0 && progress.phases.every(p => p.isPassed || p.requirements?.completionRequired === false);
+        if (certCheck.eligible || allPhasesPassed) {
+          completions.push({
+            ...enr,
+            reEnrollmentDiscountPercentage: certCheck.reEnrollmentDiscountPercentage
+          });
+        }
+      } else {
+        if (enr.step4_completed === 1) {
+          completions.push(enr);
+        }
+      }
+    }
 
     // Map completions to certificates, marking locked ones securely
     const templates = db.prepare('SELECT * FROM certificate_templates').all();
     const templateMap = templates.reduce((acc, t) => ({ ...acc, [t.course_name]: t }), {});
 
     const certificates = completions.map(course => {
-      const isLocked = hasPendingDueOrPartialPayment(course.fee_details, course.course_type);
+      let batchNumber = student.batch_number;
+      if (course.batch_id) {
+        const b = db.prepare('SELECT batch_number FROM batches WHERE id = ?').get(course.batch_id);
+        if (b && b.batch_number) batchNumber = b.batch_number;
+      }
+      const isLocked = hasPendingDueOrPartialPayment(
+        course.fee_details, 
+        course.course_type, 
+        course.course_name, 
+        batchNumber, 
+        course.course_definition_id,
+        db,
+        course
+      );
       if (isLocked) {
         return {
+          enrollmentId: course.id,
+          batchId: course.batch_id || null,
           courseName: course.course_name,
-          locked: true
+          locked: true,
+          reEnrollmentDiscountPercentage: course.reEnrollmentDiscountPercentage || 0
         };
       }
       return {
+        enrollmentId: course.id,
+        batchId: course.batch_id || null,
         courseName: course.course_name,
         studentDetails: {
           fullName: student.full_name,
           studentId: student.student_id,
-          batchNumber: student.batch_number,
+          batchNumber,
           completionDate: course.updated_at
         },
-        template: templateMap[course.course_name] || { layout_json: '{}', background_url: '' }
+        template: templateMap[course.course_name] || { layout_json: '{}', background_url: '' },
+        reEnrollmentDiscountPercentage: course.reEnrollmentDiscountPercentage || 0
       };
     });
 

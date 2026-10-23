@@ -40,6 +40,7 @@ import feeTrackerRoutes from './routes/fee-tracker.js';
 import batchRoutes from './routes/batches.js';
 import studentExportRoutes from './routes/student-export.js';
 import courseSettingsRoutes from './routes/course-settings.js';
+import courseDefinitionsRoutes from './routes/course-definitions.js';
 import { runBatchStatusAutomation } from './utils/batchStatusAutomation.js';
 import broadcastRoutes from './routes/broadcast.js';
 import trashRoutes from './routes/trash.js';
@@ -432,6 +433,32 @@ app.use('/api/student-export', studentExportRoutes);
 app.use('/api/admin/broadcast', broadcastRoutes);
 app.use('/api/admin/trash', trashRoutes);
 app.use('/api/admin/course-settings', courseSettingsRoutes);
+app.use('/api/admin/course-definitions', courseDefinitionsRoutes);
+
+// Test environment and database identity verification endpoint (strictly restricted to test servers)
+app.get('/api/test/db-identity', (req, res) => {
+  const isTestServer = Boolean(process.env.IS_TEST_SERVER === 'true');
+  const isTestEnv = process.env.NODE_ENV === 'test';
+
+  if (!isTestServer && !isTestEnv) {
+    return res.status(404).json({ error: 'Endpoint not found' });
+  }
+
+  const resolvedDb = path.resolve(db.name || process.env.DATABASE_PATH || '');
+  const lower = resolvedDb.toLowerCase();
+  const isProductionDb = lower.endsWith('server\\bfi_classroom.db') || lower.endsWith('server/bfi_classroom.db') || (lower.includes('bfi_classroom.db') && !lower.includes('test'));
+  const isIsolatedTestDb = lower.includes('test_isolated_bfi.db');
+
+  res.json({
+    status: 'ok',
+    port: Number(PORT),
+    dbPath: path.basename(resolvedDb),
+    isProductionDb,
+    isIsolatedTestDb,
+    isTestServer,
+    nodeEnv: 'test'
+  });
+});
 
 app.use('/api', (req, res) => {
   res.status(404).json({ error: `API route not found: ${req.method} ${req.originalUrl}` });

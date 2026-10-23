@@ -3,6 +3,8 @@ import bcrypt from 'bcryptjs';
 import db from '../db/database.js';
 import { authenticateToken, requireRole, sanitizeInput, validateEmail } from '../middleware/auth.js';
 import { logTrashAction } from '../utils/trashLogger.js';
+import courseProgressService from '../services/courseProgressService.js';
+import { resolveDiscountAmount, resolvePhaseFee } from '../utils/feeResolver.js';
 
 const router = express.Router();
 
@@ -106,7 +108,9 @@ router.post('/students', authenticateToken, requireRole('admin'), sanitizeInput,
           VALUES (?, ?, ?)
         `);
         for (const course of courses) {
-          const type = course === 'Online Filmmaking Course' ? 'filmmaking' : 'workshop';
+          let type = course === 'Online Filmmaking Course' ? 'filmmaking' : 'workshop';
+          const cd = db.prepare('SELECT course_type FROM course_definitions WHERE name = ? ORDER BY version DESC LIMIT 1').get(course);
+          if (cd?.course_type) type = cd.course_type;
           enrollStmt.run(userId, course, type);
         }
       }
@@ -243,7 +247,9 @@ router.post('/students/bulk', authenticateToken, requireRole('admin'), sanitizeI
               batchId = resultBatch.lastInsertRowid;
             }
             db.prepare('INSERT OR IGNORE INTO batch_students (batch_id, student_id) VALUES (?, ?)').run(batchId, existingUserId);
-            const type = course === 'Online Filmmaking Course' ? 'filmmaking' : 'workshop';
+            let type = course === 'Online Filmmaking Course' ? 'filmmaking' : 'workshop';
+            const cd = db.prepare('SELECT course_type FROM course_definitions WHERE name = ? ORDER BY version DESC LIMIT 1').get(course);
+            if (cd?.course_type) type = cd.course_type;
             db.prepare('INSERT OR IGNORE INTO student_course_enrollments (user_id, course_name, course_type) VALUES (?, ?, ?)').run(existingUserId, course, type);
           }
           // Update primary batch number in profile
@@ -310,7 +316,9 @@ router.post('/students/bulk', authenticateToken, requireRole('admin'), sanitizeI
               VALUES (?, ?, ?)
             `);
             for (const course of courses) {
-              const type = course === 'Online Filmmaking Course' ? 'filmmaking' : 'workshop';
+              let type = course === 'Online Filmmaking Course' ? 'filmmaking' : 'workshop';
+              const cd = db.prepare('SELECT course_type FROM course_definitions WHERE name = ? ORDER BY version DESC LIMIT 1').get(course);
+              if (cd?.course_type) type = cd.course_type;
               enrollStmt.run(userId, course, type);
             }
           }
@@ -412,8 +420,8 @@ router.post('/batches/:id/results/bulk', authenticateToken, requireRole('admin')
     let updatedCount = 0;
     const updateEnrollment = db.prepare(`
       UPDATE student_course_enrollments 
-      SET exam_written = ?
-      WHERE user_id = ? AND course_name = ?
+      SET exam_written = ?, updated_at = datetime('now')
+      WHERE user_id = ? AND (batch_id = ? OR (batch_id IS NULL AND course_name = ?))
     `);
 
     const updateProfile = db.prepare(`
@@ -424,8 +432,8 @@ router.post('/batches/:id/results/bulk', authenticateToken, requireRole('admin')
 
     const updateEnrollmentStatus = db.prepare(`
       UPDATE student_course_enrollments
-      SET step2_completed = ?
-      WHERE user_id = ? AND course_name = ?
+      SET step2_completed = ?, updated_at = datetime('now')
+      WHERE user_id = ? AND (batch_id = ? OR (batch_id IS NULL AND course_name = ?))
     `);
 
     db.transaction(() => {
@@ -463,11 +471,14 @@ router.post('/batches/:id/results/bulk', authenticateToken, requireRole('admin')
         }
 
         if (student) {
-           const enrollment = db.prepare('SELECT fee_details FROM student_course_enrollments WHERE user_id = ? AND course_name = ?').get(student.id, batch.course_name);
+           const enrollment = db.prepare(`
+             SELECT fee_details FROM student_course_enrollments 
+             WHERE user_id = ? AND (batch_id = ? OR (batch_id IS NULL AND course_name = ?))
+           `).get(student.id, batch.id, batch.course_name);
            let isUnpaid = false;
            if (enrollment && enrollment.fee_details) {
              let feeDetails = {};
-             try { feeDetails = typeof enrollment.fee_details === 'string' ? JSON.parse(enrollment.fee_details) : enrollment.fee_details; } catch(err) {}
+             try { feeDetails = typeof enrollment.fee_details === 'string' ? JSON.parse(enrollment.fee_details) : enrollment.fee_details; } catch(err) { /* ignore json parse err */ }
              
              if (batch.course_name === 'Online Filmmaking Course') {
                const p1 = feeDetails.phase1 || {};
@@ -488,12 +499,12 @@ router.post('/batches/:id/results/bulk', authenticateToken, requireRole('admin')
 
            if (!isUnpaid) {
              if (row.obtainedMarks !== '' && row.obtainedMarks !== null) {
-                updateEnrollment.run(row.obtainedMarks, student.id, batch.course_name);
+                updateEnrollment.run(row.obtainedMarks, student.id, batch.id, batch.course_name);
              }
              if (row.remarks) {
                 const passed = row.remarks === 'Pass' ? 1 : 0;
                 updateProfile.run(passed, student.id);
-                updateEnrollmentStatus.run(passed, student.id, batch.course_name);
+                updateEnrollmentStatus.run(passed, student.id, batch.id, batch.course_name);
              }
              updatedCount++;
            }
@@ -612,19 +623,24 @@ router.post('/students/leads/:id/admit', authenticateToken, requireRole('admin')
       // 3. Update profile with student_id and batch_number
       db.prepare(`UPDATE student_profiles SET student_id = ?, batch_number = ? WHERE user_id = ?`).run(studentId, cleanBatch, userId);
       
-      // 4. Enroll in course (if not already)
-      const existingEnrollment = db.prepare('SELECT * FROM student_course_enrollments WHERE user_id = ? AND course_name = ?').get(userId, course);
-      if (!existingEnrollment) {
-        db.prepare('INSERT INTO student_course_enrollments (user_id, course_name, course_type) VALUES (?, ?, ?)').run(userId, course, 'filmmaking');
-      }
-
-      // 5. Link to batch roster (if batch exists for this course)
+      // 4. Link to batch roster (if batch exists for this course)
       const batchRecord = db.prepare('SELECT id FROM batches WHERE batch_number = ? AND course_name = ?').get(cleanBatch, course);
       if (batchRecord) {
         const existsInBatch = db.prepare('SELECT id FROM batch_students WHERE batch_id = ? AND student_id = ?').get(batchRecord.id, userId);
         if (!existsInBatch) {
           db.prepare('INSERT INTO batch_students (batch_id, student_id) VALUES (?, ?)').run(batchRecord.id, userId);
         }
+      }
+
+      // 5. Enroll in course (if not already)
+      const batchId = batchRecord ? batchRecord.id : null;
+      const existingEnrollment = db.prepare(
+        'SELECT * FROM student_course_enrollments WHERE user_id = ? AND course_name = ? AND (batch_id = ? OR (batch_id IS NULL AND ? IS NULL))'
+      ).get(userId, course, batchId, batchId);
+      if (!existingEnrollment) {
+        db.prepare('INSERT INTO student_course_enrollments (user_id, course_name, course_type, batch_id) VALUES (?, ?, ?, ?)').run(userId, course, 'filmmaking', batchId);
+      } else if (batchId && !existingEnrollment.batch_id) {
+        db.prepare('UPDATE student_course_enrollments SET batch_id = ? WHERE id = ?').run(batchId, existingEnrollment.id);
       }
     });
 
@@ -813,30 +829,102 @@ router.put('/students/:id', authenticateToken, requireRole('admin'), sanitizeInp
   try {
     const { id } = req.params;
     const { 
-      firstName, lastName, email, mobileNumber, username, batchNumber, phase1_fee, phase2_fee, courses, snNo, year, course_fees
+      firstName, lastName, email, mobileNumber, username, batchNumber, phase1_fee, phase2_fee, courses, snNo, year, course_fees,
+      enrollment_id, enrollmentId, batch_id, batchId
     } = req.body;
 
     console.log(`[AdminAPI] PUT /students/${id} called with:`, {
-      firstName, lastName, email, username, batchNumber, snNo, year, courses, course_fees
+      firstName, lastName, email, username, batchNumber, snNo, year, courses, course_fees, enrollment_id, batch_id
     });
 
-    // Validate Phase 2 fee details restriction: Cannot set Phase 2 details if Phase 1 exam is not passed
-    if (course_fees?.['Online Filmmaking Course']?.phase2) {
-      const existingEnrollment = db.prepare('SELECT step2_completed, fee_details FROM student_course_enrollments WHERE user_id = ? AND course_name = ?').get(id, 'Online Filmmaking Course');
-      const step2Completed = existingEnrollment ? existingEnrollment.step2_completed : 0;
-      if (step2Completed !== 1) {
-        const p2 = course_fees['Online Filmmaking Course'].phase2;
-        
-        // Parse existing Phase 2 details
-        let existingP2 = null;
-        if (existingEnrollment && existingEnrollment.fee_details) {
-          try {
-            const parsed = JSON.parse(existingEnrollment.fee_details);
-            existingP2 = parsed?.phase2;
-          } catch (e) {
-            console.error('Failed to parse existing fee details:', e);
-          }
+    const targetEnrollmentId = enrollment_id || enrollmentId || null;
+    const targetBatchId = batch_id || batchId || null;
+
+    // Helper: Resolve a student's enrollment for a course deterministically
+    function resolveEnrollmentForCourse(userId, courseName, reqEnrId, reqBId) {
+      const userEnrollments = db.prepare('SELECT * FROM student_course_enrollments WHERE user_id = ? AND course_name = ?').all(userId, courseName);
+      
+      if (userEnrollments.length === 0) {
+        return { notFound: true, count: 0 };
+      }
+
+      // 1. Explicit enrollment ID takes highest priority
+      if (reqEnrId) {
+        const match = userEnrollments.find(e => e.id === parseInt(reqEnrId, 10));
+        if (match) return { enrollment: match, count: userEnrollments.length };
+        return {
+          error: `Specified enrollment_id ${reqEnrId} does not belong to student ${userId} for course '${courseName}'.`,
+          count: userEnrollments.length
+        };
+      }
+
+      // 2. Batch ID context
+      let effectiveBatchId = reqBId ? parseInt(reqBId, 10) : null;
+      if (!effectiveBatchId && batchNumber) {
+        const b = db.prepare('SELECT id FROM batches WHERE course_name = ? AND (batch_number = ? OR batch_name = ?)').get(courseName, String(batchNumber), String(batchNumber));
+        if (b) effectiveBatchId = b.id;
+      }
+
+      if (effectiveBatchId) {
+        const match = userEnrollments.find(e => e.batch_id === effectiveBatchId);
+        if (match) return { enrollment: match, count: userEnrollments.length };
+        // If single legacy unassigned enrollment, allow mapping
+        const legacyMatch = userEnrollments.find(e => e.batch_id === null);
+        if (legacyMatch && userEnrollments.length === 1) {
+          return { enrollment: legacyMatch, count: 1 };
         }
+        return {
+          error: `No enrollment found for student ${userId}, course '${courseName}', in batch ${effectiveBatchId}.`,
+          count: userEnrollments.length
+        };
+      }
+
+      // 3. Fallback when neither enrollment_id nor batch context is provided:
+      // If student has exactly 1 enrollment for this course: preserve legacy behavior!
+      if (userEnrollments.length === 1) {
+        return { enrollment: userEnrollments[0], count: 1 };
+      }
+
+      // If student has > 1 enrollments for this course: reject ambiguous operation!
+      return {
+        ambiguous: true,
+        error: `Ambiguous enrollment operation: student has multiple (${userEnrollments.length}) enrollments for course '${courseName}'. Specify enrollment_id or batch_id context to avoid unintended multi-batch modifications.`,
+        count: userEnrollments.length
+      };
+    }
+
+    // Validate Phase 2 fee details restriction: Cannot set Phase 2 details if Phase 1 exam is not passed or Phase 1 fee is not paid
+    if (course_fees?.['Online Filmmaking Course']?.phase2) {
+      const courseName = 'Online Filmmaking Course';
+      const cfee = course_fees[courseName];
+      const enrContextId = cfee.enrollment_id || cfee.enrollmentId || targetEnrollmentId;
+      const bContextId = cfee.batch_id || cfee.batchId || targetBatchId;
+
+      const resolved = resolveEnrollmentForCourse(id, courseName, enrContextId, bContextId);
+      if (resolved.ambiguous || resolved.error) {
+        return res.status(400).json({ error: resolved.error });
+      }
+
+      const existingEnrollment = resolved.enrollment;
+      const step2Completed = existingEnrollment ? existingEnrollment.step2_completed : 0;
+      
+      let existingFeeDetails = null;
+      if (existingEnrollment && existingEnrollment.fee_details) {
+        try {
+          existingFeeDetails = JSON.parse(existingEnrollment.fee_details);
+        } catch (e) {
+          console.error('Failed to parse existing fee details:', e);
+        }
+      }
+
+      const p1Acct = resolvePhaseFee(cfee.phase1 || existingFeeDetails?.phase1 || {}, { courseDefinition: null });
+      const isPhase1FullyPaid = p1Acct.isPaid;
+      const isPhase1Passed = step2Completed === 1;
+      const isOverridden = Boolean(req.body.admin_override);
+
+      if (!isOverridden && (!isPhase1Passed || !isPhase1FullyPaid)) {
+        const p2 = cfee.phase2;
+        const existingP2 = existingFeeDetails?.phase2;
 
         // Check if there is any new/modified Phase 2 data compared to what's already saved
         const hasP2Data = p2.full_fee || p2.amount_paid || p2.status || p2.discount || (p2.installments && p2.installments.length > 0);
@@ -854,10 +942,43 @@ router.put('/students/:id', authenticateToken, requireRole('admin'), sanitizeInp
           // Check installments change
           const instChanged = JSON.stringify(p2.installments || []) !== JSON.stringify(existingP2?.installments || []);
 
-          if (fullFeeChanged || amountPaidChanged || statusChanged || discountChanged || instChanged) {
-            return res.status(400).json({ error: 'Cannot set or modify Phase 2 fee details because the student has not passed the Phase 1 exam.' });
+          if (fullFeeChanged || amountPaidChanged || discountChanged || instChanged) {
+            const reason = (!isPhase1Passed && !isPhase1FullyPaid)
+              ? 'Phase 1 exam has not been passed and Phase 1 fee is not fully paid.'
+              : (!isPhase1Passed ? 'Phase 1 exam has not been passed.' : 'Phase 1 fee is not fully paid.');
+            return res.status(400).json({ error: `Cannot set or modify Phase 2 fee details because ${reason}` });
+          } else {
+            // Retain exact existing Phase 2 to prevent any cosmetic/status drift
+            course_fees['Online Filmmaking Course'].phase2 = existingP2 || p2;
           }
         }
+      }
+    }
+
+    // Pre-validate all course removals and updates for ambiguity before opening transaction
+    const currentEnrollments = db.prepare('SELECT id, course_name, batch_id FROM student_course_enrollments WHERE user_id = ?').all(id);
+    const currentCourseNames = [...new Set(currentEnrollments.map(r => r.course_name))];
+    const newCourses = courses || [];
+    const toRemove = currentCourseNames.filter(c => !newCourses.includes(c));
+    const toAdd = newCourses.filter(c => !currentCourseNames.includes(c));
+
+    for (const course of toRemove) {
+      const cfee = course_fees?.[course] || {};
+      const enrContextId = cfee.enrollment_id || cfee.enrollmentId || targetEnrollmentId;
+      const bContextId = cfee.batch_id || cfee.batchId || targetBatchId;
+      const resolved = resolveEnrollmentForCourse(id, course, enrContextId, bContextId);
+      if (resolved.ambiguous) {
+        return res.status(400).json({ error: resolved.error });
+      }
+    }
+
+    for (const course of newCourses) {
+      const cfee = course_fees?.[course] || {};
+      const enrContextId = cfee.enrollment_id || cfee.enrollmentId || targetEnrollmentId;
+      const bContextId = cfee.batch_id || cfee.batchId || targetBatchId;
+      const resolved = resolveEnrollmentForCourse(id, course, enrContextId, bContextId);
+      if (resolved.ambiguous) {
+        return res.status(400).json({ error: resolved.error });
       }
     }
 
@@ -894,58 +1015,91 @@ router.put('/students/:id', authenticateToken, requireRole('admin'), sanitizeInp
       `).run(fullName, batchNumber || '', phase1_fee || '', phase2_fee || '', studentIdStr, additionalInfo || '', id);
 
       // 3. Update course enrollments
-      const currentEnrollments = db.prepare('SELECT course_name FROM student_course_enrollments WHERE user_id = ?').all(id).map(r => r.course_name);
-      
-      const newCourses = courses || [];
-      const toAdd = newCourses.filter(c => !currentEnrollments.includes(c));
-      const toRemove = currentEnrollments.filter(c => !newCourses.includes(c));
-
       if (toRemove.length > 0) {
-        const removeStmt = db.prepare('DELETE FROM student_course_enrollments WHERE user_id = ? AND course_name = ?');
         for (const course of toRemove) {
-          removeStmt.run(id, course);
+          const cfee = course_fees?.[course] || {};
+          const enrContextId = cfee.enrollment_id || cfee.enrollmentId || targetEnrollmentId;
+          const bContextId = cfee.batch_id || cfee.batchId || targetBatchId;
+          const resolved = resolveEnrollmentForCourse(id, course, enrContextId, bContextId);
+          if (resolved.enrollment) {
+            db.prepare('DELETE FROM student_course_enrollments WHERE id = ?').run(resolved.enrollment.id);
+          }
         }
       }
 
       if (toAdd.length > 0) {
-        const addStmt = db.prepare('INSERT INTO student_course_enrollments (user_id, course_name, course_type) VALUES (?, ?, ?)');
         for (const course of toAdd) {
-          const type = course === 'Online Filmmaking Course' ? 'filmmaking' : 'workshop';
-          addStmt.run(id, course, type);
+          let type = course === 'Online Filmmaking Course' ? 'filmmaking' : 'workshop';
+          const cfee = course_fees?.[course] || {};
+          let bContextId = cfee.batch_id || cfee.batchId || targetBatchId;
+          if (!bContextId && batchNumber) {
+            const b = db.prepare('SELECT id FROM batches WHERE course_name = ? AND (batch_number = ? OR batch_name = ?)').get(course, String(batchNumber), String(batchNumber));
+            if (b) bContextId = b.id;
+          }
+
+          let defId = null;
+          let version = null;
+          if (bContextId) {
+            const batchRow = db.prepare(`
+              SELECT b.course_definition_id, b.course_version, cd.course_type 
+              FROM batches b
+              LEFT JOIN course_definitions cd ON cd.id = b.course_definition_id
+              WHERE b.id = ?
+            `).get(bContextId);
+            if (batchRow) {
+              defId = batchRow.course_definition_id || null;
+              version = batchRow.course_version || null;
+              if (batchRow.course_type) type = batchRow.course_type;
+            }
+          }
+          if (!defId) {
+            const cd = db.prepare('SELECT id, version, course_type FROM course_definitions WHERE name = ? ORDER BY version DESC LIMIT 1').get(course);
+            if (cd) {
+              defId = cd.id;
+              version = cd.version;
+              if (cd.course_type) type = cd.course_type;
+            }
+          }
+
+          db.prepare(`
+            INSERT INTO student_course_enrollments (
+              user_id, course_name, course_type, course_definition_id, course_version, batch_id
+            ) VALUES (?, ?, ?, ?, ?, ?)
+          `).run(id, course, type, defId, version, bContextId || null);
         }
       }
 
-      // 4. Update fee details for all currently enrolled courses
-      const updateFeeStmt = db.prepare('UPDATE student_course_enrollments SET fee_details = ? WHERE user_id = ? AND course_name = ?');
-      const forceStep1Stmt = db.prepare('UPDATE student_course_enrollments SET step1_completed = ? WHERE user_id = ? AND course_name = ?');
-      const forceStep3Stmt = db.prepare('UPDATE student_course_enrollments SET step3_completed = ? WHERE user_id = ? AND course_name = ?');
+      // 4. Update fee details and step completions for targeted enrollments
       for (const course of newCourses) {
-        const feeInfo = course_fees?.[course] ? JSON.stringify(course_fees[course]) : null;
-        updateFeeStmt.run(feeInfo, id, course);
+        const cfee = course_fees?.[course];
+        const enrContextId = cfee?.enrollment_id || cfee?.enrollmentId || targetEnrollmentId;
+        const bContextId = cfee?.batch_id || cfee?.batchId || targetBatchId;
+        const resolved = resolveEnrollmentForCourse(id, course, enrContextId, bContextId);
 
-        if (course_fees?.[course]) {
-          const cfee = course_fees[course];
-          
+        if (!resolved.enrollment) continue;
+        const enrId = resolved.enrollment.id;
+
+        const feeInfo = cfee ? JSON.stringify(cfee) : null;
+        db.prepare('UPDATE student_course_enrollments SET fee_details = ?, updated_at = datetime(\'now\') WHERE id = ?').run(feeInfo, enrId);
+
+        // For legacy enrollments only, update step1_completed / step3_completed based on authoritative cash collected.
+        // Defined course enrollments use student_phase_results and courseProgressService.
+        if (cfee && !resolved.enrollment.course_definition_id) {
           if (course === 'Online Filmmaking Course') {
             // Phase 1 payment check
-            const phase1 = cfee.phase1 || {};
-            const amountPaidNum = parseFloat(String(phase1.amount_paid || '').replace(/[^\d.]/g, '')) || 0;
-            const hasPaidInst = (phase1.installments || []).some(inst => inst.status === 'Paid' && parseFloat(String(inst.amount || '').replace(/[^\d.]/g, '')) > 0);
-            const isPhase1Paid = amountPaidNum > 0 || hasPaidInst ? 1 : 0;
-            forceStep1Stmt.run(isPhase1Paid, id, course);
+            const phase1Acct = resolvePhaseFee(cfee.phase1 || {}, { courseDefinition: null });
+            const isPhase1Paid = (phase1Acct.cashCollected > 0 || phase1Acct.isPaid) ? 1 : 0;
+            db.prepare('UPDATE student_course_enrollments SET step1_completed = ? WHERE id = ?').run(isPhase1Paid, enrId);
 
             // Phase 2 payment check
-            const phase2 = cfee.phase2 || {};
-            const phase2PaidNum = parseFloat(String(phase2.amount_paid || '').replace(/[^\d.]/g, '')) || 0;
-            const phase2HasPaidInst = (phase2.installments || []).some(inst => inst.status === 'Paid' && parseFloat(String(inst.amount || '').replace(/[^\d.]/g, '')) > 0);
-            const isPhase2Paid = phase2PaidNum > 0 || phase2HasPaidInst ? 1 : 0;
-            forceStep3Stmt.run(isPhase2Paid, id, course);
+            const phase2Acct = resolvePhaseFee(cfee.phase2 || {}, { courseDefinition: null });
+            const isPhase2Paid = (phase2Acct.cashCollected > 0 || phase2Acct.isPaid) ? 1 : 0;
+            db.prepare('UPDATE student_course_enrollments SET step3_completed = ? WHERE id = ?').run(isPhase2Paid, enrId);
           } else {
-            // Other courses (Workshops) payment check
-            const amountPaidNum = parseFloat(String(cfee.amount_paid || '').replace(/[^\d.]/g, '')) || 0;
-            const hasPaidInst = (cfee.installments || []).some(inst => inst.status === 'Paid' && parseFloat(String(inst.amount || '').replace(/[^\d.]/g, '')) > 0);
-            const isPaid = amountPaidNum > 0 || hasPaidInst ? 1 : 0;
-            forceStep1Stmt.run(isPaid, id, course);
+            // Other legacy courses (Workshops) payment check
+            const acct = resolvePhaseFee(cfee, { courseDefinition: null });
+            const isPaid = (acct.cashCollected > 0 || acct.isPaid) ? 1 : 0;
+            db.prepare('UPDATE student_course_enrollments SET step1_completed = ? WHERE id = ?').run(isPaid, enrId);
           }
         }
       }
@@ -1065,7 +1219,7 @@ router.post('/teachers', authenticateToken, requireRole('admin'), sanitizeInput,
 });
 
 // Route to list all students (for the admin dashboard)
-router.get('/students', authenticateToken, requireRole('admin'), (req, res) => {
+router.get('/students', authenticateToken, requireRole('admin'), async (req, res) => {
   try {
     const students = db.prepare(`
       SELECT 
@@ -1079,10 +1233,20 @@ router.get('/students', authenticateToken, requireRole('admin'), (req, res) => {
     `).all();
 
     // Fetch enrollments for each student
-    const enrolledStudents = students.map(s => {
+    const enrolledStudents = [];
+    for (const s of students) {
       const enrollments = db.prepare('SELECT * FROM student_course_enrollments WHERE user_id = ?').all(s.id);
-      return { ...s, enrollments };
-    });
+      for (const enr of enrollments) {
+        if (enr.course_definition_id) {
+          try {
+            enr.defined_progress = await courseProgressService.getEnrollmentProgress(enr.id, null, { batchId: enr.batch_id });
+          } catch (e) {
+            console.error(`Error loading progress for enrollment ${enr.id}:`, e.message);
+          }
+        }
+      }
+      enrolledStudents.push({ ...s, enrollments });
+    }
 
     res.json({ students: enrolledStudents });
   } catch (error) {
@@ -1092,7 +1256,7 @@ router.get('/students', authenticateToken, requireRole('admin'), (req, res) => {
 });
 
 // Route to get a specific student details
-router.get('/students/:id', authenticateToken, requireRole('admin'), (req, res) => {
+router.get('/students/:id', authenticateToken, requireRole('admin'), async (req, res) => {
   try {
     const { id } = req.params;
     const student = db.prepare(`
@@ -1110,6 +1274,16 @@ router.get('/students/:id', authenticateToken, requireRole('admin'), (req, res) 
     }
 
     const enrollments = db.prepare('SELECT * FROM student_course_enrollments WHERE user_id = ?').all(student.id);
+    for (const enr of enrollments) {
+      if (enr.course_definition_id) {
+        try {
+          const reqBatchId = req.query.batch_id ? parseInt(req.query.batch_id, 10) : null;
+          enr.defined_progress = await courseProgressService.getEnrollmentProgress(enr.id, null, { batchId: enr.batch_id || reqBatchId });
+        } catch (e) {
+          console.error(`Error loading defined progress for enrollment ${enr.id}:`, e.message);
+        }
+      }
+    }
     res.json({ student: { ...student, enrollments } });
   } catch (error) {
     console.error('Error fetching student details:', error);
@@ -1248,9 +1422,13 @@ router.patch('/students/:id/progress', authenticateToken, requireRole('admin'), 
     if (!course_id) return res.status(400).json({ error: 'Course ID (enrollment id) is required.' });
 
     // Validate phase payment restrictions for Online Filmmaking Course
-    const enrollment = db.prepare('SELECT course_name, fee_details FROM student_course_enrollments WHERE id = ? AND user_id = ?').get(course_id, studentId);
+    const enrollment = db.prepare('SELECT id, course_name, fee_details, course_definition_id FROM student_course_enrollments WHERE id = ? AND user_id = ?').get(course_id, studentId);
     if (!enrollment) {
       return res.status(404).json({ error: 'Enrollment not found.' });
+    }
+
+    if (enrollment.course_definition_id) {
+      return res.status(400).json({ error: 'Cannot update progress for defined courses using legacy progress route. Use /defined-progress endpoint.' });
     }
 
     if (enrollment.course_name === 'Online Filmmaking Course') {
@@ -1263,19 +1441,12 @@ router.patch('/students/:id/progress', authenticateToken, requireRole('admin'), 
         }
       }
 
-      const phase1 = feeDetails?.phase1 || {};
-      const fullFeeNum = parseFloat(String(phase1.full_fee || '').replace(/[^\d.]/g, '')) || 0;
-      const amountPaidNum = parseFloat(String(phase1.amount_paid || '').replace(/[^\d.]/g, '')) || 0;
-      const discountNum = parseFloat(String(phase1.discount || '').replace(/[^\d.]/g, '')) || 0;
-      const remainingDue = Math.max(0, fullFeeNum - discountNum - amountPaidNum);
-      
-      const phase1PaidAny = amountPaidNum > 0 || (phase1.installments || []).some(inst => inst.status === 'Paid' && parseFloat(String(inst.amount || '').replace(/[^\d.]/g, '')) > 0);
-      const phase1FullyPaid = (fullFeeNum > 0 && amountPaidNum + discountNum >= fullFeeNum) ||
-        (fullFeeNum > 0 && remainingDue > 0 && (phase1.installments || []).length > 0 && (phase1.installments || []).every(inst => inst.status === 'Paid'));
+      const p1Acct = resolvePhaseFee(feeDetails?.phase1 || {}, { courseDefinition: null });
+      const phase1PaidAny = p1Acct.cashCollected > 0 || p1Acct.isPaid;
+      const phase1FullyPaid = p1Acct.isPaid;
 
-      const phase2 = feeDetails?.phase2 || {};
-      const phase2PaidAny = (parseFloat(String(phase2.amount_paid || '').replace(/[^\d.]/g, '')) || 0) > 0 ||
-        (phase2.installments || []).some(inst => inst.status === 'Paid' && parseFloat(String(inst.amount || '').replace(/[^\d.]/g, '')) > 0);
+      const p2Acct = resolvePhaseFee(feeDetails?.phase2 || {}, { courseDefinition: null });
+      const phase2PaidAny = p2Acct.cashCollected > 0 || p2Acct.isPaid;
 
       if (step1_completed === 0 && phase1PaidAny) {
         return res.status(400).json({ error: 'Cannot uncheck "Phase 1: Admitted" because a payment has already been made for this phase.' });
@@ -1341,23 +1512,49 @@ router.put('/students/:id/academic-records/:courseId', authenticateToken, requir
       return res.status(404).json({ error: 'Course enrollment not found.' });
     }
 
-    // Determine batch_number
+    // Determine batch_number and batch_id
     let batchNumber = 'DEFAULT';
-    const batchRecord = db.prepare(`
-      SELECT b.batch_number 
-      FROM batch_students bs
-      JOIN batches b ON bs.batch_id = b.id
-      WHERE bs.student_id = ? AND b.course_name = ?
-    `).get(studentId, enrollment.course_name);
-    
-    if (batchRecord && batchRecord.batch_number) {
-      batchNumber = batchRecord.batch_number;
+    let targetBatchId = enrollment.batch_id || null;
+
+    if (!targetBatchId) {
+      const batchRecord = db.prepare(`
+        SELECT b.id, b.batch_number 
+        FROM batch_students bs
+        JOIN batches b ON bs.batch_id = b.id
+        WHERE bs.student_id = ? AND b.course_name = ?
+        LIMIT 1
+      `).get(studentId, enrollment.course_name);
+      
+      if (batchRecord && batchRecord.batch_number) {
+        targetBatchId = batchRecord.id;
+        batchNumber = batchRecord.batch_number;
+      }
+    } else {
+      const bRow = db.prepare('SELECT batch_number FROM batches WHERE id = ?').get(targetBatchId);
+      if (bRow?.batch_number) {
+        batchNumber = bRow.batch_number;
+      }
     }
 
     // Fetch course settings
-    let courseSetting = db.prepare('SELECT * FROM course_settings WHERE course_name = ? AND batch_number = ?').get(enrollment.course_name, batchNumber);
-    if (!courseSetting) {
-      courseSetting = db.prepare('SELECT * FROM course_settings WHERE course_name = ? AND batch_number = ?').get(enrollment.course_name, 'DEFAULT');
+    let courseSetting = null;
+    if (enrollment.course_definition_id) {
+      if (targetBatchId) {
+        courseSetting = db.prepare('SELECT * FROM course_settings WHERE batch_id = ?').get(targetBatchId);
+      }
+      if (!courseSetting) {
+        courseSetting = db.prepare('SELECT * FROM course_settings WHERE course_name = ? AND batch_number = ?').get(enrollment.course_name, 'DEFAULT');
+      }
+    } else {
+      if (targetBatchId) {
+        courseSetting = db.prepare('SELECT * FROM course_settings WHERE batch_id = ?').get(targetBatchId);
+      }
+      if (!courseSetting) {
+        courseSetting = db.prepare('SELECT * FROM course_settings WHERE course_name = ? AND batch_number = ? AND batch_id IS NULL').get(enrollment.course_name, batchNumber);
+      }
+      if (!courseSetting) {
+        courseSetting = db.prepare('SELECT * FROM course_settings WHERE course_name = ? AND batch_number = ?').get(enrollment.course_name, 'DEFAULT');
+      }
     }
 
     if (!courseSetting) {
@@ -1377,7 +1574,7 @@ router.put('/students/:id/academic-records/:courseId', authenticateToken, requir
     let definedAssignments = [];
     try {
       definedAssignments = JSON.parse(courseSetting.assignments || '[]');
-    } catch(e) {}
+    } catch(e) { /* ignore parse error */ }
 
     // Phase 2 admission check
     if (hasPhase2) {
@@ -1439,22 +1636,37 @@ router.put('/students/:id/academic-records/:courseId', authenticateToken, requir
         WHERE id = ? AND user_id = ?
       `).run(attendance, totalAttendance, exam, JSON.stringify(parsedScores), courseId, studentId);
 
-      // 2. Sync the new attendance_total to EVERYONE in the same course (only if it's phase2 course logic)
+      // 2. Sync the new attendance_total to students in the same batch/course
       if (hasPhase2) {
-        db.prepare(`
-          UPDATE student_course_enrollments
-          SET attendance_total = ?,
-              updated_at = datetime('now')
-          WHERE course_name = ?
-        `).run(totalAttendance, enrollment.course_name);
+        if (enrollment.batch_id) {
+          db.prepare(`
+            UPDATE student_course_enrollments
+            SET attendance_total = ?,
+                updated_at = datetime('now')
+            WHERE course_name = ? AND batch_id = ?
+          `).run(totalAttendance, enrollment.course_name, enrollment.batch_id);
+        } else {
+          db.prepare(`
+            UPDATE student_course_enrollments
+            SET attendance_total = ?,
+                updated_at = datetime('now')
+            WHERE course_name = ? AND batch_id IS NULL
+          `).run(totalAttendance, enrollment.course_name);
+        }
       }
 
-      // 3. Recalculate pass/fail for EVERYONE in the course (or just this student if it's not a synced course)
-      const allEnrollments = db.prepare(`
-        SELECT id, user_id, attendance_classes, attendance_total, exam_written, assignment_scores, step2_completed
-        FROM student_course_enrollments
-        WHERE course_name = ?
-      `).all(enrollment.course_name);
+      // 3. Recalculate pass/fail for students in the same batch/course
+      const allEnrollments = enrollment.batch_id
+        ? db.prepare(`
+            SELECT id, user_id, attendance_classes, attendance_total, exam_written, assignment_scores, step2_completed
+            FROM student_course_enrollments
+            WHERE course_name = ? AND batch_id = ?
+          `).all(enrollment.course_name, enrollment.batch_id)
+        : db.prepare(`
+            SELECT id, user_id, attendance_classes, attendance_total, exam_written, assignment_scores, step2_completed
+            FROM student_course_enrollments
+            WHERE course_name = ? AND batch_id IS NULL
+          `).all(enrollment.course_name);
 
       let targetStudentPassed = 0;
 
@@ -1466,7 +1678,7 @@ router.put('/students/:id/academic-records/:courseId', authenticateToken, requir
         let eScores = {};
         try {
           eScores = JSON.parse(e.assignment_scores || '{}');
-        } catch(err) {}
+        } catch(err) { /* ignore parse error */ }
 
         let eAssTotal = 0;
         if (hasAssignment) {
@@ -1536,6 +1748,491 @@ router.put('/students/:id/academic-records/:courseId', authenticateToken, requir
   } catch (error) {
     console.error('Error updating academic records:', error);
     res.status(500).json({ error: 'Internal server error while updating academic records.' });
+  }
+});
+
+// Route to get a student's defined course progress
+router.get('/students/:id/courses/:courseId/defined-progress', authenticateToken, requireRole('admin', 'moderator'), async (req, res) => {
+  try {
+    const studentId = parseInt(req.params.id, 10);
+    const courseId = parseInt(req.params.courseId, 10);
+
+    const enrollment = db.prepare('SELECT * FROM student_course_enrollments WHERE id = ? AND user_id = ?').get(courseId, studentId);
+    if (!enrollment) {
+      return res.status(404).json({ error: 'Enrollment not found.' });
+    }
+
+    // Role check for moderator: must be assigned to this batch
+    if (req.user.role === 'moderator') {
+      if (!enrollment.batch_id) {
+        return res.status(403).json({ error: 'Moderators cannot view progress for enrollments not linked to a batch.' });
+      }
+      const isAssigned = db.prepare('SELECT 1 FROM batch_moderators WHERE batch_id = ? AND user_id = ?').get(enrollment.batch_id, req.user.id);
+      if (!isAssigned) {
+        return res.status(403).json({ error: 'Moderators can only view progress for batches they are assigned to.' });
+      }
+    }
+
+    const reqBatchId = req.query.batch_id ? parseInt(req.query.batch_id, 10) : null;
+    const progress = await courseProgressService.getEnrollmentProgress(courseId, null, { batchId: enrollment.batch_id || reqBatchId });
+    res.json({ progress });
+  } catch (error) {
+    console.error('Error fetching defined course progress:', error);
+    res.status(500).json({ error: 'Internal server error while fetching defined course progress.' });
+  }
+});
+
+// Route to update a student's defined course progress (attendance, assignments, exams) atomically
+router.put('/students/:id/courses/:courseId/defined-progress', authenticateToken, requireRole('admin', 'moderator'), async (req, res) => {
+  try {
+    const studentId = parseInt(req.params.id, 10);
+    const courseId = parseInt(req.params.courseId, 10);
+    const { attendance, assignments, exam_marks } = req.body;
+
+    const enrollment = db.prepare('SELECT * FROM student_course_enrollments WHERE id = ? AND user_id = ?').get(courseId, studentId);
+    if (!enrollment) {
+      return res.status(404).json({ error: 'Enrollment not found.' });
+    }
+
+    if (!enrollment.course_definition_id) {
+      return res.status(400).json({ error: 'This enrollment is a legacy course, not a defined course.' });
+    }
+
+    // Role check for moderator: must be assigned to this batch
+    if (req.user.role === 'moderator') {
+      if (!enrollment.batch_id) {
+        return res.status(403).json({ error: 'Moderators cannot modify progress for enrollments not linked to a batch.' });
+      }
+      const isAssigned = db.prepare('SELECT 1 FROM batch_moderators WHERE batch_id = ? AND user_id = ?').get(enrollment.batch_id, req.user.id);
+      if (!isAssigned) {
+        return res.status(403).json({ error: 'Moderators can only modify progress for batches they are assigned to.' });
+      }
+    }
+
+    const reqBatchId = req.query.batch_id ? parseInt(req.query.batch_id, 10) : null;
+    const batchOpt = { batchId: enrollment.batch_id || reqBatchId };
+
+    // 1. Fetch and validate published course definition
+    const defRow = db.prepare('SELECT definition_json FROM course_definitions WHERE id = ?').get(enrollment.course_definition_id);
+    if (!defRow || !defRow.definition_json) {
+      return res.status(400).json({ error: 'Course definition not found for this enrollment.' });
+    }
+    let cDef;
+    try {
+      cDef = JSON.parse(defRow.definition_json);
+    } catch {
+      return res.status(500).json({ error: 'Failed to parse course definition.' });
+    }
+
+    const phaseMap = new Map();
+    const classMap = new Map();
+    const asgMap = new Map();
+
+    for (const p of (cDef.phases || [])) {
+      phaseMap.set(p.id, p);
+      for (const c of (p.classes || [])) {
+        classMap.set(c.id, { classObj: c, phase: p });
+      }
+      for (const a of (p.assignments || [])) {
+        asgMap.set(a.id, { asgObj: a, phase: p });
+      }
+    }
+
+    // 2. Validate phase gates and lock status using preCheckProgress
+    const preCheckProgress = await courseProgressService.getEnrollmentProgress(courseId, null, batchOpt);
+    const lockedPhaseMap = new Map();
+    if (preCheckProgress && Array.isArray(preCheckProgress.phases)) {
+      for (const p of preCheckProgress.phases) {
+        if (p.isLocked || (p.phaseNumber > 1 && !p.isAdmitted)) {
+          lockedPhaseMap.set(p.id, p);
+        }
+      }
+    }
+
+    // 3. Deep validation of attendance items
+    if (attendance !== undefined && attendance !== null) {
+      if (!Array.isArray(attendance)) {
+        return res.status(400).json({ error: 'Attendance payload must be an array.' });
+      }
+      for (const item of attendance) {
+        if (!item.class_id) {
+          return res.status(400).json({ error: 'Each attendance item must contain a class_id.' });
+        }
+        const classEntry = classMap.get(item.class_id);
+        if (!classEntry) {
+          return res.status(400).json({ error: `Invalid class_id: "${item.class_id}" does not belong to the course definition.` });
+        }
+        if (lockedPhaseMap.has(classEntry.phase.id)) {
+          const lp = lockedPhaseMap.get(classEntry.phase.id);
+          const reason = lp.isLocked ? (lp.lockReason || 'Phase is locked by progression policy.') : 'Student has not been admitted to this phase.';
+          return res.status(400).json({
+            error: `Cannot modify attendance for Phase ${lp.phaseNumber} (${lp.title || 'Phase ' + lp.phaseNumber}): ${reason}`
+          });
+        }
+      }
+    }
+
+    // 4. Deep validation of assignment items
+    const allowedStatuses = ['pending', 'submitted', 'graded', 'returned'];
+    if (assignments !== undefined && assignments !== null) {
+      if (!Array.isArray(assignments)) {
+        return res.status(400).json({ error: 'Assignments payload must be an array.' });
+      }
+      for (const item of assignments) {
+        if (!item.assignment_id) {
+          return res.status(400).json({ error: 'Each assignment item must contain an assignment_id.' });
+        }
+        const asgEntry = asgMap.get(item.assignment_id);
+        if (!asgEntry) {
+          return res.status(400).json({ error: `Invalid assignment_id: "${item.assignment_id}" does not belong to the course definition.` });
+        }
+        if (lockedPhaseMap.has(asgEntry.phase.id)) {
+          const lp = lockedPhaseMap.get(asgEntry.phase.id);
+          const reason = lp.isLocked ? (lp.lockReason || 'Phase is locked by progression policy.') : 'Student has not been admitted to this phase.';
+          return res.status(400).json({
+            error: `Cannot grade assignment for Phase ${lp.phaseNumber} (${lp.title || 'Phase ' + lp.phaseNumber}): ${reason}`
+          });
+        }
+        if (item.submission_status && !allowedStatuses.includes(item.submission_status)) {
+          return res.status(400).json({ error: `Invalid submission_status: "${item.submission_status}". Allowed: ${allowedStatuses.join(', ')}.` });
+        }
+        const marksVal = item.marks_obtained !== undefined ? item.marks_obtained : item.marks;
+        if (marksVal !== null && marksVal !== undefined && marksVal !== '') {
+          const num = Number(marksVal);
+          const maxAllowed = asgEntry.asgObj.maxMarks !== undefined ? Number(asgEntry.asgObj.maxMarks) : 100;
+          if (isNaN(num) || num < 0 || num > maxAllowed) {
+            return res.status(400).json({
+              error: `Marks for assignment "${asgEntry.asgObj.title || item.assignment_id}" must be between 0 and ${maxAllowed}. Received: ${marksVal}`
+            });
+          }
+        }
+      }
+    }
+
+    // 5. Deep validation of exam items
+    if (exam_marks !== undefined && exam_marks !== null) {
+      const normalizePid = (em) => {
+        if (em.phase_id !== undefined && em.phase_id !== null) return String(em.phase_id);
+        if (em.phaseNumber !== undefined && em.phaseNumber !== null) return `p_${em.phaseNumber}`;
+        return 'p_1';
+      };
+      const examItems = Array.isArray(exam_marks) ? exam_marks : [exam_marks];
+      for (const item of examItems) {
+        const pid = normalizePid(item);
+        const phaseObj = phaseMap.get(pid);
+        if (!phaseObj) {
+          return res.status(400).json({ error: `Invalid phase_id for exam: "${pid}" does not exist in course definition.` });
+        }
+        if (!phaseObj.exam?.enabled) {
+          return res.status(400).json({ error: `Phase "${phaseObj.title || pid}" does not have an exam enabled.` });
+        }
+        if (lockedPhaseMap.has(pid)) {
+          const lp = lockedPhaseMap.get(pid);
+          const reason = lp.isLocked ? (lp.lockReason || 'Phase is locked by progression policy.') : 'Student has not been admitted to this phase.';
+          return res.status(400).json({
+            error: `Cannot record exam marks for Phase ${lp.phaseNumber} (${lp.title || 'Phase ' + lp.phaseNumber}): ${reason}`
+          });
+        }
+        const rawMarks = item.marks !== undefined ? item.marks : item.examMarks;
+        if (rawMarks !== null && rawMarks !== undefined && rawMarks !== '') {
+          const num = Number(rawMarks);
+          const maxAllowed = phaseObj.exam?.maxMarks !== undefined ? Number(phaseObj.exam.maxMarks) : 100;
+          if (isNaN(num) || num < 0 || num > maxAllowed) {
+            return res.status(400).json({
+              error: `Exam marks for phase "${phaseObj.title || pid}" must be between 0 and ${maxAllowed}. Received: ${rawMarks}`
+            });
+          }
+        }
+      }
+    }
+
+    // 6. Execute atomic update across attendance, assignments, and exams in a single transaction
+    const updatedProgress = await courseProgressService.updateDefinedProgressAtomic(
+      courseId,
+      {
+        attendance: Array.isArray(attendance) ? attendance : [],
+        assignments: Array.isArray(assignments) ? assignments : [],
+        exam_marks: exam_marks || [],
+        updatedBy: req.user.id
+      },
+      null,
+      batchOpt
+    );
+
+    const io = req.app.get('io');
+    if (io) {
+      io.emit('progression_updated', { studentId });
+    }
+
+    res.json({ success: true, progress: updatedProgress });
+  } catch (error) {
+    console.error('Error updating defined course progress:', error);
+    res.status(500).json({ error: 'Internal server error while updating defined course progress.' });
+  }
+});
+
+// Route to admit a student to a specific phase (1–5) of a course
+router.post('/students/:id/courses/:courseId/phases/:phaseNumber/admit', authenticateToken, requireRole('admin', 'moderator'), async (req, res) => {
+  try {
+    const studentId = parseInt(req.params.id, 10);
+    const enrollmentId = parseInt(req.params.courseId, 10);
+    const phaseNumber = parseInt(req.params.phaseNumber, 10);
+
+    const enrollment = db.prepare('SELECT * FROM student_course_enrollments WHERE id = ? AND user_id = ?').get(enrollmentId, studentId);
+    if (!enrollment) {
+      return res.status(404).json({ error: 'Enrollment not found.' });
+    }
+
+    if (req.user.role === 'moderator') {
+      if (!enrollment.batch_id) {
+        return res.status(403).json({ error: 'Moderators cannot modify progress for enrollments not linked to a batch.' });
+      }
+      const isAssigned = db.prepare('SELECT 1 FROM batch_moderators WHERE batch_id = ? AND user_id = ?').get(enrollment.batch_id, req.user.id);
+      if (!isAssigned) {
+        return res.status(403).json({ error: 'Moderators can only modify progress for batches they are assigned to.' });
+      }
+    }
+
+    const updatedProgress = await courseProgressService.admitStudentToPhase(enrollmentId, phaseNumber, db, { batchId: enrollment.batch_id });
+    
+    const io = req.app.get('io');
+    if (io) {
+      io.emit('progression_updated', { studentId });
+    }
+
+    res.json({ success: true, progress: updatedProgress });
+  } catch (error) {
+    console.error('Error admitting student to phase:', error);
+    res.status(400).json({ error: error.message || 'Failed to admit student to phase.' });
+  }
+});
+
+// Route to undo phase admission (unadmit) with strict payment restriction defense
+router.post('/students/:id/courses/:courseId/phases/:phaseNumber/unadmit', authenticateToken, requireRole('admin', 'moderator'), async (req, res) => {
+  try {
+    const studentId = parseInt(req.params.id, 10);
+    const enrollmentId = parseInt(req.params.courseId, 10);
+    const phaseNumber = parseInt(req.params.phaseNumber, 10);
+
+    const enrollment = db.prepare('SELECT * FROM student_course_enrollments WHERE id = ? AND user_id = ?').get(enrollmentId, studentId);
+    if (!enrollment) {
+      return res.status(404).json({ error: 'Enrollment not found.' });
+    }
+
+    if (req.user.role === 'moderator') {
+      if (!enrollment.batch_id) {
+        return res.status(403).json({ error: 'Moderators cannot modify progress for enrollments not linked to a batch.' });
+      }
+      const isAssigned = db.prepare('SELECT 1 FROM batch_moderators WHERE batch_id = ? AND user_id = ?').get(enrollment.batch_id, req.user.id);
+      if (!isAssigned) {
+        return res.status(403).json({ error: 'Moderators can only modify progress for batches they are assigned to.' });
+      }
+    }
+
+    const updatedProgress = await courseProgressService.unadmitStudentFromPhase(enrollmentId, phaseNumber, db, { batchId: enrollment.batch_id });
+    
+    const io = req.app.get('io');
+    if (io) {
+      io.emit('progression_updated', { studentId });
+    }
+
+    res.json({ success: true, progress: updatedProgress });
+  } catch (error) {
+    console.error('Error undoing phase admission:', error);
+    res.status(400).json({ error: error.message || 'Failed to undo phase admission.' });
+  }
+});
+
+// Explicit Migration Endpoint: Migrate a legacy enrollment to a defined course definition
+router.post('/students/:id/courses/:courseId/migrate-to-defined', authenticateToken, requireRole('admin'), async (req, res) => {
+  try {
+    const studentId = parseInt(req.params.id, 10);
+    const enrollmentId = parseInt(req.params.courseId, 10);
+    const { target_course_definition_id, target_version, notes, phase_mapping, allow_cross_course_mapping, batch_id: requestedBatchId } = req.body;
+
+    if (!target_course_definition_id) {
+      return res.status(400).json({ error: 'target_course_definition_id is required' });
+    }
+
+    const enrollment = db.prepare('SELECT * FROM student_course_enrollments WHERE id = ? AND user_id = ?').get(enrollmentId, studentId);
+    if (!enrollment) {
+      return res.status(404).json({ error: 'Enrollment not found.' });
+    }
+
+    if (enrollment.course_definition_id) {
+      return res.status(400).json({ error: 'Enrollment is already bound to a defined course definition.' });
+    }
+
+    const targetDef = db.prepare('SELECT * FROM course_definitions WHERE id = ?').get(target_course_definition_id);
+    if (!targetDef) {
+      return res.status(404).json({ error: 'Target course definition not found.' });
+    }
+
+    if (targetDef.status !== 'published') {
+      return res.status(400).json({ error: 'Target course definition must be published to migrate enrollments.' });
+    }
+
+    if (target_version !== undefined && target_version !== null) {
+      const requestedVer = parseInt(target_version, 10);
+      if (isNaN(requestedVer) || requestedVer !== targetDef.version) {
+        return res.status(400).json({ error: `Invalid target_version ${target_version}. Target course definition is at version ${targetDef.version}.` });
+      }
+    }
+
+    const parsedDef = JSON.parse(targetDef.definition_json || '{}');
+    const phases = parsedDef.phases || [];
+    if (phases.length === 0) {
+      return res.status(400).json({ error: 'Cannot migrate to a course definition with 0 phases.' });
+    }
+
+    // Relatedness & explicit mapping validation
+    const normalizeName = (s) => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    const normSource = normalizeName(enrollment.course_name);
+    const normTarget = normalizeName(targetDef.name);
+
+    const isDirectMatch = normSource === normTarget || normSource.includes(normTarget) || normTarget.includes(normSource);
+    const isSameType = (enrollment.course_type && targetDef.course_type && enrollment.course_type.toLowerCase() === targetDef.course_type.toLowerCase());
+    const isRelated = isDirectMatch || isSameType;
+
+    if (!isRelated && !allow_cross_course_mapping && !phase_mapping) {
+      return res.status(400).json({
+        error: `Cannot migrate enrollment to unrelated course definition "${targetDef.name}" without an explicit, validated phase_mapping or allow_cross_course_mapping: true.`
+      });
+    }
+
+    if (phase_mapping && typeof phase_mapping === 'object') {
+      const validPhaseIds = new Set(phases.map((p, idx) => p.id || `p_${idx + 1}`));
+      for (const targetPhaseId of Object.values(phase_mapping)) {
+        if (!validPhaseIds.has(targetPhaseId)) {
+          return res.status(400).json({
+            error: `Invalid phase_mapping: target phase "${targetPhaseId}" does not exist in target course definition.`
+          });
+        }
+      }
+    }
+
+    // Safety checks: reject unmappable legacy progress states
+    if (enrollment.step2_completed === 0 && (enrollment.step3_completed === 1 || enrollment.step4_completed === 1)) {
+      return res.status(400).json({ error: 'Cannot safely migrate: contradictory legacy progress state (Phase 2 progress recorded without Phase 1 completion).' });
+    }
+
+    if (enrollment.step4_completed === 1 && phases.length > 2) {
+      return res.status(400).json({ error: 'Cannot safely migrate completed legacy graduate (2 phases completed) to a course definition with more than 2 phases.' });
+    }
+
+    if (enrollment.step4_completed === 1 && phases.length < 2) {
+      return res.status(400).json({ error: 'Cannot safely migrate completed legacy graduate (2 phases completed) to a course definition with fewer than 2 phases.' });
+    }
+
+    // Validate optional batch link
+    let targetBatchId = null;
+    if (requestedBatchId) {
+      const bRow = db.prepare('SELECT id, course_definition_id FROM batches WHERE id = ?').get(requestedBatchId);
+      if (!bRow) {
+        return res.status(404).json({ error: `Specified batch_id ${requestedBatchId} not found.` });
+      }
+      if (bRow.course_definition_id && bRow.course_definition_id !== targetDef.id) {
+        return res.status(400).json({ error: `Batch ${requestedBatchId} is associated with course definition ${bRow.course_definition_id}, not target ${targetDef.id}.` });
+      }
+      targetBatchId = bRow.id;
+    } else if (enrollment.batch_id) {
+      const currentBatch = db.prepare('SELECT id, course_definition_id FROM batches WHERE id = ?').get(enrollment.batch_id);
+      if (currentBatch && (!currentBatch.course_definition_id || currentBatch.course_definition_id === targetDef.id)) {
+        targetBatchId = currentBatch.id;
+      }
+    }
+
+    // Preserve complete snapshot of legacy enrollment data before conversion
+    const legacySnapshot = {
+      enrollment_id: enrollment.id,
+      user_id: enrollment.user_id,
+      course_name: enrollment.course_name,
+      course_type: enrollment.course_type,
+      step1_completed: enrollment.step1_completed,
+      step2_completed: enrollment.step2_completed,
+      step3_completed: enrollment.step3_completed,
+      step4_completed: enrollment.step4_completed,
+      attendance_classes: enrollment.attendance_classes,
+      attendance_total: enrollment.attendance_total,
+      assignment_screenplay: enrollment.assignment_screenplay,
+      assignment_shooting_script: enrollment.assignment_shooting_script,
+      exam_written: enrollment.exam_written,
+      assignment_scores: enrollment.assignment_scores,
+      phase2_shooting_attended: enrollment.phase2_shooting_attended,
+      phase2_editing_attended: enrollment.phase2_editing_attended,
+      fee_details: enrollment.fee_details,
+      created_at: enrollment.created_at,
+      snapshot_timestamp: new Date().toISOString()
+    };
+
+    const targetVersion = target_version ? parseInt(target_version, 10) : targetDef.version;
+
+    const migrationTx = db.transaction(() => {
+      // 1. Record migration audit with full historical snapshot
+      db.prepare(`
+        INSERT INTO legacy_enrollment_migrations (
+          enrollment_id, student_id, source_course_name, target_course_definition_id,
+          target_version, legacy_snapshot_json, migrated_by, notes
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        enrollment.id,
+        studentId,
+        enrollment.course_name,
+        targetDef.id,
+        targetVersion,
+        JSON.stringify(legacySnapshot),
+        req.user.id,
+        notes || (phase_mapping ? `Migrated with phase_mapping: ${JSON.stringify(phase_mapping)}` : 'Explicit admin migration')
+      );
+
+      // Determine target phase IDs for phase 1 and phase 2
+      const targetP1 = phase_mapping && phase_mapping['1'] ? phase_mapping['1'] : (phases[0]?.id || 'p_1');
+      const targetP2 = phase_mapping && phase_mapping['2'] ? phase_mapping['2'] : (phases[1]?.id || 'p_2');
+
+      // 2. Safely initialize student_phase_results mapping legacy pass states if applicable
+      if (phases.length >= 1 && enrollment.step2_completed === 1) {
+        const attClasses = enrollment.attendance_classes || 0;
+        const attTotal = enrollment.attendance_total || 0;
+        const attPct = attTotal > 0 ? Math.round((attClasses / attTotal) * 100) : 100.0;
+        const examMarks = enrollment.exam_written !== null && enrollment.exam_written !== undefined ? enrollment.exam_written : null;
+
+        db.prepare(`
+          INSERT OR REPLACE INTO student_phase_results (
+            enrollment_id, phase_id, attendance_classes, attendance_total, attendance_percentage,
+            exam_marks, is_passed, calculated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'))
+        `).run(enrollment.id, targetP1, attClasses, attTotal, attPct, examMarks, 1);
+      }
+      if (phases.length >= 2 && enrollment.step4_completed === 1) {
+        const p2Attended = (enrollment.phase2_shooting_attended || 0) + (enrollment.phase2_editing_attended || 0);
+        db.prepare(`
+          INSERT OR REPLACE INTO student_phase_results (
+            enrollment_id, phase_id, attendance_classes, attendance_total, attendance_percentage,
+            exam_marks, is_passed, calculated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'))
+        `).run(enrollment.id, targetP2, p2Attended, 2, 100.0, null, 1);
+      }
+
+      // 3. Atomically update the enrollment to the defined course
+      db.prepare(`
+        UPDATE student_course_enrollments
+        SET course_definition_id = ?, course_version = ?, batch_id = COALESCE(?, batch_id), updated_at = datetime('now')
+        WHERE id = ?
+      `).run(targetDef.id, targetVersion, targetBatchId, enrollment.id);
+    });
+
+    migrationTx();
+
+    const updatedProgress = await courseProgressService.getEnrollmentProgress(enrollmentId, null, { batchId: targetBatchId });
+
+    res.json({
+      success: true,
+      message: 'Enrollment successfully migrated to defined course with legacy snapshot preserved.',
+      progress: updatedProgress
+    });
+  } catch (error) {
+    console.error('Error during explicit enrollment migration:', error);
+    res.status(500).json({ error: 'Internal server error during enrollment migration.' });
   }
 });
 

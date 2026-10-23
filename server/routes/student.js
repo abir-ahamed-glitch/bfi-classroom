@@ -2,6 +2,7 @@ import express from 'express';
 import bcrypt from 'bcryptjs';
 import db from '../db/database.js';
 import { authenticateToken, sanitizeInput, validatePassword, sensitiveEndpointLimiter } from '../middleware/auth.js';
+import courseProgressService from '../services/courseProgressService.js';
 
 const router = express.Router();
 
@@ -43,7 +44,7 @@ function fetchUserProfileData(userId, includePrivateData = false) {
 }
 
 // Get student or instructor profile
-router.get('/profile', authenticateToken, (req, res) => {
+router.get('/profile', authenticateToken, async (req, res) => {
   try {
     const data = fetchUserProfileData(req.user.id, true);
     
@@ -53,6 +54,16 @@ router.get('/profile', authenticateToken, (req, res) => {
 
     const { baseUser, profileData } = data;
     const enrollments = db.prepare('SELECT * FROM student_course_enrollments WHERE user_id = ?').all(req.user.id);
+    for (const enr of enrollments) {
+      if (enr.course_definition_id) {
+        try {
+          const reqBatchId = req.query.batch_id ? parseInt(req.query.batch_id, 10) : null;
+          enr.defined_progress = await courseProgressService.getEnrollmentProgress(enr.id, null, { batchId: enr.batch_id || reqBatchId });
+        } catch (e) {
+          console.error(`Error loading progress for enrollment ${enr.id}:`, e.message);
+        }
+      }
+    }
     const socialLinks = db.prepare('SELECT id, platform, url FROM social_links WHERE user_id = ?').all(req.user.id);
     const experiences = db.prepare('SELECT * FROM student_experiences WHERE user_id = ? ORDER BY start_date DESC').all(req.user.id);
 
@@ -70,7 +81,7 @@ router.get('/profile', authenticateToken, (req, res) => {
 });
 
 // Get another user's profile
-router.get('/profile/:userId', authenticateToken, sensitiveEndpointLimiter, (req, res) => {
+router.get('/profile/:userId', authenticateToken, sensitiveEndpointLimiter, async (req, res) => {
   try {
     const targetUserId = req.params.userId;
 
@@ -82,6 +93,16 @@ router.get('/profile/:userId', authenticateToken, sensitiveEndpointLimiter, (req
 
     const { baseUser, profileData } = data;
     const enrollments = db.prepare('SELECT * FROM student_course_enrollments WHERE user_id = ?').all(targetUserId);
+    for (const enr of enrollments) {
+      if (enr.course_definition_id) {
+        try {
+          const reqBatchId = req.query.batch_id ? parseInt(req.query.batch_id, 10) : null;
+          enr.defined_progress = await courseProgressService.getEnrollmentProgress(enr.id, null, { batchId: enr.batch_id || reqBatchId });
+        } catch (e) {
+          console.error(`Error loading progress for enrollment ${enr.id}:`, e.message);
+        }
+      }
+    }
     const socialLinks = db.prepare('SELECT id, platform, url FROM social_links WHERE user_id = ?').all(targetUserId);
     const experiences = db.prepare('SELECT * FROM student_experiences WHERE user_id = ? ORDER BY start_date DESC').all(targetUserId);
     const portfolioQuery = db.prepare(`
