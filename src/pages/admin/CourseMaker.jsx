@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { createPortal } from 'react-dom';
@@ -393,8 +393,9 @@ export default function CourseMaker() {
     }
   }, [searchParams, viewMode, editingDefId, activePhaseTab]);
 
-  // Auto-save form state to localStorage
-  useEffect(() => {
+  // Cache each committed edit before paint, so an immediate refresh cannot
+  // overtake a deferred effect and restore an older draft.
+  useLayoutEffect(() => {
     if (!isInitializedRef.current) return;
     if (viewMode === 'list') return;
 

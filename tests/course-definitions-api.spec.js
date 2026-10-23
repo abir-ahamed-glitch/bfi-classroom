@@ -112,6 +112,63 @@ test.beforeAll(async () => {
   );
 });
 
+  test('12. Routine edits reject overlapping or malformed slots without changing schedules or audits', async ({ request }) => {
+    const slot = (weekday, startTime, endTime) => ({ weekday, startTime, endTime, timezone: 'Asia/Dhaka' });
+    const baseline = [slot('Saturday', '10:00', '12:00')];
+    const invalidRoutines = [
+      [slot('Friday', '18:00', '20:00'), slot('Friday', '19:00', '21:00')],
+      [slot('Friday', '18:00', '21:00'), slot('Friday', '19:00', '20:00')],
+      [slot('Friday', '18:00', '20:00'), slot('Friday', '18:00', '20:00')],
+      [null],
+      ['Friday'],
+      [[]],
+    ];
+
+    for (const status of ['draft', 'published']) {
+      const definitionJson = JSON.stringify({ phases: [{ id: 'phase_1', title: 'Routine validation', routine: baseline }] });
+      const defId = db.prepare(`
+        INSERT INTO course_definitions (slug, name, course_type, phase_count, status, version, definition_json, created_by, updated_by)
+        VALUES (?, ?, 'workshop', 1, ?, 1, ?, ?, ?)
+      `).run(`test-routine-validation-${status}`, `Test Routine Validation ${status}`, status, definitionJson, adminUser.id, adminUser.id).lastInsertRowid;
+      const batchId = db.prepare(`
+        INSERT INTO batches (batch_name, batch_number, course_name, status, course_definition_id, course_version, created_by)
+        VALUES (?, ?, ?, 'active', ?, 1, ?)
+      `).run(`Test Sound Batch Routine ${status}`, `RV-${status}`, `Test Routine Validation ${status}`, defId, adminUser.id).lastInsertRowid;
+      const readState = () => ({
+        definition: db.prepare('SELECT definition_json FROM course_definitions WHERE id = ?').get(defId),
+        overrides: db.prepare('SELECT * FROM course_routine_overrides WHERE course_definition_id = ? ORDER BY id').all(defId),
+        audits: db.prepare('SELECT * FROM course_routine_audits WHERE course_definition_id = ? ORDER BY id').all(defId),
+      });
+
+      for (const targetBatch of [null, batchId]) {
+        for (const routine of invalidRoutines) {
+          const before = readState();
+          const response = await request.put(`${API_BASE}/api/admin/course-definitions/${defId}/routine`, {
+            headers: { Authorization: `Bearer ${adminToken}` },
+            data: { phase_id: 'phase_1', batch_id: targetBatch, routine, reason: 'Validate routine edit' },
+          });
+          expect(response.status(), JSON.stringify({ status, targetBatch, routine })).toBe(400);
+          expect((await response.json()).error).toMatch(/overlap|slot/i);
+          expect(readState()).toEqual(before);
+        }
+
+        // Adjacent slots, unsorted input, and the same times on different days remain valid.
+        const validRoutine = [slot('Friday', '20:00', '21:00'), slot('Friday', '18:00', '20:00'), slot('Saturday', '18:00', '20:00')];
+        const before = readState();
+        const response = await request.put(`${API_BASE}/api/admin/course-definitions/${defId}/routine`, {
+          headers: { Authorization: `Bearer ${adminToken}` },
+          data: { phase_id: 'phase_1', batch_id: targetBatch, routine: validRoutine, reason: 'Valid adjacent routine edit' },
+        });
+        expect(response.status()).toBe(200);
+        const after = readState();
+        expect(after.audits).toHaveLength(before.audits.length + 1);
+        const override = after.overrides.find(row => row.batch_id === (targetBatch || 0));
+        expect(JSON.parse(override.routine_json)).toEqual(validRoutine);
+        if (status === 'published') expect(after.definition).toEqual(before.definition);
+      }
+    }
+  });
+
 test.afterAll(() => {
   if (db) {
     cleanupTestArtifacts(db);

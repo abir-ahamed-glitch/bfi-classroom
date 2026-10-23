@@ -707,8 +707,12 @@ router.put('/:id/routine', authenticateToken, (req, res) => {
     }
 
     // Validate routine slots
+    const daySlots = new Map();
     for (let rIdx = 0; rIdx < routine.length; rIdx++) {
       const slot = routine[rIdx];
+      if (!slot || typeof slot !== 'object' || Array.isArray(slot)) {
+        return res.status(400).json({ error: `Routine slot ${rIdx + 1} must be an object with weekday, startTime, and endTime.` });
+      }
       if (!ALLOWED_WEEKDAYS.includes(slot.weekday)) {
         return res.status(400).json({ error: `Invalid weekday "${slot.weekday}" in routine.` });
       }
@@ -718,6 +722,14 @@ router.put('/:id/routine', authenticateToken, (req, res) => {
       if (timeToMinutes(slot.endTime) <= timeToMinutes(slot.startTime)) {
         return res.status(400).json({ error: `End time (${slot.endTime}) must be strictly after start time (${slot.startTime}).` });
       }
+      const start = timeToMinutes(slot.startTime);
+      const end = timeToMinutes(slot.endTime);
+      const previousSlots = daySlots.get(slot.weekday) || [];
+      if (previousSlots.some(previous => Math.max(start, previous.start) < Math.min(end, previous.end))) {
+        return res.status(400).json({ error: `Overlapping routine schedule detected on ${slot.weekday}.` });
+      }
+      previousSlots.push({ start, end });
+      daySlots.set(slot.weekday, previousSlots);
     }
 
     // Determine old routine: check if there was a previous override or take base phase routine
