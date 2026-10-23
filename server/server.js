@@ -57,7 +57,10 @@ const io = new Server(httpServer, {
     origin: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE'],
     credentials: true,
-  }
+  },
+  pingTimeout: 20000,
+  pingInterval: 25000,
+  maxHttpBufferSize: 1e7
 });
 app.set('io', io);
 
@@ -491,6 +494,11 @@ trashEvents.on('update', (payload) => {
 io.on('connection', (socket) => {
   const userId = socket.user.id;
   console.log(`User connected via Socket.io: socketId=${socket.id}, userId=${userId}`);
+
+  socket.on('error', (err) => {
+    console.error(`Socket error [socketId=${socket.id}, userId=${userId}]:`, err?.message || err);
+  });
+
   socket.join(`user:${userId}`);
 
   // Track online status
@@ -597,7 +605,15 @@ io.on('connection', (socket) => {
 // Serve frontend in production (Single Deployment)
 const clientBuildPath = path.join(__dirname, '..', 'dist');
 const clientAssetsPath = path.join(clientBuildPath, 'assets');
+
+// Detect social link preview scrapers (WhatsApp, Facebook, Twitter, Telegram, Discord, LinkedIn, etc.)
+const SOCIAL_BOT_REGEX = /facebookexternalhit|Facebot|Twitterbot|WhatsApp|TelegramBot|Discordbot|LinkedInBot|Pinterest|Slackbot|vkShare|W3C_Validator/i;
+
 app.get('/', (req, res) => {
+  const userAgent = req.headers['user-agent'] || '';
+  if (SOCIAL_BOT_REGEX.test(userAgent)) {
+    return res.sendFile(path.join(clientBuildPath, 'index.html'));
+  }
   res.redirect('/bfi-classroom');
 });
 
