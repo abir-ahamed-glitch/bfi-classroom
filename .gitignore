@@ -40,6 +40,8 @@ scratch.js
 *.ps1
 test_*.js
 test_helper.js
+*.tar.gz
+*.zip
 
 # Test artifacts and reports
 test-results/
@@ -48,3 +50,9 @@ playwright-report/
 
 # Cloudflare wrangler
 .wrangler/
+
+# Environment files
+.env
+.env.*
+*.env
+

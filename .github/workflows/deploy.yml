@@ -1,0 +1,49 @@
+name: Deploy BFI Classroom to Oracle Cloud
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    steps:
+      - name: Execute Remote Deployment via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.ORACLE_HOST }}
+          username: ${{ secrets.ORACLE_USER }}
+          key: ${{ secrets.ORACLE_SSH_KEY }}
+          script: |
+            set -e
+            echo "🚀 Starting automated deployment on Oracle Cloud..."
+            cd /home/ubuntu/bfi-classroom
+
+            # Preserve production .env if backup exists
+            if [ -f /home/ubuntu/.env.bfi ]; then
+              cp /home/ubuntu/.env.bfi .env.backup
+            fi
+
+            # Clean any untracked diffs on tracked files
+            git checkout -- .env || true
+            git checkout -- ecosystem.config.cjs || true
+
+            # Pull latest changes from main
+            git pull origin main
+
+            # Restore production .env
+            if [ -f .env.backup ]; then
+              cp .env.backup .env
+              rm -f .env.backup
+            fi
+
+            # Install dependencies and build frontend
+            npm install --legacy-peer-deps
+            npm run build
+
+            # Zero-downtime PM2 reload
+            pm2 reload bfi-classroom || pm2 start ecosystem.config.cjs
+
+            echo "✅ Deployment completed successfully!"

@@ -1,26 +1,13 @@
 module.exports = {
   apps: [
     {
-      name: 'bfi-classroom-backend',
+      name: 'bfi-classroom',
       script: 'server/server.js',
+      instances: 1,
+      exec_mode: 'fork',
       env: {
         NODE_ENV: 'production',
         PORT: 3001,
-      },
-    },
-    {
-      name: 'bfi-classroom-frontend',
-      script: 'node_modules/vite/bin/vite.js',
-      args: '',
-      env: {
-        NODE_ENV: 'development',
-      },
-    },
-    {
-      name: 'bfi-classroom-tunnel',
-      script: 'tunnel.js',
-      env: {
-        NODE_ENV: 'production',
       },
     },
   ],
