@@ -527,6 +527,17 @@ export function initializeDatabase() {
     CREATE INDEX IF NOT EXISTS idx_password_reset_user_id ON password_reset_tokens(user_id);
     CREATE INDEX IF NOT EXISTS idx_password_reset_expires ON password_reset_tokens(expires_at);
     CREATE INDEX IF NOT EXISTS idx_profile_field_privacy_user ON profile_field_privacy(user_id);
+    CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
+    CREATE INDEX IF NOT EXISTS idx_users_role_last_login ON users(role, last_login);
+    CREATE INDEX IF NOT EXISTS idx_student_profiles_phase2 ON student_profiles(phase2_completed);
+    CREATE INDEX IF NOT EXISTS idx_sce_course_name ON student_course_enrollments(course_name);
+    CREATE INDEX IF NOT EXISTS idx_sce_course_def ON student_course_enrollments(course_definition_id);
+    CREATE INDEX IF NOT EXISTS idx_sce_steps ON student_course_enrollments(step1_completed, step2_completed, step3_completed, step4_completed);
+    CREATE INDEX IF NOT EXISTS idx_sce_user_course ON student_course_enrollments(user_id, course_name);
+    CREATE INDEX IF NOT EXISTS idx_spr_enrollment_passed ON student_phase_results(enrollment_id, is_passed);
+    CREATE INDEX IF NOT EXISTS idx_spr_phase_id ON student_phase_results(phase_id);
+    CREATE INDEX IF NOT EXISTS idx_bcf_lookup ON batch_course_fees(batch_id, course_name, batch_number);
+    CREATE INDEX IF NOT EXISTS idx_batches_lookup ON batches(course_name, batch_number);
 
     -- Custom subjects
     CREATE TABLE IF NOT EXISTS custom_subjects (

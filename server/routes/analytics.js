@@ -1,17 +1,34 @@
 import express from 'express';
 import db from '../db/database.js';
 import { authenticateToken, requireRole } from '../middleware/auth.js';
-import { parseFeeDetails, getBatchFee, getFeeStatus, extractFeeAmounts, resolvePhaseFee } from '../utils/feeResolver.js';
+import { parseFeeDetails, getBatchFee, getFeeStatus, extractFeeAmounts, resolvePhaseFee, createFeeResolverContext, resolveEnrollmentFinancials } from '../utils/feeResolver.js';
 
 const router = express.Router();
 
-function getPendingCertificateRows() {
+const analyticsCache = new Map();
+const CACHE_TTL_MS = 30 * 1000; // 30 seconds
+
+function getCachedOrCompute(key, computeFn) {
+  const cached = analyticsCache.get(key);
+  const now = Date.now();
+  if (cached && (now - cached.timestamp < CACHE_TTL_MS)) {
+    return cached.data;
+  }
+  const data = computeFn();
+  analyticsCache.set(key, { timestamp: now, data });
+  return data;
+}
+
+
+function getPendingCertificateRows(feeContext = null) {
   const rows = db.prepare(`
     SELECT
       sce.id AS enrollment_id,
       sce.user_id,
       sce.course_name,
       sce.course_type,
+      sce.course_definition_id,
+      sce.batch_id,
       sce.fee_details,
       u.first_name,
       u.last_name,
@@ -32,8 +49,16 @@ function getPendingCertificateRows() {
     ORDER BY datetime(sp.updated_at) DESC, sce.id DESC
   `).all();
 
+  const ctx = feeContext || createFeeResolverContext(db);
+
   return rows
-    .filter((row) => getFeeStatus(parseFeeDetails(row.fee_details), row.course_type) === 'paid')
+    .filter((row) => getFeeStatus(parseFeeDetails(row.fee_details), row.course_type, null, {
+      courseDefId: row.course_definition_id,
+      courseName: row.course_name,
+      batchNumber: row.batch_number,
+      batchId: row.batch_id,
+      feeContext: ctx
+    }) === 'paid')
     .map(({ fee_details: _feeDetails, ...row }) => ({
       ...row,
       payment_status: 'Fully Paid',
@@ -107,303 +132,294 @@ router.get('/urgent', authenticateToken, requireRole('admin'), (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/stats', authenticateToken, requireRole('admin'), (req, res) => {
   try {
-    // Total registered students
-    const totalRegistered = db.prepare(`
-      SELECT COUNT(*) as count FROM users WHERE role = 'student'
-    `).get();
+    const data = getCachedOrCompute('stats', () => {
+      // Total registered students
+      const totalRegistered = db.prepare(`
+        SELECT COUNT(*) as count FROM users WHERE role = 'student'
+      `).get();
 
-    // Currently enrolled / admitted (global)
-    const allEnrollments = db.prepare(`SELECT id, user_id, course_name, course_type, course_definition_id, step1_completed, step2_completed, step4_completed, fee_details FROM student_course_enrollments`).all();
-    const enrolledUserIds = new Set();
-    const passedUserIds = new Set();
-    const passedPhase1UserIds = new Set();
+      // Currently enrolled / admitted (global)
+      const allEnrollments = db.prepare(`
+        SELECT id, user_id, course_name, course_type, course_definition_id, batch_id, step1_completed, step2_completed, step3_completed, step4_completed, fee_details
+        FROM student_course_enrollments
+      `).all();
 
-    const definedDefs = db.prepare('SELECT id, phase_count FROM course_definitions').all();
-    const defMap = new Map(definedDefs.map(d => [d.id, d.phase_count]));
+      const enrolledUserIds = new Set();
+      const passedUserIds = new Set();
+      const passedPhase1UserIds = new Set();
 
-    for (const e of allEnrollments) {
-      let isEnrolled = false;
-      const feeDetails = parseFeeDetails(e.fee_details);
-      const status = getFeeStatus(feeDetails, e.course_type);
-      const hasPaid = status === 'paid' || status === 'partial';
-
-      if (e.course_definition_id) {
-        isEnrolled = true;
-        const totalPhases = defMap.get(e.course_definition_id) || 1;
-        const passedPhases = db.prepare('SELECT COUNT(*) as cnt FROM student_phase_results WHERE enrollment_id = ? AND is_passed = 1').get(e.id)?.cnt || 0;
-        if (passedPhases >= totalPhases) {
-          passedUserIds.add(e.user_id);
-        }
-        if (passedPhases >= 1) {
-          passedPhase1UserIds.add(e.user_id);
-        }
-      } else {
-        if (e.course_name === 'Online Filmmaking Course') {
-          if (e.step1_completed === 1) isEnrolled = true;
-        } else {
-          if (hasPaid) isEnrolled = true;
-        }
-
-        if (e.step4_completed === 1) passedUserIds.add(e.user_id);
-        if (e.step2_completed === 1) passedPhase1UserIds.add(e.user_id);
+      const definedDefs = db.prepare('SELECT id, phase_count, definition_json FROM course_definitions').all();
+      const defMap = new Map(definedDefs.map(d => [d.id, d.phase_count]));
+      const defDetailsMap = new Map();
+      for (const d of definedDefs) {
+        let parsed = null;
+        try {
+          parsed = typeof d.definition_json === 'string' ? JSON.parse(d.definition_json) : d.definition_json;
+        } catch {}
+        defDetailsMap.set(d.id, { ...d, parsed });
       }
 
-      if (isEnrolled) enrolledUserIds.add(e.user_id);
-    }
+      // Pre-compute passed phases per enrollment in ONE single query
+      const passedPhasesRows = db.prepare(`
+        SELECT enrollment_id, COUNT(*) as cnt
+        FROM student_phase_results
+        WHERE is_passed = 1
+        GROUP BY enrollment_id
+      `).all();
+      const passedPhasesMap = new Map();
+      for (const r of passedPhasesRows) {
+        passedPhasesMap.set(r.enrollment_id, r.cnt);
+      }
 
-    // Total Passed Students (unique student count who completed any course)
-    const totalPassed = passedUserIds.size;
+      const feeContext = createFeeResolverContext(db);
 
-    // Certificates issued (total count of step4_completed rows)
-    const legacyCertificates = db.prepare(`
-      SELECT COUNT(*) as count
-      FROM student_course_enrollments
-      WHERE step4_completed = 1 AND course_definition_id IS NULL
-    `).get();
+      for (const e of allEnrollments) {
+        let isEnrolled = false;
 
-    let definedCertsCount = 0;
-    for (const [defId, phaseCount] of defMap.entries()) {
-      const definedCompleted = db.prepare(`
-        SELECT COUNT(DISTINCT enrollment_id) as count
+        if (e.course_definition_id) {
+          isEnrolled = true;
+          const totalPhases = defMap.get(e.course_definition_id) || 1;
+          const passedPhases = passedPhasesMap.get(e.id) || 0;
+          if (passedPhases >= totalPhases) {
+            passedUserIds.add(e.user_id);
+          }
+          if (passedPhases >= 1) {
+            passedPhase1UserIds.add(e.user_id);
+          }
+        } else {
+          if (e.course_name === 'Online Filmmaking Course') {
+            if (e.step1_completed === 1) isEnrolled = true;
+          } else {
+            const feeDetails = parseFeeDetails(e.fee_details);
+            const status = getFeeStatus(feeDetails, e.course_type, null, {
+              courseDefId: e.course_definition_id,
+              courseName: e.course_name,
+              batchId: e.batch_id,
+              feeContext
+            });
+            if (status === 'paid' || status === 'partial') isEnrolled = true;
+          }
+
+          if (e.step4_completed === 1) passedUserIds.add(e.user_id);
+          if (e.step2_completed === 1) passedPhase1UserIds.add(e.user_id);
+        }
+
+        if (isEnrolled) enrolledUserIds.add(e.user_id);
+      }
+
+      // Total Passed Students (unique student count who completed any course)
+      const totalPassed = passedUserIds.size;
+
+      // Certificates issued (total count of step4_completed rows)
+      const legacyCertificates = db.prepare(`
+        SELECT COUNT(*) as count
+        FROM student_course_enrollments
+        WHERE step4_completed = 1 AND course_definition_id IS NULL
+      `).get();
+
+      let definedCertsCount = 0;
+      for (const e of allEnrollments) {
+        if (e.course_definition_id) {
+          const requiredPhases = defMap.get(e.course_definition_id) || 1;
+          if ((passedPhasesMap.get(e.id) || 0) >= requiredPhases) {
+            definedCertsCount++;
+          }
+        }
+      }
+      const certificatesIssued = { count: (legacyCertificates?.count || 0) + definedCertsCount };
+
+      // Failed / Dropped (global)
+      const failedOrDropped = Math.max(
+        0,
+        (totalRegistered.count || 0) - passedPhase1UserIds.size
+      );
+
+      // Course-specific statistics for active courses
+      const activeCourses = db.prepare(`
+        SELECT course_name,
+               CASE WHEN MAX(CASE WHEN course_type = 'filmmaking' THEN 1 ELSE 0 END) = 1
+                    THEN 'filmmaking'
+                    ELSE COALESCE(MAX(course_type), 'short')
+               END AS course_type,
+               MAX(course_definition_id) as course_definition_id
+        FROM student_course_enrollments
+        WHERE course_name IS NOT NULL AND TRIM(course_name) != ''
+        GROUP BY course_name
+      `).all();
+
+      // Pre-query phase stats for all courses in one query
+      const phaseStatsRows = db.prepare(`
+        SELECT 
+          sce.course_name,
+          spr.phase_id,
+          COUNT(DISTINCT spr.enrollment_id) as students_evaluated,
+          SUM(CASE WHEN spr.is_passed = 1 THEN 1 ELSE 0 END) as passed_count,
+          AVG(spr.attendance_percentage) as avg_attendance,
+          SUM(spr.assignments_completed) as total_assignments_completed
         FROM student_phase_results spr
         JOIN student_course_enrollments sce ON sce.id = spr.enrollment_id
-        WHERE sce.course_definition_id = ? AND spr.is_passed = 1
-        GROUP BY spr.enrollment_id
-        HAVING COUNT(*) >= ?
-      `).all(defId, phaseCount);
-      definedCertsCount += definedCompleted.length;
-    }
-    const certificatesIssued = { count: (legacyCertificates?.count || 0) + definedCertsCount };
+        GROUP BY sce.course_name, spr.phase_id
+      `).all();
+      const phaseStatsMap = new Map();
+      for (const r of phaseStatsRows) {
+        phaseStatsMap.set(`${r.course_name}:::${r.phase_id}`, r);
+      }
 
-    // Failed / Did Not Pass (global)
-    const failedOrDropped = Math.max(
-      0,
-      (totalRegistered.count || 0) - passedPhase1UserIds.size
-    );
-
-    // Course-specific statistics for active courses (deduplicated by course_name)
-    const activeCourses = db.prepare(`
-      SELECT course_name,
-             CASE WHEN MAX(CASE WHEN course_type = 'filmmaking' THEN 1 ELSE 0 END) = 1
-                  THEN 'filmmaking'
-                  ELSE COALESCE(MAX(course_type), 'short')
-             END AS course_type,
-             MAX(course_definition_id) as course_definition_id
-      FROM student_course_enrollments
-      WHERE course_name IS NOT NULL AND TRIM(course_name) != ''
-      GROUP BY course_name
-    `).all();
-
-    const coursesStats = activeCourses.map(c => {
-      const courseName = c.course_name;
-      const courseType = c.course_type;
-      const courseDefId = c.course_definition_id;
-
-      if (courseDefId) {
-        // Defined course (1–5 phases) statistics
-        const defRow = db.prepare('SELECT id, phase_count, definition_json FROM course_definitions WHERE id = ?').get(courseDefId);
-        let parsedDef = null;
-        try {
-          parsedDef = defRow ? JSON.parse(defRow.definition_json) : null;
-        } catch { /* empty */ }
-
-        const totalAdmitted = db.prepare(`
-          SELECT COUNT(DISTINCT user_id) as count
-          FROM student_course_enrollments
-          WHERE course_name = ?
-        `).get(courseName)?.count || 0;
-
-        const phasesList = parsedDef?.phases || [];
-        const definedPhases = phasesList.map((phase, pIdx) => {
-          const phaseId = phase.id || `p_${pIdx + 1}`;
-          const phaseNum = pIdx + 1;
-          const statRow = db.prepare(`
-            SELECT 
-              COUNT(DISTINCT spr.enrollment_id) as students_evaluated,
-              SUM(CASE WHEN spr.is_passed = 1 THEN 1 ELSE 0 END) as passed_count,
-              AVG(spr.attendance_percentage) as avg_attendance,
-              SUM(spr.assignments_completed) as total_assignments_completed
-            FROM student_phase_results spr
-            JOIN student_course_enrollments sce ON sce.id = spr.enrollment_id
-            WHERE sce.course_name = ? AND spr.phase_id = ?
-          `).get(courseName, phaseId);
-
-          return {
-            phaseNumber: phaseNum,
-            phaseName: phase.title || `Phase ${phaseNum}`,
-            studentsEvaluated: statRow?.students_evaluated || 0,
-            passedCount: statRow?.passed_count || 0,
-            avgAttendance: Math.round(statRow?.avg_attendance || 0),
-            totalAssignmentsCompleted: statRow?.total_assignments_completed || 0
-          };
-        });
-
-        const totalPhasesCount = defRow?.phase_count || phasesList.length || 1;
-        const completedCourse = db.prepare(`
-          SELECT COUNT(DISTINCT spr.enrollment_id) as count
+      // Pre-query course completed counts for defined courses
+      const courseCompletedMap = new Map();
+      for (const [defId, totalPhases] of defMap.entries()) {
+        const rows = db.prepare(`
+          SELECT sce.course_name, COUNT(DISTINCT spr.enrollment_id) as cnt
           FROM student_phase_results spr
           JOIN student_course_enrollments sce ON sce.id = spr.enrollment_id
-          WHERE sce.course_name = ? AND spr.is_passed = 1
-          GROUP BY spr.enrollment_id
+          WHERE sce.course_definition_id = ? AND spr.is_passed = 1
+          GROUP BY sce.course_name, spr.enrollment_id
           HAVING COUNT(*) >= ?
-        `).all(courseName, totalPhasesCount).length;
-
-        return {
-          courseName,
-          courseType,
-          isDefined: true,
-          courseDefinitionId: courseDefId,
-          stats: {
-            totalAdmitted,
-            completedCourse,
-            definedPhases
-          }
-        };
+        `).all(defId, totalPhases);
+        for (const r of rows) {
+          courseCompletedMap.set(r.course_name, (courseCompletedMap.get(r.course_name) || 0) + 1);
+        }
       }
 
-      if (courseType === 'filmmaking') {
-        const totalAdmitted = db.prepare(`
-          SELECT COUNT(DISTINCT user_id) as count
-          FROM student_course_enrollments
-          WHERE step1_completed = 1 AND course_name = ?
-        `).get(courseName).count || 0;
+      // Pre-query admitted student counts per course
+      const admittedRows = db.prepare(`
+        SELECT course_name, COUNT(DISTINCT user_id) as count
+        FROM student_course_enrollments
+        GROUP BY course_name
+      `).all();
+      const admittedMap = new Map(admittedRows.map(r => [r.course_name, r.count]));
 
-        const classAttendance1stPhase = db.prepare(`
-          SELECT COUNT(DISTINCT user_id) as count
-          FROM student_course_enrollments
-          WHERE step1_completed = 1 AND course_name = ?
-            AND attendance_total > 0
-            AND (CAST(attendance_classes AS REAL) / CAST(attendance_total AS REAL)) >= 0.8
-        `).get(courseName).count || 0;
+      // Pre-query filmmaking stats
+      const filmmakingStatsRows = db.prepare(`
+        SELECT
+          course_name,
+          COUNT(DISTINCT CASE WHEN step1_completed = 1 THEN user_id END) as totalAdmitted,
+          COUNT(DISTINCT CASE WHEN step1_completed = 1 AND attendance_total > 0 AND (CAST(attendance_classes AS REAL) / CAST(attendance_total AS REAL)) >= 0.8 THEN user_id END) as classAttendance1stPhase,
+          COUNT(DISTINCT CASE WHEN step1_completed = 1 AND (attendance_total = 0 OR (CAST(attendance_classes AS REAL) / CAST(attendance_total AS REAL)) < 0.8) THEN user_id END) as classAttendance1stPhaseNotQualified,
+          COUNT(DISTINCT CASE WHEN step1_completed = 1 AND assignment_screenplay > 0 THEN user_id END) as screenplayCount,
+          COUNT(DISTINCT CASE WHEN step1_completed = 1 AND assignment_shooting_script > 0 THEN user_id END) as shootingScriptCount,
+          COUNT(DISTINCT CASE WHEN step2_completed = 1 THEN user_id END) as passedPhase1Exam,
+          COUNT(DISTINCT CASE WHEN step2_completed = 1 THEN user_id END) as completedPhase1,
+          COUNT(DISTINCT CASE WHEN step3_completed = 1 THEN user_id END) as totalAdmittedPhase2,
+          COUNT(DISTINCT CASE WHEN step3_completed = 1 AND phase2_shooting_attended = 1 THEN user_id END) as shootingAttendedCount,
+          COUNT(DISTINCT CASE WHEN step3_completed = 1 AND phase2_editing_attended = 1 THEN user_id END) as editingAttendedCount,
+          COUNT(DISTINCT CASE WHEN step4_completed = 1 THEN user_id END) as completedPhase2,
+          COUNT(DISTINCT CASE WHEN step4_completed = 1 THEN user_id END) as submittedFilm
+        FROM student_course_enrollments
+        GROUP BY course_name
+      `).all();
+      const filmmakingMap = new Map(filmmakingStatsRows.map(r => [r.course_name, r]));
 
-        const classAttendance1stPhaseNotQualified = db.prepare(`
-          SELECT COUNT(DISTINCT user_id) as count
-          FROM student_course_enrollments
-          WHERE step1_completed = 1 AND course_name = ?
-            AND (attendance_total = 0 OR (CAST(attendance_classes AS REAL) / CAST(attendance_total AS REAL)) < 0.8)
-        `).get(courseName).count || 0;
+      // Pre-query short courses stats
+      const shortCourseStatsRows = db.prepare(`
+        SELECT
+          course_name,
+          COUNT(DISTINCT CASE WHEN step1_completed = 1 THEN user_id END) as totalAdmitted,
+          COUNT(DISTINCT CASE WHEN step4_completed = 1 THEN user_id END) as completedCourse
+        FROM student_course_enrollments
+        GROUP BY course_name
+      `).all();
+      const shortCourseMap = new Map(shortCourseStatsRows.map(r => [r.course_name, r]));
 
-        const screenplayCount = db.prepare(`
-          SELECT COUNT(DISTINCT user_id) as count
-          FROM student_course_enrollments
-          WHERE step1_completed = 1 AND course_name = ?
-            AND assignment_screenplay > 0
-        `).get(courseName).count || 0;
+      const coursesStats = activeCourses.map(c => {
+        const courseName = c.course_name;
+        const courseType = c.course_type;
+        const courseDefId = c.course_definition_id;
 
-        const shootingScriptCount = db.prepare(`
-          SELECT COUNT(DISTINCT user_id) as count
-          FROM student_course_enrollments
-          WHERE step1_completed = 1 AND course_name = ?
-            AND assignment_shooting_script > 0
-        `).get(courseName).count || 0;
+        if (courseDefId) {
+          const defRow = defDetailsMap.get(courseDefId);
+          const parsedDef = defRow?.parsed;
+          const totalAdmitted = admittedMap.get(courseName) || 0;
 
-        const passedPhase1Exam = db.prepare(`
-          SELECT COUNT(DISTINCT user_id) as count
-          FROM student_course_enrollments
-          WHERE step2_completed = 1 AND course_name = ?
-        `).get(courseName).count || 0;
+          const phasesList = parsedDef?.phases || [];
+          const definedPhases = phasesList.map((phase, pIdx) => {
+            const phaseId = phase.id || `p_${pIdx + 1}`;
+            const phaseNum = pIdx + 1;
+            const statRow = phaseStatsMap.get(`${courseName}:::${phaseId}`);
 
-        const completedPhase1 = db.prepare(`
-          SELECT COUNT(DISTINCT user_id) as count
-          FROM student_course_enrollments
-          WHERE step2_completed = 1 AND course_name = ?
-        `).get(courseName).count || 0;
+            return {
+              phaseNumber: phaseNum,
+              phaseName: phase.title || `Phase ${phaseNum}`,
+              studentsEvaluated: statRow?.students_evaluated || 0,
+              passedCount: statRow?.passed_count || 0,
+              avgAttendance: Math.round(statRow?.avg_attendance || 0),
+              totalAssignmentsCompleted: statRow?.total_assignments_completed || 0
+            };
+          });
 
-        const totalAdmittedPhase2 = db.prepare(`
-          SELECT COUNT(DISTINCT user_id) as count
-          FROM student_course_enrollments
-          WHERE step3_completed = 1 AND course_name = ?
-        `).get(courseName).count || 0;
+          const completedCourse = courseCompletedMap.get(courseName) || 0;
 
-        const shootingAttendedCount = db.prepare(`
-          SELECT COUNT(DISTINCT user_id) as count
-          FROM student_course_enrollments
-          WHERE step3_completed = 1 AND course_name = ?
-            AND phase2_shooting_attended = 1
-        `).get(courseName).count || 0;
+          return {
+            courseName,
+            courseType,
+            isDefined: true,
+            courseDefinitionId: courseDefId,
+            stats: {
+              totalAdmitted,
+              completedCourse,
+              definedPhases
+            }
+          };
+        }
 
-        const editingAttendedCount = db.prepare(`
-          SELECT COUNT(DISTINCT user_id) as count
-          FROM student_course_enrollments
-          WHERE step3_completed = 1 AND course_name = ?
-            AND phase2_editing_attended = 1
-        `).get(courseName).count || 0;
+        if (courseType === 'filmmaking') {
+          const stats = filmmakingMap.get(courseName) || {
+            totalAdmitted: 0,
+            classAttendance1stPhase: 0,
+            classAttendance1stPhaseNotQualified: 0,
+            screenplayCount: 0,
+            shootingScriptCount: 0,
+            passedPhase1Exam: 0,
+            completedPhase1: 0,
+            totalAdmittedPhase2: 0,
+            shootingAttendedCount: 0,
+            editingAttendedCount: 0,
+            completedPhase2: 0,
+            submittedFilm: 0
+          };
+          return {
+            courseName,
+            courseType,
+            stats
+          };
+        } else {
+          const stats = shortCourseMap.get(courseName) || {
+            totalAdmitted: 0,
+            completedCourse: 0
+          };
+          return {
+            courseName,
+            courseType,
+            stats
+          };
+        }
+      });
 
-        const completedPhase2 = db.prepare(`
-          SELECT COUNT(DISTINCT user_id) as count
-          FROM student_course_enrollments
-          WHERE step4_completed = 1 AND course_name = ?
-        `).get(courseName).count || 0;
+      const totalAdmittedPhase2Count = db.prepare(`SELECT COUNT(DISTINCT user_id) as count FROM student_course_enrollments WHERE step3_completed = 1`).get().count || 0;
 
-        const submittedFilm = db.prepare(`
-          SELECT COUNT(DISTINCT user_id) as count
-          FROM student_course_enrollments
-          WHERE step4_completed = 1 AND course_name = ?
-        `).get(courseName).count || 0;
-
-        return {
-          courseName,
-          courseType,
-          stats: {
-            totalAdmitted,
-            classAttendance1stPhase,
-            classAttendance1stPhaseNotQualified,
-            screenplayCount,
-            shootingScriptCount,
-            passedPhase1Exam,
-            completedPhase1,
-            totalAdmittedPhase2,
-            shootingAttendedCount,
-            editingAttendedCount,
-            completedPhase2,
-            submittedFilm
-          }
-        };
-      } else {
-        const totalAdmitted = db.prepare(`
-          SELECT COUNT(DISTINCT user_id) as count
-          FROM student_course_enrollments
-          WHERE step1_completed = 1 AND course_name = ?
-        `).get(courseName).count || 0;
-
-        const completedCourse = db.prepare(`
-          SELECT COUNT(DISTINCT user_id) as count
-          FROM student_course_enrollments
-          WHERE step4_completed = 1 AND course_name = ?
-        `).get(courseName).count || 0;
-
-        return {
-          courseName,
-          courseType,
-          stats: {
-            totalAdmitted,
-            completedCourse
-          }
-        };
-      }
-    });
-
-    res.json({
-      totalRegistered: totalRegistered.count || 0,
-      totalAdmitted: enrolledUserIds.size, // backward compatibility / fallback if needed
-      currentlyEnrolled: enrolledUserIds.size,
-      passedPhase1Exam: passedPhase1UserIds.size,
-      failedOrDropped,
-      completedPhase1: passedPhase1UserIds.size,
-      totalAdmittedPhase2: db.prepare(`SELECT COUNT(DISTINCT user_id) as count FROM student_course_enrollments WHERE step3_completed = 1`).get().count || 0,
-      completedPhase2: certificatesIssued.count || 0,
-      submittedFilm: certificatesIssued.count || 0,
-      certificatesIssued: certificatesIssued.count || 0,
-      // Our new structured fields:
-      institute: {
+      return {
         totalRegistered: totalRegistered.count || 0,
-        totalAdmittedEnrolled: enrolledUserIds.size,
-        totalPassed,
+        totalAdmitted: enrolledUserIds.size,
+        currentlyEnrolled: enrolledUserIds.size,
+        passedPhase1Exam: passedPhase1UserIds.size,
         failedOrDropped,
-        certificatesIssued: certificatesIssued.count || 0
-      },
-      courses: coursesStats
+        completedPhase1: passedPhase1UserIds.size,
+        totalAdmittedPhase2: totalAdmittedPhase2Count,
+        completedPhase2: certificatesIssued.count || 0,
+        submittedFilm: certificatesIssued.count || 0,
+        certificatesIssued: certificatesIssued.count || 0,
+        institute: {
+          totalRegistered: totalRegistered.count || 0,
+          totalAdmittedEnrolled: enrolledUserIds.size,
+          totalPassed,
+          failedOrDropped,
+          certificatesIssued: certificatesIssued.count || 0
+        },
+        courses: coursesStats
+      };
     });
+
+    res.json(data);
   } catch (error) {
     console.error('[Analytics] /stats error:', error);
     res.status(500).json({ error: 'Failed to fetch institute stats' });
@@ -411,7 +427,6 @@ router.get('/stats', authenticateToken, requireRole('admin'), (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// GET /api/analytics/students/all
 router.get('/students/all', authenticateToken, requireRole('admin'), (req, res) => {
   try {
     const rows = db.prepare(`

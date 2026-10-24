@@ -1360,7 +1360,7 @@ export default function Analytics() {
     setError(null);
 
     try {
-      const [u, s, b, f, fee, l, a, reportCount] = await Promise.all([
+      const results = await Promise.allSettled([
         apiFetch('/urgent'),
         apiFetch('/stats'),
         apiFetch('/students-per-batch'),
@@ -1375,14 +1375,27 @@ export default function Analytics() {
           return response.json();
         }),
       ]);
-      setUrgent(u);
-      setStats(s);
-      setBatchData(b);
-      setFunnelData(f);
-      setFeeData(fee);
-      setLoginData(l);
-      setActivity(a);
-      setUnreadReports(Number(reportCount.count || 0));
+
+      const [uRes, sRes, bRes, fRes, feeRes, lRes, aRes, reportRes] = results;
+
+      if (uRes.status === 'fulfilled') setUrgent(uRes.value);
+      if (sRes.status === 'fulfilled') setStats(sRes.value);
+      if (bRes.status === 'fulfilled') setBatchData(bRes.value);
+      if (fRes.status === 'fulfilled') setFunnelData(fRes.value);
+      if (feeRes.status === 'fulfilled') setFeeData(feeRes.value);
+      if (lRes.status === 'fulfilled') setLoginData(lRes.value);
+      if (aRes.status === 'fulfilled') setActivity(aRes.value);
+      if (reportRes.status === 'fulfilled') setUnreadReports(Number(reportRes.value?.count || 0));
+
+      const rejected = results.filter(r => r.status === 'rejected');
+      if (rejected.length === results.length) {
+        setError(rejected[0].reason?.message || 'Failed to fetch dashboard data');
+      } else if (rejected.length > 0) {
+        console.warn('[Analytics] Partial fetch warning:', rejected.map(r => r.reason?.message));
+        setError(null);
+      } else {
+        setError(null);
+      }
       setLastUpdated(new Date());
     } catch (err) {
       console.error('[Analytics] fetch error:', err);

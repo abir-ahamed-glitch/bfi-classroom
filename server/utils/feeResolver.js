@@ -35,9 +35,149 @@ export function resolveDiscountAmount(discount, fullFee = 0, explicitDiscountAmo
 // HELPER: Get batch-defined fee from batch_course_fees table
 // Returns { phase1_fee, phase2_fee, full_fee, is_custom } or null if not found
 // ─────────────────────────────────────────────────────────────────────────────
-export function getBatchFee(courseName, batchNumber, customDb = null, batchId = null) {
+// ─────────────────────────────────────────────────────────────────────────────
+// HELPER: Create an in-memory resolution context to eliminate N+1 DB queries
+// Pre-loads course definitions, batches, and batch fees into Maps for O(1) lookups
+// ─────────────────────────────────────────────────────────────────────────────
+export function createFeeResolverContext(customDb = null) {
   const activeDb = customDb || db;
   try {
+    const definitions = activeDb.prepare('SELECT id, phase_count, definition_json FROM course_definitions').all();
+    const definitionById = new Map();
+    for (const d of definitions) {
+      let parsed = null;
+      try {
+        parsed = typeof d.definition_json === 'string' ? JSON.parse(d.definition_json) : d.definition_json;
+      } catch {}
+      definitionById.set(d.id, { ...d, parsed });
+    }
+
+    const batches = activeDb.prepare('SELECT id, course_definition_id, course_name, batch_number FROM batches').all();
+    const batchById = new Map();
+    const batchesByCourseAndBatchNum = new Map();
+    for (const b of batches) {
+      batchById.set(b.id, b);
+      if (b.course_name && b.batch_number) {
+        const key = `${b.course_name.toLowerCase().trim()}:::${String(b.batch_number).trim()}`;
+        if (!batchesByCourseAndBatchNum.has(key)) {
+          batchesByCourseAndBatchNum.set(key, []);
+        }
+        batchesByCourseAndBatchNum.get(key).push(b);
+      }
+    }
+
+    const fees = activeDb.prepare('SELECT id, batch_id, course_name, batch_number, phase1_fee, phase2_fee, full_fee FROM batch_course_fees').all();
+    const batchFeeByBatchId = new Map();
+    const batchFeeByCourseAndBatchNum = new Map();
+    const batchFeeDefaultByCourse = new Map();
+    for (const f of fees) {
+      if (f.batch_id) {
+        batchFeeByBatchId.set(f.batch_id, f);
+      }
+      if (f.course_name && f.batch_number) {
+        const cKey = f.course_name.toLowerCase().trim();
+        const bKey = String(f.batch_number).trim();
+        if (bKey === 'DEFAULT') {
+          batchFeeDefaultByCourse.set(cKey, f);
+        } else if (!f.batch_id) {
+          batchFeeByCourseAndBatchNum.set(`${cKey}:::${bKey}`, f);
+        }
+      }
+    }
+
+    return {
+      db: activeDb,
+      definitionById,
+      batchById,
+      batchesByCourseAndBatchNum,
+      batchFeeByBatchId,
+      batchFeeByCourseAndBatchNum,
+      batchFeeDefaultByCourse,
+    };
+  } catch (err) {
+    console.error('Error creating fee resolver context:', err);
+    return null;
+  }
+}
+
+export function getBatchFee(courseName, batchNumber, customDb = null, batchId = null, feeContext = null) {
+  const activeDb = customDb || db;
+  const ctx = feeContext;
+  try {
+    if (ctx) {
+      if (batchId) {
+        const res = ctx.batchFeeByBatchId.get(batchId);
+        if (res) return { ...res, is_custom: true };
+
+        const batchRow = ctx.batchById.get(batchId);
+        if (batchRow && batchRow.course_definition_id) {
+          const cKey = batchRow.course_name ? batchRow.course_name.toLowerCase().trim() : '';
+          const bKey = batchRow.batch_number ? String(batchRow.batch_number).trim() : '';
+          const pairKey = `${cKey}:::${bKey}`;
+
+          const unlinkedRow = ctx.batchFeeByCourseAndBatchNum.get(pairKey);
+          if (unlinkedRow) {
+            const matchingCount = (ctx.batchesByCourseAndBatchNum.get(pairKey) || []).length;
+            if (matchingCount === 1) {
+              return {
+                phase1_fee: unlinkedRow.phase1_fee,
+                phase2_fee: unlinkedRow.phase2_fee,
+                full_fee: unlinkedRow.full_fee,
+                is_custom: true
+              };
+            }
+          }
+
+          const defRow = ctx.definitionById.get(batchRow.course_definition_id);
+          if (defRow && defRow.parsed) {
+            const phases = Array.isArray(defRow.parsed.phases) ? defRow.parsed.phases : [];
+            const p1Fee = phases[0] ? (Number(phases[0].feeAmount ?? phases[0].fee ?? phases[0].fee_amount) || 0) : 0;
+            const p2Fee = phases[1] ? (Number(phases[1].feeAmount ?? phases[1].fee ?? phases[1].fee_amount) || 0) : 0;
+            const totalFee = phases.reduce((acc, p) => acc + (Number(p.feeAmount ?? p.fee ?? p.fee_amount) || 0), 0);
+
+            return {
+              phase1_fee: p1Fee,
+              phase2_fee: p2Fee,
+              full_fee: totalFee,
+              is_custom: false
+            };
+          }
+
+          const defaultFee = ctx.batchFeeDefaultByCourse.get(cKey || (courseName ? courseName.toLowerCase().trim() : ''));
+          if (defaultFee) return { ...defaultFee, is_custom: false };
+          return null;
+        }
+      }
+
+      if (!courseName && !batchNumber) return null;
+
+      if (courseName && batchNumber) {
+        const pairKey = `${courseName.toLowerCase().trim()}:::${String(batchNumber).trim()}`;
+        const matchingBatches = ctx.batchesByCourseAndBatchNum.get(pairKey) || [];
+
+        if (matchingBatches.length === 1) {
+          return getBatchFee(courseName, batchNumber, activeDb, matchingBatches[0].id, ctx);
+        }
+
+        if (matchingBatches.length === 0) {
+          const res = ctx.batchFeeByCourseAndBatchNum.get(pairKey);
+          if (res) return { ...res, is_custom: true };
+        }
+
+        const defaultRes = ctx.batchFeeDefaultByCourse.get(courseName.toLowerCase().trim());
+        if (defaultRes) return { ...defaultRes, is_custom: false };
+      }
+
+      if (courseName) {
+        const lowerName = courseName.toLowerCase().trim();
+        if (lowerName === 'film appreciation course' || lowerName.includes('appreciation')) {
+          return { phase1_fee: 8000, phase2_fee: 0, full_fee: 8000, is_custom: false };
+        } else if (lowerName === 'online filmmaking course' || lowerName.includes('filmmaking')) {
+          return { phase1_fee: 4000, phase2_fee: 4000, full_fee: 8000, is_custom: false };
+        }
+      }
+      return null;
+    }
     // 1. Try specific batch_id first
     if (batchId) {
       const res = activeDb.prepare(
@@ -219,8 +359,8 @@ export function resolvePhaseFee({
   // 4. Resolve destination batch fee schedule
   const targetBatchId = batchId || enrollment?.batch_id || null;
   const batchFee = explicitBatchFee || (targetBatchId
-    ? getBatchFee(effectiveCourseName, effectiveBatchNumber, activeDb, targetBatchId)
-    : ((effectiveCourseName && effectiveBatchNumber) ? getBatchFee(effectiveCourseName, effectiveBatchNumber, activeDb) : null));
+    ? getBatchFee(effectiveCourseName, effectiveBatchNumber, activeDb, targetBatchId, feeContext)
+    : ((effectiveCourseName && effectiveBatchNumber) ? getBatchFee(effectiveCourseName, effectiveBatchNumber, activeDb, null, feeContext) : null));
 
   // 5. Determine expected base fee for this phase
   let expectedBaseFee = 0;
@@ -477,6 +617,7 @@ export function getFeeStatus(feeDetails, courseType, batchFee, options = {}) {
   const parsed = parseFeeDetails(feeDetails);
   const def = options.courseDefinition || null;
   const customDb = options.customDb || null;
+  const feeContext = options.feeContext || null;
 
   let phaseCount = 1;
   if (def && Array.isArray(def.phases) && def.phases.length > 0) {
@@ -532,6 +673,7 @@ export function extractFeeAmounts(feeDetails, courseType, batchFee, options = {}
   const parsed = parseFeeDetails(feeDetails);
   const def = options.courseDefinition || null;
   const customDb = options.customDb || null;
+  const feeContext = options.feeContext || null;
 
   let phaseCount = 1;
   if (def && Array.isArray(def.phases) && def.phases.length > 0) {
@@ -559,7 +701,8 @@ export function extractFeeAmounts(feeDetails, courseType, batchFee, options = {}
       batchNumber: options.batchNumber,
       batchId: options.batchId,
       batchFee,
-      customDb
+      customDb,
+      feeContext
     });
     totalGross += res.grossFee;
     totalDiscount += res.discount;
@@ -576,5 +719,75 @@ export function extractFeeAmounts(feeDetails, courseType, batchFee, options = {}
     collected: totalCashCollected,      // CRITICAL: ONLY real cash collected!
     cashCollected: totalCashCollected,
     outstanding: totalOutstanding
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HELPER: Resolve entire enrollment status and fee amounts in a single pass
+// Computes both status ('paid' | 'partial' | 'unpaid') and financial numbers
+// without looping over phases multiple times or querying the DB repeatedly.
+// ─────────────────────────────────────────────────────────────────────────────
+export function resolveEnrollmentFinancials(feeDetails, courseType, batchFee, options = {}) {
+  const parsed = parseFeeDetails(feeDetails);
+  const def = options.courseDefinition || null;
+  const customDb = options.customDb || null;
+  const feeContext = options.feeContext || null;
+
+  let phaseCount = 1;
+  if (def && Array.isArray(def.phases) && def.phases.length > 0) {
+    phaseCount = def.phases.length;
+  } else if (parsed && Array.isArray(parsed.phases) && parsed.phases.length > 0) {
+    phaseCount = parsed.phases.length;
+  } else if (courseType === 'filmmaking') {
+    phaseCount = 2;
+  }
+
+  let totalGross = 0;
+  let totalDiscount = 0;
+  let totalNetPayable = 0;
+  let totalCashCollected = 0;
+  let totalOutstanding = 0;
+  let allPaid = true;
+  let anyPayment = false;
+  const phaseResults = [];
+
+  for (let i = 0; i < phaseCount; i++) {
+    const res = resolvePhaseFee({
+      feeDetailsRaw: parsed,
+      phaseIndex: i,
+      courseDefinition: def,
+      courseDefId: options.courseDefId,
+      courseName: options.courseName,
+      courseType,
+      batchNumber: options.batchNumber,
+      batchId: options.batchId,
+      batchFee,
+      customDb,
+      feeContext
+    });
+    phaseResults.push(res);
+    totalGross += res.grossFee;
+    totalDiscount += res.discount;
+    totalNetPayable += res.netPayable;
+    totalCashCollected += res.cashCollected;
+    totalOutstanding += res.remainingDue;
+    if (!res.isPaid) allPaid = false;
+    if (res.hasPayment || res.cashCollected > 0) anyPayment = true;
+  }
+
+  const status = allPaid ? 'paid' : (anyPayment ? 'partial' : 'unpaid');
+
+  return {
+    status,
+    phaseResults,
+    amounts: {
+      total: totalGross,
+      gross: totalGross,
+      discount: totalDiscount,
+      netPayable: totalNetPayable,
+      collected: totalCashCollected,
+      cashCollected: totalCashCollected,
+      outstanding: totalOutstanding
+    }
   };
 }
