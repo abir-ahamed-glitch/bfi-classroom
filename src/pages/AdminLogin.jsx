@@ -1,3 +1,4 @@
+import TurnstileWidget from '../components/TurnstileWidget';
 import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { User, Lock, ArrowRight, Loader2, ShieldAlert, Eye, EyeOff } from 'lucide-react';
@@ -10,6 +11,7 @@ export default function AdminLogin() {
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+  const [turnstileToken, setTurnstileToken] = useState('');
   const { login } = useAuth();
   const navigate = useNavigate();
 
@@ -27,9 +29,16 @@ export default function AdminLogin() {
     setError('');
     setIsLoading(true);
 
+    const token = turnstileToken || window.turnstile?.getResponse() || document.querySelector('input[name="cf-turnstile-response"]')?.value || '';
+    if (!token && window.turnstile) {
+      setError('Please complete the Cloudflare security verification.');
+      setIsLoading(false);
+      return;
+    }
+
     try {
-      // Pass 'admin' as the type to the login context
-      await login(username, password, 'admin');
+      // Pass 'admin' as the type to the login context with token
+      await login(username, password, 'admin', token);
       navigate('/', { replace: true });
     } catch (err) {
       setError(err.message || 'Failed to login. Please check your credentials.');
@@ -144,6 +153,8 @@ export default function AdminLogin() {
           <div className="form-actions" style={{ display: 'flex', justifyContent: 'flex-end', margin: '-0.5rem 0 1.5rem 0' }}>
             <Link to="/admin/forgot-password" style={{ color: 'var(--text-muted)', fontSize: '0.85rem', textDecoration: 'none', transition: 'color 0.2s' }} onMouseEnter={(e) => e.target.style.color = 'var(--danger)'} onMouseLeave={(e) => e.target.style.color = 'var(--text-muted)'}>Forgot password?</Link>
           </div>
+
+          <TurnstileWidget onVerify={setTurnstileToken} onExpire={() => setTurnstileToken("")} />
 
           <button 
             type="submit" 

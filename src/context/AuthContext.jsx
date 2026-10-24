@@ -225,7 +225,7 @@ export function AuthProvider({ children }) {
     }
   };
 
-  const login = async (username, password, type = 'student') => {
+  const login = async (username, password, type = 'student', turnstileToken = null) => {
     // DEMO MODE FOR GITHUB PAGES (Since no backend runs here)
     if (window.location.hostname.includes('github.io')) {
       // In Demo Mode, we allow any username/password to let people preview the UI
@@ -258,7 +258,7 @@ export function AuthProvider({ children }) {
           headers: {
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify({ username, password, type }),
+          body: JSON.stringify({ username, password, type, turnstileToken }),
         });
       } catch {
         throw new Error('Cannot connect to server. Please ensure the backend is running.');
@@ -278,6 +278,15 @@ export function AuthProvider({ children }) {
         throw new Error(data.error || `Server error (${response.status})`);
       }
 
+      // If MFA is required, do NOT persist token or user; return challenge payload
+      if (data.requireMfa) {
+        return {
+          requireMfa: true,
+          mfaToken: data.mfaToken,
+          user: data.user
+        };
+      }
+
       localStorage.setItem('token', data.token);
       // Normalize: the API returns camelCase 'profilePicture' but the app uses snake_case 'profile_picture'
       if (data.user.profilePicture && !data.user.profile_picture) {
@@ -288,6 +297,44 @@ export function AuthProvider({ children }) {
       // server-side private key blob with PBKDF2. After this call the
       // password is no longer stored anywhere.
       const userWithKey = await ensureSecureMessagingKey(data.user, data.token, password);
+      persistUser(userWithKey);
+      return { ...data, user: userWithKey };
+    } catch (error) {
+      console.error(error);
+      throw error;
+    }
+  };
+
+  const verifyMfa = async (mfaToken, { code, recoveryCode }) => {
+    try {
+      const response = await fetch('/api/auth/mfa-verify', {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ mfaToken, code, recoveryCode }),
+      });
+
+      const contentType = response.headers.get('content-type') || '';
+      let data = {};
+      if (contentType.includes('application/json')) {
+        const text = await response.text();
+        if (text) {
+          data = JSON.parse(text);
+        }
+      }
+
+      if (!response.ok) {
+        throw new Error(data.error || `Verification failed (${response.status})`);
+      }
+
+      localStorage.setItem('token', data.token);
+      if (data.user?.profilePicture && !data.user.profile_picture) {
+        data.user.profile_picture = data.user.profilePicture;
+      }
+
+      const userWithKey = await ensureSecureMessagingKey(data.user, data.token);
       persistUser(userWithKey);
       return { ...data, user: userWithKey };
     } catch (error) {
@@ -317,6 +364,7 @@ export function AuthProvider({ children }) {
     currentUser,
     loading,
     login,
+    verifyMfa,
     logout,
     updateUser,
   };

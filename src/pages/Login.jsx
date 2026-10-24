@@ -1,3 +1,4 @@
+import TurnstileWidget from '../components/TurnstileWidget';
 import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { Film, User, Lock, ArrowRight, Loader2, Eye, EyeOff, ShieldAlert } from 'lucide-react';
@@ -10,6 +11,7 @@ export default function Login() {
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+  const [turnstileToken, setTurnstileToken] = useState('');
   const { login } = useAuth();
   const navigate = useNavigate();
 
@@ -18,8 +20,15 @@ export default function Login() {
     setError('');
     setIsLoading(true);
 
+    const token = turnstileToken || window.turnstile?.getResponse() || document.querySelector('input[name="cf-turnstile-response"]')?.value || '';
+    if (!token && window.turnstile) {
+      setError('Please complete the Cloudflare security verification.');
+      setIsLoading(false);
+      return;
+    }
+
     try {
-      await login(username, password);
+      await login(username, password, 'student', token);
       navigate('/', { replace: true });
     } catch (err) {
       setError(err.message || 'Failed to login. Please check your credentials.');
@@ -44,7 +53,7 @@ export default function Login() {
             padding: '0.6rem', 
             borderRadius: '16px', 
             marginBottom: '0.35rem', 
-            boxShadow: '0 15px 35px -10px rgba(37, 99, 235, 0.6)',
+            boxShadow: '0 8px 20px -6px rgba(37, 99, 235, 0.55)',
             display: 'inline-flex',
             alignItems: 'center',
             justifyContent: 'center'
@@ -111,6 +120,8 @@ export default function Login() {
             <Link to="/forgot-password" className="forgot-password text-gradient">Forgot password?</Link>
           </div>
 
+          <TurnstileWidget onVerify={setTurnstileToken} onExpire={() => setTurnstileToken('')} />
+
           <button 
             type="submit" 
             className="btn btn-primary w-full login-btn"
@@ -134,25 +145,23 @@ export default function Login() {
                 display: 'inline-flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                gap: '0.45rem',
+                gap: '0.4rem',
                 textDecoration: 'none',
-                background: 'rgba(255,255,255,0.05)',
-                border: '1px solid rgba(255,255,255,0.12)',
+                background: 'rgba(255,255,255,0.04)',
+                border: '1px solid rgba(255,255,255,0.1)',
                 borderRadius: '8px',
                 padding: '0.4rem 0.9rem',
                 width: '100%',
-                transition: 'background 0.2s, border-color 0.2s, transform 0.15s',
+                transition: 'background 0.2s, border-color 0.2s',
                 cursor: 'pointer',
               }}
               onMouseEnter={e => {
                 e.currentTarget.style.background = 'rgba(255,255,255,0.09)';
                 e.currentTarget.style.borderColor = 'rgba(255,255,255,0.22)';
-                
               }}
               onMouseLeave={e => {
                 e.currentTarget.style.background = 'rgba(255,255,255,0.05)';
                 e.currentTarget.style.borderColor = 'rgba(255,255,255,0.12)';
-                
               }}
             >
               <ShieldAlert size={13} style={{ color: 'rgba(255,255,255,0.45)', flexShrink: 0 }} />
