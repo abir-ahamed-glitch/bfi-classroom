@@ -32,7 +32,6 @@ import certificationRoutes from './routes/certification.js';
 import experienceRoutes from './routes/experience.js';
 import registryRoutes from './routes/registry.js';
 import { trashEvents } from './utils/trashLogger.js';
-import { securityEvents } from './utils/security-events.js';
 import notificationsRoutes from './routes/notifications.js';
 import analyticsRoutes from './routes/analytics.js';
 import reportsRoutes from './routes/reports.js';
@@ -45,7 +44,6 @@ import courseDefinitionsRoutes from './routes/course-definitions.js';
 import { runBatchStatusAutomation } from './utils/batchStatusAutomation.js';
 import broadcastRoutes from './routes/broadcast.js';
 import trashRoutes from './routes/trash.js';
-import adminManagementRoutes from './routes/admin-management.js';
 import { checkScheduledBroadcasts } from './utils/broadcastScheduler.js';
 
 import { getJwtRefreshSecret, getJwtSecret } from './config/security.js';
@@ -439,7 +437,6 @@ app.use('/api/admin/broadcast', broadcastRoutes);
 app.use('/api/admin/trash', trashRoutes);
 app.use('/api/admin/course-settings', courseSettingsRoutes);
 app.use('/api/admin/course-definitions', courseDefinitionsRoutes);
-app.use('/api/admin', adminManagementRoutes);
 
 // Test environment and database identity verification endpoint (strictly restricted to test servers)
 app.get('/api/test/db-identity', (req, res) => {
@@ -480,86 +477,10 @@ io.use((socket, next) => {
 
   try {
     const decoded = jwt.verify(rawToken, getJwtSecret());
-    if (!decoded || !decoded.id) {
-      return next(new Error('Invalid token'));
-    }
-
-    // Token-purpose separation: Sockets strictly accept only completed-login access tokens
-    if (decoded.type !== 'access') {
-      return next(new Error('Access token required. Invalid token purpose.'));
-    }
-
-    const user = db.prepare('SELECT id, username, role, is_active, deleted_at, token_version FROM users WHERE id = ?').get(decoded.id);
-    if (!user || user.is_active !== 1 || user.deleted_at !== null) {
-      return next(new Error('Account inactive or revoked'));
-    }
-
-    if (user.role === 'admin') {
-      if (!decoded.sessionId || decoded.token_version === undefined) {
-        return next(new Error('Session credentials required for administrator access'));
-      }
-      if (decoded.token_version !== (user.token_version || 1)) {
-        return next(new Error('Session revoked or expired'));
-      }
-      const session = db.prepare('SELECT id FROM sessions WHERE id = ? AND user_id = ? AND datetime(expires_at) > datetime(\'now\')').get(decoded.sessionId, user.id);
-      if (!session) {
-        return next(new Error('Session revoked or expired'));
-      }
-    } else {
-      if (decoded.token_version !== undefined && decoded.token_version !== (user.token_version || 1)) {
-        return next(new Error('Session revoked or expired'));
-      }
-      if (decoded.sessionId) {
-        const session = db.prepare('SELECT id FROM sessions WHERE id = ? AND user_id = ? AND datetime(expires_at) > datetime(\'now\')').get(decoded.sessionId, user.id);
-        if (!session) {
-          return next(new Error('Session revoked or expired'));
-        }
-      }
-    }
-
     socket.user = decoded;
-    socket.sessionId = decoded.sessionId || null;
     return next();
   } catch {
     return next(new Error('Invalid token'));
-  }
-});
-
-// Real-time socket session invalidation and disconnection listeners
-securityEvents.on('revoke_user', ({ userId }) => {
-  if (io && io.of('/').sockets) {
-    for (const [, s] of io.of('/').sockets) {
-      if (s.user && Number(s.user.id) === Number(userId)) {
-        s.emit('session_revoked', { reason: 'Account deactivated or revoked' });
-        s.disconnect(true);
-      }
-    }
-  }
-});
-
-securityEvents.on('revoke_session', ({ userId, sessionId }) => {
-  if (io && io.of('/').sockets) {
-    for (const [, s] of io.of('/').sockets) {
-      if (s.user && Number(s.user.id) === Number(userId)) {
-        if (!sessionId || Number(s.sessionId) === Number(sessionId)) {
-          s.emit('session_revoked', { reason: 'Session revoked' });
-          s.disconnect(true);
-        }
-      }
-    }
-  }
-});
-
-securityEvents.on('revoke_other_sessions', ({ userId, currentSessionId }) => {
-  if (io && io.of('/').sockets) {
-    for (const [, s] of io.of('/').sockets) {
-      if (s.user && Number(s.user.id) === Number(userId)) {
-        if (Number(s.sessionId) !== Number(currentSessionId)) {
-          s.emit('session_revoked', { reason: 'Session revoked by user' });
-          s.disconnect(true);
-        }
-      }
-    }
   }
 });
 

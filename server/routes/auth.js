@@ -6,8 +6,6 @@ import db from '../db/database.js';
 import { authenticateToken, authLimiter, sanitizeInput, sensitiveEndpointLimiter, generatePasswordResetToken, verifyPasswordResetToken, validatePassword } from '../middleware/auth.js';
 import { getJwtRefreshSecret, getJwtSecret } from '../config/security.js';
 import { sendPasswordResetEmail } from '../utils/email.js';
-import { verifyTotpCode, decryptSecret } from '../utils/totp.js';
-import { securityEvents } from '../utils/security-events.js';
 
 const router = express.Router();
 const REFRESH_COOKIE_NAME = 'bfi_refresh_token';
@@ -20,19 +18,6 @@ function buildUserPayload(user) {
     profile = { full_name: `${user.first_name} ${user.last_name}` };
   }
 
-  const isSuper = Number(user.id) === 1 && user.role === 'admin' && (user.is_super_admin === 1 || user.is_super_admin === true || user.isSuperAdmin === true);
-
-  let permissions = [];
-  if (isSuper) {
-    permissions = ['*'];
-  } else if (user.role === 'admin') {
-    try {
-      permissions = db.prepare('SELECT permission FROM admin_permissions WHERE user_id = ?').all(user.id).map(r => r.permission);
-    } catch {
-      permissions = [];
-    }
-  }
-
   return {
     id: user.id,
     username: user.username,
@@ -43,34 +28,16 @@ function buildUserPayload(user) {
     profilePicture: user.profile_picture,
     publicKey: user.public_key,
     batch: profile?.batch_number,
-    studentId: profile?.student_id,
-    is_super_admin: isSuper ? 1 : 0,
-    isSuperAdmin: isSuper,
-    permissions
+    studentId: profile?.student_id
   };
 }
 
-function signAccessToken(user, sessionId = null) {
-  const isSuper = Number(user.id) === 1 && user.role === 'admin' && (user.is_super_admin === 1 || user.is_super_admin === true || user.isSuperAdmin === true);
-  // Privileged administrators use 15m short-lived tokens; non-privileged users use standard expiry
-  const isPrivileged = user.role === 'admin';
-  const expiresIn = isPrivileged ? '15m' : (process.env.JWT_EXPIRY || '365d');
-
-  const payload = {
-    id: user.id,
-    username: user.username,
-    role: user.role,
-    name: `${user.first_name} ${user.last_name}`,
-    is_super_admin: isSuper ? 1 : 0,
-    token_version: user.token_version || 1,
-    type: 'access'
-  };
-
-  if (sessionId) {
-    payload.sessionId = sessionId;
-  }
-
-  return jwt.sign(payload, getJwtSecret(), { expiresIn });
+function signAccessToken(user) {
+  return jwt.sign(
+    { id: user.id, username: user.username, role: user.role, name: `${user.first_name} ${user.last_name}` },
+    getJwtSecret(),
+    { expiresIn: process.env.JWT_EXPIRY || '365d' }
+  );
 }
 
 function hashToken(token) {
@@ -89,21 +56,52 @@ function setRefreshCookie(req, res, token) {
 }
 
 function issueRefreshToken(req, res, user) {
-  const isSuper = Number(user.id) === 1 && user.role === 'admin' && (user.is_super_admin === 1 || user.is_super_admin === true || user.isSuperAdmin === true);
   const refreshToken = jwt.sign(
-    { id: user.id, username: user.username, role: user.role, is_super_admin: isSuper ? 1 : 0, token_version: user.token_version || 1 },
+    { id: user.id, username: user.username, role: user.role },
     getJwtRefreshSecret(),
-    { expiresIn: '7d' }
+    { expiresIn: '365d' }
   );
-  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+  const expiresAt = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString();
 
-  const insert = db.prepare(`
-    INSERT INTO sessions (user_id, token_hash, ip_address, user_agent, expires_at, created_at, last_activity, sudo_verified_at)
-    VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'), datetime('now'))
-  `).run(user.id, hashToken(refreshToken), req.ip || '', req.get('user-agent') || '', expiresAt);
+  db.prepare(`
+    INSERT INTO sessions (user_id, token_hash, ip_address, user_agent, expires_at)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(user.id, hashToken(refreshToken), req.ip, req.get('user-agent') || '', expiresAt);
 
   setRefreshCookie(req, res, refreshToken);
-  return insert.lastInsertRowid;
+}
+
+// Cloudflare Turnstile token verifier
+async function verifyTurnstileToken(token, ip) {
+  const secretKey = process.env.CLOUDFLARE_TURNSTILE_SECRET_KEY;
+  if (!secretKey) {
+    return true;
+  }
+  if (!token) {
+    return false;
+  }
+  try {
+    const formData = new URLSearchParams();
+    formData.append('secret', secretKey);
+    formData.append('response', token);
+    if (ip) {
+      formData.append('remoteip', ip);
+    }
+
+    const res = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
+      method: 'POST',
+      body: formData,
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded'
+      }
+    });
+
+    const data = await res.json();
+    return Boolean(data && data.success);
+  } catch (err) {
+    console.error('[TURNSTILE] Verification request error:', err);
+    return false;
+  }
 }
 
 // Login route
@@ -114,43 +112,20 @@ router.post('/login', authLimiter, sanitizeInput, async (req, res) => {
     return res.status(400).json({ error: 'Username/Email and password are required' });
   }
 
-  // Universal rule: Admin usernames MUST start with 'admin@'
-  if (type === 'admin' && !username.toLowerCase().startsWith('admin@')) {
-    return res.status(400).json({ error: 'Admin usernames must start with "admin@". Please enter your full admin username (e.g. admin@yourname).' });
+  // Cloudflare Turnstile bot verification
+  if (process.env.CLOUDFLARE_TURNSTILE_SECRET_KEY) {
+    const token = turnstileToken || req.body['cf-turnstile-response'];
+    const clientIp = req.headers['cf-connecting-ip'] || req.headers['x-forwarded-for']?.split(',')[0].trim() || req.ip;
+    const isBotCheckPassed = await verifyTurnstileToken(token, clientIp);
+    if (!isBotCheckPassed) {
+      return res.status(403).json({ error: 'Security verification failed. Please complete the Cloudflare security check.' });
+    }
   }
 
-  // Cloudflare Turnstile Bot Verification
-  const turnstileSecret = process.env.CLOUDFLARE_TURNSTILE_SECRET_KEY;
-  if (turnstileSecret) {
-    const token = turnstileToken || req.body['cf-turnstile-response'];
-    if (!token) {
-      return res.status(403).json({ error: 'Bot verification required. Please complete the Cloudflare check.' });
-    }
-
-    try {
-      const verifyParams = new URLSearchParams();
-      verifyParams.append('secret', turnstileSecret);
-      verifyParams.append('response', token);
-      const clientIp = req.headers['cf-connecting-ip'] || req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.ip;
-      if (clientIp) verifyParams.append('remoteip', clientIp);
-
-      const cfRes = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-        },
-        body: verifyParams.toString(),
-      });
-
-      const cfData = await cfRes.json();
-      if (!cfData.success) {
-        console.warn('[Turnstile] Bot verification rejected:', cfData['error-codes']);
-        return res.status(403).json({ error: 'Security verification failed. Please refresh and try again.' });
-      }
-    } catch (cfErr) {
-      console.error('[Turnstile] Verification error:', cfErr.message);
-      return res.status(500).json({ error: 'Security verification service temporarily unreachable. Please retry.' });
-    }
+  // Universal rule: Admin usernames MUST start with 'admin@'
+  // This is enforced at login when type is 'admin' to prevent any bypass.
+  if (type === 'admin' && !username.toLowerCase().startsWith('admin@')) {
+    return res.status(400).json({ error: 'Admin usernames must start with "admin@". Please enter your full admin username (e.g. admin@yourname).' });
   }
 
   try {
@@ -158,7 +133,6 @@ router.post('/login', authLimiter, sanitizeInput, async (req, res) => {
       SELECT * FROM users 
       WHERE (email = ? COLLATE NOCASE OR username = ? COLLATE NOCASE) 
       AND is_active = 1
-      AND deleted_at IS NULL
     `;
       
     const user = db.prepare(query).get(username, username);
@@ -181,37 +155,11 @@ router.post('/login', authLimiter, sanitizeInput, async (req, res) => {
       return res.status(403).json({ error: 'Administrators must log in via the designated Admin Portal.' });
     }
 
-    // MFA Check for Privileged Users
-    if (user.two_factor_enabled === 1) {
-      const mfaToken = jwt.sign(
-        { 
-          id: user.id, 
-          username: user.username,
-          role: user.role,
-          type: 'mfa_challenge', 
-          token_version: user.token_version || 1 
-        },
-        getJwtSecret(),
-        { expiresIn: '5m' }
-      );
-      return res.json({
-        requireMfa: true,
-        mfaToken,
-        user: {
-          id: user.id,
-          username: user.username,
-          firstName: user.first_name,
-          lastName: user.last_name,
-          role: user.role
-        }
-      });
-    }
-
     // Update last login
     db.prepare("UPDATE users SET last_login = datetime('now') WHERE id = ?").run(user.id);
 
-    const sessionId = issueRefreshToken(req, res, user);
-    const accessToken = signAccessToken(user, sessionId);
+    const accessToken = signAccessToken(user);
+    issueRefreshToken(req, res, user);
 
     res.json({
       message: 'Login successful',
@@ -221,93 +169,6 @@ router.post('/login', authLimiter, sanitizeInput, async (req, res) => {
   } catch (error) {
     console.error('Login error:', error);
     res.status(500).json({ error: 'Internal server error during login' });
-  }
-});
-
-// MFA Verification route
-router.post('/mfa-verify', authLimiter, sanitizeInput, (req, res) => {
-  try {
-    const { mfaToken, code, recoveryCode } = req.body;
-    if (!mfaToken) {
-      return res.status(400).json({ error: 'MFA session token required.' });
-    }
-
-    let decoded;
-    try {
-      decoded = jwt.verify(mfaToken, getJwtSecret());
-    } catch {
-      return res.status(401).json({ error: 'MFA session expired. Please log in again.' });
-    }
-
-    if (!decoded || (decoded.type !== 'mfa_challenge' && decoded.type !== 'mfa_pending') || !decoded.id) {
-      return res.status(401).json({ error: 'Invalid MFA challenge token.' });
-    }
-
-    const user = db.prepare('SELECT * FROM users WHERE id = ? AND deleted_at IS NULL').get(decoded.id);
-    if (!user) {
-      return res.status(404).json({ error: 'User not found.' });
-    }
-
-    if (user.is_active !== 1) {
-      return res.status(401).json({ error: 'MFA challenge expired or invalidated. Account inactive or revoked.' });
-    }
-
-    // Security version check on challenge: reject if user's token_version changed (e.g. deactivation, password reset, recovery)
-    if (decoded.token_version !== undefined && decoded.token_version !== (user.token_version || 1)) {
-      return res.status(401).json({ error: 'MFA challenge expired or invalidated. Please log in again.' });
-    }
-
-    if (code) {
-      if (!user.two_factor_secret) {
-        return res.status(400).json({ error: 'MFA is not configured for this account.' });
-      }
-      const plainSecret = decryptSecret(user.two_factor_secret);
-      const verification = verifyTotpCode(plainSecret, code, {
-        lastTimestamp: user.last_totp_timestamp || 0
-      });
-
-      if (!verification.valid) {
-        if (verification.reason === 'REPLAY_DETECTED') {
-          return res.status(400).json({ error: 'This verification code was already used. Please wait for a new code.' });
-        }
-        return res.status(400).json({ error: 'Invalid verification code.' });
-      }
-
-      // Record last verified step to prevent replay
-      db.prepare("UPDATE users SET last_totp_timestamp = ?, last_login = datetime('now') WHERE id = ?").run(verification.step, user.id);
-    } else if (recoveryCode) {
-      const cleanRecovery = String(recoveryCode).trim().toUpperCase();
-      const rows = db.prepare('SELECT id, code_hash FROM admin_mfa_recovery_codes WHERE user_id = ? AND used = 0').all(user.id);
-      let matchedId = null;
-      for (const row of rows) {
-        if (bcrypt.compareSync(cleanRecovery, row.code_hash)) {
-          matchedId = row.id;
-          break;
-        }
-      }
-
-      if (!matchedId) {
-        return res.status(400).json({ error: 'Invalid or already used recovery code.' });
-      }
-
-      // Mark recovery code as used
-      db.prepare("UPDATE admin_mfa_recovery_codes SET used = 1, used_at = datetime('now') WHERE id = ?").run(matchedId);
-      db.prepare("UPDATE users SET last_login = datetime('now') WHERE id = ?").run(user.id);
-    } else {
-      return res.status(400).json({ error: 'Verification code or recovery code is required.' });
-    }
-
-    const sessionId = issueRefreshToken(req, res, user);
-    const accessToken = signAccessToken(user, sessionId);
-
-    res.json({
-      message: 'Login successful',
-      token: accessToken,
-      user: buildUserPayload(user)
-    });
-  } catch (error) {
-    console.error('MFA verify error:', error);
-    res.status(500).json({ error: 'Internal server error during MFA verification' });
   }
 });
 
@@ -334,35 +195,14 @@ router.post('/refresh', (req, res) => {
       return res.status(401).json({ error: 'Invalid refresh session' });
     }
 
-    const user = db.prepare('SELECT * FROM users WHERE id = ? AND is_active = 1 AND deleted_at IS NULL').get(decoded.id);
+    const user = db.prepare('SELECT * FROM users WHERE id = ? AND is_active = 1').get(decoded.id);
     if (!user) {
       res.clearCookie(REFRESH_COOKIE_NAME, { path: '/' });
       return res.status(401).json({ error: 'User not found' });
     }
 
-    // Token version check on refresh
-    if (decoded.token_version !== undefined && decoded.token_version !== (user.token_version || 1)) {
-      res.clearCookie(REFRESH_COOKIE_NAME, { path: '/' });
-      return res.status(401).json({ error: 'Session revoked' });
-    }
-
-    // Refresh token rotation
-    const newRefreshToken = jwt.sign(
-      { id: user.id, username: user.username, role: user.role, is_super_admin: user.is_super_admin, token_version: user.token_version || 1 },
-      getJwtRefreshSecret(),
-      { expiresIn: '7d' }
-    );
-    const newExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
-    db.prepare(`
-      UPDATE sessions 
-      SET token_hash = ?, expires_at = ?, last_activity = datetime('now')
-      WHERE id = ?
-    `).run(hashToken(newRefreshToken), newExpiresAt, session.id);
-
-    setRefreshCookie(req, res, newRefreshToken);
-
     return res.json({
-      token: signAccessToken(user, session.id),
+      token: signAccessToken(user),
       user: buildUserPayload(user),
     });
   } catch {
@@ -375,22 +215,6 @@ router.post('/logout', (req, res) => {
   const refreshToken = req.cookies?.[REFRESH_COOKIE_NAME];
   if (refreshToken) {
     db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(hashToken(refreshToken));
-  }
-  const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1];
-  if (token) {
-    try {
-      const decoded = jwt.verify(token, getJwtSecret());
-      if (decoded.sessionId) {
-        db.prepare('DELETE FROM sessions WHERE id = ?').run(decoded.sessionId);
-      }
-      if (decoded.id) {
-        db.prepare('UPDATE users SET token_version = token_version + 1 WHERE id = ?').run(decoded.id);
-        securityEvents.emit('revoke_session', { userId: decoded.id, sessionId: decoded.sessionId });
-      }
-    } catch {
-      // Ignore token verification errors during logout
-    }
   }
   res.clearCookie(REFRESH_COOKIE_NAME, { path: '/' });
   res.json({ message: 'Logged out' });
@@ -409,31 +233,15 @@ router.get('/me', authenticateToken, (req, res) => {
         u.last_name,
         u.profile_picture,
         u.public_key,
-        u.is_super_admin,
         sp.batch_number,
         sp.student_id
       FROM users u
       LEFT JOIN student_profiles sp ON sp.user_id = u.id
       WHERE u.id = ?
-        AND u.is_active = 1
-        AND u.deleted_at IS NULL
     `).get(req.user.id);
     
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
-    }
-
-    const isSuper = Number(user.id) === 1 && user.role === 'admin' && (user.is_super_admin === 1 || user.is_super_admin === true);
-
-    let permissions = [];
-    if (isSuper) {
-      permissions = ['*'];
-    } else if (user.role === 'admin') {
-      try {
-        permissions = db.prepare('SELECT permission FROM admin_permissions WHERE user_id = ?').all(user.id).map(r => r.permission);
-      } catch {
-        permissions = [];
-      }
     }
 
     res.json({
@@ -446,10 +254,7 @@ router.get('/me', authenticateToken, (req, res) => {
       profilePicture: user.profile_picture,
       publicKey: user.public_key,
       batch: user.batch_number,
-      studentId: user.student_id,
-      is_super_admin: isSuper ? 1 : 0,
-      isSuperAdmin: Boolean(isSuper),
-      permissions
+      studentId: user.student_id
     });
   } catch (error) {
     console.error('Fetch me error:', error);
@@ -579,8 +384,7 @@ router.put('/update-name', authenticateToken, sanitizeInput, (req, res) => {
         .run(first_name.trim(), (last_name || '').trim(), normalizedUsername, req.user.id);
     }
 
-    const updated = db.prepare('SELECT id, username, email, role, first_name, last_name, profile_picture, public_key, is_super_admin FROM users WHERE id = ?').get(req.user.id);
-    const isSuper = Number(updated.id) === 1 && updated.role === 'admin' && (updated.is_super_admin === 1 || updated.is_super_admin === true);
+    const updated = db.prepare('SELECT id, username, email, role, first_name, last_name, profile_picture, public_key FROM users WHERE id = ?').get(req.user.id);
     res.json({
       message: 'Profile updated successfully',
       user: {
@@ -592,8 +396,6 @@ router.put('/update-name', authenticateToken, sanitizeInput, (req, res) => {
         lastName: updated.last_name,
         profilePicture: updated.profile_picture,
         publicKey: updated.public_key,
-        is_super_admin: isSuper ? 1 : 0,
-        isSuperAdmin: Boolean(isSuper)
       }
     });
   } catch (error) {
@@ -772,13 +574,12 @@ router.post('/reset-password/:id/:token', sanitizeInput, (req, res) => {
     
     // Update password and invalidate all existing sessions
     const transaction = db.transaction(() => {
-      db.prepare("UPDATE users SET password_hash = ?, token_version = token_version + 1, updated_at = datetime('now') WHERE id = ?").run(newPasswordHash, user.id);
+      db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(newPasswordHash, user.id);
       db.prepare('DELETE FROM sessions WHERE user_id = ?').run(user.id);
       db.prepare('DELETE FROM password_reset_tokens WHERE user_id = ?').run(user.id);
     });
 
     transaction();
-    securityEvents.emit('revoke_user', { userId: user.id });
 
     res.json({ message: 'Password has been successfully reset. You can now log in.' });
   } catch (error) {
@@ -888,13 +689,12 @@ router.post('/admin-reset-password/:id/:token', sanitizeInput, (req, res) => {
     
     // Update password and invalidate all existing sessions
     const transaction = db.transaction(() => {
-      db.prepare("UPDATE users SET password_hash = ?, token_version = token_version + 1, updated_at = datetime('now') WHERE id = ?").run(newPasswordHash, user.id);
+      db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(newPasswordHash, user.id);
       db.prepare('DELETE FROM sessions WHERE user_id = ?').run(user.id);
       db.prepare('DELETE FROM password_reset_tokens WHERE user_id = ?').run(user.id);
     });
 
     transaction();
-    securityEvents.emit('revoke_user', { userId: user.id });
 
     res.json({ message: 'Admin password has been successfully reset. You can now log in.' });
   } catch (error) {
