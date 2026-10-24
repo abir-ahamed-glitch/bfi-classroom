@@ -5,10 +5,10 @@ module.exports = {
       script: 'server/server.js',
       instances: 1,
       exec_mode: 'fork',
-      max_memory_restart: '500M',
+      max_memory_restart: '2G',
       restart_delay: 2000,
       min_uptime: '10s',
-      max_restarts: 10,
+      max_restarts: 50,
       env: {
         NODE_ENV: 'production',
         PORT: 3001,

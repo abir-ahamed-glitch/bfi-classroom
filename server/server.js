@@ -16,6 +16,15 @@ import jwt from 'jsonwebtoken';
 // Setup env
 dotenv.config();
 
+// Process crash guards — prevent unhandled rejections from terminating the server process
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[Process Guard] Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('[Process Guard] Uncaught Exception:', err);
+});
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
