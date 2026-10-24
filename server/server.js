@@ -626,7 +626,10 @@ app.get('/', (req, res) => {
   res.redirect('/bfi-classroom');
 });
 
-app.use('/bfi-classroom/assets', express.static(clientAssetsPath));
+app.use('/bfi-classroom/assets', express.static(clientAssetsPath, {
+  maxAge: '1y',
+  immutable: true,
+}));
 app.use('/bfi-classroom', express.static(clientBuildPath, { redirect: false }));
 app.use(express.static(clientBuildPath));
 
