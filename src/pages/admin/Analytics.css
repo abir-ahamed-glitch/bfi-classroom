@@ -150,8 +150,8 @@
 }
 
 .urgent-card:hover {
-  transform: translateY(-3px);
   box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+  border-color: rgba(255, 255, 255, 0.2);
 }
 
 .urgent-card:hover::before {
@@ -280,7 +280,7 @@
 .stat-card.clickable:hover {
   background: rgba(255, 255, 255, 0.055);
   border-color: rgba(255, 255, 255, 0.15);
-  transform: translateY(-2px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
 }
 
 .stat-card.clickable:focus-visible {
@@ -299,15 +299,14 @@
   bottom: 0.65rem;
   color: var(--text-muted);
   opacity: 0;
-  transform: translateX(-3px);
-  transition: opacity 0.2s ease, transform 0.2s ease;
+  transition: opacity 0.2s ease, color 0.2s ease;
 }
 
 .stat-card.clickable:hover .stat-card-chevron,
 .stat-card.clickable:focus-visible .stat-card-chevron,
 .stat-card.active .stat-card-chevron {
   opacity: 1;
-  transform: translateX(0);
+  color: var(--text-primary);
 }
 
 .stat-card-icon {

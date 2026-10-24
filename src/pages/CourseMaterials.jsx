@@ -163,11 +163,12 @@ export default function CourseMaterials() {
           align-items: center;
           padding: 1.5rem;
           border-radius: 12px;
-          transition: transform 0.2s, border-color 0.2s;
+          transition: border-color 0.2s, box-shadow 0.2s, background 0.2s;
         }
         .material-card:hover {
-          transform: translateY(-3px);
-          border-color: var(--glass-border);
+          border-color: var(--accent-primary);
+          box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+          background: rgba(255, 255, 255, 0.04);
         }
         .material-icon {
           width: 50px;

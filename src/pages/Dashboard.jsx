@@ -1562,7 +1562,7 @@ export default function Dashboard() {
           opacity: 0.85;
         }
         .dashboard-read-more:hover svg {
-          transform: translateX(3px);
+          color: var(--accent-primary);
         }
         .dashboard-header {
           display: flex;
@@ -1616,8 +1616,7 @@ export default function Dashboard() {
           flex-direction: column;
           padding: 0.5rem;
           z-index: 100;
-          transition: opacity 0.2s ease, transform 0.2s ease;
-          transform: translateY(8px);
+          transition: opacity 0.2s ease, visibility 0.2s ease;
           background: var(--bg-secondary, #1e1e2e);
           border: none;
           border-radius: 14px;
@@ -1630,7 +1629,6 @@ export default function Dashboard() {
           display: flex;
           opacity: 1;
           visibility: visible;
-          transform: translateY(0);
         }
         /* Invisible bridge to prevent losing hover between button and menu */
         .dropdown-container::after {
@@ -1684,10 +1682,10 @@ export default function Dashboard() {
           height: 100%;
           object-fit: cover;
           display: block;
-          transition: transform 0.4s ease;
+          transition: filter 0.4s ease;
         }
         .hero-card:hover .hero-thumb-img {
-          transform: scale(1.04);
+          filter: brightness(1.06);
         }
         .hero-thumb-placeholder {
           width: 100%;
@@ -1788,7 +1786,7 @@ export default function Dashboard() {
           flex-direction: column;
           gap: 1rem;
           cursor: pointer;
-          transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+          transition: border-color 0.3s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.3s cubic-bezier(0.4, 0, 0.2, 1);
           min-width: 0;
         }
         @media (max-width: 768px) {
@@ -1797,7 +1795,7 @@ export default function Dashboard() {
           }
         }
         .movie-card:hover {
-          transform: translateY(-8px) scale(1.02);
+          box-shadow: 0 12px 30px rgba(0,0,0,0.45);
         }
         .movie-card:hover .poster-overlay {
           opacity: 1;
@@ -1854,11 +1852,12 @@ export default function Dashboard() {
         .play-icon {
           color: white;
           filter: drop-shadow(0 4px 6px rgba(0,0,0,0.5));
-          transform: scale(0.8);
-          transition: transform 0.3s;
+          opacity: 0.85;
+          transition: opacity 0.3s, filter 0.3s;
         }
         .movie-card:hover .play-icon {
-          transform: scale(1);
+          opacity: 1;
+          filter: drop-shadow(0 0 12px rgba(225, 29, 72, 0.8));
         }
         .movie-info h4 {
           font-size: 1.1rem;
@@ -1935,7 +1934,6 @@ export default function Dashboard() {
         }
         .video-modal-close:hover {
           background: var(--accent-primary);
-          transform: rotate(90deg);
         }
         .video-player-container {
           position: relative;

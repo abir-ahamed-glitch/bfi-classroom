@@ -859,9 +859,9 @@ export default function PhotoEditorModal({ images, initialIndex = 0, onSave, onC
           cursor: pointer;
           border: none;
           font-family: inherit;
-          transition: opacity 0.2s, transform 0.15s;
+          transition: opacity 0.2s, background 0.2s;
         }
-        .pe-btn:hover { opacity: 0.88; transform: translateY(-1px); }
+        .pe-btn:hover { opacity: 0.88; }
         .pe-btn-primary {
           background: var(--accent-primary, #e11d48);
           color: #fff;

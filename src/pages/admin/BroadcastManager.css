@@ -649,8 +649,8 @@
 }
 
 .bc-btn-primary:hover:not(:disabled) {
-  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
-  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+  filter: brightness(1.08);
 }
 
 .bc-btn-primary:disabled,
@@ -1523,11 +1523,10 @@
 
 /* ─── Attachment Preview Cards ─────────────────────────────────── */
 .bc-attachment-card {
-  transition: transform 0.2s, border-color 0.2s, box-shadow 0.2s;
+  transition: border-color 0.2s, box-shadow 0.2s;
 }
 
 .bc-attachment-card:hover {
-  transform: translateY(-2px);
   border-color: rgba(124, 58, 237, 0.4);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
 }

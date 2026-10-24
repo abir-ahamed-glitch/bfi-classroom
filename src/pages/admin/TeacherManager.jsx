@@ -629,11 +629,9 @@ export default function TeacherManager() {
                           }} 
                           onMouseEnter={(e) => { 
                             e.currentTarget.style.background = 'rgba(239, 68, 68, 0.2)'; 
-                            e.currentTarget.style.transform = 'scale(1.05)'; 
                           }} 
                           onMouseLeave={(e) => { 
                             e.currentTarget.style.background = 'rgba(239, 68, 68, 0.1)'; 
-                            e.currentTarget.style.transform = 'scale(1)'; 
                           }} 
                           title="Delete Teacher"
                         >

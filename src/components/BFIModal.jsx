@@ -376,11 +376,10 @@ const dialogCss = `
   }
   .bfi-modal-btn-ok:hover {
     background: linear-gradient(135deg, #f43f5e 0%, #db2777 100%);
-    box-shadow: 0 6px 20px rgba(225, 29, 72, 0.55);
-    transform: translateY(-1px);
+    box-shadow: 0 4px 20px rgba(225, 29, 72, 0.55);
   }
   .bfi-modal-btn-ok:active {
-    transform: translateY(0);
+    filter: brightness(0.95);
     box-shadow: 0 2px 8px rgba(225, 29, 72, 0.4);
   }
 

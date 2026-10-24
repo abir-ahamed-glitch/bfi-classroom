@@ -1789,8 +1789,8 @@ export default function Analytics() {
               onClick={() => openAcademicModal(s, enr.id)}
               className="analytics-table-action-btn" 
               style={{ padding: '0.5rem', background: 'rgba(16, 185, 129, 0.1)', color: '#10b981', border: '1px solid rgba(16, 185, 129, 0.2)', borderRadius: '8px', transition: 'all 0.2s', width: '32px', height: '32px', display: 'flex', alignItems: 'center', justifyContent: 'center' }} 
-              onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(16, 185, 129, 0.2)'; e.currentTarget.style.transform = 'scale(1.05)'; }} 
-              onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(16, 185, 129, 0.1)'; e.currentTarget.style.transform = 'scale(1)'; }} 
+              onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(16, 185, 129, 0.2)'; }} 
+              onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(16, 185, 129, 0.1)'; }} 
               title={isAppreciation ? 'Exam Result' : 'Academic Records'}
             >
               <GraduationCap size={16} />
@@ -1803,8 +1803,8 @@ export default function Analytics() {
             onClick={() => openPhase2Modal(s, s.enrollments.find(enr => enr.course_name === 'Online Filmmaking Course').id)}
             className="analytics-table-action-btn"
             style={{ padding: '0.5rem', background: 'rgba(139, 92, 246, 0.1)', color: '#8b5cf6', border: '1px solid rgba(139, 92, 246, 0.2)', borderRadius: '8px', transition: 'all 0.2s', width: '32px', height: '32px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-            onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(139, 92, 246, 0.2)'; e.currentTarget.style.transform = 'scale(1.05)'; }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(139, 92, 246, 0.1)'; e.currentTarget.style.transform = 'scale(1)'; }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(139, 92, 246, 0.2)'; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(139, 92, 246, 0.1)'; }}
             title="Phase 2: Shooting & Editing Attendance"
           >
             <Film size={16} />
@@ -1815,8 +1815,8 @@ export default function Analytics() {
           onClick={() => openEditModal(s)} 
           className="analytics-table-action-btn" 
           style={{ padding: '0.5rem', background: 'rgba(56, 189, 248, 0.1)', color: '#0284c7', border: '1px solid rgba(56, 189, 248, 0.2)', borderRadius: '8px', transition: 'all 0.2s', width: '32px', height: '32px', display: 'flex', alignItems: 'center', justifyContent: 'center' }} 
-          onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(56, 189, 248, 0.2)'; e.currentTarget.style.transform = 'scale(1.05)'; }} 
-          onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(56, 189, 248, 0.1)'; e.currentTarget.style.transform = 'scale(1)'; }} 
+          onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(56, 189, 248, 0.2)'; }} 
+          onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(56, 189, 248, 0.1)'; }} 
           title="Edit Student"
         >
           <Edit size={16} />
@@ -1826,8 +1826,8 @@ export default function Analytics() {
           onClick={() => navigate('/inbox', { state: { selectedUser: { id: s.id, first_name: s.first_name, last_name: s.last_name, role: 'student' } } })} 
           className="analytics-table-action-btn" 
           style={{ padding: '0.5rem', background: 'rgba(167, 139, 250, 0.1)', color: '#8b5cf6', border: '1px solid rgba(167, 139, 250, 0.2)', borderRadius: '8px', transition: 'all 0.2s', width: '32px', height: '32px', display: 'flex', alignItems: 'center', justifyContent: 'center' }} 
-          onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(167, 139, 250, 0.2)'; e.currentTarget.style.transform = 'scale(1.05)'; }} 
-          onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(167, 139, 250, 0.1)'; e.currentTarget.style.transform = 'scale(1)'; }} 
+          onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(167, 139, 250, 0.2)'; }} 
+          onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(167, 139, 250, 0.1)'; }} 
           title="Send Message"
         >
           <MessageSquare size={16} />

@@ -32,11 +32,12 @@
 }
 
 .privacy-trigger:hover {
-  transform: translateY(-1px);
+  filter: brightness(1.12);
+  box-shadow: 0 0 0 1px currentColor;
 }
 
 .privacy-trigger:active {
-  transform: scale(0.96);
+  filter: brightness(0.95);
 }
 
 /* Color variants */

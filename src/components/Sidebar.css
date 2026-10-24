@@ -131,7 +131,6 @@
 .nav-item:hover {
   background: rgba(255, 255, 255, 0.05);
   color: var(--text-primary);
-  transform: translateX(4px);
 }
 
 [data-mode="light"] .nav-item:hover {

@@ -957,12 +957,10 @@ export default function NoticeBoard() {
                     onMouseEnter={e => {
                       e.currentTarget.style.background = 'rgba(96, 165, 250, 0.1)';
                       e.currentTarget.style.borderColor = 'rgba(96, 165, 250, 0.3)';
-                      e.currentTarget.style.transform = 'translateY(-1px)';
                     }}
                     onMouseLeave={e => {
                       e.currentTarget.style.background = 'rgba(255,255,255,0.04)';
                       e.currentTarget.style.borderColor = 'rgba(255,255,255,0.04)';
-                      e.currentTarget.style.transform = 'translateY(0)';
                     }}
                   >
                     <ChevronDown size={16} style={{ 

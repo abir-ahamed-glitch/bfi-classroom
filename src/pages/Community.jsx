@@ -3680,7 +3680,7 @@ export default function Community() {
           opacity: 0;
         }
         .media-grid-item:hover .media-grid-remove { opacity: 1; }
-        .media-grid-remove:hover { transform: scale(1.15); background: #e11d48; }
+        .media-grid-remove:hover { background: #e11d48; box-shadow: 0 0 0 2px rgba(255,255,255,0.4); }
 
         /* ── Edit button (pencil) ── */
         .media-grid-edit {
@@ -3695,7 +3695,7 @@ export default function Community() {
           opacity: 0;
         }
         .media-grid-item:hover .media-grid-edit { opacity: 1; }
-        .media-grid-edit:hover { transform: scale(1.15); background: #1d4ed8; }
+        .media-grid-edit:hover { background: #1d4ed8; box-shadow: 0 0 0 2px rgba(255,255,255,0.4); }
 
         /* ── "Edited" badge (top-left, shows when image has been edited) ── */
         .media-grid-edited-badge {
@@ -3784,9 +3784,10 @@ export default function Community() {
           text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
         }
         .post-reaction-badge:hover {
-          transform: scale(1.35) translateY(-3px);
+          filter: brightness(1.15);
           box-shadow: 
-            0 6px 12px rgba(0, 0, 0, 0.5), 
+            0 0 0 2px var(--accent-primary),
+            0 4px 12px rgba(0, 0, 0, 0.5), 
             inset 0 1px 2px rgba(255, 255, 255, 0.35),
             inset 0 -2px 4px rgba(0, 0, 0, 0.5);
           z-index: 50 !important;
@@ -4056,7 +4057,7 @@ export default function Community() {
           transition: transform 0.3s ease;
         }
         .proj-thumbnail-placeholder:hover .play-overlay svg {
-          transform: scale(1.1);
+          filter: drop-shadow(0 0 20px rgba(59, 130, 246, 0.9)) brightness(1.2);
         }
         .proj-poster-wrapper {
           width: 100%;
@@ -4275,7 +4276,7 @@ export default function Community() {
         }
         .lb-arrow:hover {
           background: rgba(255,255,255,0.22);
-          transform: translateY(-50%) scale(1.08);
+          transform: translateY(-50%); box-shadow: 0 0 0 2px rgba(255,255,255,0.3);
         }
         .lb-arrow:disabled {
           opacity: 0.25;
@@ -4345,7 +4346,7 @@ export default function Community() {
           transition: transform 0.15s cubic-bezier(0.18, 0.89, 0.32, 1.28) !important;
         }
         .reaction-emoji-btn:hover {
-          transform: scale(1.35) translateY(-4px) !important;
+          filter: brightness(1.2) drop-shadow(0 2px 8px rgba(0,0,0,0.4)) !important;
         }
 
         /* Reactors Modal styles */

@@ -215,8 +215,8 @@
 }
 
 .btn-submit:hover:not(:disabled) {
-  opacity: 0.9;
-  transform: translateY(-1px);
+  opacity: 0.92;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-primary, #3b82f6) 40%, transparent);
 }
 
 .btn-submit:disabled {

@@ -113,7 +113,7 @@
   border-radius: 8px;
   overflow: hidden;
   background: rgba(0,0,0,0.05);
-  transition: transform 0.1s ease;
+  transition: opacity 0.15s ease, box-shadow 0.15s ease;
 }
 
 [data-mode="dark"] .gif-item {
@@ -121,7 +121,8 @@
 }
 
 .gif-item:hover {
-  transform: scale(0.98);
+  opacity: 0.88;
+  box-shadow: 0 0 0 2px var(--accent-primary, #6366f1);
 }
 
 .gif-item img {

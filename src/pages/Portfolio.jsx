@@ -456,10 +456,10 @@ export default function Portfolio() {
           display: flex;
           flex-direction: column;
           border: 1px solid var(--glass-border);
-          transition: transform 0.3s ease, box-shadow 0.3s ease;
+          transition: border-color 0.3s ease, box-shadow 0.3s ease;
         }
         .portfolio-card:hover {
-          transform: translateY(-5px);
+          border-color: var(--accent-primary);
           box-shadow: 0 15px 35px rgba(0,0,0,0.4);
         }
         .card-media {
@@ -498,10 +498,10 @@ export default function Portfolio() {
           width: 100%;
           height: 100%;
           object-fit: cover;
-          transition: transform 0.5s ease;
+          transition: filter 0.5s ease;
         }
         .video-thumbnail-placeholder:hover img {
-          transform: scale(1.05);
+          filter: brightness(1.08);
         }
         .play-overlay {
           position: absolute;
@@ -518,11 +518,10 @@ export default function Portfolio() {
         .play-overlay svg {
           color: white;
           filter: drop-shadow(0 0 15px rgba(239, 68, 68, 0.6));
-          transition: transform 0.3s ease, filter 0.3s ease;
+          transition: filter 0.3s ease;
         }
         .video-thumbnail-placeholder:hover .play-overlay svg {
-          transform: scale(1.15);
-          filter: drop-shadow(0 0 20px rgba(239, 68, 68, 0.9));
+          filter: drop-shadow(0 0 25px rgba(239, 68, 68, 1)) brightness(1.2);
         }
         .placeholder-overlay {
           display: flex;

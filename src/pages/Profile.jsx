@@ -1084,16 +1084,16 @@ export default function Profile() {
                         border: ['#FFFFFF', '#F0F6FC'].includes(meta.color) ? undefined : `1px solid ${meta.color}38`,
                         textDecoration: 'none',
                         boxShadow: ['#FFFFFF', '#F0F6FC'].includes(meta.color) ? undefined : `0 8px 24px ${meta.color}10`,
-                        transition: 'transform 0.15s ease, border-color 0.15s ease'
+                        transition: 'border-color 0.15s ease, box-shadow 0.15s ease'
                       }}
                       className={['#FFFFFF', '#F0F6FC'].includes(meta.color) ? "bw-social" : ""}
                       onMouseEnter={(event) => {
-                        event.currentTarget.style.transform = 'translateY(-2px)';
                         event.currentTarget.style.borderColor = `${meta.color}80`;
+                        event.currentTarget.style.boxShadow = `0 0 0 2px ${meta.color}40`;
                       }}
                       onMouseLeave={(event) => {
-                        event.currentTarget.style.transform = 'translateY(0)';
                         event.currentTarget.style.borderColor = `${meta.color}38`;
+                        event.currentTarget.style.boxShadow = 'none';
                       }}
                     >
                       <PlatformIcon size={20} />
@@ -2023,7 +2023,7 @@ export default function Profile() {
         from { opacity: 0; transform: scale(0.95) translateY(20px); }
         to { opacity: 1; transform: scale(1) translateY(0); }
       }
-      .hover-scale:hover { transform: scale(1.1); }
+      .hover-scale:hover { filter: brightness(1.1); }
 
       /* ── Inline Portfolio Grid ─────────────────────────── */
       .profile-portfolio-grid {
@@ -2032,26 +2032,27 @@ export default function Profile() {
         gap: 1.25rem;
       }
       .profile-portfolio-card {
+        transition: border-color 0.3s ease, box-shadow 0.3s ease;
         border-radius: 14px;
         overflow: hidden;
         display: flex;
         flex-direction: column;
         border: 1px solid var(--glass-border);
-        transition: transform 0.3s ease, box-shadow 0.3s ease;
+        transition: border-color 0.3s ease, box-shadow 0.3s ease;
       }
-      .profile-portfolio-card:hover { transform: translateY(-4px); box-shadow: 0 12px 30px rgba(0,0,0,0.4); }
+      .profile-portfolio-card:hover { border-color: var(--accent-primary); box-shadow: 0 12px 30px rgba(0,0,0,0.4); }
       .pf-card-media { position: relative; aspect-ratio: 16/9; background: #000; overflow: hidden; }
       .pf-achievement-badge { position: absolute; top: 0.6rem; left: 0.6rem; background: linear-gradient(135deg, var(--warning) 0%, #d97706 100%); color: white; width: 26px; height: 26px; border-radius: 50%; display: flex; align-items: center; justify-content: center; z-index: 10; }
       .pf-video-wrapper, .pf-video-wrapper iframe { width: 100%; height: 100%; border: none; }
       .pf-thumb { position: relative; width: 100%; height: 100%; cursor: pointer; overflow: hidden; background: #000; display: flex; align-items: center; justify-content: center; }
-      .pf-thumb img { width: 100%; height: 100%; object-fit: cover; transition: transform 0.4s ease; }
-      .pf-thumb:hover img { transform: scale(1.05); }
+      .pf-thumb img { width: 100%; height: 100%; object-fit: cover; transition: filter 0.4s ease; }
+      .pf-thumb:hover img { filter: brightness(1.08); }
       .pf-thumb-blank { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; background: var(--bg-surface-2); color: var(--text-muted); }
       .pf-poster img { width: 100%; height: 100%; object-fit: cover; }
       .pf-play-overlay { position: absolute; inset: 0; background: rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center; transition: background 0.3s ease; }
       .pf-thumb:hover .pf-play-overlay { background: rgba(0,0,0,0.5); }
-      .pf-play-overlay svg { color: white; filter: drop-shadow(0 0 12px rgba(239,68,68,0.6)); transition: transform 0.3s ease; }
-      .pf-thumb:hover .pf-play-overlay svg { transform: scale(1.15); }
+      .pf-play-overlay svg { color: white; filter: drop-shadow(0 0 12px rgba(239,68,68,0.6)); transition: filter 0.3s ease; }
+      .pf-thumb:hover .pf-play-overlay svg { filter: drop-shadow(0 0 20px rgba(239,68,68,1)) brightness(1.2); }
       .pf-overlay { position: absolute; inset: 0; background: linear-gradient(to top, rgba(0,0,0,0.85) 0%, transparent 50%); opacity: 0; transition: opacity 0.3s ease; display: flex; align-items: flex-end; justify-content: flex-end; padding: 0.75rem; z-index: 5; pointer-events: none; }
       .profile-portfolio-card:hover .pf-overlay { opacity: 1; }
       .pf-overlay-actions { pointer-events: auto; display: flex; gap: 0.4rem; }

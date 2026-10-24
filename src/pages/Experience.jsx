@@ -327,9 +327,9 @@ export default function Experience() {
           transition: all 0.3s ease;
         }
         .experience-card:hover {
-          transform: translateX(10px);
           background: rgba(255,255,255,0.03);
           border-color: var(--accent-primary);
+          box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
         }
         .exp-icon-main {
           width: 50px;

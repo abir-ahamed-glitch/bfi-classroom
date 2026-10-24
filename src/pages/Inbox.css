@@ -246,7 +246,6 @@
         .icon-btn-ghost:hover {
           background: rgba(96, 165, 250, 0.12) !important;
           color: #082e23 !important;
-          transform: scale(1.05) rotate(90deg);
         }
         [data-mode='dark'] .icon-btn-ghost:hover {
           background: rgba(96, 165, 250, 0.12) !important;
@@ -331,8 +330,8 @@
           background: rgba(96, 165, 250, 0.08); color: #ffffff;
           border-color: rgba(255, 255, 255, 0.25);
         }
-        .modern-btn:hover { transform: translateY(-2px); }
-        .modern-btn:active { transform: translateY(0); }
+        .modern-btn:hover { filter: brightness(1.08); box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15); }
+        .modern-btn:active { filter: brightness(0.96); }
 
         /* Current app modal style */
         .modern-modal-overlay {
@@ -473,7 +472,7 @@
           to { transform: translateX(-50%) translateY(0) scale(1); opacity: 1; }
         }
         .scroll-bottom-btn:hover {
-          transform: translateX(-50%) translateY(-3px);
+          transform: translateX(-50%);
           background: #0084ff;
           color: white;
           border-color: transparent;
@@ -619,8 +618,8 @@
           color: white;
           flex-shrink: 0;
         }
-        .hdr-icon-btn:hover  { transform: translateY(-2px) scale(1.05); }
-        .hdr-icon-btn:active { transform: scale(0.93); }
+        .hdr-icon-btn:hover  { filter: brightness(1.15); box-shadow: 0 0 0 2px rgba(255,255,255,0.2); }
+        .hdr-icon-btn:active { filter: brightness(0.95); }
         .hdr-icon-btn:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
 
         /* Audio call ╬ô├ç├╢ emerald */
@@ -762,7 +761,6 @@
         }
         .new-msg-btn:hover {
           background: #0073e6;
-          transform: translateY(-1px);
           box-shadow: 0 6px 14px rgba(0, 132, 255, 0.4);
         }
         .new-msg-btn:active {
@@ -1119,7 +1117,6 @@
         .chat-details-action.active span {
           background: rgba(59,130,246,0.16);
           color: #60a5fa;
-          transform: translateY(-1px);
         }
         .chat-details-action.active {
           color: #60a5fa;
@@ -1383,7 +1380,7 @@
         }
         .chat-emoji-close:hover {
           background: #dbe1e8;
-          transform: translateY(-50%) scale(1.04);
+          transform: translateY(-50%);
         }
         [data-mode="dark"] .chat-emoji-close:hover {
           background: rgba(148, 163, 184, 0.28);
@@ -1520,7 +1517,7 @@
         }
         .chat-emoji-category-tab:hover {
           background: rgba(59, 130, 246, 0.08);
-          transform: translateY(-1px);
+          color: #0084ff;
         }
         .chat-emoji-category-tab.active {
           color: #0084ff;
@@ -1944,8 +1941,7 @@
         }
         .reaction-option:hover .reaction-emoji-glyph,
         .reaction-picker-emoji:hover .reaction-emoji-glyph {
-          transform: translate3d(0,-2px,0) scale(1.12);
-          filter: drop-shadow(0 4px 7px rgba(15,23,42,0.16));
+          filter: drop-shadow(0 4px 7px rgba(15,23,42,0.25)) brightness(1.15);
         }
         .reaction-picker-panel {
           position: absolute;
@@ -2369,8 +2365,8 @@
           transition: background 0.16s ease, transform 0.16s ease, box-shadow 0.16s ease;
         }
         .reaction-pill:hover {
-          transform: translateY(-1px);
           box-shadow: 0 6px 14px rgba(0,0,0,0.16);
+          border-color: var(--accent-primary);
         }
         .reaction-pill.mine {
           border-color: rgba(255,255,255,0.22);
@@ -2437,7 +2433,7 @@
           transition: transform 0.18s ease;
         }
         .fb-icon-btn.heart:hover .quick-chat-emoji {
-          transform: scale(1.08);
+          filter: drop-shadow(0 0 8px rgba(225, 29, 72, 0.6));
         }
         .gif-btn span {
           background: rgba(0, 132, 255, 0.1);
@@ -2702,8 +2698,7 @@
           transition: transform 0.18s ease, background 0.18s ease;
         }
         .vmp-play-btn:hover {
-          background: rgba(128, 128, 128, 0.15);
-          transform: scale(1.04);
+          background: rgba(128, 128, 128, 0.22);
         }
         .vmp-play-btn svg {
           margin-left: 2px;
@@ -2871,8 +2866,7 @@
         }
         .recording-cancel:hover {
           color: #ef4444;
-          background: rgba(239, 68, 68, 0.1);
-          transform: scale(1.04);
+          background: rgba(239, 68, 68, 0.15);
         }
         .recording-pause-btn {
           color: #d9043d;
@@ -2883,7 +2877,7 @@
           background: rgba(34, 197, 94, 0.12);
         }
         .recording-pause-btn:hover {
-          transform: scale(1.04);
+          filter: brightness(1.15);
         }
         .voice-send-btn {
           background: #22c55e !important;
@@ -2893,7 +2887,6 @@
         }
         .voice-send-btn:hover {
           background: #16a34a !important;
-          transform: scale(1.05);
           box-shadow: 0 10px 22px rgba(34, 197, 94, 0.34);
         }
         @keyframes recordingPulse {
@@ -2960,7 +2953,6 @@
         .composer-icon-btn:hover {
           background: rgba(255,255,255,0.08);
           color: var(--text-primary);
-          transform: scale(1.1);
         }
         .composer-icon-btn.active {
           color: #6366f1;
@@ -3092,7 +3084,8 @@
           flex-shrink: 0;
         }
         .send-btn:hover:not(:disabled) {
-          transform: translateY(-1px);
+          filter: brightness(1.08);
+          box-shadow: 0 14px 30px rgba(225,29,72,0.38);
         }
         .send-btn:disabled {
           opacity: 0.35;
@@ -3510,7 +3503,6 @@
           transition: transform 0.25s cubic-bezier(0.25, 0.8, 0.25, 1), border-color 0.25s cubic-bezier(0.25, 0.8, 0.25, 1), background 0.25s cubic-bezier(0.25, 0.8, 0.25, 1);
         }
         .user-result-card:hover {
-          transform: translateY(-1px);
           border-color: rgba(255,255,255,0.18);
           background: rgba(255,255,255,0.05);
         }

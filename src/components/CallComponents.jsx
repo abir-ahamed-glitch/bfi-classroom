@@ -44,12 +44,12 @@ const CALL_STYLES = `
     border: none;
     cursor: pointer;
     display: flex; align-items: center; justify-content: center;
-    transition: transform 0.15s ease, filter 0.15s ease;
+    transition: filter 0.15s ease, box-shadow 0.15s ease;
     position: relative;
     color: white;
   }
-  .call-ctrl-btn:hover  { transform: scale(1.1); filter: brightness(1.2); }
-  .call-ctrl-btn:active { transform: scale(0.95); }
+  .call-ctrl-btn:hover  { filter: brightness(1.2); box-shadow: 0 0 0 3px rgba(255,255,255,0.25); }
+  .call-ctrl-btn:active { filter: brightness(0.95); }
   .call-ctrl-btn.danger {
     width: 68px; height: 68px;
     background: linear-gradient(135deg, #ef4444, #dc2626);
@@ -63,11 +63,11 @@ const CALL_STYLES = `
     border: none; border-radius: 14px; cursor: pointer;
     font-weight: 700; font-size: 0.95rem;
     display: flex; align-items: center; justify-content: center; gap: 8px;
-    transition: transform 0.15s ease, filter 0.15s ease;
+    transition: filter 0.15s ease, box-shadow 0.15s ease;
     color: white;
   }
-  .call-answer-btn:hover  { transform: translateY(-2px); filter: brightness(1.1); }
-  .call-answer-btn:active { transform: scale(0.97); }
+  .call-answer-btn:hover  { filter: brightness(1.1); box-shadow: 0 0 0 3px rgba(255,255,255,0.25); }
+  .call-answer-btn:active { filter: brightness(0.95); }
   .call-answer-btn.accept  {
     background: linear-gradient(135deg, #10b981, #059669);
     box-shadow: 0 6px 18px rgba(16,185,129,0.4);
