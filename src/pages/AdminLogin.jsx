@@ -51,16 +51,16 @@ export default function AdminLogin() {
         <div className="login-brand font-display">
           <div className="logo-box" style={{ 
             background: 'linear-gradient(135deg, #0f172a 0%, #1e3a8a 100%)', 
-            padding: '1.2rem', 
-            borderRadius: '24px', 
-            marginBottom: '1.5rem', 
+            padding: '0.6rem', 
+            borderRadius: '16px', 
+            marginBottom: '0.35rem', 
             boxShadow: '0 15px 35px -10px rgba(30, 58, 138, 0.6)',
             display: 'inline-flex',
             alignItems: 'center',
             justifyContent: 'center'
           }}>
             <img src={`${import.meta.env.BASE_URL}bfi-logo.jpg`} alt="BFI Logo" style={{ 
-              height: '50px', 
+              height: '32px', 
               width: 'auto', 
               mixBlendMode: 'multiply',
               display: 'block'

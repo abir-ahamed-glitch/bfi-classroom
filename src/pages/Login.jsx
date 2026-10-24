@@ -41,16 +41,16 @@ export default function Login() {
         <div className="login-brand font-display">
           <div className="logo-box" style={{ 
             background: 'linear-gradient(135deg, #0284c7 0%, #2563eb 50%, #4f46e5 100%)', 
-            padding: '1.2rem', 
-            borderRadius: '24px', 
-            marginBottom: '1.5rem', 
+            padding: '0.6rem', 
+            borderRadius: '16px', 
+            marginBottom: '0.35rem', 
             boxShadow: '0 15px 35px -10px rgba(37, 99, 235, 0.6)',
             display: 'inline-flex',
             alignItems: 'center',
             justifyContent: 'center'
           }}>
             <img src={`${import.meta.env.BASE_URL}bfi-logo.jpg`} alt="BFI Logo" style={{ 
-              height: '50px', 
+              height: '32px', 
               width: 'auto', 
               mixBlendMode: 'multiply',
               display: 'block'
@@ -122,8 +122,8 @@ export default function Login() {
 
           {/* Institute Authority Area — subtle secondary button */}
           <div style={{
-            marginTop: '1.25rem',
-            paddingTop: '1.1rem',
+            marginTop: '0.65rem',
+            paddingTop: '0.6rem',
             borderTop: '1px solid rgba(255,255,255,0.08)',
             display: 'flex',
             justifyContent: 'center',
@@ -139,7 +139,7 @@ export default function Login() {
                 background: 'rgba(255,255,255,0.05)',
                 border: '1px solid rgba(255,255,255,0.12)',
                 borderRadius: '8px',
-                padding: '0.5rem 1.2rem',
+                padding: '0.4rem 0.9rem',
                 width: '100%',
                 transition: 'background 0.2s, border-color 0.2s, transform 0.15s',
                 cursor: 'pointer',
@@ -147,12 +147,12 @@ export default function Login() {
               onMouseEnter={e => {
                 e.currentTarget.style.background = 'rgba(255,255,255,0.09)';
                 e.currentTarget.style.borderColor = 'rgba(255,255,255,0.22)';
-                e.currentTarget.style.transform = 'translateY(-1px)';
+                
               }}
               onMouseLeave={e => {
                 e.currentTarget.style.background = 'rgba(255,255,255,0.05)';
                 e.currentTarget.style.borderColor = 'rgba(255,255,255,0.12)';
-                e.currentTarget.style.transform = 'translateY(0)';
+                
               }}
             >
               <ShieldAlert size={13} style={{ color: 'rgba(255,255,255,0.45)', flexShrink: 0 }} />
