@@ -39,6 +39,16 @@ jobs:
               rm -f .env.backup
             fi
 
+            # Ensure valid email credentials in production .env
+            if [ -f .env ]; then
+              sed -i 's/^EMAIL_USER=.*/EMAIL_USER=bangladesh.film.institute@gmail.com/' .env || true
+              sed -i 's/^EMAIL_PASS=.*/EMAIL_PASS=rexmeerkbwqbtzha/' .env || true
+            fi
+            if [ -f /home/ubuntu/.env.bfi ]; then
+              sed -i 's/^EMAIL_USER=.*/EMAIL_USER=bangladesh.film.institute@gmail.com/' /home/ubuntu/.env.bfi || true
+              sed -i 's/^EMAIL_PASS=.*/EMAIL_PASS=rexmeerkbwqbtzha/' /home/ubuntu/.env.bfi || true
+            fi
+
             # Install dependencies and build frontend
             npm install --legacy-peer-deps
             npm run build
