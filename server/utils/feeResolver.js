@@ -312,7 +312,8 @@ export function resolvePhaseFee({
   batchNumber = null,
   batchId = null,
   batchFee: explicitBatchFee = null,
-  customDb = null
+  customDb = null,
+  feeContext = null
 } = {}) {
   const activeDb = customDb || db;
   const pIdx = Number(phaseIndex) || 0;
@@ -640,7 +641,8 @@ export function getFeeStatus(feeDetails, courseType, batchFee, options = {}) {
       batchNumber: options.batchNumber,
       batchId: options.batchId,
       batchFee,
-      customDb
+      customDb,
+      feeContext
     }));
   }
 
