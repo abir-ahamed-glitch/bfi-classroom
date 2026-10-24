@@ -12,12 +12,15 @@ export default function Login() {
   const [isLoading, setIsLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [turnstileToken, setTurnstileToken] = useState('');
+  const [errorField, setErrorField] = useState('');
+  const [turnstileResetKey, setTurnstileResetKey] = useState(0);
   const { login } = useAuth();
   const navigate = useNavigate();
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
+    setErrorField('');
     setIsLoading(true);
 
     const token = turnstileToken || window.turnstile?.getResponse() || document.querySelector('input[name="cf-turnstile-response"]')?.value || '';
@@ -32,6 +35,9 @@ export default function Login() {
       navigate('/', { replace: true });
     } catch (err) {
       setError(err.message || 'Failed to login. Please check your credentials.');
+      setErrorField(err.field || '');
+      setTurnstileToken('');
+      setTurnstileResetKey((prev) => prev + 1);
     } finally {
       setIsLoading(false);
     }
@@ -82,10 +88,13 @@ export default function Login() {
               <input 
                 id="username"
                 type="text" 
-                className="input-glass" 
-                placeholder="Enter your username"
+                className={`input-glass ${errorField === "username" ? "input-error-field" : ""}`} 
+                placeholder="Enter your username or email"
                 value={username}
-                onChange={(e) => setUsername(e.target.value)}
+                onChange={(e) => {
+                  setUsername(e.target.value);
+                  if (errorField === "username") setErrorField("");
+                }}
                 required
               />
             </div>
@@ -98,10 +107,13 @@ export default function Login() {
               <input 
                 id="password"
                 type={showPassword ? "text" : "password"} 
-                className="input-glass" 
+                className={`input-glass ${errorField === "password" ? "input-error-field" : ""}`} 
                 placeholder="Enter your password"
                 value={password}
-                onChange={(e) => setPassword(e.target.value)}
+                onChange={(e) => {
+                  setPassword(e.target.value);
+                  if (errorField === "password") setErrorField("");
+                }}
                 style={{ paddingRight: '3rem' }}
                 required
               />
@@ -120,7 +132,7 @@ export default function Login() {
             <Link to="/forgot-password" className="forgot-password text-gradient">Forgot password?</Link>
           </div>
 
-          <TurnstileWidget onVerify={setTurnstileToken} onExpire={() => setTurnstileToken('')} />
+          <TurnstileWidget onVerify={setTurnstileToken} onExpire={() => setTurnstileToken('')} resetKey={turnstileResetKey} />
 
           <button 
             type="submit" 

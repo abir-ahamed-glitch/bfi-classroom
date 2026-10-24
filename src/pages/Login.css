@@ -285,3 +285,8 @@
     margin-top: 0.15rem;
   }
 }
+
+.input-error-field {
+  border-color: rgba(239, 68, 68, 0.75) !important;
+  box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.25) !important;
+}

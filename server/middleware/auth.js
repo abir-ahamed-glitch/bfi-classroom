@@ -7,6 +7,34 @@ import { getJwtSecret } from '../config/security.js';
 const window = new JSDOM('').window;
 const purify = DOMPurify(window);
 
+// Helper to safely extract client IP behind reverse proxies/Cloudflare
+export function getClientIp(req) {
+  const cfIp = req?.headers?.['cf-connecting-ip'];
+  if (cfIp && typeof cfIp === 'string' && cfIp.trim()) {
+    return cfIp.trim();
+  }
+  const xForwarded = req?.headers?.['x-forwarded-for'];
+  if (xForwarded && typeof xForwarded === 'string' && xForwarded.trim()) {
+    return xForwarded.split(',')[0].trim();
+  }
+  if (typeof req?.ip === 'string' && req.ip.trim()) {
+    return req.ip.trim();
+  }
+  return req?.socket?.remoteAddress || '127.0.0.1';
+}
+
+// Safely generate an IP key for express-rate-limit without risking runtime exceptions
+export function safeIpKeyGenerator(ip) {
+  try {
+    if (typeof ip === 'string' && ip.trim()) {
+      return ipKeyGenerator(ip.trim());
+    }
+  } catch {
+    // Fallback if IP address format is unexpected or unsupported
+  }
+  return typeof ip === 'string' && ip.trim() ? ip.trim() : '127.0.0.1';
+}
+
 // JWT Authentication Middleware
 export function authenticateToken(req, res, next) {
   const authHeader = req.headers['authorization'];
@@ -47,10 +75,12 @@ export const authLimiter = rateLimit({
   max: 25,
   skipSuccessfulRequests: true,
   keyGenerator: (req) => {
+    const rawIp = getClientIp(req);
+    const ipKey = safeIpKeyGenerator(rawIp);
     const identifier = String(req.body?.username || '').trim().toLowerCase() || 'anonymous';
-    return `${ipKeyGenerator(req.ip)}:${identifier}`;
+    return `${ipKey}:${identifier}`;
   },
-  message: { error: 'Too many login attempts. Please try again after 10 minutes.' },
+  message: { error: 'Too many login attempts. For security reasons, please wait a few moments before trying again.' },
   standardHeaders: true,
   legacyHeaders: false,
 });
@@ -69,7 +99,7 @@ export const sensitiveEndpointLimiter = rateLimit({
   max: 100, // Stricter limit
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) => ipKeyGenerator(req.ip),
+  keyGenerator: (req) => safeIpKeyGenerator(getClientIp(req)),
   message: { error: 'Too many requests. Please try again later.' }
 });
 

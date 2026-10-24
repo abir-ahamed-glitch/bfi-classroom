@@ -3,7 +3,7 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import db from '../db/database.js';
-import { authenticateToken, authLimiter, sanitizeInput, sensitiveEndpointLimiter, generatePasswordResetToken, verifyPasswordResetToken, validatePassword } from '../middleware/auth.js';
+import { authenticateToken, authLimiter, sanitizeInput, sensitiveEndpointLimiter, generatePasswordResetToken, verifyPasswordResetToken, validatePassword, getClientIp } from '../middleware/auth.js';
 import { getJwtRefreshSecret, getJwtSecret } from '../config/security.js';
 import { sendPasswordResetEmail } from '../utils/email.js';
 
@@ -72,8 +72,10 @@ function issueRefreshToken(req, res, user) {
 }
 
 // Cloudflare Turnstile token verifier
+const TURNSTILE_DEFAULT_SECRET = '0x4AAAAAAFjcgxWdsFD76vYeWwOAe3VG7pI';
+
 async function verifyTurnstileToken(token, ip) {
-  const secretKey = process.env.CLOUDFLARE_TURNSTILE_SECRET_KEY;
+  const secretKey = process.env.CLOUDFLARE_TURNSTILE_SECRET_KEY || process.env.TURNSTILE_SECRET || TURNSTILE_DEFAULT_SECRET;
   if (!secretKey) {
     return true;
   }
@@ -109,50 +111,84 @@ router.post('/login', authLimiter, sanitizeInput, async (req, res) => {
   const { username, password, type = 'student', turnstileToken } = req.body;
 
   if (!username || !password) {
-    return res.status(400).json({ error: 'Username/Email and password are required' });
+    return res.status(400).json({ 
+      error: 'Username/Email and password are required',
+      field: !username ? 'username' : 'password'
+    });
   }
 
   // Cloudflare Turnstile bot verification
-  if (process.env.CLOUDFLARE_TURNSTILE_SECRET_KEY) {
-    const token = turnstileToken || req.body['cf-turnstile-response'];
-    const clientIp = req.headers['cf-connecting-ip'] || req.headers['x-forwarded-for']?.split(',')[0].trim() || req.ip;
+  const turnstileSecret = process.env.CLOUDFLARE_TURNSTILE_SECRET_KEY || process.env.TURNSTILE_SECRET || TURNSTILE_DEFAULT_SECRET;
+  if (turnstileSecret) {
+    const token = turnstileToken || req.body?.['cf-turnstile-response'];
+    if (!token) {
+      return res.status(400).json({ 
+        error: 'Security verification required. Please complete the Cloudflare security check.',
+        field: 'turnstile'
+      });
+    }
+    const clientIp = getClientIp(req);
     const isBotCheckPassed = await verifyTurnstileToken(token, clientIp);
     if (!isBotCheckPassed) {
-      return res.status(403).json({ error: 'Security verification failed. Please complete the Cloudflare security check.' });
+      return res.status(403).json({ 
+        error: 'Security verification failed. Please complete the Cloudflare security check again.',
+        field: 'turnstile'
+      });
     }
   }
 
   // Universal rule: Admin usernames MUST start with 'admin@'
   // This is enforced at login when type is 'admin' to prevent any bypass.
   if (type === 'admin' && !username.toLowerCase().startsWith('admin@')) {
-    return res.status(400).json({ error: 'Admin usernames must start with "admin@". Please enter your full admin username (e.g. admin@yourname).' });
+    return res.status(400).json({ 
+      error: 'Admin usernames must start with "admin@". Please enter your full admin username (e.g. admin@yourname).',
+      field: 'username'
+    });
   }
 
   try {
-    const query = `
+    // 1. Look up user by email or username (active or inactive)
+    const user = db.prepare(`
       SELECT * FROM users 
-      WHERE (email = ? COLLATE NOCASE OR username = ? COLLATE NOCASE) 
-      AND is_active = 1
-    `;
-      
-    const user = db.prepare(query).get(username, username);
+      WHERE (email = ? COLLATE NOCASE OR username = ? COLLATE NOCASE)
+    `).get(username, username);
 
     if (!user) {
-      return res.status(401).json({ error: 'Invalid credentials' });
+      return res.status(401).json({ 
+        error: 'Account not found. Please check your username or email address.',
+        field: 'username'
+      });
     }
 
-    const isValidPassword = bcrypt.compareSync(password, user.password_hash);
-    if (!isValidPassword) {
-      return res.status(401).json({ error: 'Invalid credentials' });
+    if (!user.is_active) {
+      return res.status(403).json({ 
+        error: 'This account has been deactivated. Please contact BFI administration for assistance.',
+        field: 'account'
+      });
     }
 
     // Role Based Separation
     if (type === 'admin' && user.role !== 'admin') {
-      return res.status(403).json({ error: 'Access Denied: This portal is for Administrators only.' });
+      return res.status(403).json({ 
+        error: 'Access Denied: This portal is restricted to Administrators only.',
+        field: 'role'
+      });
     }
     
     if (type === 'student' && user.role === 'admin') {
-      return res.status(403).json({ error: 'Administrators must log in via the designated Admin Portal.' });
+      return res.status(403).json({ 
+        error: 'Administrators must log in via the designated Admin Portal.',
+        field: 'role'
+      });
+    }
+
+    // 2. Validate password
+    const isValidPassword = bcrypt.compareSync(password, user.password_hash);
+    if (!isValidPassword) {
+      return res.status(401).json({ 
+        error: 'Incorrect password. Please verify your password or use "Forgot password".',
+        field: 'password'
+      });
     }
 
     // Update last login

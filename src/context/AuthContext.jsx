@@ -261,21 +261,47 @@ export function AuthProvider({ children }) {
           body: JSON.stringify({ username, password, type, turnstileToken }),
         });
       } catch {
-        throw new Error('Cannot connect to server. Please ensure the backend is running.');
+        if (typeof navigator !== 'undefined' && !navigator.onLine) {
+          throw new Error('You appear to be offline. Please check your internet connection.');
+        }
+        throw new Error('Unable to reach the BFI Classroom server. Please check your internet connection and try again.');
       }
 
       // Safely parse JSON — guard against empty or HTML error responses
       const contentType = response.headers.get('content-type') || '';
       let data = {};
-      if (contentType.includes('application/json')) {
-        const text = await response.text();
-        if (text) {
-          data = JSON.parse(text);
+      try {
+        if (contentType.includes('application/json')) {
+          const text = await response.text();
+          if (text) {
+            data = JSON.parse(text);
+          }
+        } else {
+          await response.text();
         }
+      } catch {
+        data = {};
       }
 
       if (!response.ok) {
-        throw new Error(data.error || `Server error (${response.status})`);
+        if (data.error) {
+          const err = new Error(data.error);
+          err.field = data.field;
+          throw err;
+        }
+        if (response.status === 401) {
+          throw new Error('Invalid username or password. Please verify your credentials.');
+        }
+        if (response.status === 403) {
+          throw new Error('Access denied. Please check your permissions or complete the security check.');
+        }
+        if (response.status === 429) {
+          throw new Error('Too many login attempts. For security reasons, please wait a few moments before trying again.');
+        }
+        if (response.status >= 500) {
+          throw new Error('The BFI Classroom authentication service is momentarily unavailable. Please try again in a few moments.');
+        }
+        throw new Error(`Login request failed (${response.status}). Please try again.`);
       }
 
       // If MFA is required, do NOT persist token or user; return challenge payload

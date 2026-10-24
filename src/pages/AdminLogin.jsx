@@ -12,6 +12,8 @@ export default function AdminLogin() {
   const [isLoading, setIsLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [turnstileToken, setTurnstileToken] = useState('');
+  const [errorField, setErrorField] = useState('');
+  const [turnstileResetKey, setTurnstileResetKey] = useState(0);
   const { login } = useAuth();
   const navigate = useNavigate();
 
@@ -22,11 +24,13 @@ export default function AdminLogin() {
     // Strip any accidental 'admin@' the user might type; we always prepend it
     const raw = e.target.value.replace(/^admin@/i, '').replace(/\s/g, '');
     setUsername('admin@' + raw);
+    if (errorField === "username") setErrorField("");
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
+    setErrorField('');
     setIsLoading(true);
 
     const token = turnstileToken || window.turnstile?.getResponse() || document.querySelector('input[name="cf-turnstile-response"]')?.value || '';
@@ -42,6 +46,9 @@ export default function AdminLogin() {
       navigate('/', { replace: true });
     } catch (err) {
       setError(err.message || 'Failed to login. Please check your credentials.');
+      setErrorField(err.field || '');
+      setTurnstileToken('');
+      setTurnstileResetKey((prev) => prev + 1);
     } finally {
       setIsLoading(false);
     }
@@ -114,7 +121,7 @@ export default function AdminLogin() {
               <input
                 id="username"
                 type="text"
-                className="input-glass"
+                className={`input-glass ${errorField === "username" ? "input-error-field" : ""}`}
                 placeholder="yourname"
                 value={usernameDisplay}
                 onChange={handleUsernameChange}
@@ -132,10 +139,13 @@ export default function AdminLogin() {
               <input 
                 id="password"
                 type={showPassword ? "text" : "password"} 
-                className="input-glass" 
+                className={`input-glass ${errorField === "password" ? "input-error-field" : ""}`} 
                 placeholder="Enter password"
                 value={password}
-                onChange={(e) => setPassword(e.target.value)}
+                onChange={(e) => {
+                  setPassword(e.target.value);
+                  if (errorField === "password") setErrorField("");
+                }}
                 style={{ paddingRight: '3rem' }}
                 required
               />
@@ -154,7 +164,7 @@ export default function AdminLogin() {
             <Link to="/admin/forgot-password" style={{ color: 'var(--text-muted)', fontSize: '0.85rem', textDecoration: 'none', transition: 'color 0.2s' }} onMouseEnter={(e) => e.target.style.color = 'var(--danger)'} onMouseLeave={(e) => e.target.style.color = 'var(--text-muted)'}>Forgot password?</Link>
           </div>
 
-          <TurnstileWidget onVerify={setTurnstileToken} onExpire={() => setTurnstileToken("")} />
+          <TurnstileWidget onVerify={setTurnstileToken} onExpire={() => setTurnstileToken("")} resetKey={turnstileResetKey} />
 
           <button 
             type="submit" 

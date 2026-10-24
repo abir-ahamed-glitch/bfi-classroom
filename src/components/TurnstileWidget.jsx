@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react';
 
 const TURNSTILE_SITE_KEY = import.meta.env.VITE_CLOUDFLARE_TURNSTILE_SITE_KEY || '0x4AAAAAAFjcg344NyZ8QEVR';
 
-export default function TurnstileWidget({ onVerify, onError, onExpire, theme = 'dark' }) {
+export default function TurnstileWidget({ onVerify, onError, onExpire, resetKey = 0, theme = 'dark' }) {
   const containerRef = useRef(null);
   const widgetIdRef = useRef(null);
   const callbacksRef = useRef({ onVerify, onError, onExpire });
@@ -70,6 +70,17 @@ export default function TurnstileWidget({ onVerify, onError, onExpire, theme = '
       }
     };
   }, [theme]);
+
+  // Watch for resetKey increments to clear/reset the widget
+  useEffect(() => {
+    if (resetKey > 0 && widgetIdRef.current !== null && window.turnstile && typeof window.turnstile.reset === 'function') {
+      try {
+        window.turnstile.reset(widgetIdRef.current);
+      } catch (err) {
+        console.warn('[Turnstile] Reset failed:', err);
+      }
+    }
+  }, [resetKey]);
 
   return (
     <div 
