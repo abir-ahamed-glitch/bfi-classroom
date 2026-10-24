@@ -548,8 +548,9 @@ router.post('/forgot-password', authLimiter, sanitizeInput, async (req, res) => 
     `).run(user.id, tokenHash, expiresAt, tokenHash, expiresAt);
 
     // The frontend URL
-    const baseUrl = process.env.CLIENT_URL || req.headers.origin || 'http://localhost:5174';
-    const resetLink = `${baseUrl}/reset-password/${user.id}/${resetToken}`;
+    const rawBase = (process.env.CLIENT_URL || req.headers.origin || 'https://classroom.bfibd.org').replace(/\/+$/, '');
+    const appPrefix = rawBase.includes('/bfi-classroom') ? '' : '/bfi-classroom';
+    const resetLink = `${rawBase}${appPrefix}/reset-password/${user.id}/${resetToken}`;
 
     const emailSent = await sendPasswordResetEmail(user.email, resetLink);
 
@@ -659,8 +660,9 @@ router.post('/admin-forgot-password', authLimiter, sanitizeInput, async (req, re
     `).run(user.id, tokenHash, expiresAt, tokenHash, expiresAt);
 
     // The frontend URL
-    const baseUrl = process.env.CLIENT_URL || req.headers.origin || 'http://localhost:5174';
-    const resetLink = `${baseUrl}/admin/reset-password/${user.id}/${resetToken}`;
+    const rawBase = (process.env.CLIENT_URL || req.headers.origin || 'https://classroom.bfibd.org').replace(/\/+$/, '');
+    const appPrefix = rawBase.includes('/bfi-classroom') ? '' : '/bfi-classroom';
+    const resetLink = `${rawBase}${appPrefix}/admin/reset-password/${user.id}/${resetToken}`;
 
     const emailSent = await sendPasswordResetEmail(user.email, resetLink);
 

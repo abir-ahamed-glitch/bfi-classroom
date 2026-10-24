@@ -203,7 +203,9 @@ const ScrollToTop = () => {
 };
 
 function App() {
-  const routerBase = (import.meta.env.BASE_URL || '/').replace(/\/+$/, '') || '/';
+  // Support both /bfi-classroom/* and root /* transparently so reset links with or without prefix render properly
+  const pathname = typeof window !== 'undefined' ? window.location.pathname : '';
+  const routerBase = pathname.startsWith('/bfi-classroom') ? '/bfi-classroom' : '';
 
   return (
     <ThemeProvider>
