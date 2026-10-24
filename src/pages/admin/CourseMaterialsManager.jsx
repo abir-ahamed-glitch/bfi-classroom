@@ -1,3 +1,4 @@
+import { isVideoFile } from '../../utils/imageCompressor';
 import { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import {
@@ -472,9 +473,9 @@ export default function CourseMaterialsManager() {
                   <div onClick={() => fileRef.current?.click()}
                     style={{ border: `2px dashed ${file ? 'var(--success)' : 'var(--glass-border)'}`, borderRadius: '12px', padding: '2rem', textAlign: 'center', cursor: 'pointer', background: 'rgba(255,255,255,0.02)', transition: 'all 0.2s' }}
                     onDragOver={e => e.preventDefault()}
-                    onDrop={e => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (f) setFile(f); }}
+                    onDrop={e => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (f) handleFileSelect(f); }}
                   >
-                    <input ref={fileRef} type="file" accept=".pdf,.doc,.docx,.mp4,.webm,.ogg" hidden onChange={e => setFile(e.target.files[0] || null)} />
+                    <input ref={fileRef} type="file" accept=".pdf,.doc,.docx,.zip,.jpg,.jpeg,.png,.webp" hidden onChange={e => handleFileSelect(e.target.files[0] || null)} />
                     {file ? (
                       <>
                         <CheckCircle size={32} style={{ color: 'var(--success)', marginBottom: '0.5rem' }} />
@@ -485,7 +486,7 @@ export default function CourseMaterialsManager() {
                       <>
                         <Upload size={32} style={{ color: 'var(--text-muted)', marginBottom: '0.5rem', opacity: 0.5 }} />
                         <p style={{ color: 'var(--text-secondary)', fontWeight: 500 }}>Drag & drop or click to select</p>
-                        <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>PDF, DOC, DOCX, MP4, WebM — up to 500 MB</p>
+                        <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>PDF, DOC, DOCX, ZIP, Images — up to 50 MB. For videos, use 'External URL' (YouTube/Drive).</p>
                         {editTarget?.file_url && <p style={{ fontSize: '0.78rem', color: 'var(--success)', marginTop: '0.5rem' }}>Current: {editTarget.file_url.split('/').pop()}</p>}
                       </>
                     )}

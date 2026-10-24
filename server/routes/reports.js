@@ -6,6 +6,7 @@ import rateLimit from 'express-rate-limit';
 import { fileURLToPath } from 'url';
 import db from '../db/database.js';
 import { authenticateToken, requireRole, sanitizeInput } from '../middleware/auth.js';
+import { optimizeBuffer } from '../utils/imageOptimizer.js';
 import { decryptMessageContent, encryptMessageContent } from '../utils/messageCrypto.js';
 
 const router = express.Router();
@@ -128,7 +129,7 @@ function sendReportUpdate({ io, admin, recipientId, text, inboxText = text }) {
 }
 
 router.post('/upload-screenshot', authenticateToken, screenshotLimiter, (req, res) => {
-  screenshotUpload.single('screenshot')(req, res, (error) => {
+  screenshotUpload.single('screenshot')(req, res, async (error) => {
     if (error) {
       if (error.code === 'LIMIT_FILE_SIZE') return res.status(400).json({ error: 'Screenshot must be under 5MB' });
       return res.status(400).json({ error: 'Only image files are allowed' });
@@ -136,8 +137,19 @@ router.post('/upload-screenshot', authenticateToken, screenshotLimiter, (req, re
     if (!req.file) return res.status(400).json({ error: 'Only image files are allowed' });
     const extension = imageExtension(req.file.buffer);
     if (!extension) return res.status(400).json({ error: 'Only image files are allowed' });
-    const filename = `report-screenshot-${req.user.id}-${Date.now()}.${extension}`;
-    fs.writeFileSync(path.join(screenshotDirectory, filename), req.file.buffer);
+    
+    let bufferToWrite = req.file.buffer;
+    let finalExt = extension;
+    try {
+      const opt = await optimizeBuffer(req.file.buffer, { maxWidth: 1600, quality: 80 });
+      if (opt && opt.buffer) {
+        bufferToWrite = opt.buffer;
+        finalExt = 'webp';
+      }
+    } catch (_) {}
+
+    const filename = `report-screenshot-${req.user.id}-${Date.now()}.${finalExt}`;
+    fs.writeFileSync(path.join(screenshotDirectory, filename), bufferToWrite);
     return res.status(201).json({ success: true, path: `/uploads/report-screenshots/${filename}` });
   });
 });

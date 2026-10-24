@@ -573,7 +573,9 @@ export default function Profile() {
         drawH
       );
 
-      const croppedDataUrl = canvas.toDataURL('image/jpeg', 0.9);
+      const isWebP = canvas.toDataURL('image/webp').indexOf('image/webp') === 5;
+      const targetMime = isWebP ? 'image/webp' : 'image/jpeg';
+      const croppedDataUrl = canvas.toDataURL(targetMime, 0.82);
       
       // Update local state and immediately upload
       const newBio = formData.bio;
@@ -593,15 +595,18 @@ export default function Profile() {
       });
 
       if (res.ok) {
+        const resData = await res.json().catch(() => ({}));
+        const finalAvatarUrl = resData.profile_picture || croppedDataUrl;
+        setFormData(prev => ({ ...prev, profile_picture: finalAvatarUrl }));
         if (updateUser) {
-          updateUser({ profile_picture: croppedDataUrl });
+          updateUser({ profile_picture: finalAvatarUrl });
           
           // Sync with demo cache if on GitHub Pages
           if (window.location.hostname.includes('github.io')) {
             const cached = localStorage.getItem('demo_user_cache');
             if (cached) {
               const userData = JSON.parse(cached);
-              userData.profile_picture = croppedDataUrl;
+              userData.profile_picture = finalAvatarUrl;
               localStorage.setItem('demo_user_cache', JSON.stringify(userData));
             }
           }

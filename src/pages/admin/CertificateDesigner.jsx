@@ -1,3 +1,4 @@
+import { compressImage } from '../../utils/imageCompressor';
 import { useState, useEffect, useRef } from 'react';
 import { Save, CheckCircle2, Image as ImageIcon, UploadCloud, Trash2, Award, Move, ChevronDown, Type, Bold, Italic, Underline, Strikethrough, Superscript, Subscript, AlignLeft, AlignCenter, AlignRight, AlignJustify, Minus, Plus, Palette } from 'lucide-react';
 import { useModal } from '../../components/BFIModal';
@@ -383,8 +384,9 @@ export default function CertificateDesigner() {
   const handleFileUpload = async (e) => {
     const file = e.target.files[0]; if (!file) return;
     setSaving(true); setMessage({ text: '', type: '' });
-    const fd = new FormData(); fd.append('file', file);
     try {
+      const optimizedFile = await compressImage(file, { maxWidth: 2048, quality: 0.85, outputFormat: 'file' });
+      const fd = new FormData(); fd.append('file', optimizedFile);
       const res = await fetch(`${API_BASE}/api/certification/upload-image`, {
         method: 'POST', headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }, body: fd,
       });

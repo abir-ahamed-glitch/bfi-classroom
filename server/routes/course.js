@@ -6,6 +6,7 @@ import { fileURLToPath } from 'url';
 import { logTrashAction } from '../utils/trashLogger.js';
 import db from '../db/database.js';
 import { authenticateToken, requireRole } from '../middleware/auth.js';
+import { optimizeUploadedImage } from '../utils/imageOptimizer.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -30,21 +31,26 @@ const allowedTypes = [
   'application/pdf',
   'application/msword',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  'video/mp4',
-  'video/webm',
-  'video/ogg',
   'image/jpeg',
   'image/png',
+  'image/webp',
   'application/zip',
   'application/x-zip-compressed',
 ];
 
 const upload = multer({
   storage,
-  limits: { fileSize: 500 * 1024 * 1024 }, // 500 MB
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50 MB limit (video uploads are disabled)
   fileFilter: (req, file, cb) => {
+    if (file.mimetype && file.mimetype.startsWith('video/')) {
+      return cb(new Error('Direct video uploads are disabled on this platform. Please select "External URL" and paste a YouTube, Vimeo, or Google Drive link instead.'));
+    }
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (['.mp4', '.mov', '.avi', '.mkv', '.webm', '.flv', '.wmv', '.m4v', '.ogg'].includes(ext)) {
+      return cb(new Error('Direct video uploads are disabled on this platform. Please select "External URL" and paste a YouTube, Vimeo, or Google Drive link instead.'));
+    }
     if (allowedTypes.includes(file.mimetype)) return cb(null, true);
-    cb(new Error('File type not allowed'));
+    cb(new Error('File type not allowed. Allowed formats: PDF, Word, ZIP, JPEG, PNG, WebP.'));
   },
 });
 
@@ -222,7 +228,7 @@ router.get('/admin/all', authenticateToken, requireRole('admin'), (req, res) => 
 });
 
 // ─── POST: Upload new material ────────────────────────────────────────────────
-router.post('/upload', authenticateToken, requireRole('admin'), upload.single('file'), (req, res) => {
+router.post('/upload', authenticateToken, requireRole('admin'), upload.single('file'), async (req, res) => {
   try {
     const { title, description, course_name, batch_number, batch_id, is_downloadable, external_url, file_type_override } = req.body;
 
@@ -278,7 +284,7 @@ router.post('/upload', authenticateToken, requireRole('admin'), upload.single('f
 });
 
 // ─── PUT: Update material metadata ───────────────────────────────────────────
-router.put('/:id', authenticateToken, requireRole('admin'), upload.single('file'), (req, res) => {
+router.put('/:id', authenticateToken, requireRole('admin'), upload.single('file'), async (req, res) => {
   try {
     const { id } = req.params;
     const existing = db.prepare('SELECT * FROM course_materials WHERE id = ?').get(id);

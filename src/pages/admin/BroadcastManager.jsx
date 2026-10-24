@@ -1,3 +1,4 @@
+import { compressImage, isVideoFile } from '../../utils/imageCompressor';
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import {
@@ -1170,14 +1171,28 @@ export default function BroadcastManager() {
   // ─── File Upload (Broadcast Attachments) ──────────────────────────
   const handleFileSelect = async (files) => {
     if (!files || files.length === 0) return;
-    if (attachments.length + files.length > 5) {
+    const rawFiles = Array.from(files);
+    const hasVideo = rawFiles.some(f => isVideoFile(f));
+    if (hasVideo) {
+      showToast('Video uploads are disabled in broadcasts. Please share video links (YouTube, Vimeo, Google Drive) instead.', 'error');
+    }
+    const eligibleFiles = rawFiles.filter(f => !isVideoFile(f));
+    if (eligibleFiles.length === 0) return;
+
+    if (attachments.length + eligibleFiles.length > 5) {
       showToast('Maximum 5 files per broadcast', 'error');
       return;
     }
     setUploading(true);
     try {
       const formData = new FormData();
-      Array.from(files).forEach(f => formData.append('files', f));
+      for (const f of eligibleFiles) {
+        let processedFile = f;
+        if (f.type && f.type.startsWith('image/')) {
+          processedFile = await compressImage(f, { maxWidth: 1600, quality: 0.82, outputFormat: 'file' });
+        }
+        formData.append('files', processedFile);
+      }
       const r = await fetch(`${API_BASE}/upload`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token()}` },
@@ -1196,19 +1211,34 @@ export default function BroadcastManager() {
   };
 
   // ─── File Upload (Notice Attachment) ──────────────────────────────
-  const handleNoticeFileSelect = (e) => {
+  const handleNoticeFileSelect = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
 
-    const reader = new FileReader();
-    reader.onloadend = () => {
+    if (isVideoFile(file)) {
+      showToast('Video uploads are disabled in notices. Please share a video link instead.', 'error');
+      e.target.value = '';
+      return;
+    }
+
+    if (file.type && file.type.startsWith('image/')) {
+      const compressedDataUrl = await compressImage(file, { maxWidth: 1440, quality: 0.82, outputFormat: 'dataUrl' });
       setNoticeAttachment({
         name: file.name,
-        type: file.type,
-        url: reader.result
+        type: 'image/webp',
+        url: compressedDataUrl
       });
-    };
-    reader.readAsDataURL(file);
+    } else {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setNoticeAttachment({
+          name: file.name,
+          type: file.type,
+          url: reader.result
+        });
+      };
+      reader.readAsDataURL(file);
+    }
     e.target.value = '';
   };
 
@@ -1854,6 +1884,7 @@ export default function BroadcastManager() {
                   <input
                     ref={noticeFileInputRef}
                     type="file"
+                    accept="image/*,.pdf,.doc,.docx"
                     style={{ display: 'none' }}
                     onChange={handleNoticeFileSelect}
                   />
@@ -1914,6 +1945,7 @@ export default function BroadcastManager() {
                   ref={fileInputRef}
                   type="file"
                   multiple
+                  accept="image/*,.pdf,.doc,.docx,.xls,.xlsx"
                   style={{ display: 'none' }}
                   onChange={e => handleFileSelect(e.target.files)}
                 />

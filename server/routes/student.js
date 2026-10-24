@@ -1,3 +1,8 @@
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { saveOptimizedAvatar } from '../utils/imageOptimizer.js';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 import express from 'express';
 import bcrypt from 'bcryptjs';
 import db from '../db/database.js';
@@ -204,20 +209,33 @@ router.get('/profile/:userId', authenticateToken, sensitiveEndpointLimiter, asyn
 });
 
 // Update student profile (editable fields)
-router.put('/profile', authenticateToken, sanitizeInput, (req, res) => {
+router.put('/profile', authenticateToken, sanitizeInput, async (req, res) => {
   try {
     const { 
       gender, birthday, present_address, permanent_address, educational_qualification, profession, bfi_batch,
       mobile_number, whatsapp_number, bio, socialLinks, profile_picture
     } = req.body;
 
+    let finalProfilePicture = profile_picture;
+    if (profile_picture && typeof profile_picture === 'string' && profile_picture.startsWith('data:image/')) {
+      try {
+        const rootDir = path.resolve(__dirname, '../..');
+        const savedPath = await saveOptimizedAvatar(profile_picture, req.user.id, rootDir);
+        if (savedPath) {
+          finalProfilePicture = savedPath;
+        }
+      } catch (e) {
+        console.warn('Avatar optimization error:', e);
+      }
+    }
+
     const transaction = db.transaction(() => {
       // Update users table (mobile and profile picture)
       if (mobile_number !== undefined) {
         db.prepare('UPDATE users SET mobile_number = ? WHERE id = ?').run(mobile_number, req.user.id);
       }
-      if (profile_picture !== undefined) {
-        db.prepare('UPDATE users SET profile_picture = ? WHERE id = ?').run(profile_picture, req.user.id);
+      if (finalProfilePicture !== undefined) {
+        db.prepare('UPDATE users SET profile_picture = ? WHERE id = ?').run(finalProfilePicture, req.user.id);
       }
 
       const userRole = db.prepare('SELECT role FROM users WHERE id = ?').get(req.user.id)?.role;
@@ -268,7 +286,7 @@ router.put('/profile', authenticateToken, sanitizeInput, (req, res) => {
     });
 
     transaction();
-    res.json({ message: 'Profile updated successfully' });
+    res.json({ message: 'Profile updated successfully', profile_picture: finalProfilePicture });
   } catch (error) {
     console.error('Profile update error:', error);
     res.status(500).json({ error: 'Internal server error' });

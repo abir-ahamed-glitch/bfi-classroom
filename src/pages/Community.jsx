@@ -8,6 +8,7 @@ import { AudienceSelector } from '../components/PrivacySelector';
 import data from '@emoji-mart/data';
 import { Picker } from 'emoji-mart';
 import { resolveMediaUrl } from '../utils/mediaUtils';
+import { compressImage, isVideoFile } from '../utils/imageCompressor';
 import UserHoverCard from '../components/UserHoverCard';
 import { useModal } from '../components/BFIModal';
 import PhotoEditorModal from '../components/PhotoEditorModal';
@@ -531,16 +532,20 @@ export default function Community() {
     
     if (files.length > 0) {
       e.preventDefault();
-      const readers = files.map(file => new Promise(resolve => {
-        const reader = new FileReader();
-        reader.onloadend = () => resolve(reader.result);
-        reader.readAsDataURL(file);
-      }));
-      Promise.all(readers).then(urls => {
-        addImages(urls);
-        setSelectedProjectId(null);
-        setSelectedProjectTitle('');
-      });
+      const hasVideo = files.some(f => isVideoFile(f));
+      if (hasVideo) {
+        showAlert('Direct video uploads are disabled on this platform. Please link your video from YouTube, Vimeo, or Google Drive instead.', { title: 'Video Uploads Disabled' });
+      }
+      const imageFiles = files.filter(f => !isVideoFile(f));
+      if (imageFiles.length > 0) {
+        Promise.all(
+          imageFiles.map(f => compressImage(f, { maxWidth: 1440, quality: 0.82, outputFormat: 'dataUrl' }))
+        ).then(urls => {
+          addImages(urls);
+          setSelectedProjectId(null);
+          setSelectedProjectTitle('');
+        });
+      }
     }
   }, [addImages]);
 
@@ -558,11 +563,9 @@ export default function Community() {
     
     if (file) {
       e.preventDefault();
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setCommentImages(prev => ({ ...prev, [postId]: reader.result }));
-      };
-      reader.readAsDataURL(file);
+      compressImage(file, { maxWidth: 1200, quality: 0.82, outputFormat: 'dataUrl' }).then(url => {
+        setCommentImages(prev => ({ ...prev, [postId]: url }));
+      });
     }
   }, []);
 
@@ -580,11 +583,9 @@ export default function Community() {
     
     if (file) {
       e.preventDefault();
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setReplyImages(prev => ({ ...prev, [commentId]: reader.result }));
-      };
-      reader.readAsDataURL(file);
+      compressImage(file, { maxWidth: 1200, quality: 0.82, outputFormat: 'dataUrl' }).then(url => {
+        setReplyImages(prev => ({ ...prev, [commentId]: url }));
+      });
     }
   }, []);
 
@@ -783,12 +784,18 @@ export default function Community() {
   const handleFileChange = (e) => {
     const files = Array.from(e.target.files);
     if (files.length === 0) return;
-    const readers = files.map(file => new Promise(resolve => {
-      const reader = new FileReader();
-      reader.onloadend = () => resolve(reader.result);
-      reader.readAsDataURL(file);
-    }));
-    Promise.all(readers).then(urls => {
+    const hasVideo = files.some(f => isVideoFile(f));
+    if (hasVideo) {
+      showAlert('Direct video uploads are disabled on this platform. Please link your video project from YouTube, Vimeo, or Google Drive instead.', { title: 'Video Uploads Disabled' });
+    }
+    const imageFiles = files.filter(f => !isVideoFile(f));
+    if (imageFiles.length === 0) {
+      e.target.value = '';
+      return;
+    }
+    Promise.all(
+      imageFiles.map(f => compressImage(f, { maxWidth: 1440, quality: 0.82, outputFormat: 'dataUrl' }))
+    ).then(urls => {
       addImages(urls);
       setSelectedProjectId(null);
       setSelectedProjectTitle('');
@@ -799,12 +806,18 @@ export default function Community() {
   const handleEditingFileChange = (e) => {
     const files = Array.from(e.target.files);
     if (files.length === 0) return;
-    const readers = files.map(file => new Promise(resolve => {
-      const reader = new FileReader();
-      reader.onloadend = () => resolve(reader.result);
-      reader.readAsDataURL(file);
-    }));
-    Promise.all(readers).then(urls => {
+    const hasVideo = files.some(f => isVideoFile(f));
+    if (hasVideo) {
+      showAlert('Direct video uploads are disabled. Please share a video link instead.', { title: 'Video Uploads Disabled' });
+    }
+    const imageFiles = files.filter(f => !isVideoFile(f));
+    if (imageFiles.length === 0) {
+      e.target.value = '';
+      return;
+    }
+    Promise.all(
+      imageFiles.map(f => compressImage(f, { maxWidth: 1440, quality: 0.82, outputFormat: 'dataUrl' }))
+    ).then(urls => {
       setEditingPostImages(prev => {
         const shaped = urls.map(url => ({ url, editedUrl: undefined, caption: '' }));
         return [...prev, ...shaped].slice(0, 10);
@@ -2454,11 +2467,9 @@ export default function Community() {
                                     onChange={(e) => {
                                       const file = e.target.files?.[0];
                                       if (file) {
-                                        const reader = new FileReader();
-                                        reader.onloadend = () => {
-                                          setEditingCommentImage(reader.result);
-                                        };
-                                        reader.readAsDataURL(file);
+                                        compressImage(file, { maxWidth: 1200, quality: 0.82, outputFormat: 'dataUrl' }).then(url => {
+                                          setEditingCommentImage(url);
+                                        });
                                       }
                                       e.target.value = '';
                                     }}
@@ -2884,11 +2895,9 @@ export default function Community() {
                                           onChange={(e) => {
                                             const file = e.target.files?.[0];
                                             if (file) {
-                                              const reader = new FileReader();
-                                              reader.onloadend = () => {
-                                                setEditingCommentImage(reader.result);
-                                              };
-                                              reader.readAsDataURL(file);
+                                              compressImage(file, { maxWidth: 1200, quality: 0.82, outputFormat: 'dataUrl' }).then(url => {
+                                                setEditingCommentImage(url);
+                                              });
                                             }
                                             e.target.value = '';
                                           }}
@@ -3309,11 +3318,9 @@ export default function Community() {
                                   onChange={(e) => {
                                     const file = e.target.files?.[0];
                                     if (file) {
-                                      const reader = new FileReader();
-                                      reader.onloadend = () => {
-                                        setReplyImages(prev => ({ ...prev, [comment.id]: reader.result }));
-                                      };
-                                      reader.readAsDataURL(file);
+                                      compressImage(file, { maxWidth: 1200, quality: 0.82, outputFormat: 'dataUrl' }).then(url => {
+                                        setReplyImages(prev => ({ ...prev, [comment.id]: url }));
+                                      });
                                     }
                                     e.target.value = '';
                                   }}
@@ -3497,11 +3504,9 @@ export default function Community() {
                           onChange={(e) => {
                             const file = e.target.files?.[0];
                             if (file) {
-                              const reader = new FileReader();
-                              reader.onloadend = () => {
-                                setCommentImages(prev => ({ ...prev, [post.id]: reader.result }));
-                              };
-                              reader.readAsDataURL(file);
+                              compressImage(file, { maxWidth: 1200, quality: 0.82, outputFormat: 'dataUrl' }).then(url => {
+                                setCommentImages(prev => ({ ...prev, [post.id]: url }));
+                              });
                             }
                             e.target.value = '';
                           }}

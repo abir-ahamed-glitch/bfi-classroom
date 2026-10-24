@@ -5,6 +5,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import db from '../db/database.js';
 import { authenticateToken, sanitizeInput } from '../middleware/auth.js';
+import { optimizeUploadedImage } from '../utils/imageOptimizer.js';
 import { decryptMessageContent, encryptMessageContent } from '../utils/messageCrypto.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -36,12 +37,10 @@ const ALLOWED_MIME_TYPES = [
   'audio/mp4',
   'audio/ogg',
   'audio/wav',
-  'video/mp4',
-  'video/webm',
   'application/octet-stream' // Allow E2E encrypted files
 ];
 
-const ALLOWED_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.txt', '.csv', '.webm', '.mpeg', '.m4a', '.mp4', '.ogg', '.wav', '.e2e'];
+const ALLOWED_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.txt', '.csv', '.webm', '.mpeg', '.m4a', '.ogg', '.wav', '.e2e'];
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, uploadDir),
@@ -531,7 +530,7 @@ router.get('/attachments/:filename', authenticateToken, (req, res) => {
   }
 });
 
-router.post('/upload', authenticateToken, uploadAttachment.single('file'), (req, res) => {
+router.post('/upload', authenticateToken, uploadAttachment.single('file'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No file provided.' });
@@ -609,7 +608,7 @@ router.post('/messages', authenticateToken, sanitizeInput, (req, res) => {
   }
 });
 
-router.post('/messages/upload', authenticateToken, uploadAttachment.single('attachment'), (req, res) => {
+router.post('/messages/upload', authenticateToken, uploadAttachment.single('attachment'), async (req, res) => {
   try {
     const senderId = req.user.id;
     const receiverId = Number(req.body.receiver_id);

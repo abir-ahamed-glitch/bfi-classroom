@@ -1,3 +1,4 @@
+import { compressImage, isVideoFile } from '../utils/imageCompressor';
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate, useLocation } from 'react-router-dom';
@@ -3249,13 +3250,28 @@ export default function Inbox() {
     }
   };
 
-  const handleFilePick = (event) => {
+  const handleFilePick = async (event) => {
     const files = Array.from(event.target.files || []);
     if (files.length === 0) return;
-    const newFiles = files.map(file => ({
-      id: Math.random().toString(36).substr(2, 9),
-      file,
-      previewUrl: ((file.type || '').startsWith('image/') || (file.type || '').startsWith('video/') || (file.type || '').startsWith('audio/')) ? URL.createObjectURL(file) : null
+    const hasVideo = files.some(f => isVideoFile(f));
+    if (hasVideo) {
+      showModernAlert('Direct video uploads are disabled on this platform. Please share video links (YouTube, Vimeo, Google Drive) instead.', 'Video Uploads Disabled');
+    }
+    const nonVideoFiles = files.filter(f => !isVideoFile(f));
+    if (nonVideoFiles.length === 0) {
+      if (event.target) event.target.value = '';
+      return;
+    }
+    const newFiles = await Promise.all(nonVideoFiles.map(async (file) => {
+      let processedFile = file;
+      if (file.type && file.type.startsWith('image/')) {
+        processedFile = await compressImage(file, { maxWidth: 1440, quality: 0.82, outputFormat: 'file' });
+      }
+      return {
+        id: Math.random().toString(36).substr(2, 9),
+        file: processedFile,
+        previewUrl: ((processedFile.type || '').startsWith('image/') || (processedFile.type || '').startsWith('audio/')) ? URL.createObjectURL(processedFile) : null
+      };
     }));
     setAttachedFiles(prev => [...prev, ...newFiles]);
     setEditingMessage(null);
@@ -3857,7 +3873,7 @@ export default function Inbox() {
 
   return (
       <div className={`page-container container inbox-page ${activeChat ? 'has-active-chat' : 'no-active-chat'}`} style={{ display: 'flex', paddingBottom: 0 }}>
-      <input ref={fileInputRef} type="file" multiple style={{ display: 'none' }} onChange={handleFilePick} />
+      <input ref={fileInputRef} type="file" multiple accept="image/*,audio/*,.pdf,.doc,.docx,.xls,.xlsx,.txt,.csv" style={{ display: 'none' }} onChange={handleFilePick} />
 
       <div className={`inbox-sidebar glass-panel ${slideDirection === 'exit' ? 'slide-in-from-left' : ''}`} style={{ width: 320, flexShrink: 0 }}>
         {isGlobalMessageSearchActive ? (

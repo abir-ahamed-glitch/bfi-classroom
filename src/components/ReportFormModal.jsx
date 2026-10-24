@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Flag, LoaderCircle, Paperclip, Upload, X } from 'lucide-react';
+import { compressImage } from '../utils/imageCompressor';
 import './ReportFormModal.css';
 
 export default function ReportFormModal({
@@ -77,7 +78,8 @@ export default function ReportFormModal({
     setUploading(true);
     setUploadError('');
     const formData = new FormData();
-    formData.append('screenshot', file);
+    const compressedFile = await compressImage(file, { maxWidth: 1600, quality: 0.82, outputFormat: 'file' });
+    formData.append('screenshot', compressedFile);
     try {
       const response = await fetch('/api/reports/upload-screenshot', {
         method: 'POST',

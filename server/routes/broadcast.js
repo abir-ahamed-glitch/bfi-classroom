@@ -6,6 +6,7 @@ import multer from 'multer';
 import { fileURLToPath } from 'url';
 import db from '../db/database.js';
 import { authenticateToken, requireRole, sanitizeInput } from '../middleware/auth.js';
+import { optimizeUploadedImage } from '../utils/imageOptimizer.js';
 import { encryptMessageContent } from '../utils/messageCrypto.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -40,6 +41,13 @@ const broadcastStorage = multer.diskStorage({
 const broadcastUpload = multer({
   storage: broadcastStorage,
   fileFilter: (_req, file, cb) => {
+    if (file.mimetype && file.mimetype.startsWith('video/')) {
+      return cb(new Error('Video uploads are disabled in broadcasts. Please share video links (YouTube, Vimeo, Google Drive) instead.'));
+    }
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (['.mp4', '.mov', '.avi', '.mkv', '.webm', '.flv', '.wmv', '.m4v'].includes(ext)) {
+      return cb(new Error('Video uploads are disabled in broadcasts. Please share video links (YouTube, Vimeo, Google Drive) instead.'));
+    }
     if (ALLOWED_MIME_TYPES.includes(file.mimetype)) {
       cb(null, true);
     } else {
@@ -407,19 +415,31 @@ router.post('/resolve-audience', authenticateToken, broadcastAuth, (req, res) =>
 
 // ── Endpoint 2: Upload attachment ─────────────────────────────────────────────
 router.post('/upload', authenticateToken, broadcastAuth, (req, res) => {
-  broadcastUpload.array('files', 5)(req, res, (err) => {
+  broadcastUpload.array('files', 5)(req, res, async (err) => {
     if (err) {
       return res.status(400).json({ error: err.message });
     }
     if (!req.files || req.files.length === 0) {
       return res.status(400).json({ error: 'No files uploaded' });
     }
-    const uploaded = req.files.map(file => ({
-      file_name: file.originalname,
-      file_path: `/media/broadcast-attachments/${file.filename}`,
-      file_type: file.mimetype,
-      file_size: file.size,
-    }));
+    const uploaded = [];
+    for (const file of req.files) {
+      if (file.mimetype && file.mimetype.startsWith('image/')) {
+        const opt = await optimizeUploadedImage(file.path, { maxWidth: 1600, quality: 82 });
+        if (opt) {
+          file.filename = opt.filename;
+          file.path = opt.path;
+          file.mimetype = opt.mimetype;
+          file.size = opt.size;
+        }
+      }
+      uploaded.push({
+        file_name: file.originalname,
+        file_path: `/media/broadcast-attachments/${file.filename}`,
+        file_type: file.mimetype,
+        file_size: file.size,
+      });
+    }
     res.json({ files: uploaded });
   });
 });

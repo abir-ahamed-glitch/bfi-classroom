@@ -1,6 +1,7 @@
 import express from 'express';
 import db from '../db/database.js';
 import { authenticateToken, requireRole } from '../middleware/auth.js';
+import { optimizeUploadedImage } from '../utils/imageOptimizer.js';
 import courseProgressService from '../services/courseProgressService.js';
 import { resolvePhaseFee } from '../utils/feeResolver.js';
 import multer from 'multer';
