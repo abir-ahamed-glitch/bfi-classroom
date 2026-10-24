@@ -782,6 +782,13 @@ export function resolveEnrollmentFinancials(feeDetails, courseType, batchFee, op
   return {
     status,
     phaseResults,
+    total: totalGross,
+    gross: totalGross,
+    discount: totalDiscount,
+    netPayable: totalNetPayable,
+    collected: totalCashCollected,
+    cashCollected: totalCashCollected,
+    outstanding: totalOutstanding,
     amounts: {
       total: totalGross,
       gross: totalGross,

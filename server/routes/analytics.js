@@ -931,52 +931,57 @@ router.get('/funnel', authenticateToken, requireRole('admin'), (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/fee-status', authenticateToken, requireRole('admin'), (req, res) => {
   try {
-    const enrollments = db.prepare(`
-      SELECT sce.fee_details, sce.course_type, sce.course_name, sce.course_definition_id, sce.batch_id, sp.batch_number
-      FROM student_course_enrollments sce
-      LEFT JOIN student_profiles sp ON sp.user_id = sce.user_id
-    `).all();
+    const data = getCachedOrCompute('fee-status', () => {
+      const feeContext = createFeeResolverContext(db);
+      const enrollments = db.prepare(`
+        SELECT sce.fee_details, sce.course_type, sce.course_name, sce.course_definition_id, sce.batch_id, sp.batch_number
+        FROM student_course_enrollments sce
+        LEFT JOIN student_profiles sp ON sp.user_id = sce.user_id
+      `).all();
 
-    let paid = 0, partial = 0, unpaid = 0;
-    let totalGrossAmount = 0, totalDiscountAmount = 0, totalNetPayable = 0;
-    let collectedAmount = 0, outstandingAmount = 0;
+      let paid = 0, partial = 0, unpaid = 0;
+      let totalGrossAmount = 0, totalDiscountAmount = 0, totalNetPayable = 0;
+      let collectedAmount = 0, outstandingAmount = 0;
 
-    for (const row of enrollments) {
-      const feeDetails = parseFeeDetails(row.fee_details);
-      const batchFee = getBatchFee(row.course_name, row.batch_number, db, row.batch_id);
-      const feeOpts = {
-        courseDefId: row.course_definition_id,
-        courseName: row.course_name,
-        batchNumber: row.batch_number,
-        batchId: row.batch_id
+      for (const row of enrollments) {
+        const feeDetails = parseFeeDetails(row.fee_details);
+        const batchFee = getBatchFee(row.course_name, row.batch_number, db, row.batch_id, feeContext);
+        const feeOpts = {
+          courseDefId: row.course_definition_id,
+          courseName: row.course_name,
+          batchNumber: row.batch_number,
+          batchId: row.batch_id,
+          feeContext
+        };
+        const res = resolveEnrollmentFinancials(feeDetails, row.course_type, batchFee, feeOpts);
+
+        if (res.status === 'paid') paid++;
+        else if (res.status === 'partial') partial++;
+        else unpaid++;
+
+        totalGrossAmount += res.gross;
+        totalDiscountAmount += res.discount;
+        totalNetPayable += res.netPayable;
+        collectedAmount += res.collected;
+        outstandingAmount += res.outstanding;
+      }
+
+      return {
+        slices: [
+          { name: 'Fully Paid', value: paid, color: '#22c55e' },
+          { name: 'Partially Paid', value: partial, color: '#f59e0b' },
+          { name: 'Unpaid', value: unpaid, color: '#ef4444' },
+        ],
+        totalAmount: Math.round(totalGrossAmount),
+        grossAmount: Math.round(totalGrossAmount),
+        discountAmount: Math.round(totalDiscountAmount),
+        netPayable: Math.round(totalNetPayable),
+        collectedAmount: Math.round(collectedAmount),
+        outstandingAmount: Math.round(outstandingAmount),
       };
-      const status = getFeeStatus(feeDetails, row.course_type, batchFee, feeOpts);
-      const amounts = extractFeeAmounts(feeDetails, row.course_type, batchFee, feeOpts);
-
-      if (status === 'paid') paid++;
-      else if (status === 'partial') partial++;
-      else unpaid++;
-
-      totalGrossAmount += amounts.gross;
-      totalDiscountAmount += amounts.discount;
-      totalNetPayable += amounts.netPayable;
-      collectedAmount += amounts.collected;
-      outstandingAmount += amounts.outstanding;
-    }
-
-    res.json({
-      slices: [
-        { name: 'Fully Paid', value: paid, color: '#22c55e' },
-        { name: 'Partially Paid', value: partial, color: '#f59e0b' },
-        { name: 'Unpaid', value: unpaid, color: '#ef4444' },
-      ],
-      totalAmount: Math.round(totalGrossAmount),
-      grossAmount: Math.round(totalGrossAmount),
-      discountAmount: Math.round(totalDiscountAmount),
-      netPayable: Math.round(totalNetPayable),
-      collectedAmount: Math.round(collectedAmount),
-      outstandingAmount: Math.round(outstandingAmount),
     });
+
+    res.json(data);
   } catch (error) {
     console.error('[Analytics] /fee-status error:', error);
     res.status(500).json({ error: 'Failed to fetch fee status data' });
@@ -1210,13 +1215,13 @@ router.get('/missing-attendance', authenticateToken, requireRole('admin'), (req,
 router.get('/unpaid-students', authenticateToken, requireRole('admin'), (req, res) => {
   try {
     const targetStatus = req.query.status || 'unpaid';
+    const feeContext = createFeeResolverContext(db);
     const enrollments = db.prepare(`
       SELECT 
         sce.id as enrollment_id,
         sce.user_id,
         sce.course_name,
         sce.course_type,
-        sce.course_name,
         sce.course_definition_id,
         sce.batch_id,
         sce.fee_details,
@@ -1232,36 +1237,18 @@ router.get('/unpaid-students', authenticateToken, requireRole('admin'), (req, re
     const unpaidStudents = [];
     for (const row of enrollments) {
       const feeDetails = parseFeeDetails(row.fee_details);
-      const batchFee = getBatchFee(row.course_name, row.batch_number, db, row.batch_id);
+      const batchFee = getBatchFee(row.course_name, row.batch_number, db, row.batch_id, feeContext);
       const feeOpts = {
         courseDefId: row.course_definition_id,
         courseName: row.course_name,
         batchNumber: row.batch_number,
-        batchId: row.batch_id
+        batchId: row.batch_id,
+        feeContext
       };
-      const status = getFeeStatus(feeDetails, row.course_type, batchFee, feeOpts);
-      if (status === targetStatus) {
-        const amounts = extractFeeAmounts(feeDetails, row.course_type, batchFee, feeOpts);
-        const p1Res = resolvePhaseFee({
-          feeDetailsRaw: feeDetails,
-          phaseIndex: 0,
-          courseDefId: row.course_definition_id,
-          courseName: row.course_name,
-          courseType: row.course_type,
-          batchNumber: row.batch_number,
-          batchId: row.batch_id,
-          batchFee
-        });
-        const p2Res = resolvePhaseFee({
-          feeDetailsRaw: feeDetails,
-          phaseIndex: 1,
-          courseDefId: row.course_definition_id,
-          courseName: row.course_name,
-          courseType: row.course_type,
-          batchNumber: row.batch_number,
-          batchId: row.batch_id,
-          batchFee
-        });
+      const res = resolveEnrollmentFinancials(feeDetails, row.course_type, batchFee, feeOpts);
+      if (res.status === targetStatus) {
+        const p1 = res.phaseResults?.[0];
+        const p2 = res.phaseResults?.[1];
         unpaidStudents.push({
           enrollment_id: row.enrollment_id,
           user_id: row.user_id,
@@ -1270,11 +1257,11 @@ router.get('/unpaid-students', authenticateToken, requireRole('admin'), (req, re
           last_name: row.last_name,
           student_id: row.student_id,
           batch_number: row.batch_number,
-          phase1_fee: Math.round(p1Res.grossFee),
-          phase2_fee: Math.round(p2Res.grossFee),
-          total_due: Math.round(amounts.outstanding),
-          cash_collected: Math.round(amounts.collected),
-          gross_fee: Math.round(amounts.gross)
+          phase1_fee: Math.round(p1?.grossFee || 0),
+          phase2_fee: Math.round(p2?.grossFee || 0),
+          total_due: Math.round(res.outstanding),
+          cash_collected: Math.round(res.collected),
+          gross_fee: Math.round(res.gross)
         });
       }
     }
