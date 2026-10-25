@@ -543,6 +543,12 @@ export function initializeDatabase() {
     CREATE INDEX IF NOT EXISTS idx_spr_phase_id ON student_phase_results(phase_id);
     CREATE INDEX IF NOT EXISTS idx_bcf_lookup ON batch_course_fees(batch_id, course_name, batch_number);
     CREATE INDEX IF NOT EXISTS idx_batches_lookup ON batches(course_name, batch_number);
+    CREATE INDEX IF NOT EXISTS idx_batch_students_batch_id ON batch_students(batch_id);
+    CREATE INDEX IF NOT EXISTS idx_batch_students_student_id ON batch_students(student_id);
+    CREATE INDEX IF NOT EXISTS idx_sce_batch_id ON student_course_enrollments(batch_id);
+    CREATE INDEX IF NOT EXISTS idx_sce_batch_step2 ON student_course_enrollments(batch_id, step2_completed);
+    CREATE INDEX IF NOT EXISTS idx_batches_deleted_status ON batches(deleted_at, status);
+    CREATE INDEX IF NOT EXISTS idx_batches_deleted_course ON batches(deleted_at, course_name);
 
     -- Custom subjects
     CREATE TABLE IF NOT EXISTS custom_subjects (

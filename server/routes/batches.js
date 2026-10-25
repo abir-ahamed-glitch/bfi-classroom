@@ -2,7 +2,7 @@ import express from 'express';
 import db from '../db/database.js';
 import { authenticateToken, requireRole } from '../middleware/auth.js';
 import { runBatchStatusAutomation } from '../utils/batchStatusAutomation.js';
-import { getBatchFee } from '../utils/feeResolver.js';
+import { getBatchFee, createFeeResolverContext } from '../utils/feeResolver.js';
 import { logTrashAction } from '../utils/trashLogger.js';
 import { courseProgressService, getEnrollmentProgressSync, resolvePhaseRoutine } from '../services/courseProgressService.js';
 
@@ -49,8 +49,13 @@ router.get('/', authenticateToken, requireRole('admin'), (req, res) => {
     const batches = db.prepare(`
       SELECT 
         b.*,
-        (SELECT COUNT(*) FROM batch_students WHERE batch_id = b.id) as student_count
+        COALESCE(bs_cnt.cnt, 0) as student_count
       FROM batches b
+      LEFT JOIN (
+        SELECT batch_id, COUNT(*) as cnt 
+        FROM batch_students 
+        GROUP BY batch_id
+      ) bs_cnt ON bs_cnt.batch_id = b.id
       WHERE 
         b.deleted_at IS NULL
         AND (:status IS NULL OR b.status = :status)
@@ -63,19 +68,26 @@ router.get('/', authenticateToken, requireRole('admin'), (req, res) => {
       ORDER BY CAST(b.batch_number AS INTEGER) DESC
     `).all({ status, course, search });
 
+    // Bulk pre-compute phase 1 completed counts in a single query across all batches
+    const p1Rows = db.prepare(`
+      SELECT bs.batch_id, COUNT(DISTINCT bs.student_id) as count
+      FROM batch_students bs
+      JOIN batches b ON b.id = bs.batch_id
+      JOIN student_course_enrollments sce
+        ON sce.user_id = bs.student_id
+        AND (sce.batch_id = bs.batch_id OR (sce.batch_id IS NULL AND sce.course_name = b.course_name))
+      WHERE b.deleted_at IS NULL AND sce.step2_completed = 1
+      GROUP BY bs.batch_id
+    `).all();
+    const p1Map = new Map(p1Rows.map(r => [r.batch_id, r.count]));
+
+    // Pre-load in-memory fee context to resolve course/batch fees with zero DB queries per batch
+    const feeContext = createFeeResolverContext(db);
+
     for (const batch of batches) {
-      const p1Count = db.prepare(`
-        SELECT COUNT(DISTINCT bs.student_id) as count
-        FROM batch_students bs
-        JOIN student_course_enrollments sce
-          ON sce.user_id = bs.student_id
-          AND (sce.batch_id = bs.batch_id OR (sce.batch_id IS NULL AND sce.course_name = ?))
-        WHERE bs.batch_id = ? AND sce.step2_completed = 1
-      `).get(batch.course_name, batch.id).count || 0;
+      batch.phase1_completed_count = p1Map.get(batch.id) || 0;
 
-      batch.phase1_completed_count = p1Count;
-
-      const batchFee = getBatchFee(batch.course_name, batch.batch_number, db, batch.id);
+      const batchFee = getBatchFee(batch.course_name, batch.batch_number, db, batch.id, feeContext);
       batch.course_fee = batchFee ? (batchFee.full_fee || (batchFee.phase1_fee + batchFee.phase2_fee)) : 0;
       batch.phase1_fee = batchFee ? batchFee.phase1_fee : 0;
       batch.phase2_fee = batchFee ? batchFee.phase2_fee : 0;

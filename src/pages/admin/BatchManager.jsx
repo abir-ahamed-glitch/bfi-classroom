@@ -65,8 +65,30 @@ const DEFAULT_BATCH_FORM = {
 };
 
 export default function BatchManager() {
-  const [allBatches, setAllBatches] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [allBatches, setAllBatches] = useState(() => {
+    try {
+      const cached = sessionStorage.getItem('cached_admin_batches');
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch {
+      /* ignore */
+    }
+    return [];
+  });
+  const [loading, setLoading] = useState(() => {
+    try {
+      const cached = sessionStorage.getItem('cached_admin_batches');
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (Array.isArray(parsed) && parsed.length > 0) return false;
+      }
+    } catch {
+      /* ignore */
+    }
+    return true;
+  });
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCourse, setSelectedCourse] = useState('all');
   const [activeStatusTab, setActiveStatusTab] = useState('all');
@@ -190,10 +212,12 @@ export default function BatchManager() {
     }
   };
 
-  // Fetch all batches
-  const fetchBatches = async () => {
+  // Fetch all batches with Stale-While-Revalidate support
+  const fetchBatches = async (isBackground = false) => {
     try {
-      setLoading(true);
+      if (!isBackground && allBatches.length === 0) {
+        setLoading(true);
+      }
       const token = localStorage.getItem('token');
       const response = await fetch('/api/admin/batches', {
         headers: {
@@ -202,7 +226,13 @@ export default function BatchManager() {
       });
       if (response.ok) {
         const data = await response.json();
-        setAllBatches(data || []);
+        const batches = data || [];
+        setAllBatches(batches);
+        try {
+          sessionStorage.setItem('cached_admin_batches', JSON.stringify(batches));
+        } catch {
+          /* ignore */
+        }
       } else {
         console.error('Failed to fetch batches from server.');
       }
@@ -214,8 +244,21 @@ export default function BatchManager() {
   };
 
   useEffect(() => {
-    fetchBatches();
+    const hasCache = allBatches.length > 0;
+    fetchBatches(hasCache);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Sync cache whenever allBatches changes (e.g. status changed, edited, deleted)
+  useEffect(() => {
+    if (allBatches && allBatches.length > 0) {
+      try {
+        sessionStorage.setItem('cached_admin_batches', JSON.stringify(allBatches));
+      } catch {
+        /* ignore */
+      }
+    }
+  }, [allBatches]);
 
   // Close dropdowns on outside clicks and escape
   useEffect(() => {
