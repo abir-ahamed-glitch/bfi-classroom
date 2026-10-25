@@ -532,7 +532,7 @@ export default function Inbox() {
         headers: { Authorization: `Bearer ${token}` }
       })
         .then(r => r.json())
-        .then(d => setBatches(d.batches || []))
+        .then(d => setBatches(Array.isArray(d) ? d : (d.batches || [])))
         .catch(err => console.error('Failed to fetch batches', err));
     }
   }, [quickBroadcastOpen, batches.length]);

@@ -65,8 +65,30 @@ const DEFAULT_BATCH_FORM = {
 };
 
 export default function BatchManager() {
-  const [allBatches, setAllBatches] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [allBatches, setAllBatches] = useState(() => {
+    try {
+      const cached = sessionStorage.getItem('cached_admin_batches');
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch {
+      /* ignore */
+    }
+    return [];
+  });
+  const [loading, setLoading] = useState(() => {
+    try {
+      const cached = sessionStorage.getItem('cached_admin_batches');
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (Array.isArray(parsed) && parsed.length > 0) return false;
+      }
+    } catch {
+      /* ignore */
+    }
+    return true;
+  });
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCourse, setSelectedCourse] = useState('all');
   const [activeStatusTab, setActiveStatusTab] = useState('all');
@@ -76,6 +98,20 @@ export default function BatchManager() {
   const [leavingBatches, setLeavingBatches] = useState([]);
   const [enteringBatches, setEnteringBatches] = useState([]);
   const [toastMsg, setToastMsg] = useState('');
+  const [page, setPage] = useState(1);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [totalCount, setTotalCount] = useState(0);
+  const [serverStats, setServerStats] = useState(null);
+  const [debouncedSearch, setDebouncedSearch] = useState(searchQuery);
+  const isMountedRef = useRef(false);
+
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setDebouncedSearch(searchQuery);
+    }, 300);
+    return () => clearTimeout(handler);
+  }, [searchQuery]);
 
   // Details view states
   const { id: urlBatchId } = useParams();
@@ -190,19 +226,64 @@ export default function BatchManager() {
     }
   };
 
-  // Fetch all batches
-  const fetchBatches = async () => {
+  // Fetch batches with Stale-While-Revalidate and Server-Side Pagination
+  const fetchBatches = async (isBackground = false, targetPage = 1, append = false) => {
     try {
-      setLoading(true);
+      if (append) {
+        setLoadingMore(true);
+      } else if (!isBackground && allBatches.length === 0) {
+        setLoading(true);
+      }
       const token = localStorage.getItem('token');
-      const response = await fetch('/api/admin/batches', {
+      const params = new URLSearchParams();
+      params.set('page', targetPage.toString());
+      params.set('limit', '24');
+      if (activeStatusTab && activeStatusTab !== 'all') params.set('status', activeStatusTab);
+      if (selectedCourse && selectedCourse !== 'all') params.set('course', selectedCourse);
+      if (debouncedSearch && debouncedSearch.trim()) params.set('search', debouncedSearch.trim());
+
+      const response = await fetch(`/api/admin/batches?${params.toString()}`, {
         headers: {
           'Authorization': `Bearer ${token}`
         }
       });
       if (response.ok) {
         const data = await response.json();
-        setAllBatches(data || []);
+        const batches = Array.isArray(data) ? data : (data.batches || []);
+        
+        if (append) {
+          setAllBatches(prev => {
+            const existingIds = new Set(prev.map(b => b.id));
+            const next = [...prev, ...batches.filter(b => !existingIds.has(b.id))];
+            try {
+              sessionStorage.setItem('cached_admin_batches', JSON.stringify(next));
+            } catch {
+              /* ignore */
+            }
+            return next;
+          });
+        } else {
+          setAllBatches(batches);
+          try {
+            sessionStorage.setItem('cached_admin_batches', JSON.stringify(batches));
+          } catch {
+            /* ignore */
+          }
+        }
+
+        if (data && typeof data === 'object' && !Array.isArray(data)) {
+          setHasMore(!!data.hasMore);
+          setTotalCount(data.total ?? batches.length);
+          setPage(data.page ?? targetPage);
+          if (data.stats) {
+            setServerStats(data.stats);
+          }
+        } else {
+          setHasMore(false);
+          setTotalCount(batches.length);
+        }
+      } else if (response.status === 304) {
+        // HTTP 304 Not Modified: Browser cache is already completely up to date!
       } else {
         console.error('Failed to fetch batches from server.');
       }
@@ -210,12 +291,40 @@ export default function BatchManager() {
       console.error('Error fetching batches:', error);
     } finally {
       setLoading(false);
+      setLoadingMore(false);
     }
   };
 
+  const handleLoadMore = () => {
+    if (loadingMore || !hasMore) return;
+    const nextPage = page + 1;
+    fetchBatches(false, nextPage, true);
+  };
+
   useEffect(() => {
-    fetchBatches();
+    const hasCache = allBatches.length > 0;
+    fetchBatches(hasCache, 1, false);
+    isMountedRef.current = true;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Re-fetch page 1 whenever filters change after mount
+  useEffect(() => {
+    if (!isMountedRef.current) return;
+    fetchBatches(false, 1, false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeStatusTab, selectedCourse, debouncedSearch]);
+
+  // Sync cache whenever allBatches changes (e.g. status changed, edited, deleted)
+  useEffect(() => {
+    if (allBatches && allBatches.length > 0) {
+      try {
+        sessionStorage.setItem('cached_admin_batches', JSON.stringify(allBatches));
+      } catch {
+        /* ignore */
+      }
+    }
+  }, [allBatches]);
 
   // Close dropdowns on outside clicks and escape
   useEffect(() => {
@@ -501,8 +610,9 @@ export default function BatchManager() {
     );
   };
 
-  // Statistics calculations (client-side)
+  // Statistics calculations (server-backed with client fallback)
   const stats = useMemo(() => {
+    if (serverStats) return serverStats;
     let total = allBatches.length;
     let active = 0;
     let upcoming = 0;
@@ -515,7 +625,7 @@ export default function BatchManager() {
     });
 
     return { total, active, upcoming, completed };
-  }, [allBatches]);
+  }, [allBatches, serverStats]);
 
   // Filter batches client-side
   const filteredBatches = useMemo(() => {
@@ -1240,7 +1350,8 @@ export default function BatchManager() {
               </button>
             </div>
           ) : (
-            <div className="batch-grid">
+            <>
+              <div className="batch-grid">
               {filteredBatches.map(b => {
                 const hasStudents = b.student_count > 0;
                 const isFilmmaking = b.course_name === 'Online Filmmaking Course';
@@ -1422,7 +1533,40 @@ export default function BatchManager() {
                   </div>
                 );
               })}
-            </div>
+              </div>
+              {hasMore && (
+                <div style={{ display: 'flex', justifyContent: 'center', marginTop: '2.5rem', marginBottom: '1.5rem' }}>
+                  <button
+                    type="button"
+                    onClick={handleLoadMore}
+                    disabled={loadingMore}
+                    className="modern-btn"
+                    style={{
+                      padding: '0.75rem 2rem',
+                      fontSize: '0.95rem',
+                      fontWeight: 600,
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.6rem',
+                      borderRadius: '8px',
+                      background: 'rgba(255, 255, 255, 0.08)',
+                      border: '1px solid rgba(255, 255, 255, 0.15)',
+                      color: 'var(--text-primary)',
+                      cursor: loadingMore ? 'not-allowed' : 'pointer'
+                    }}
+                  >
+                    {loadingMore ? (
+                      <>
+                        <span className="spin" style={{ display: 'inline-block', width: '16px', height: '16px', border: '2px solid currentColor', borderTopColor: 'transparent', borderRadius: '50%' }}></span>
+                        Loading more batches...
+                      </>
+                    ) : (
+                      `Load More Batches (${allBatches.length} of ${totalCount})`
+                    )}
+                  </button>
+                </div>
+              )}
+            </>
           )}
         </div>
       )}

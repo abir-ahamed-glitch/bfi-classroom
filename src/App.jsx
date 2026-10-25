@@ -168,7 +168,7 @@ const Layout = ({ children }) => {
               background: 'var(--bg-secondary)',
               borderBottom: '1px solid var(--glass-border)',
             }}>
-              <div style={{ width: '40px' }}></div> {/* Spacer for symmetry */}
+              <div style={{ width: '40px' }}></div> {/* Spacer reserved for future master search */}
               <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
                 <img src={`${import.meta.env.BASE_URL}bfi-logo.jpg`} alt="Logo" style={{ height: '28px', borderRadius: '6px' }} />
                 <div style={{ width: '1px', height: '20px', background: 'var(--glass-border)' }} />
