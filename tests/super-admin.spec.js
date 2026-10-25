@@ -5173,4 +5173,124 @@ test.describe('Super Admin Architecture & Role Governance Suite', () => {
     db.prepare('DELETE FROM admin_audit_logs WHERE resource = ?').run(`enrollment:${customEnrollmentId}`);
   });
 
+
+  test('82. Integrated Main: Batches HTTP 304 ETag Conditional Caching & Invalidation', async ({ request }) => {
+    const { token: saToken } = issueAdminSessionToken(SUPER_ADMIN_ID);
+
+    // 1. Initial GET /api/batches -> HTTP 200 with ETag header
+    const firstRes = await request.get(`${API_BASE}/api/admin/batches`, {
+      headers: { Authorization: `Bearer ${saToken}` }
+    });
+    expect(firstRes.status()).toBe(200);
+    const etag = firstRes.headers()['etag'];
+    expect(etag).toBeDefined();
+    expect(etag.startsWith('W/"b-')).toBe(true);
+
+    // 2. Conditional GET with matching If-None-Match -> HTTP 304 Not Modified
+    const cachedRes = await request.get(`${API_BASE}/api/admin/batches`, {
+      headers: {
+        Authorization: `Bearer ${saToken}`,
+        'if-none-match': etag
+      }
+    });
+    expect(cachedRes.status()).toBe(304);
+
+    // 3. Trigger database update to invalidate ETag
+    const testBatchNumber = `TEST_ETAG_${Date.now()}`;
+    const insertRes = db.prepare(`
+      INSERT INTO batches (batch_name, batch_number, course_name, status, created_at, updated_at)
+      VALUES ('ETag Test Batch', ?, 'Online Filmmaking Course', 'active', datetime('now'), datetime('now'))
+    `).run(testBatchNumber);
+    const newBatchId = insertRes.lastInsertRowid;
+
+    // 4. Conditional GET with stale ETag -> HTTP 200 with refreshed ETag
+    const refreshedRes = await request.get(`${API_BASE}/api/admin/batches`, {
+      headers: {
+        Authorization: `Bearer ${saToken}`,
+        'if-none-match': etag
+      }
+    });
+    expect(refreshedRes.status()).toBe(200);
+    const newEtag = refreshedRes.headers()['etag'];
+    expect(newEtag).not.toBe(etag);
+
+    // Cleanup
+    db.prepare('DELETE FROM batches WHERE id = ?').run(newBatchId);
+  });
+
+  test('83. Integrated Main: Batches Server-Side Pagination & Global Status Aggregations', async ({ request }) => {
+    const { token: saToken } = issueAdminSessionToken(SUPER_ADMIN_ID);
+
+    const paginatedRes = await request.get(`${API_BASE}/api/admin/batches?paginate=true&page=1&limit=5`, {
+      headers: { Authorization: `Bearer ${saToken}` }
+    });
+    expect(paginatedRes.status()).toBe(200);
+    const data = await paginatedRes.json();
+
+    expect(data.batches).toBeDefined();
+    expect(Array.isArray(data.batches)).toBe(true);
+    expect(data.page).toBe(1);
+    expect(data.limit).toBe(5);
+    expect(typeof data.total).toBe('number');
+    expect(typeof data.totalPages).toBe('number');
+    expect(typeof data.hasMore).toBe('boolean');
+    expect(data.stats).toBeDefined();
+    expect(typeof data.stats.total).toBe('number');
+    expect(typeof data.stats.active).toBe('number');
+
+    // In-memory fee resolution check
+    if (data.batches.length > 0) {
+      expect(data.batches[0].course_fee).toBeDefined();
+      expect(data.batches[0].phase1_fee).toBeDefined();
+      expect(data.batches[0].phase2_fee).toBeDefined();
+    }
+  });
+
+  test('84. Integrated Main: Analytics Dynamic Unread Reports Count', async ({ request }) => {
+    const { token: saToken } = issueAdminSessionToken(SUPER_ADMIN_ID);
+
+    const urgentRes = await request.get(`${API_BASE}/api/analytics/urgent`, {
+      headers: { Authorization: `Bearer ${saToken}` }
+    });
+    expect(urgentRes.status()).toBe(200);
+    const data = await urgentRes.json();
+
+    expect(data.unreadReports).toBeDefined();
+    expect(typeof data.unreadReports).toBe('number');
+    expect(data.pendingCertApprovals).toBeDefined();
+    expect(data.missingAttendance).toBeDefined();
+    expect(data.inactiveStudents).toBeDefined();
+  });
+
+  test('85. Integrated Main: Global Search Super Admin Privileges & Role Guard', async ({ request }) => {
+    const { token: saToken } = issueAdminSessionToken(SUPER_ADMIN_ID);
+
+    // Super Admin can access administrator management
+    const saRes = await request.get(`${API_BASE}/api/admin/administrators`, {
+      headers: { Authorization: `Bearer ${saToken}` }
+    });
+    expect(saRes.status()).toBe(200);
+
+    // Ordinary admin cannot access administrator management
+    const ordinaryAdminUsername = `admin@ordinary_${Date.now()}`;
+    const passwordHash = bcrypt.hashSync(TEST_PASSWORD, 10);
+    const insertRes = db.prepare(`
+      INSERT INTO users (username, email, password_hash, role, first_name, last_name, is_active, is_super_admin, last_login, token_version)
+      VALUES (?, ?, ?, 'admin', 'Ordinary', 'Admin', 1, 0, datetime('now'), 1)
+    `).run(ordinaryAdminUsername, `${ordinaryAdminUsername.replace('@', '_')}@bfibd.org`, passwordHash);
+    const ordinaryAdminId = insertRes.lastInsertRowid;
+    const { token: ordinaryToken, sessionId: ordSessId } = issueAdminSessionToken(ordinaryAdminId);
+
+    const ordRes = await request.get(`${API_BASE}/api/admin/administrators`, {
+      headers: { Authorization: `Bearer ${ordinaryToken}` }
+    });
+    expect(ordRes.status()).toBe(403);
+    const ordData = await ordRes.json();
+    expect(ordData.error).toContain('Super Administrator privilege required');
+
+    // Cleanup
+    db.prepare('DELETE FROM sessions WHERE id = ?').run(ordSessId);
+    db.prepare('DELETE FROM users WHERE id = ?').run(ordinaryAdminId);
+  });
+
 });

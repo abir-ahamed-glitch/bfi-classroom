@@ -466,7 +466,7 @@ export default function GlobalSearch({ onNavigate }) {
     ];
 
     return items;
-  }, [currentUser?.role, mode]);
+  }, [currentUser?.role, currentUser?.is_super_admin, currentUser?.id, mode]);
 
   // Intelligent search matching: exact + typo-tolerant fuzzy suggestions
   const { results, isSuggestion } = useMemo(() => {
