@@ -913,7 +913,7 @@ export default function Dashboard() {
     const match = url.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|watch\?.+&v=))([^&?]+)/);
     if (!match) return null;
     const id = match[1];
-    const rawUrl = `https://i.ytimg.com/vi/${id}/hqdefault.jpg`;
+    const rawUrl = `https://i.ytimg.com/vi/${id}/maxresdefault.jpg`;
     const base = import.meta.env.BASE_URL.endsWith('/') ? import.meta.env.BASE_URL : `${import.meta.env.BASE_URL}/`;
     return `${base}api/proxy-image?url=${encodeURIComponent(rawUrl)}`;
   };
@@ -955,7 +955,7 @@ export default function Dashboard() {
   };
 
   return (
-    <div className="page-container container" style={{ paddingBottom: '4rem' }}>
+    <div className="page-container container dashboard-container">
       
       {/* Header Profile Summary */}
       <header className="dashboard-header" style={{ 
@@ -1517,9 +1517,11 @@ export default function Dashboard() {
                       src={getProjectPoster(proj)}
                       alt={proj.title}
                       onError={(e) => {
-                        // Advanced fallback for YouTube thumbnails
+                        // Advanced fallback for YouTube thumbnails: maxresdefault -> hqdefault -> 0.jpg -> mqdefault
                         const currentSrc = e.target.src;
-                        if (currentSrc.includes('hqdefault.jpg')) {
+                        if (currentSrc.includes('maxresdefault.jpg')) {
+                          e.target.src = currentSrc.replace('maxresdefault.jpg', 'hqdefault.jpg');
+                        } else if (currentSrc.includes('hqdefault.jpg')) {
                           e.target.src = currentSrc.replace('hqdefault.jpg', '0.jpg');
                         } else if (currentSrc.includes('0.jpg')) {
                           e.target.src = currentSrc.replace('0.jpg', 'mqdefault.jpg');
@@ -1558,10 +1560,16 @@ export default function Dashboard() {
       </section>
 
       <style>{`
+        .dashboard-container {
+          padding-bottom: 4rem;
+        }
+        @media (max-width: 1024px) {
+          .dashboard-container {
+            padding-bottom: calc(100px + env(safe-area-inset-bottom, 24px)) !important;
+          }
+        }
         .dashboard-read-more:hover {
           opacity: 0.85;
-        }
-        .dashboard-read-more:hover svg {
           color: var(--accent-primary);
         }
         .dashboard-header {
@@ -1777,25 +1785,47 @@ export default function Dashboard() {
           display: grid;
           grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
           gap: 1.5rem;
-          padding-bottom: 1rem;
+          padding-bottom: 1.5rem;
           width: 100%;
         }
         .movie-card {
           width: 100%;
           display: flex;
           flex-direction: column;
-          gap: 1rem;
+          gap: 0.75rem;
           cursor: pointer;
           transition: border-color 0.3s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.3s cubic-bezier(0.4, 0, 0.2, 1);
           min-width: 0;
         }
         @media (max-width: 768px) {
+          .movie-row {
+            display: flex;
+            overflow-x: auto;
+            overflow-y: hidden;
+            scroll-snap-type: x mandatory;
+            -webkit-overflow-scrolling: touch;
+            gap: 1.25rem;
+            padding-bottom: 2rem;
+            padding-left: 2px;
+            padding-right: 2px;
+            scrollbar-width: none;
+          }
+          .movie-row::-webkit-scrollbar {
+            display: none;
+          }
+          .movie-card {
+            flex: 0 0 260px;
+            width: 260px;
+            max-width: 80vw;
+            scroll-snap-align: start;
+          }
           .movie-poster {
-            border-radius: 16px;
+            border-radius: 14px;
           }
         }
-        .movie-card:hover {
-          box-shadow: 0 12px 30px rgba(0,0,0,0.45);
+        .movie-card:hover .movie-poster {
+          border-color: var(--accent-primary);
+          box-shadow: 0 12px 28px rgba(0, 0, 0, 0.5);
         }
         .movie-card:hover .poster-overlay {
           opacity: 1;
@@ -1807,11 +1837,14 @@ export default function Dashboard() {
           background: var(--bg-secondary);
           position: relative;
           box-shadow: 0 10px 20px rgba(0,0,0,0.3);
+          border: 1px solid var(--glass-border);
+          transition: border-color 0.2s ease, box-shadow 0.2s ease;
         }
         .movie-poster img {
           width: 100%;
           height: 100%;
           object-fit: cover;
+          display: block;
         }
         .poster-placeholder {
           width: 100%;
@@ -1847,20 +1880,21 @@ export default function Dashboard() {
           align-items: center;
           justify-content: center;
           opacity: 0;
-          transition: opacity 0.3s;
+          transition: opacity 0.3s ease;
         }
         .play-icon {
           color: white;
           filter: drop-shadow(0 4px 6px rgba(0,0,0,0.5));
           opacity: 0.85;
-          transition: opacity 0.3s, filter 0.3s;
+          transition: opacity 0.3s ease, filter 0.3s ease, color 0.3s ease;
         }
         .movie-card:hover .play-icon {
           opacity: 1;
+          color: var(--accent-primary);
           filter: drop-shadow(0 0 12px rgba(225, 29, 72, 0.8));
         }
         .movie-info h4 {
-          font-size: 1.1rem;
+          font-size: 1.05rem;
           margin-bottom: 0.25rem;
           white-space: nowrap;
           overflow: hidden;
@@ -1870,9 +1904,10 @@ export default function Dashboard() {
           font-size: 0.85rem;
           color: var(--text-muted);
           margin-bottom: 0.5rem;
+          transition: color 0.2s ease;
         }
         .movie-creator:hover {
-          color: var(--text-primary);
+          color: var(--accent-primary);
           text-decoration: underline;
         }
         .movie-meta {
@@ -1934,6 +1969,7 @@ export default function Dashboard() {
         }
         .video-modal-close:hover {
           background: var(--accent-primary);
+          color: white;
         }
         .video-player-container {
           position: relative;
