@@ -3,8 +3,8 @@
 **Prepared Date:** October 25, 2026  
 **Candidate Worktree:** `.worktrees/super-admin-integration`  
 **Candidate Branch:** `integration/super-admin-candidate`  
-**Exact Release Candidate Commit SHA:** `7fabdc89ad3f1bd9179a4d91b4d04060c404d437`  
-**Base Commit (Integrated Local Main):** `17d93356e4ec084c718e874cecfb0a82b9e69c10` (Full 11-commit revision gap integrated)  
+**Exact Code Release Candidate Commit SHA:** `1b421a22378ba6029a2e20849720eb780ffba112`  
+**Base Commit (Integrated Local Main):** `17d933567c2b39ad2dd47d949564eee1bce2dd66` (Full 11-commit revision gap integrated)  
 **Target Super Admin Account:** ID `1`, `admin@abir` / `k.eye.films@gmail.com`  
 **Production Host:** `bfi-classroom-server` (`129.221.243.153`, Ubuntu 22.04 LTS aarch64)  
 **Root Database SHA-256 (Pristine):** `BF37A89C3F0DA1038E2E9A8FA18916D9A2986541A062C9AB40EE51E4987F5F1E`  
@@ -13,17 +13,17 @@
 
 ## 1. Executive Deployment Verdict: READY FOR APPROVAL
 
-All local integration, regression testing, deployment safety, rollback hardening, and migration execution requirements have been completely resolved and independently verified.
+All local integration, regression testing, deployment safety, rollback hardening, migration distinction validation, and automated production smoke verification requirements have been completely resolved and independently verified.
 
 | Category | Status | Details |
 | :--- | :---: | :--- |
 | **Main Branch Gap Integration** | **PASS** | 11/11 commits from `4d8feb0..17d9335` cleanly merged; Global Search, ETag caching, SWR pagination, N+1 fee context, unread reports preserved. |
 | **Fail-Closed Safety Gates** | **PASS** | All `\|\| true` eliminated; `set -e` enforced; 14/14 subprocess fail-closed rehearsal vectors pass. |
-| **Unified Migration Runner** | **PASS** | `scripts/run_migrations.cjs` built with explicit path support, chronological order, and post-migration schema integrity assertions. |
-| **Migration Rehearsals** | **PASS** | Initial migration, repeat idempotency execution, and simulated failure rollback 100% verified on disposable 1.5GB database copy. |
-| **Deployment & Rollback Rehearsal** | **PASS** | End-to-end rehearsal passed on disposable staging sandbox; dirty state quarantined, validated preflight backup restored. |
-| **Automated Test Regression** | **PASS** | **122 / 122 Tests Passing** across all 4 suites (including new tests 82–85 for integrated features). |
-| **Code Quality & Build** | **PASS** | **0 ESLint Errors** (168 warnings); clean production Vite build (`dist/index.html` & `dist/404.html` generated in 9.87s). |
+| **Unified Migration Runner** | **PASS** | `scripts/run_migrations.cjs` built with explicit path support, chronological order, and 10/10 post-migration schema integrity assertions. |
+| **Migration Distinction Rehearsals** | **PASS** | **Scenario A (True Pre-Upgrade DB):** All 5 migrations applied sequentially, User 1 promoted, 36 permissions seeded for ordinary admins.<br>**Scenario B (Repeat / Idempotency):** All 5 migrations skipped cleanly (`applied: false`), 0 duplicate permissions, schema verified. |
+| **Automated Smoke Checks** | **PASS** | `scripts/production_smoke_check.cjs` enforces 5 strict tiers (HTML shell, login validation, profile, SA endpoint, Ord Admin 403). Rehearsed across 5 failure/timeout vectors. |
+| **Automated Test Regression** | **PASS** | **122 / 122 Tests Passing** across all 4 suites (including Test 85 real browser Global Search role-indexing verification). |
+| **Code Quality & Build** | **PASS** | **0 ESLint Errors** (168 warnings); clean production Vite build (`dist/index.html` & `dist/404.html` generated in 1.11s). |
 | **Pristine Root Database** | **PASS** | Root database SHA-256 verified unchanged (`BF37A89C...5F1E`). |
 | **Live Host Read-Only Inspection** | **VERIFIED** | Ubuntu 22.04 aarch64, Node v22.23.4, PM2 v7.1.0, 91GB disk available, Nginx proxy active, `lsof`/`fuser` available. |
 | **Edge Maintenance Mode Bypass** | **UNVERIFIED** | Edge Cloudflare/proxy 503 maintenance bypass rule must be verified by the system operator before maintenance window. |
@@ -32,7 +32,7 @@ All local integration, regression testing, deployment safety, rollback hardening
 
 ## 2. Integrated Code Gap & File Inventory
 
-### 2.1 The 11 Integrated Commits from Local `main` (`4d8feb0..17d9335`)
+### 2.1 The 11 Integrated Commits from Local `main` (`4d8feb0..17d933567c2b39ad2dd47d949564eee1bce2dd66`)
 1. `17ed3b7` fix(dashboard): resolve incomplete film thumbnail on mobile view and enforce hover rules
 2. `7a7911c` feat(settings): add real-time search filter for all setting sections
 3. `f0bc58e` feat(navigation): add top-left professional global search covering all sidebar menus and options
@@ -45,7 +45,7 @@ All local integration, regression testing, deployment safety, rollback hardening
 10. `13d719f` feat(batches): implement HTTP 304 ETag conditional caching and server-side pagination with load more
 11. `17d9335` fix(analytics): dynamic unread reports count and ESLint compliance
 
-### 2.2 Complete Release Candidate File Inventory (Commit `7fabdc8`)
+### 2.2 Complete Release Candidate File Inventory (Code Release Commit `1b421a2`)
 * **Core Application Entry & Security:**
   * `server/server.js`: Express router mounting, security headers, rate limiters, session tracking.
   * `server/middleware/auth.js`: Real-time RBAC middleware, `requireSuperAdmin`, `requirePermission`, `requireSudo`, `authLimiter`.
@@ -54,14 +54,15 @@ All local integration, regression testing, deployment safety, rollback hardening
   * `server/routes/admin-management.js`: Super Admin APIs, admin lifecycle, dual timelines, session revocation, MFA reset.
   * `server/routes/admin.js`, `broadcast.js`, `batches.js`, `analytics.js`, `fees.js`, `reports.js`, `student.js`, `trash.js`: Operational audit coverage.
   * `server/utils/totp.js`, `security-events.js`, `feeResolver.js`: TOTP engine, security telemetry, fee context.
-* **Database & Migrations:**
+* **Database, Migrations & Operational Tooling:**
   * `server/db/database.js`: SQLite configuration (WAL mode, foreign keys, 64MB cache, batch indexes).
-  * `scripts/run_migrations.cjs`: Unified CLI runner with post-migration schema integrity assertions.
+  * `scripts/run_migrations.cjs`: Unified CLI runner with post-migration schema integrity assertions and explicit DB path support.
   * `scripts/preflight_lockdown_check.cjs`: Fail-closed writer and database handle inspection tool.
+  * `scripts/production_smoke_check.cjs`: Automated fail-closed production smoke checker with strict multi-tier HTTP assertions.
   * `server/db/migrations/20261023_super_admin.cjs`: Account promotion & schema preparation.
   * `server/db/migrations/20261023_admin_permissions.cjs`: Granular RBAC tables & default catalog.
-  * `server/db/migrations/20261024_privileged_safeguards.cjs`: Sudo mode, token versions, MFA recovery codes.
-  * `server/db/migrations/20261024_mfa_single_use_challenges.cjs`: Server-side single-use challenge tracking.
+  * `server/db/migrations/20261024_privileged_safeguards.cjs`: Sudo mode, token versions, MFA recovery codes (idempotent `{ applied: false }` return).
+  * `server/db/migrations/20261024_mfa_single_use_challenges.cjs`: Server-side single-use challenge tracking (idempotent `{ applied: false }` return).
   * `server/db/migrations/20261025_admin_accountability.cjs`: Creator attribution & expanded audit ledger.
 * **Frontend UI Components & Pages:**
   * `src/components/Sidebar.jsx`: Integrated Global Search, Super Admin navigation, repositioned Account Settings.
@@ -70,10 +71,23 @@ All local integration, regression testing, deployment safety, rollback hardening
   * `src/pages/AdminLogin.jsx`: Multi-factor authentication flow with single-use challenge handling.
   * `src/pages/Dashboard.jsx`, `Inbox.jsx`, `Settings.jsx`, `BatchManager.jsx`: Main integration updates.
 * **Automated Test Specifications:**
-  * `tests/super-admin.spec.js`: 85 automated tests covering governance, MFA, accountability, and main features.
+  * `tests/super-admin.spec.js`: 85 automated tests covering governance, MFA, accountability, and main features (including Test 85 real browser Global Search role-indexing verification).
   * `tests/course-definitions-api.spec.js`: 12 automated tests covering definition immutability and routines.
   * `tests/course-maker-e2e.spec.js`: 10 automated tests covering full lifecycle and student progress.
   * `tests/same-title-batch-collision.spec.js`: 15 automated tests covering multi-batch isolation.
+
+### 2.3 Release Distribution Boundary & Prerequisite
+> [!IMPORTANT]
+> **Candidate Distribution Prerequisite:** Because development, hardening, and verification were performed locally in isolated worktree `.worktrees/super-admin-integration` on branch `integration/super-admin-candidate`, the code release commit `1b421a22378ba6029a2e20849720eb780ffba112` is not yet present on remote `origin`.
+> 
+> The production server (`bfi-classroom-server`) **cannot** fetch this revision (`git fetch origin`) until the operator reviews and pushes the candidate branch to `origin`.
+> 
+> **Action Required Prior to Phase 0:**
+> ```bash
+> # From local candidate repository:
+> git push origin integration/super-admin-candidate
+> # (or merge integration/super-admin-candidate into main and git push origin main)
+> ```
 
 ---
 
@@ -88,7 +102,7 @@ All local integration, regression testing, deployment safety, rollback hardening
 * **Reverse Proxy:** Nginx active on port 80 forwarding `/bfi-classroom/` to local port 3001
 * **Process Inspection Tools:** `/usr/bin/lsof` and `/usr/bin/fuser` confirmed installed with normal execution permissions
 * **Database Location & Size:** `/home/ubuntu/bfi-classroom/server/bfi_classroom.db` (1.57 GB)
-* **Current Production Revision:** Commit `17d9335` on branch `main`
+* **Current Production Revision:** Commit `17d933567c2b39ad2dd47d949564eee1bce2dd66` on branch `main`
 
 ### 3.2 Unverified Host Prerequisites (Marked as UNVERIFIED)
 * **[UNVERIFIED] Edge Maintenance Mode Rule:** Operator must verify Cloudflare or reverse proxy maintenance page routing rules can return HTTP 503 while allowing the operator's IP to access the site.
@@ -97,44 +111,71 @@ All local integration, regression testing, deployment safety, rollback hardening
 
 ---
 
-## 4. Full Automated Test Regression Evidence
+## 4. Full Automated Test Regression & Rehearsal Evidence
 
-All 4 test suites executed against isolated backend port 3099 and frontend port 5174:
+### 4.1 Full Regression Execution (122 / 122 Tests Passed)
+All 4 test suites executed against isolated test environment:
 
 ```
 ================================================================================
                     BFI CLASSROOM FULL REGRESSION REPORT
 ================================================================================
 Suite 1: Super Admin Governance, MFA & Main Feature Regression (tests/super-admin.spec.js)
-  -> 85 / 85 Passed (58.0s)
+  -> 85 / 85 Passed
   -> Covers: RBAC enforcement, session revocation, single-use MFA challenges,
      factor replacement lifecycle, accountability ledger coupling, broadcast retry
      atomicity, scheduled broadcast rollback, custom phase ID before-states,
      batches HTTP 304 ETag caching, batches pagination & server stats, dynamic
-     unread reports count, and Global Search role guards.
+     unread reports count, API route guards, and real browser Global Search
+     role-based indexing (Test 85).
 
 Suite 2: Course Definitions API & Validation (tests/course-definitions-api.spec.js)
-  -> 12 / 12 Passed (6.4s)
+  -> 12 / 12 Passed
   -> Covers: Draft validation, phase constraints, immutability of published
      definitions, routine modifications, legacy migrations, and batch association.
 
 Suite 3: Course Maker End-to-End Lifecycle (tests/course-maker-e2e.spec.js)
-  -> 10 / 10 Passed (4.3s)
+  -> 10 / 10 Passed
   -> Covers: Complete 3-phase lifecycle, practical classes, assignment grading,
      exam results, certificates issuance, and multi-batch isolation.
 
 Suite 4: Same-Title Batch Collision & Multi-Batch Registry (tests/same-title-batch-collision.spec.js)
-  -> 15 / 15 Passed (35.3s)
+  -> 15 / 15 Passed
   -> Covers: Identical course title isolation, batch fee overrides, course settings
      isolation, student portal separation, and instructor scope filtering.
 
 --------------------------------------------------------------------------------
 TOTAL REGRESSION VERDICT: 122 / 122 TESTS PASSED (100% PASS RATE)
 LINT VERDICT: 0 ERRORS (168 warnings)
-BUILD VERDICT: VITE PRODUCTION BUILD PASSED (dist/index.html & dist/404.html in 9.87s)
+BUILD VERDICT: VITE PRODUCTION BUILD PASSED (dist/index.html & dist/404.html in 1.11s)
 ROOT DATABASE INTEGRITY: SHA-256 BF37A89C3F0DA1038E2E9A8FA18916D9A2986541A062C9AB40EE51E4987F5F1E (UNMODIFIED)
 ================================================================================
 ```
+
+### 4.2 Migration Distinction Rehearsal Evidence
+The distinction between an initial migration from a true pre-upgrade database and repeat execution (idempotency) was verified on disposable replicas:
+
+* **Scenario A: Initial Migration from True Pre-Upgrade Database:**
+  * Rehearsed against a clean pre-upgrade replica (`users.is_super_admin = 0`, 0 migrations in `app_migrations`, zero admin permission tables).
+  * Executed `run_migrations.cjs`:
+    * `20261023_super_admin`: Verified User 1 (`admin@abir` / `k.eye.films@gmail.com`) and promoted to Super Admin (`is_super_admin = 1`).
+    * `20261023_admin_permissions`: Created permissions tables, seeded 36 operational permissions for ordinary admins (`admin2` id=7, `admin@test` id=570).
+    * `20261024_privileged_safeguards`: Applied user token/permissions versioning, session activity tracking, and recovery codes table.
+    * `20261024_mfa_single_use_challenges`: Applied challenge tracking table.
+    * `20261025_admin_accountability`: Applied `created_by_admin_id` and expanded operational audit columns.
+  * Verified 10/10 schema assertions: 5 migrations recorded, 0 foreign key violations, PRAGMA `quick_check` = ok.
+* **Scenario B: Repeat Execution (Idempotency) on Already-Upgraded Database:**
+  * Executed `run_migrations.cjs` immediately a second time against the upgraded database.
+  * Result: Exactly 5/5 migrations returned `{ applied: false, reason: 'Already applied' }` and logged `ℹ️ [Skipped] Already applied`.
+  * Verified: 0 duplicated permissions (ordinary admin permissions remained exactly 36), 0 duplicated migration rows (remained exactly 5), schema integrity verified, exit code `0`.
+
+### 4.3 Automated Smoke Check Rehearsal Evidence
+`scripts/production_smoke_check.cjs` was rehearsed against a disposable HTTP server across 5 controlled vectors:
+1. **Happy Path:** Valid 200/400/200/200/403 responses -> Passed all 15 sub-assertions, exit code `0`.
+2. **HTTP 500 Status on Login:** Rejected unexpected status code, exited immediately with code `1`.
+3. **Malformed HTML Body instead of JSON:** Rejected unparseable JSON payload, exited immediately with code `1`.
+4. **Connection Refusal (ECONNREFUSED):** Handled unreachable host gracefully, printed diagnostic and exited with code `1`.
+5. **Request Timeout:** Handled slow endpoint exceeding threshold, aborted connection and exited with code `1`.
 
 ---
 
@@ -143,20 +184,21 @@ ROOT DATABASE INTEGRITY: SHA-256 BF37A89C3F0DA1038E2E9A8FA18916D9A2986541A062C9A
 Execute this exact runbook sequentially during the approved maintenance window. Every command is fail-closed (`set -e`). If any step fails, execution halts immediately.
 
 ### Phase 0: Pre-Flight Staging & Safety Gate Preparation
-Before stopping any production services, stage the reviewed preflight script from the release candidate:
+Before stopping any production services, stage the reviewed preflight script from the release candidate. **Do NOT run operational inspection checks before maintenance shutdown.**
 
 ```bash
 set -e
 cd /home/ubuntu/bfi-classroom
 
-# 1. Fetch release candidate commit without checking out entire tree yet
+# 1. Fetch release candidate commit from origin (prerequisite: local candidate pushed to origin)
 git fetch origin
 
 # 2. Stage the reviewed preflight inspection script
-git checkout 7fabdc89ad3f1bd9179a4d91b4d04060c404d437 -- scripts/preflight_lockdown_check.cjs
+git checkout 1b421a22378ba6029a2e20849720eb780ffba112 -- scripts/preflight_lockdown_check.cjs
 
-# 3. Verify script staged and executable
-node scripts/preflight_lockdown_check.cjs --help || true
+# 3. Verify script presence and file integrity without executing operational checks
+test -s scripts/preflight_lockdown_check.cjs
+sha256sum scripts/preflight_lockdown_check.cjs
 ```
 
 ### Phase 1: Maintenance Mode & Writer Lockdown
@@ -256,7 +298,7 @@ node scripts/preflight_lockdown_check.cjs --help || true
 ### Phase 3: Reproducible Code Update & Build Sequence
 1. **Checkout Pinned Release Candidate Commit:**
    ```bash
-   git checkout 7fabdc89ad3f1bd9179a4d91b4d04060c404d437
+   git checkout 1b421a22378ba6029a2e20849720eb780ffba112
    ```
 2. **Install Dependencies (Including DevDependencies for Vite):**
    ```bash
@@ -277,36 +319,21 @@ node scripts/preflight_lockdown_check.cjs --help || true
    ```bash
    node scripts/run_migrations.cjs server/bfi_classroom.db
    ```
-   *Gate:* Must execute all 5 migrations in chronological order, verify all schema integrity assertions, and exit with code `0`. If this command fails, halt and trigger Rollback Runbook (Window A).
+   *Gate:* Must execute all 5 migrations in chronological order, verify all 10 schema integrity assertions, and exit with code `0`. If this command fails, halt and trigger Rollback Runbook (Window A).
 
-### Phase 5: Start Service & Decoupled Production Smoke Checks
+### Phase 5: Start Service & Automated Production Smoke Checks
 1. **Start Application Process:**
    ```bash
    pm2 start ecosystem.config.cjs
    pm2 status
    ```
-2. **Smoke Tier 1: Static Frontend Shell:**
+2. **Execute Automated Fail-Closed Smoke Check:**
    ```bash
-   curl -I -s http://127.0.0.1:3001/bfi-classroom/ | grep "HTTP/1.1 200 OK"
+   # Run automated multi-tier smoke checker (exits nonzero on status mismatch, malformed JSON, or connection failure)
+   node scripts/production_smoke_check.cjs http://127.0.0.1:3001 --super-admin-token "$SA_TOKEN" --admin-token "$ORD_TOKEN"
    ```
-3. **Smoke Tier 2: Unauthenticated Backend Express Router & Middleware:**
-   ```bash
-   # Expect HTTP 400 Bad Request with username validation error
-   curl -s -o /dev/null -w "%{http_code}\n" -X POST http://127.0.0.1:3001/api/auth/login
-   ```
-4. **Smoke Tier 3: Authenticated Admin Profile API:**
-   ```bash
-   curl -s -H "Authorization: Bearer <ADMIN_ACCESS_TOKEN>" http://127.0.0.1:3001/api/auth/me | grep '"username":'
-   ```
-5. **Smoke Tier 4: Super Admin Role Guard Verification:**
-   ```bash
-   # Super Admin query returns HTTP 200
-   curl -s -H "Authorization: Bearer <SUPER_ADMIN_ACCESS_TOKEN>" http://127.0.0.1:3001/api/admin/administrators | grep '"administrators":'
-
-   # Ordinary Admin query returns HTTP 403 Forbidden
-   curl -s -o /dev/null -w "%{http_code}\n" -H "Authorization: Bearer <ORDINARY_ADMIN_ACCESS_TOKEN>" http://127.0.0.1:3001/api/admin/administrators
-   ```
-6. **Reopen Public Traffic:**
+   *Gate:* If `production_smoke_check.cjs` exits with code `1`, **DO NOT REOPEN TRAFFIC**. Trigger Rollback Runbook (Window A).
+3. **Reopen Public Traffic:**
    * Remove 503 maintenance page on Cloudflare / reverse proxy. Monitor PM2 logs for 15 minutes:
    ```bash
    pm2 logs bfi-classroom --lines 100

@@ -4,7 +4,7 @@
 **Date:** October 25, 2026  
 **Target Super Admin Account:** Abir Ahmad (`admin@abir` / `k.eye.films@gmail.com`)  
 **Verified Stable Database User ID:** `1`  
-**Branch & Revision:** `integration/super-admin-candidate` in isolated worktree `.worktrees/super-admin-integration` (commit `7fabdc8`, base `main` `17d9335` with full 11-commit revision gap integrated)  
+**Branch & Revision:** `integration/super-admin-candidate` in isolated worktree `.worktrees/super-admin-integration` (commit `1b421a22378ba6029a2e20849720eb780ffba112`, base `main` `17d933567c2b39ad2dd47d949564eee1bce2dd66` with full 11-commit revision gap integrated)  
 **Status:** ✅ Fully Implemented, Hardened, Tested & Verified (122/122 Tests Passing: 85/85 Super Admin Suite, 37/37 Regression Suites: 12 Course Definitions API, 10 Course Maker E2E, 15 Same-Title Batch Collision; 0 ESLint Errors)
 
 ---
@@ -909,7 +909,7 @@ Untracked files:
 | **Integrated Main**| `GET /api/admin/batches` (ETag) | `batch.etag_caching` | `batch:list` | Conditional 304 | Test 82 | ✅ Implemented & Tested |
 | **Integrated Main**| `GET /api/admin/batches?paginate=true` | `batch.pagination_stats` | `batch:list` | Fast Envelope | Test 83 | ✅ Implemented & Tested |
 | **Integrated Main**| `GET /api/analytics/urgent` | `analytics.unread_reports` | `reports:pending` | Dynamic Count | Test 84 | ✅ Implemented & Tested |
-| **Integrated Main**| Global Search indexing & RBAC guards | `search.role_indexing` | `search:global` | Role-Filtered | Test 85 | ✅ Implemented & Tested |
+| **Integrated Main**| Global Search role indexing & RBAC route guards | `search.role_indexing` | `search:global` | Role-Filtered (Browser & API) | Test 85 | ✅ Implemented & Tested |
 | **Finance** | `POST /api/admin/fee-tracker/send-reminder` | `finance.send_reminder` | `student:<id>` | Yes | Test 78 | ✅ Implemented & Tested |
 | **Finance** | `PUT /api/admin/students/:id` (with fee update) | `finance.update_student_fees` | `student:<id>` | Yes | Test 77 | ✅ Implemented & Tested |
 | **Notices** | `POST /api/admin/announcements` | `notice.create` (deduplicated) | `notice:<id>` | Yes | Test 78 | ✅ Implemented & Tested |
