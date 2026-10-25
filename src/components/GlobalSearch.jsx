@@ -4,7 +4,6 @@ import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
 import {
   Search,
-  X,
   Home,
   Megaphone,
   Inbox,
@@ -29,52 +28,63 @@ import {
   LogOut,
   Settings,
   Shield,
-  ArrowRight
+  CornerDownLeft
 } from 'lucide-react';
 import './GlobalSearch.css';
 
-export default function GlobalSearch({ inSidebar = false, onNavigate }) {
+export default function GlobalSearch({ onNavigate }) {
   const [query, setQuery] = useState('');
   const [isOpen, setIsOpen] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const inputRef = useRef(null);
-  const containerRef = useRef(null);
+  const itemRefs = useRef([]);
   const navigate = useNavigate();
   const { currentUser, logout } = useAuth();
   const { mode, toggleMode } = useTheme();
 
-  // Global hotkey: Ctrl+K or Cmd+K or "/" to focus search
+  // Open & Focus helper
+  const handleOpen = () => {
+    setIsOpen(true);
+    setSelectedIndex(0);
+  };
+
+  const handleClose = () => {
+    setIsOpen(false);
+    setQuery('');
+  };
+
+  // Global hotkey: Ctrl+K or Cmd+K or "/" to open palette
   useEffect(() => {
     const handleKeyDown = (e) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
-        inputRef.current?.focus();
-        setIsOpen(true);
-      } else if (e.key === '/' && document.activeElement !== inputRef.current) {
-        // Only trigger '/' if not already typing in another input/textarea
+        setIsOpen((prev) => !prev);
+      } else if (e.key === '/' && !isOpen) {
         const tag = document.activeElement?.tagName?.toLowerCase();
         if (tag !== 'input' && tag !== 'textarea' && !document.activeElement?.isContentEditable) {
           e.preventDefault();
-          inputRef.current?.focus();
-          setIsOpen(true);
+          handleOpen();
         }
+      } else if (e.key === 'Escape' && isOpen) {
+        e.preventDefault();
+        handleClose();
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
+  }, [isOpen]);
 
-  // Click outside to close
+  // Auto-focus input when palette opens
   useEffect(() => {
-    const handleClickOutside = (e) => {
-      if (containerRef.current && !containerRef.current.contains(e.target)) {
-        setIsOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
+    if (isOpen) {
+      // Small timeout to guarantee DOM is mounted
+      const t = setTimeout(() => {
+        inputRef.current?.focus();
+      }, 30);
+      return () => clearTimeout(t);
+    }
+  }, [isOpen]);
 
   // Complete index of every sidebar menu and option
   const allItems = useMemo(() => {
@@ -86,7 +96,7 @@ export default function GlobalSearch({ inSidebar = false, onNavigate }) {
         title: 'Dashboard',
         category: 'Main Menu',
         path: '/',
-        icon: <Home size={18} />,
+        icon: <Home size={17} />,
         desc: 'Overview, film catalog, and quick access',
         keywords: 'dashboard home overview feed film catalog welcome',
       },
@@ -95,8 +105,8 @@ export default function GlobalSearch({ inSidebar = false, onNavigate }) {
         title: 'Notice Board',
         category: 'Main Menu',
         path: '/notices',
-        icon: <Megaphone size={18} />,
-        desc: 'Official institutional announcements and notices',
+        icon: <Megaphone size={17} />,
+        desc: 'Official institutional announcements and circulars',
         keywords: 'notice board announcements circulars news broadcast alerts',
       },
       {
@@ -104,8 +114,8 @@ export default function GlobalSearch({ inSidebar = false, onNavigate }) {
         title: 'Inbox',
         category: 'Main Menu',
         path: '/inbox',
-        icon: <Inbox size={18} />,
-        desc: 'Direct messages, class conversations, and chat',
+        icon: <Inbox size={17} />,
+        desc: 'Direct messages, class discussions, and chat',
         keywords: 'inbox messages chat conversations direct communication messaging',
       },
 
@@ -115,8 +125,8 @@ export default function GlobalSearch({ inSidebar = false, onNavigate }) {
         title: 'Student Portal',
         category: 'BFI Classroom',
         path: '/student-portal',
-        icon: <Award size={18} />,
-        desc: 'Academic profile, grades, and records',
+        icon: <Award size={17} />,
+        desc: 'Academic records, grades, and course status',
         keywords: 'student portal grades attendance academic results',
       }] : []),
       {
@@ -124,7 +134,7 @@ export default function GlobalSearch({ inSidebar = false, onNavigate }) {
         title: 'Classroom',
         category: 'BFI Classroom',
         path: '/classroom',
-        icon: <BookOpen size={18} />,
+        icon: <BookOpen size={17} />,
         desc: 'Course lessons, video modules, and curriculum',
         keywords: 'classroom lessons courses lectures syllabus video learning',
       },
@@ -133,7 +143,7 @@ export default function GlobalSearch({ inSidebar = false, onNavigate }) {
         title: role === 'student' ? 'My Batchmates' : 'Academic Records & Registry',
         category: 'BFI Classroom',
         path: '/registry',
-        icon: <UsersRound size={18} />,
+        icon: <UsersRound size={17} />,
         desc: role === 'student' ? 'View and connect with your batchmates' : 'Student database, batch rosters, and transcripts',
         keywords: 'registry records students batchmates academic database roster',
       },
@@ -142,7 +152,7 @@ export default function GlobalSearch({ inSidebar = false, onNavigate }) {
         title: 'Instructor Directory',
         category: 'BFI Classroom',
         path: '/instructors',
-        icon: <Award size={18} />,
+        icon: <Award size={17} />,
         desc: 'Faculty members, course mentors, and directors',
         keywords: 'instructors teachers faculty directory professors mentors',
       },
@@ -153,7 +163,7 @@ export default function GlobalSearch({ inSidebar = false, onNavigate }) {
         title: role === 'admin' ? 'Admin Profile' : role === 'instructor' ? 'Teacher Profile' : 'Student Profile',
         category: 'My Studio',
         path: '/profile',
-        icon: <User size={18} />,
+        icon: <User size={17} />,
         desc: 'Personal details, portfolio, and identity',
         keywords: 'profile my account student teacher admin details bio avatar identity',
       },
@@ -162,7 +172,7 @@ export default function GlobalSearch({ inSidebar = false, onNavigate }) {
         title: 'Certificates',
         category: 'My Studio',
         path: '/certificates',
-        icon: <ScrollText size={18} />,
+        icon: <ScrollText size={17} />,
         desc: 'Issued certificates, diplomas, and credentials',
         keywords: 'certificates awards achievements diploma degree credentials verification',
       }] : []),
@@ -171,8 +181,8 @@ export default function GlobalSearch({ inSidebar = false, onNavigate }) {
         title: 'Course Materials',
         category: 'My Studio',
         path: '/courses',
-        icon: <BookOpen size={18} />,
-        desc: 'Downloadable syllabus, lecture notes, and PDFs',
+        icon: <BookOpen size={17} />,
+        desc: 'Downloadable syllabus, lecture notes, and study PDFs',
         keywords: 'course materials syllabus notes pdf download study resources',
       }] : []),
 
@@ -182,8 +192,8 @@ export default function GlobalSearch({ inSidebar = false, onNavigate }) {
         title: 'Community',
         category: 'Learning Hub',
         path: '/community',
-        icon: <Users size={18} />,
-        desc: 'Student posts, discussions, and film collaborations',
+        icon: <Users size={17} />,
+        desc: 'Student posts, film discussions, and collaborations',
         keywords: 'community forum discussion posts group social feed film collab',
       },
       {
@@ -191,7 +201,7 @@ export default function GlobalSearch({ inSidebar = false, onNavigate }) {
         title: 'Alumni Directory',
         category: 'Learning Hub',
         path: '/directory',
-        icon: <BookUser size={18} />,
+        icon: <BookUser size={17} />,
         desc: 'Directory of all graduated BFI filmmakers',
         keywords: 'directory alumni graduates members list filmmakers contact',
       },
@@ -200,7 +210,7 @@ export default function GlobalSearch({ inSidebar = false, onNavigate }) {
         title: 'BFIAA Network',
         category: 'Learning Hub',
         path: '/bfiaa',
-        icon: <Globe size={18} />,
+        icon: <Globe size={17} />,
         desc: 'Bangladesh Film Institute Alumni Association network',
         keywords: 'bfiaa alumni network global film association chapter',
       },
@@ -212,7 +222,7 @@ export default function GlobalSearch({ inSidebar = false, onNavigate }) {
           title: 'Analytics',
           category: 'Administration',
           path: '/admin/analytics',
-          icon: <BarChart2 size={18} />,
+          icon: <BarChart2 size={17} />,
           desc: 'Platform traffic, logins, and engagement metrics',
           keywords: 'analytics statistics metrics data charts visitors traffic performance',
         },
@@ -221,7 +231,7 @@ export default function GlobalSearch({ inSidebar = false, onNavigate }) {
           title: 'Reports & Moderation',
           category: 'Administration',
           path: '/admin/reports',
-          icon: <Flag size={18} />,
+          icon: <Flag size={17} />,
           desc: 'Moderation queue, user flags, and issue reports',
           keywords: 'reports flags moderation issues tickets logs audit',
         },
@@ -230,7 +240,7 @@ export default function GlobalSearch({ inSidebar = false, onNavigate }) {
           title: 'Student Manager',
           category: 'Administration',
           path: '/admin/studentsmanager',
-          icon: <Users size={18} />,
+          icon: <Users size={17} />,
           desc: 'Enrollments, user permissions, and access status',
           keywords: 'student manager users enrollment accounts admissions access',
         },
@@ -239,7 +249,7 @@ export default function GlobalSearch({ inSidebar = false, onNavigate }) {
           title: 'Batch Manager',
           category: 'Administration',
           path: '/admin/batchmanager',
-          icon: <Users size={18} />,
+          icon: <Users size={17} />,
           desc: 'Create and manage student batches and cohorts',
           keywords: 'batch manager classes cohorts batches groups intake',
         },
@@ -248,7 +258,7 @@ export default function GlobalSearch({ inSidebar = false, onNavigate }) {
           title: 'Teacher Manager',
           category: 'Administration',
           path: '/admin/teachers',
-          icon: <Shield size={18} />,
+          icon: <Shield size={17} />,
           desc: 'Faculty assignments and teacher management',
           keywords: 'teachers manager faculty instructors staff assign instructors',
         },
@@ -257,7 +267,7 @@ export default function GlobalSearch({ inSidebar = false, onNavigate }) {
           title: 'Admin Course Materials',
           category: 'Administration',
           path: '/admin/course-materials',
-          icon: <BookOpen size={18} />,
+          icon: <BookOpen size={17} />,
           desc: 'Upload and organize course files and resources',
           keywords: 'admin course materials upload files resources pdf video curriculum',
         },
@@ -266,7 +276,7 @@ export default function GlobalSearch({ inSidebar = false, onNavigate }) {
           title: 'Course Maker',
           category: 'Administration',
           path: '/admin/course-maker',
-          icon: <Layers size={18} />,
+          icon: <Layers size={17} />,
           desc: 'Design and build interactive course modules',
           keywords: 'course maker builder curriculum syllabus modules lessons create',
         },
@@ -275,7 +285,7 @@ export default function GlobalSearch({ inSidebar = false, onNavigate }) {
           title: 'Certificate Designer',
           category: 'Administration',
           path: '/admin/certificate-designer',
-          icon: <FileSignature size={18} />,
+          icon: <FileSignature size={17} />,
           desc: 'Design templates and generate graduate certificates',
           keywords: 'certificate designer template design issue credentials generator',
         },
@@ -284,7 +294,7 @@ export default function GlobalSearch({ inSidebar = false, onNavigate }) {
           title: 'Announcements & Broadcasts',
           category: 'Administration',
           path: '/admin/announcements',
-          icon: <Megaphone size={18} />,
+          icon: <Megaphone size={17} />,
           desc: 'Send push announcements and bulk notices',
           keywords: 'announcements broadcast notices push send alert notice board',
         },
@@ -293,7 +303,7 @@ export default function GlobalSearch({ inSidebar = false, onNavigate }) {
           title: 'Additional Options',
           category: 'Administration',
           path: '/admin/additional-options',
-          icon: <Sliders size={18} />,
+          icon: <Sliders size={17} />,
           desc: 'Fee tracking, batch fees, and advanced admin controls',
           keywords: 'additional options settings fees fee tracker finance configuration',
         },
@@ -305,7 +315,7 @@ export default function GlobalSearch({ inSidebar = false, onNavigate }) {
         title: 'Account Settings',
         category: 'Settings',
         path: '/settings',
-        icon: <Settings size={18} />,
+        icon: <Settings size={17} />,
         desc: 'Preferences, security, appearance, and profile info',
         keywords: 'settings account preferences options configuration',
       },
@@ -315,7 +325,7 @@ export default function GlobalSearch({ inSidebar = false, onNavigate }) {
         category: 'Settings',
         path: '/settings',
         action: 'toggle-mode',
-        icon: mode === 'dark' ? <Moon size={18} /> : <Sun size={18} />,
+        icon: mode === 'dark' ? <Moon size={17} /> : <Sun size={17} />,
         desc: `Currently in ${mode === 'dark' ? 'Dark' : 'Light'} Mode. Click to switch.`,
         keywords: 'display mode dark light theme appearance contrast night day switch toggle',
       },
@@ -324,8 +334,8 @@ export default function GlobalSearch({ inSidebar = false, onNavigate }) {
         title: 'Colour Theme',
         category: 'Settings',
         path: '/settings',
-        icon: <Palette size={18} />,
-        desc: 'Customize your accent color palette',
+        icon: <Palette size={17} />,
+        desc: 'Customize accent color palette across the UI',
         keywords: 'colour color theme accent palette tint style look aesthetic crimson emerald cyan',
       },
       {
@@ -333,8 +343,8 @@ export default function GlobalSearch({ inSidebar = false, onNavigate }) {
         title: 'Profile Details & Name',
         category: 'Settings',
         path: '/settings',
-        icon: <Pencil size={18} />,
-        desc: 'Update your display name, username, and recovery email',
+        icon: <Pencil size={17} />,
+        desc: 'Update display name, username, and recovery email',
         keywords: 'profile details edit name username recovery email change name',
       },
       {
@@ -342,7 +352,7 @@ export default function GlobalSearch({ inSidebar = false, onNavigate }) {
         title: 'Change Password',
         category: 'Settings',
         path: '/settings',
-        icon: <Key size={18} />,
+        icon: <Key size={17} />,
         desc: 'Update your account login password',
         keywords: 'change password security update password credentials current new confirm',
       },
@@ -353,7 +363,7 @@ export default function GlobalSearch({ inSidebar = false, onNavigate }) {
         title: 'Logout',
         category: 'Actions',
         action: 'logout',
-        icon: <LogOut size={18} />,
+        icon: <LogOut size={17} />,
         desc: 'Sign out of your BFI Classroom account',
         keywords: 'logout sign out exit quit disconnect',
       },
@@ -366,10 +376,9 @@ export default function GlobalSearch({ inSidebar = false, onNavigate }) {
   const filteredItems = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) {
-      // Return top / default items when input is empty
-      return allItems.slice(0, 8);
+      return allItems;
     }
-    return allItems.filter(item => {
+    return allItems.filter((item) => {
       return (
         item.title.toLowerCase().includes(q) ||
         item.category.toLowerCase().includes(q) ||
@@ -392,8 +401,7 @@ export default function GlobalSearch({ inSidebar = false, onNavigate }) {
   }, [filteredItems]);
 
   const handleSelect = (item) => {
-    setIsOpen(false);
-    setQuery('');
+    handleClose();
 
     if (item.action === 'toggle-mode') {
       toggleMode();
@@ -411,119 +419,149 @@ export default function GlobalSearch({ inSidebar = false, onNavigate }) {
   };
 
   const handleKeyDown = (e) => {
-    if (!isOpen) {
-      if (e.key === 'ArrowDown' || e.key === 'Enter') {
-        setIsOpen(true);
-      }
-      return;
-    }
+    if (filteredItems.length === 0) return;
 
     if (e.key === 'ArrowDown') {
       e.preventDefault();
-      setSelectedIndex((prev) => (prev + 1) % Math.max(1, filteredItems.length));
+      const next = (selectedIndex + 1) % filteredItems.length;
+      setSelectedIndex(next);
+      itemRefs.current[next]?.scrollIntoView({ block: 'nearest' });
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
-      setSelectedIndex((prev) => (prev - 1 + filteredItems.length) % Math.max(1, filteredItems.length));
+      const prev = (selectedIndex - 1 + filteredItems.length) % filteredItems.length;
+      setSelectedIndex(prev);
+      itemRefs.current[prev]?.scrollIntoView({ block: 'nearest' });
     } else if (e.key === 'Enter') {
       e.preventDefault();
       if (filteredItems[selectedIndex]) {
         handleSelect(filteredItems[selectedIndex]);
       }
-    } else if (e.key === 'Escape') {
-      setIsOpen(false);
-      inputRef.current?.blur();
     }
   };
 
   return (
-    <div
-      ref={containerRef}
-      className={`global-search-container ${inSidebar ? 'sidebar-mode' : ''}`}
-      role="search"
-    >
-      <div className="global-search-input-wrap">
-        <Search size={15} className="global-search-icon" />
-        <input
-          ref={inputRef}
-          type="text"
-          className="global-search-input"
-          placeholder="Search menus & settings…"
-          value={query}
-          onChange={(e) => {
-            setQuery(e.target.value);
-            setSelectedIndex(0);
-            if (!isOpen) setIsOpen(true);
-          }}
-          onFocus={() => setIsOpen(true)}
-          onKeyDown={handleKeyDown}
-          aria-label="Search all menus and settings"
-          aria-expanded={isOpen}
-          aria-autocomplete="list"
-        />
-        {query ? (
-          <button
-            type="button"
-            className="global-search-clear-btn"
-            onClick={() => {
-              setQuery('');
-              inputRef.current?.focus();
-            }}
-            title="Clear search"
-          >
-            <X size={14} />
-          </button>
-        ) : (
-          <kbd className="global-search-kbd">Ctrl K</kbd>
-        )}
-      </div>
+    <>
+      {/* ── Sleek Trigger Button in Sidebar ──────────────────────────────── */}
+      <button
+        type="button"
+        className="sidebar-search-trigger"
+        onClick={handleOpen}
+        aria-label="Open command palette"
+        title="Search menus & settings (Ctrl+K)"
+      >
+        <Search size={15} className="sidebar-search-trigger-icon" />
+        <span className="sidebar-search-trigger-text">Search menus & settings…</span>
+        <kbd className="sidebar-search-trigger-kbd">Ctrl K</kbd>
+      </button>
 
-      {/* Floating search dropdown */}
+      {/* ── Modern Industry-Standard Command Palette Modal ──────────────── */}
       {isOpen && (
-        <div className="global-search-dropdown" role="listbox">
-          {filteredItems.length === 0 ? (
-            <div className="global-search-empty">
-              <Search size={28} style={{ opacity: 0.3 }} />
-              <div>No menu or option matches “<strong>{query}</strong>”</div>
+        <div
+          className="cmd-palette-backdrop"
+          onClick={handleClose}
+          role="presentation"
+        >
+          <div
+            className="cmd-palette-modal"
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Command search"
+          >
+            {/* Header with Search Input */}
+            <div className="cmd-palette-header">
+              <Search size={18} className="cmd-palette-search-icon" />
+              <input
+                ref={inputRef}
+                type="text"
+                className="cmd-palette-input"
+                placeholder="Type a menu, setting, or command…"
+                value={query}
+                onChange={(e) => {
+                  setQuery(e.target.value);
+                  setSelectedIndex(0);
+                }}
+                onKeyDown={handleKeyDown}
+                aria-label="Search menus and settings"
+                aria-autocomplete="list"
+              />
+              <button
+                type="button"
+                className="cmd-palette-close-badge"
+                onClick={handleClose}
+                title="Press ESC to close"
+              >
+                ESC
+              </button>
             </div>
-          ) : (
-            <div>
-              {Object.entries(groupedItems).map(([category, items]) => (
-                <div key={category}>
-                  <div className="global-search-group-title">{category}</div>
-                  {items.map((item) => {
-                    const globalIdx = filteredItems.indexOf(item);
-                    const isSelected = globalIdx === selectedIndex;
-                    return (
-                      <button
-                        key={item.id}
-                        type="button"
-                        className={`global-search-item ${isSelected ? 'selected' : ''}`}
-                        onClick={() => handleSelect(item)}
-                        onMouseEnter={() => setSelectedIndex(globalIdx)}
-                        role="option"
-                        aria-selected={isSelected}
-                      >
-                        <div className="global-search-item-icon">
-                          {item.icon}
-                        </div>
-                        <div className="global-search-item-info">
-                          <div className="global-search-item-title">
-                            <span>{item.title}</span>
-                          </div>
-                          <div className="global-search-item-desc">
-                            {item.desc}
-                          </div>
-                        </div>
-                        <ArrowRight size={13} style={{ color: 'var(--text-muted)', opacity: isSelected ? 0.9 : 0.3 }} />
-                      </button>
-                    );
-                  })}
+
+            {/* Scrollable Results Body */}
+            <div className="cmd-palette-body" role="listbox">
+              {filteredItems.length === 0 ? (
+                <div className="cmd-palette-empty">
+                  <Search size={32} style={{ opacity: 0.35 }} />
+                  <div>No menu or setting matches “<strong>{query}</strong>”</div>
                 </div>
-              ))}
+              ) : (
+                Object.entries(groupedItems).map(([category, items]) => (
+                  <div key={category}>
+                    <div className="cmd-palette-section-title">{category}</div>
+                    {items.map((item) => {
+                      const globalIdx = filteredItems.indexOf(item);
+                      const isSelected = globalIdx === selectedIndex;
+                      return (
+                        <button
+                          key={item.id}
+                          ref={(el) => (itemRefs.current[globalIdx] = el)}
+                          type="button"
+                          className={`cmd-palette-item ${isSelected ? 'selected' : ''}`}
+                          onClick={() => handleSelect(item)}
+                          onMouseEnter={() => setSelectedIndex(globalIdx)}
+                          role="option"
+                          aria-selected={isSelected}
+                        >
+                          <div className="cmd-palette-item-icon">
+                            {item.icon}
+                          </div>
+                          <div className="cmd-palette-item-content">
+                            <div className="cmd-palette-item-top">
+                              <span className="cmd-palette-item-title">{item.title}</span>
+                              <span className="cmd-palette-item-category">{item.category}</span>
+                            </div>
+                            <span className="cmd-palette-item-desc">{item.desc}</span>
+                          </div>
+                          <div className="cmd-palette-item-enter">
+                            <span>Open</span>
+                            <CornerDownLeft size={13} />
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ))
+              )}
             </div>
-          )}
+
+            {/* Modal Keyboard Navigation Footer */}
+            <div className="cmd-palette-footer">
+              <div className="cmd-palette-footer-shortcuts">
+                <span className="cmd-palette-footer-hint">
+                  <kbd>↑</kbd><kbd>↓</kbd> to navigate
+                </span>
+                <span className="cmd-palette-footer-hint">
+                  <kbd>↵</kbd> to select
+                </span>
+                <span className="cmd-palette-footer-hint">
+                  <kbd>esc</kbd> to close
+                </span>
+              </div>
+              <span>
+                {filteredItems.length} {filteredItems.length === 1 ? 'item' : 'items'}
+              </span>
+            </div>
+          </div>
         </div>
       )}
-    </div>
+    </>
   );
 }
