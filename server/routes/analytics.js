@@ -114,11 +114,19 @@ router.get('/urgent', authenticateToken, requireRole('admin'), (req, res) => {
         AND (last_login IS NULL OR last_login < ?)
     `).get(cutoff);
 
+    let unreadReports = 0;
+    try {
+      const reportRow = db.prepare("SELECT COUNT(*) AS count FROM reports WHERE status = 'pending'").get();
+      unreadReports = Number(reportRow?.count || 0);
+    } catch {
+      /* ignore */
+    }
+
     res.json({
       pendingCertApprovals: pendingCertificates.length,
       missingAttendance: missingAttendance.length,
       inactiveStudents: inactiveStudents.count || 0,
-      unreadReports: 0, // placeholder — reports feature not yet implemented
+      unreadReports,
     });
   } catch (error) {
     console.error('[Analytics] /urgent error:', error);
@@ -155,7 +163,9 @@ router.get('/stats', authenticateToken, requireRole('admin'), (req, res) => {
         let parsed = null;
         try {
           parsed = typeof d.definition_json === 'string' ? JSON.parse(d.definition_json) : d.definition_json;
-        } catch {}
+        } catch {
+          /* ignore */
+        }
         defDetailsMap.set(d.id, { ...d, parsed });
       }
 
