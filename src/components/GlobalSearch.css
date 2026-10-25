@@ -229,9 +229,20 @@
 }
 
 
-.sidebar-mobile-search-wrap {
-  display: none;
-  padding: 0 0.5rem 0.75rem 0.5rem;
+.sidebar-search-wrap {
+  display: block;
+}
+
+.global-search-container.sidebar-mode {
+  width: 100%;
+}
+
+.global-search-container.sidebar-mode .global-search-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  width: calc(280px - 2rem);
+  max-width: 90vw;
 }
 
 @media (max-width: 1024px) {

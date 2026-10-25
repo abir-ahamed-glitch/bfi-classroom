@@ -328,7 +328,7 @@ export default function Sidebar({ isNotifOpen, setIsNotifOpen }) {
         </button>
 
         <nav className="sidebar-nav">
-          <div className="sidebar-mobile-search-wrap">
+          <div className="sidebar-search-wrap" style={{ padding: '0 0.25rem 0.85rem 0.25rem' }}>
             <GlobalSearch inSidebar={true} onNavigate={closeSidebar} />
           </div>
           <p className="nav-subtitle">Main Menu</p>
@@ -421,12 +421,20 @@ export default function Sidebar({ isNotifOpen, setIsNotifOpen }) {
               <NavLink to="/admin/announcements" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
                 <Megaphone size={20} /> Announcements & Broadcasts
               </NavLink>
-              {currentUser?.role === 'admin' && (
+                            {currentUser?.role === 'admin' && (
                 <NavLink to="/admin/additional-options" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
                   <Sliders size={20} /> Additional Options
                 </NavLink>
               )}
+              <NavLink to="/settings" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
+                <Settings size={20} /> Account Settings
+              </NavLink>
             </>
+          )}
+          {!(currentUser?.role === 'admin' || (currentUser?.role === 'instructor' && hasBroadcastPermission)) && (
+            <NavLink to="/settings" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
+              <Settings size={20} /> Account Settings
+            </NavLink>
           )}
         </nav>
 
