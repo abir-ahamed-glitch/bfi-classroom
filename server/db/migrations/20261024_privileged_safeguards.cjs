@@ -71,6 +71,23 @@ function runPrivilegedSafeguardsMigration(db) {
   console.log(`[Migration] ${MIGRATION_NAME} successfully applied.`);
 }
 
+
+if (require.main === module) {
+  const Database = require('better-sqlite3');
+  const targetDbPath = process.argv[2] || process.env.DATABASE_PATH || path.join(__dirname, '..', '..', 'bfi_classroom.db');
+  console.log(`Running Privileged Safeguards migration on: ${targetDbPath}`);
+  const db = new Database(targetDbPath);
+  try {
+    db.pragma('foreign_keys = ON');
+    runPrivilegedSafeguardsMigration(db);
+  } catch (err) {
+    console.error('Migration failed:', err);
+    process.exit(1);
+  } finally {
+    db.close();
+  }
+}
+
 module.exports = {
   runPrivilegedSafeguardsMigration,
   MIGRATION_NAME

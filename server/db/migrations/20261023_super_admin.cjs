@@ -109,7 +109,7 @@ function runSuperAdminMigration(db) {
 
 // CLI execution
 if (require.main === module) {
-  const targetDbPath = process.env.DATABASE_PATH || path.join(__dirname, '..', '..', 'bfi_classroom.db');
+  const targetDbPath = process.argv[2] || process.env.DATABASE_PATH || path.join(__dirname, '..', '..', 'bfi_classroom.db');
   console.log(`Running Super Admin migration on: ${targetDbPath}`);
   const db = new Database(targetDbPath);
   try {

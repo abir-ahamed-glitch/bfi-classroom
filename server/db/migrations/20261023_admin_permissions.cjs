@@ -156,7 +156,7 @@ function runAdminPermissionsMigration(db) {
 
 // CLI execution
 if (require.main === module) {
-  const targetDbPath = process.env.DATABASE_PATH || path.join(__dirname, '..', '..', 'bfi_classroom.db');
+  const targetDbPath = process.argv[2] || process.env.DATABASE_PATH || path.join(__dirname, '..', '..', 'bfi_classroom.db');
   console.log(`Running Admin Permissions migration on: ${targetDbPath}`);
   const db = new Database(targetDbPath);
   try {
