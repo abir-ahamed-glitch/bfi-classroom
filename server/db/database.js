@@ -9,6 +9,11 @@ const require = createRequire(import.meta.url);
 const { runEnrollmentConstraintMigration } = require('./migrations/20261019_enrollment_unique_constraint_fix.cjs');
 const { runBatchesConstraintMigration } = require('./migrations/20261022_batches_unique_constraint_fix.cjs');
 const { runDownstreamCollisionMigration } = require('./migrations/20261022_downstream_identity_collision_fix.cjs');
+const { ensureSuperAdminSchema, runSuperAdminMigration } = require('./migrations/20261023_super_admin.cjs');
+const { runAdminPermissionsMigration } = require('./migrations/20261023_admin_permissions.cjs');
+const { runPrivilegedSafeguardsMigration } = require('./migrations/20261024_privileged_safeguards.cjs');
+const { runMfaSingleUseChallengesMigration } = require('./migrations/20261024_mfa_single_use_challenges.cjs');
+const { runAdminAccountabilityMigration } = require('./migrations/20261025_admin_accountability.cjs');
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -44,6 +49,7 @@ export function initializeDatabase() {
       two_factor_secret TEXT,
       public_key TEXT,
       is_active INTEGER DEFAULT 1,
+      is_super_admin INTEGER NOT NULL DEFAULT 0,
       last_login TEXT,
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now'))
@@ -539,10 +545,7 @@ export function initializeDatabase() {
     CREATE INDEX IF NOT EXISTS idx_sce_course_def ON student_course_enrollments(course_definition_id);
     CREATE INDEX IF NOT EXISTS idx_sce_steps ON student_course_enrollments(step1_completed, step2_completed, step3_completed, step4_completed);
     CREATE INDEX IF NOT EXISTS idx_sce_user_course ON student_course_enrollments(user_id, course_name);
-    CREATE INDEX IF NOT EXISTS idx_spr_enrollment_passed ON student_phase_results(enrollment_id, is_passed);
-    CREATE INDEX IF NOT EXISTS idx_spr_phase_id ON student_phase_results(phase_id);
     CREATE INDEX IF NOT EXISTS idx_bcf_lookup ON batch_course_fees(batch_id, course_name, batch_number);
-    CREATE INDEX IF NOT EXISTS idx_batches_lookup ON batches(course_name, batch_number);
 
     -- Custom subjects
     CREATE TABLE IF NOT EXISTS custom_subjects (
@@ -587,6 +590,7 @@ export function initializeDatabase() {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_batches_defined_unique ON batches(batch_number, course_definition_id) WHERE course_definition_id IS NOT NULL;
     CREATE UNIQUE INDEX IF NOT EXISTS idx_batches_defined_name_unique ON batches(batch_name, course_definition_id) WHERE course_definition_id IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_batches_course_def ON batches(course_definition_id);
+    CREATE INDEX IF NOT EXISTS idx_batches_lookup ON batches(course_name, batch_number);
 
     -- Batch students association table
     CREATE TABLE IF NOT EXISTS batch_students (
@@ -1102,6 +1106,17 @@ export function initializeDatabase() {
     // Column probably already exists
   }
 
+  // Student profiles additional_info migration
+  try {
+    const spCols = db.prepare('PRAGMA table_info(student_profiles)').all().map(c => c.name);
+    if (!spCols.includes('additional_info')) {
+      db.prepare('ALTER TABLE student_profiles ADD COLUMN additional_info TEXT').run();
+      console.log('✅ Migrated student_profiles: added additional_info column');
+    }
+  } catch (error) {
+    // Table or column already migrated
+  }
+
 
   const plainMessages = db.prepare(`
     SELECT id, content
@@ -1330,6 +1345,9 @@ export function initializeDatabase() {
         FOREIGN KEY (enrollment_id) REFERENCES student_course_enrollments(id) ON DELETE CASCADE
       );
 
+      CREATE INDEX IF NOT EXISTS idx_spr_enrollment_passed ON student_phase_results(enrollment_id, is_passed);
+      CREATE INDEX IF NOT EXISTS idx_spr_phase_id ON student_phase_results(phase_id);
+
       CREATE TABLE IF NOT EXISTS student_class_attendance (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         enrollment_id INTEGER NOT NULL,
@@ -1459,6 +1477,22 @@ export function initializeDatabase() {
 
     // Run lossless downstream identity collision migration (batch_course_fees, course_settings, course_materials)
     runDownstreamCollisionMigration(db);
+
+    // Run Super Admin schema initialization & one-time targeted account promotion
+    ensureSuperAdminSchema(db);
+    runSuperAdminMigration(db);
+
+    // Run Administrator Permissions and Governance migration
+    runAdminPermissionsMigration(db);
+
+    // Run Privileged Account Safeguards migration
+    runPrivilegedSafeguardsMigration(db);
+
+    // Run MFA Single-Use Challenges migration
+    runMfaSingleUseChallengesMigration(db);
+
+    // Run Admin Accountability & Operational Audit Ledger migration
+    runAdminAccountabilityMigration(db);
 
     console.log('✅ Course Maker tables and columns verified');
   } catch (err) {

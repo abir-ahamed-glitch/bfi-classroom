@@ -46,9 +46,15 @@ test.beforeAll(async () => {
   db = new Database(DB_PATH);
   assertIsolatedTestDatabase(db.name || DB_PATH);
 
-  adminUser = db.prepare("SELECT * FROM users WHERE role = 'admin' LIMIT 1").get();
+  adminUser = db.prepare("SELECT * FROM users WHERE role = 'admin' ORDER BY id ASC LIMIT 1").get();
+  const insertSession = db.prepare(`
+    INSERT INTO sessions (user_id, token_hash, ip_address, user_agent, expires_at, created_at, last_activity, sudo_verified_at)
+    VALUES (?, 'test_session_hash', '127.0.0.1', 'playwright_test', datetime('now', '+1 day'), datetime('now'), datetime('now'), datetime('now'))
+  `).run(adminUser.id);
+  const adminSessionId = insertSession.lastInsertRowid;
+
   adminToken = jwt.sign(
-    { id: adminUser.id, username: adminUser.username, role: adminUser.role, name: `${adminUser.first_name} ${adminUser.last_name}` },
+    { id: adminUser.id, username: adminUser.username, role: adminUser.role, name: `${adminUser.first_name} ${adminUser.last_name}`, type: 'access', sessionId: adminSessionId, token_version: adminUser.token_version || 1 },
     JWT_SECRET,
     { expiresIn: '1d' }
   );
@@ -302,7 +308,7 @@ test.describe('Downstream Identity Collision Fix: Same Title & Same Batch Number
     `).run(studentAId);
 
     studentAToken = jwt.sign(
-      { id: studentAId, username: 'collision_student_a', role: 'student', name: 'Amina Al-Theory' },
+      { id: studentAId, username: 'collision_student_a', role: 'student', name: 'Amina Al-Theory', type: 'access' },
       JWT_SECRET,
       { expiresIn: '1d' }
     );
@@ -330,7 +336,7 @@ test.describe('Downstream Identity Collision Fix: Same Title & Same Batch Number
     `).run(studentBId);
 
     studentBToken = jwt.sign(
-      { id: studentBId, username: 'collision_student_b', role: 'student', name: 'Bilal Al-Workshop' },
+      { id: studentBId, username: 'collision_student_b', role: 'student', name: 'Bilal Al-Workshop', type: 'access' },
       JWT_SECRET,
       { expiresIn: '1d' }
     );
@@ -651,7 +657,7 @@ test.describe('Downstream Identity Collision Fix: Same Title & Same Batch Number
     `).run(legStudentId);
 
     const legToken = jwt.sign(
-      { id: legStudentId, username: `collision_reg_legacy_${legTs}`, role: 'student', name: 'Farhan Legacy' },
+      { id: legStudentId, username: `collision_reg_legacy_${legTs}`, role: 'student', name: 'Farhan Legacy', type: 'access' },
       JWT_SECRET,
       { expiresIn: '1d' }
     );
@@ -691,7 +697,7 @@ test.describe('Downstream Identity Collision Fix: Same Title & Same Batch Number
     `).run(batchAId, modId);
 
     const modToken = jwt.sign(
-      { id: modId, username: `collision_mod_${legTs}`, role: 'moderator', name: 'Mona Moderator' },
+      { id: modId, username: `collision_mod_${legTs}`, role: 'moderator', name: 'Mona Moderator', type: 'access' },
       JWT_SECRET,
       { expiresIn: '1d' }
     );
@@ -729,7 +735,7 @@ test.describe('Downstream Identity Collision Fix: Same Title & Same Batch Number
     `).run(instId);
 
     const instToken = jwt.sign(
-      { id: instId, username: `collision_inst_${legTs}`, role: 'instructor', name: 'Irfan Instructor' },
+      { id: instId, username: `collision_inst_${legTs}`, role: 'instructor', name: 'Irfan Instructor', type: 'access' },
       JWT_SECRET,
       { expiresIn: '1d' }
     );
@@ -762,7 +768,7 @@ test.describe('Downstream Identity Collision Fix: Same Title & Same Batch Number
     `).run(ambInstId);
 
     const ambInstToken = jwt.sign(
-      { id: ambInstId, username: `collision_amb_inst_${legTs}`, role: 'instructor', name: 'Amir AmbiguousInstructor' },
+      { id: ambInstId, username: `collision_amb_inst_${legTs}`, role: 'instructor', name: 'Amir AmbiguousInstructor', type: 'access' },
       JWT_SECRET,
       { expiresIn: '1d' }
     );
@@ -1369,7 +1375,8 @@ test.describe('Downstream Identity Collision Fix: Same Title & Same Batch Number
         id: dualStudentId, 
         username: `collision_student_dual_${dualTs}`, 
         role: 'student', 
-        name: 'Zainab DualEnrolled' 
+        name: 'Zainab DualEnrolled',
+        type: 'access'
       },
       JWT_SECRET,
       { expiresIn: '1d' }
@@ -1482,7 +1489,8 @@ test.describe('Downstream Identity Collision Fix: Same Title & Same Batch Number
         id: instUiId, 
         username: `collision_inst_ui_${instTs}`, 
         role: 'instructor', 
-        name: 'Tariq InstructorA' 
+        name: 'Tariq InstructorA',
+        type: 'access'
       },
       JWT_SECRET,
       { expiresIn: '1d' }
@@ -1642,7 +1650,7 @@ test.describe('Downstream Identity Collision Fix: Same Title & Same Batch Number
     db.prepare('INSERT INTO instructor_profiles (user_id, full_name, bfi_batch) VALUES (?, ?, ?)').run(instNumId, 'UntypedNum Instructor', String(batch1Id));
 
     const instNumToken = jwt.sign(
-      { id: instNumId, username: `collision_inst_num_${tStamp}`, role: 'instructor', name: 'UntypedNum Instructor' },
+      { id: instNumId, username: `collision_inst_num_${tStamp}`, role: 'instructor', name: 'UntypedNum Instructor', type: 'access' },
       JWT_SECRET,
       { expiresIn: '1d' }
     );
@@ -1689,7 +1697,7 @@ test.describe('Downstream Identity Collision Fix: Same Title & Same Batch Number
     db.prepare('INSERT INTO instructor_profiles (user_id, full_name, bfi_batch) VALUES (?, ?, ?)').run(instTypedId, 'TypedId Instructor', `batch_id:${batch1Id}`);
 
     const instTypedToken = jwt.sign(
-      { id: instTypedId, username: `collision_inst_typed_${tStamp}`, role: 'instructor', name: 'TypedId Instructor' },
+      { id: instTypedId, username: `collision_inst_typed_${tStamp}`, role: 'instructor', name: 'TypedId Instructor', type: 'access' },
       JWT_SECRET,
       { expiresIn: '1d' }
     );
@@ -1766,7 +1774,7 @@ test.describe('Downstream Identity Collision Fix: Same Title & Same Batch Number
     db.prepare('INSERT INTO instructor_profiles (user_id, full_name, bfi_batch) VALUES (?, ?, ?)').run(instDupLegId, 'DupLeg Instructor', legBNum);
 
     const instDupLegToken = jwt.sign(
-      { id: instDupLegId, username: `collision_inst_dupleg_${tStamp}`, role: 'instructor', name: 'DupLeg Instructor' },
+      { id: instDupLegId, username: `collision_inst_dupleg_${tStamp}`, role: 'instructor', name: 'DupLeg Instructor', type: 'access' },
       JWT_SECRET,
       { expiresIn: '1d' }
     );
@@ -1805,7 +1813,7 @@ test.describe('Downstream Identity Collision Fix: Same Title & Same Batch Number
     db.prepare('INSERT INTO batch_moderators (batch_id, user_id) VALUES (?, ?)').run(legB1Id, instModL1Id);
 
     const instModL1Token = jwt.sign(
-      { id: instModL1Id, username: `collision_inst_modl1_${tStamp}`, role: 'instructor', name: 'ModL1 Instructor' },
+      { id: instModL1Id, username: `collision_inst_modl1_${tStamp}`, role: 'instructor', name: 'ModL1 Instructor', type: 'access' },
       JWT_SECRET,
       { expiresIn: '1d' }
     );
@@ -1889,7 +1897,7 @@ test.describe('Downstream Identity Collision Fix: Same Title & Same Batch Number
     db.prepare('INSERT INTO instructor_profiles (user_id, full_name, bfi_batch) VALUES (?, ?, ?)').run(instHybId, 'HybInst Instructor', hybBNum);
 
     const instHybToken = jwt.sign(
-      { id: instHybId, username: `collision_inst_hyb_${tStamp}`, role: 'instructor', name: 'HybInst Instructor' },
+      { id: instHybId, username: `collision_inst_hyb_${tStamp}`, role: 'instructor', name: 'HybInst Instructor', type: 'access' },
       JWT_SECRET,
       { expiresIn: '1d' }
     );

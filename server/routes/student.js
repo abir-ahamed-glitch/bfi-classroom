@@ -12,13 +12,18 @@ import courseProgressService from '../services/courseProgressService.js';
 const router = express.Router();
 
 // Helper function to fetch user profile data (DRY - avoids duplicate queries)
-function fetchUserProfileData(userId, includePrivateData = false) {
+function fetchUserProfileData(userId, includePrivateData = false, isViewerAdmin = false) {
   const baseUser = db.prepare(`
-    SELECT id, username, email, first_name, last_name, mobile_number, profile_picture, role 
+    SELECT id, username, email, first_name, last_name, mobile_number, profile_picture, role, is_super_admin 
     FROM users WHERE id = ?
   `).get(userId);
   
   if (!baseUser) return null;
+
+  // Viewer-aware identity privacy: only admin viewers receive Super Admin designation
+  const isSuper = Boolean(isViewerAdmin) && Number(baseUser.id) === 1 && baseUser.role === 'admin' && Boolean(baseUser.is_super_admin);
+  baseUser.is_super_admin = isSuper ? 1 : 0;
+  baseUser.isSuperAdmin = isSuper;
 
   let profileData = {};
   if (baseUser.role === 'student') {
@@ -51,7 +56,8 @@ function fetchUserProfileData(userId, includePrivateData = false) {
 // Get student or instructor profile
 router.get('/profile', authenticateToken, async (req, res) => {
   try {
-    const data = fetchUserProfileData(req.user.id, true);
+    const isViewerAdmin = req.user.role === 'admin' || Number(req.user.id) === 1;
+    const data = fetchUserProfileData(req.user.id, true, isViewerAdmin);
     
     if (!data) {
       return res.status(404).json({ error: 'User not found' });
@@ -89,8 +95,9 @@ router.get('/profile', authenticateToken, async (req, res) => {
 router.get('/profile/:userId', authenticateToken, sensitiveEndpointLimiter, async (req, res) => {
   try {
     const targetUserId = req.params.userId;
+    const isViewerAdmin = req.user.role === 'admin';
 
-    const data = fetchUserProfileData(targetUserId, false);
+    const data = fetchUserProfileData(targetUserId, false, isViewerAdmin);
     
     if (!data) {
       return res.status(404).json({ error: 'User not found' });
@@ -478,9 +485,10 @@ router.post('/change-password', authenticateToken, async (req, res) => {
       return res.status(401).json({ error: 'Incorrect current password' });
     }
 
-    // Hash and update new password
+    // Hash and update new password and revoke old sessions
     const newHash = bcrypt.hashSync(newPass, 12);
-    db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(newHash, userId);
+    db.prepare("UPDATE users SET password_hash = ?, token_version = token_version + 1, updated_at = datetime('now') WHERE id = ?").run(newHash, userId);
+    db.prepare('DELETE FROM sessions WHERE user_id = ?').run(userId);
     
     res.json({ message: 'Password updated successfully' });
   } catch (error) {

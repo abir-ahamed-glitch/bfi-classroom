@@ -1,6 +1,6 @@
 import express from 'express';
 import db from '../db/database.js';
-import { authenticateToken, requireRole } from '../middleware/auth.js';
+import { authenticateToken, requireRole, requireAnyPermission } from '../middleware/auth.js';
 import { optimizeUploadedImage } from '../utils/imageOptimizer.js';
 import courseProgressService from '../services/courseProgressService.js';
 import { resolvePhaseFee } from '../utils/feeResolver.js';
@@ -41,7 +41,7 @@ const upload = multer({
 });
 
 // POST Upload Certificate Template Image
-router.post('/upload-image', authenticateToken, requireRole('admin'), (req, res) => {
+router.post('/upload-image', authenticateToken, requireRole('admin'), requireAnyPermission('settings:edit', 'courses:edit'), (req, res) => {
   upload.single('file')(req, res, function (err) {
     if (err) {
       console.error('Multer error:', err);
@@ -60,7 +60,7 @@ router.post('/upload-image', authenticateToken, requireRole('admin'), (req, res)
     }
   });
 });
-router.get('/template', authenticateToken, requireRole('admin'), (req, res) => {
+router.get('/template', authenticateToken, requireRole('admin'), requireAnyPermission('settings:view', 'courses:view'), (req, res) => {
   try {
     const { courseName } = req.query;
     if (!courseName) return res.status(400).json({ error: 'courseName is required' });
@@ -83,7 +83,7 @@ router.get('/template', authenticateToken, requireRole('admin'), (req, res) => {
 });
 
 // POST/PUT Certificate Template (for Admin)
-router.post('/template', authenticateToken, requireRole('admin'), (req, res) => {
+router.post('/template', authenticateToken, requireRole('admin'), requireAnyPermission('settings:edit', 'courses:edit'), (req, res) => {
   try {
     const { layout_json, background_url, course_name } = req.body;
     if (!course_name) return res.status(400).json({ error: 'course_name is required' });

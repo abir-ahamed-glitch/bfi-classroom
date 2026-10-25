@@ -394,7 +394,7 @@ export default function TrashManager() {
           >
             <option value="">All Admins</option>
             {admins.map(a => (
-              <option key={a.id} value={a.id}>{a.first_name} {a.last_name}</option>
+              <option key={a.id} value={a.id}>{a.first_name} {a.last_name}{(a.is_super_admin || a.isSuperAdmin) ? ' (Super Admin)' : ''}</option>
             ))}
           </select>
         </div>

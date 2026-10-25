@@ -1,11 +1,11 @@
 import express from 'express';
 import db from '../db/database.js';
-import { authenticateToken, requireRole } from '../middleware/auth.js';
+import { authenticateToken, requireRole, requireAnyPermission } from '../middleware/auth.js';
 
 const router = express.Router();
 
 // Get all course settings
-router.get('/', authenticateToken, requireRole('admin'), (req, res) => {
+router.get('/', authenticateToken, requireRole('admin'), requireAnyPermission('settings:view', 'courses:view'), (req, res) => {
   try {
     const settings = db.prepare(`
       SELECT cs.*, b.batch_name, b.course_definition_id
@@ -31,7 +31,7 @@ router.get('/', authenticateToken, requireRole('admin'), (req, res) => {
 });
 
 // Update or insert a course setting
-router.put('/', authenticateToken, requireRole('admin'), (req, res) => {
+router.put('/', authenticateToken, requireRole('admin'), requireAnyPermission('settings:edit', 'courses:edit'), (req, res) => {
   try {
     const {
       batch_id,
@@ -192,7 +192,7 @@ router.put('/', authenticateToken, requireRole('admin'), (req, res) => {
 });
 
 // Delete a course setting (cannot delete DEFAULT)
-router.delete('/:courseName/:batchNumber', authenticateToken, requireRole('admin'), (req, res) => {
+router.delete('/:courseName/:batchNumber', authenticateToken, requireRole('admin'), requireAnyPermission('settings:edit', 'courses:edit'), (req, res) => {
   try {
     const { courseName, batchNumber } = req.params;
     const batchId = req.query.batch_id ? parseInt(req.query.batch_id, 10) : null;

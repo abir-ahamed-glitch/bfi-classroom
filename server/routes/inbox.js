@@ -951,7 +951,7 @@ router.get('/recipients', authenticateToken, (req, res) => {
     if (query) {
       const likeQuery = `%${query}%`;
       users = db.prepare(`
-        SELECT u.id, u.first_name, u.last_name, u.role, u.username, u.profile_picture, sp.batch_number
+        SELECT u.id, u.first_name, u.last_name, u.role, u.username, u.profile_picture, u.is_super_admin, sp.batch_number
         FROM users u
         LEFT JOIN student_profiles sp ON sp.user_id = u.id
         WHERE u.id != ?
@@ -967,7 +967,7 @@ router.get('/recipients', authenticateToken, (req, res) => {
     } else {
       if (userRole === 'student') {
         users = db.prepare(`
-          SELECT u.id, u.first_name, u.last_name, u.role, u.username, u.profile_picture, sp.batch_number
+          SELECT u.id, u.first_name, u.last_name, u.role, u.username, u.profile_picture, u.is_super_admin, sp.batch_number
           FROM users u
           LEFT JOIN student_profiles sp ON sp.user_id = u.id
           WHERE u.id != ?
@@ -1002,7 +1002,7 @@ router.get('/recipients', authenticateToken, (req, res) => {
         `).all(userId, userId, userId, userId, userId, userId, userId);
       } else {
         users = db.prepare(`
-          SELECT u.id, u.first_name, u.last_name, u.role, u.username, u.profile_picture, sp.batch_number
+          SELECT u.id, u.first_name, u.last_name, u.role, u.username, u.profile_picture, u.is_super_admin, sp.batch_number
           FROM users u
           LEFT JOIN student_profiles sp ON sp.user_id = u.id
           WHERE u.id != ?
@@ -1027,7 +1027,16 @@ router.get('/recipients', authenticateToken, (req, res) => {
         `).all(userId, userId, userId);
       }
     }
-    res.json({ users });
+    const isViewerAdmin = req.user.role === 'admin';
+    const normalizedUsers = (users || []).map(u => {
+      const isSuper = isViewerAdmin && Number(u.id) === 1 && u.role === 'admin' && Boolean(u.is_super_admin);
+      return {
+        ...u,
+        is_super_admin: isSuper ? 1 : 0,
+        isSuperAdmin: isSuper
+      };
+    });
+    res.json({ users: normalizedUsers });
   } catch (err) {
     console.error('Error fetching recipients:', err);
     res.status(500).json({ error: 'Failed to fetch recipients' });
@@ -1042,7 +1051,7 @@ router.get('/users', authenticateToken, (req, res) => {
 
     const users = query
       ? db.prepare(`
-          SELECT u.id, u.first_name, u.last_name, u.role, u.username, u.email, u.profile_picture, u.public_key, u.mobile_number, sp.student_id, sp.batch_number
+          SELECT u.id, u.first_name, u.last_name, u.role, u.username, u.email, u.profile_picture, u.public_key, u.mobile_number, u.is_super_admin, sp.student_id, sp.batch_number
           FROM users u
           LEFT JOIN student_profiles sp ON sp.user_id = u.id
           WHERE u.id != ?
@@ -1093,7 +1102,7 @@ router.get('/users', authenticateToken, (req, res) => {
           DEFAULT_USER_LIMIT,
         )
       : db.prepare(`
-          SELECT u.id, u.first_name, u.last_name, u.role, u.username, u.email, u.profile_picture, u.public_key, u.mobile_number, sp.student_id, sp.batch_number
+          SELECT u.id, u.first_name, u.last_name, u.role, u.username, u.email, u.profile_picture, u.public_key, u.mobile_number, u.is_super_admin, sp.student_id, sp.batch_number
           FROM users u
           LEFT JOIN student_profiles sp ON sp.user_id = u.id
           WHERE u.id != ? AND u.is_active = 1
@@ -1131,7 +1140,17 @@ router.get('/users', authenticateToken, (req, res) => {
           LIMIT ?
         `).all(userId, userId, userId, userId, userId, userId, userId, userId, userId, userId, userId, userId, DEFAULT_USER_LIMIT);
 
-    res.json({ users });
+    const isViewerAdmin = req.user.role === 'admin';
+    const normalizedUsers = (users || []).map(u => {
+      const isSuper = isViewerAdmin && Number(u.id) === 1 && u.role === 'admin' && Boolean(u.is_super_admin);
+      return {
+        ...u,
+        is_super_admin: isSuper ? 1 : 0,
+        isSuperAdmin: isSuper
+      };
+    });
+
+    res.json({ users: normalizedUsers });
   } catch (error) {
     console.error('Users fetch error:', error);
     res.status(500).json({ error: 'Internal server error' });

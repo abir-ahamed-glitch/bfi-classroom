@@ -2,6 +2,7 @@ import { test, expect } from '@playwright/test';
 import dotenv from 'dotenv';
 import jwt from 'jsonwebtoken';
 import Database from 'better-sqlite3';
+import bcrypt from 'bcryptjs';
 
 dotenv.config();
 
@@ -36,17 +37,32 @@ test.beforeAll(async () => {
   await assertServerRejectionProof('http://127.0.0.1:3001');
   await verifyServerIsolation(API_BASE);
   db = await initIsolatedTestDatabase(DB_PATH);
-  adminUser = db.prepare("SELECT * FROM users WHERE role = 'admin' LIMIT 1").get();
-  studentUser = db.prepare("SELECT * FROM users WHERE role = 'student' LIMIT 1").get();
+  adminUser = db.prepare("SELECT * FROM users WHERE role = 'admin' ORDER BY id ASC LIMIT 1").get();
+  studentUser = db.prepare("SELECT * FROM users WHERE role = 'student' ORDER BY id ASC LIMIT 1").get();
+  if (!studentUser) {
+    const salt = bcrypt.genSaltSync(10);
+    const hash = bcrypt.hashSync('password', salt);
+    const ins = db.prepare(`
+      INSERT INTO users (username, email, password_hash, role, first_name, last_name, is_active)
+      VALUES (?, ?, ?, ?, ?, ?, 1)
+    `).run('e2e_student_fallback', 'student_fallback@bfi.local', hash, 'student', 'Default', 'Student');
+    studentUser = db.prepare("SELECT * FROM users WHERE id = ?").get(ins.lastInsertRowid);
+  }
+
+  const insertSession = db.prepare(`
+    INSERT INTO sessions (user_id, token_hash, ip_address, user_agent, expires_at, created_at, last_activity, sudo_verified_at)
+    VALUES (?, 'test_session_hash', '127.0.0.1', 'playwright_test', datetime('now', '+1 day'), datetime('now'), datetime('now'), datetime('now'))
+  `).run(adminUser.id);
+  const adminSessionId = insertSession.lastInsertRowid;
 
   adminToken = jwt.sign(
-    { id: adminUser.id, username: adminUser.username, role: adminUser.role },
+    { id: adminUser.id, username: adminUser.username, role: adminUser.role, type: 'access', sessionId: adminSessionId, token_version: adminUser.token_version || 1 },
     JWT_SECRET,
     { expiresIn: '1d' }
   );
 
   studentToken = jwt.sign(
-    { id: studentUser.id, username: studentUser.username, role: studentUser.role },
+    { id: studentUser.id, username: studentUser.username, role: studentUser.role, type: 'access' },
     JWT_SECRET,
     { expiresIn: '1d' }
   );
@@ -99,8 +115,16 @@ test.afterAll(() => {
       db.prepare('DELETE FROM student_course_enrollments WHERE id = ?').run(createdEnrollmentId);
     }
     if (createdBatchId) {
-      db.prepare('DELETE FROM batch_students WHERE batch_id = ?').run(createdBatchId);
-      db.prepare('DELETE FROM batches WHERE id = ?').run(createdBatchId);
+      try {
+        db.prepare('DELETE FROM batch_students WHERE batch_id = ?').run(createdBatchId);
+        db.prepare('DELETE FROM batch_course_fees WHERE batch_id = ?').run(createdBatchId);
+        db.prepare('DELETE FROM course_settings WHERE batch_id = ?').run(createdBatchId);
+        db.prepare('DELETE FROM course_routine_overrides WHERE batch_id = ?').run(createdBatchId);
+        db.prepare('DELETE FROM student_course_enrollments WHERE batch_id = ?').run(createdBatchId);
+        db.prepare('DELETE FROM batches WHERE id = ?').run(createdBatchId);
+      } catch (err) {
+        console.warn('[Cleanup Warning] createdBatchId cleanup:', err.message);
+      }
     }
     const defsToClean = db.prepare("SELECT id FROM course_definitions WHERE name = ?").all(COURSE_NAME).map(r => r.id);
     if (createdDefId && !defsToClean.includes(createdDefId)) {

@@ -65,7 +65,9 @@ export default function TurnstileWidget({ onVerify, onError, onExpire, resetKey 
       if (widgetIdRef.current !== null && window.turnstile) {
         try {
           window.turnstile.remove(widgetIdRef.current);
-        } catch {}
+        } catch {
+          // ignore cleanup error if already unmounted
+        }
         widgetIdRef.current = null;
       }
     };

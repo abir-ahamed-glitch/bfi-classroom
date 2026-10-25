@@ -5,7 +5,7 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { logTrashAction } from '../utils/trashLogger.js';
 import db from '../db/database.js';
-import { authenticateToken, requireRole } from '../middleware/auth.js';
+import { authenticateToken, requireRole, requireAnyPermission, isSuperAdmin, hasAnyPermission } from '../middleware/auth.js';
 import { optimizeUploadedImage } from '../utils/imageOptimizer.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -60,6 +60,9 @@ router.get('/', authenticateToken, (req, res) => {
     const requestedBatchId = req.query.batch_id ? parseInt(req.query.batch_id, 10) : null;
 
     if (req.user.role === 'admin') {
+      if (!isSuperAdmin(req.user) && !hasAnyPermission(req.user, 'courses:view', 'batches:view')) {
+        return res.status(403).json({ error: "Access denied: missing required permission 'courses:view' or 'batches:view'" });
+      }
       if (requestedBatchId) {
         const materials = db.prepare(`
           SELECT m.*, u.first_name || ' ' || u.last_name AS instructor_name
@@ -197,7 +200,7 @@ router.get('/', authenticateToken, (req, res) => {
 });
 
 // ─── GET (Admin): All materials across all batches ────────────────────────────
-router.get('/admin/all', authenticateToken, requireRole('admin'), (req, res) => {
+router.get('/admin/all', authenticateToken, requireRole('admin'), requireAnyPermission('courses:view', 'batches:view'), (req, res) => {
   try {
     const requestedBatchId = req.query.batch_id ? parseInt(req.query.batch_id, 10) : null;
     let materials;
@@ -228,7 +231,7 @@ router.get('/admin/all', authenticateToken, requireRole('admin'), (req, res) => 
 });
 
 // ─── POST: Upload new material ────────────────────────────────────────────────
-router.post('/upload', authenticateToken, requireRole('admin'), upload.single('file'), async (req, res) => {
+router.post('/upload', authenticateToken, requireRole('admin'), requireAnyPermission('courses:edit', 'batches:edit'), upload.single('file'), async (req, res) => {
   try {
     const { title, description, course_name, batch_number, batch_id, is_downloadable, external_url, file_type_override } = req.body;
 
@@ -284,7 +287,7 @@ router.post('/upload', authenticateToken, requireRole('admin'), upload.single('f
 });
 
 // ─── PUT: Update material metadata ───────────────────────────────────────────
-router.put('/:id', authenticateToken, requireRole('admin'), upload.single('file'), async (req, res) => {
+router.put('/:id', authenticateToken, requireRole('admin'), requireAnyPermission('courses:edit', 'batches:edit'), upload.single('file'), async (req, res) => {
   try {
     const { id } = req.params;
     const existing = db.prepare('SELECT * FROM course_materials WHERE id = ?').get(id);
@@ -349,7 +352,7 @@ router.put('/:id', authenticateToken, requireRole('admin'), upload.single('file'
 });
 
 // ─── DELETE: Remove a material ────────────────────────────────────────────────
-router.delete('/:id', authenticateToken, requireRole('admin'), (req, res) => {
+router.delete('/:id', authenticateToken, requireRole('admin'), requireAnyPermission('courses:delete', 'batches:delete'), (req, res) => {
   try {
     const { id } = req.params;
     const material = db.prepare('SELECT * FROM course_materials WHERE id = ?').get(id);

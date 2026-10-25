@@ -1,6 +1,7 @@
+import { recordAuditEventFromReq } from '../services/auditLedgerService.js';
 import express from 'express';
 import db from '../db/database.js';
-import { authenticateToken, requireRole } from '../middleware/auth.js';
+import { authenticateToken, requireRole, requirePermission } from '../middleware/auth.js';
 import { logTrashAction } from '../utils/trashLogger.js';
 
 const router = express.Router();
@@ -40,7 +41,7 @@ function getLabelForEntity(entity, record) {
 
 // GET /api/admin/trash/audit-log
 // Fetch all audit log records
-router.get('/audit-log', authenticateToken, requireRole('admin'), (req, res) => {
+router.get('/audit-log', authenticateToken, requireRole('admin'), requirePermission('trash:view'), (req, res) => {
   try {
     const items = db.prepare(`SELECT * FROM trash_audit_log ORDER BY performed_at DESC`).all();
     for (const item of items) {
@@ -61,9 +62,9 @@ router.get('/audit-log', authenticateToken, requireRole('admin'), (req, res) => 
 
 // GET /api/admin/trash/admins
 // Fetch list of admins for filtering dropdown
-router.get('/admins', authenticateToken, requireRole('admin'), (req, res) => {
+router.get('/admins', authenticateToken, requireRole('admin'), requirePermission('trash:view'), (req, res) => {
   try {
-    const admins = db.prepare(`SELECT id, first_name, last_name FROM users WHERE role = 'admin'`).all();
+    const admins = db.prepare(`SELECT id, first_name, last_name, is_super_admin FROM users WHERE role = 'admin'`).all();
     res.json({ admins });
   } catch (error) {
     console.error('Error fetching admins:', error);
@@ -73,7 +74,7 @@ router.get('/admins', authenticateToken, requireRole('admin'), (req, res) => {
 
 // GET /api/admin/trash/:entity
 // Fetch all soft-deleted items for a given entity
-router.get('/:entity', authenticateToken, requireRole('admin'), (req, res) => {
+router.get('/:entity', authenticateToken, requireRole('admin'), requirePermission('trash:view'), (req, res) => {
   try {
     const { entity } = req.params;
     const config = ENTITY_TABLES[entity];
@@ -95,7 +96,7 @@ router.get('/:entity', authenticateToken, requireRole('admin'), (req, res) => {
 
 // POST /api/admin/trash/restore/:entity/:id
 // Restore a soft-deleted item
-router.post('/restore/:entity/:id', authenticateToken, requireRole('admin'), (req, res) => {
+router.post('/restore/:entity/:id', authenticateToken, requireRole('admin'), requirePermission('trash:restore'), (req, res) => {
   try {
     const { entity, id } = req.params;
     const config = ENTITY_TABLES[entity];
@@ -107,9 +108,21 @@ router.post('/restore/:entity/:id', authenticateToken, requireRole('admin'), (re
     const record = db.prepare(`SELECT * FROM ${config.table} WHERE id = ?`).get(id);
     if (!record) return res.status(404).json({ error: 'Record not found.' });
 
-    db.prepare(`UPDATE ${config.table} SET deleted_at = NULL, deleted_by_admin_id = NULL WHERE id = ?`).run(id);
-    logTrashAction(entity, id, getLabelForEntity(entity, record), 'restored', req.user.id);
+    const restoreTx = db.transaction(() => {
+      db.prepare(`UPDATE ${config.table} SET deleted_at = NULL, deleted_by_admin_id = NULL WHERE id = ?`).run(id);
+      logTrashAction(entity, id, getLabelForEntity(entity, record), 'restored', req.user.id);
 
+      recordAuditEventFromReq(req, {
+        action: 'trash.restore',
+        module: 'trash',
+        resource: `${entity}:${id}`,
+        outcome: 'success',
+        details: { entity, id, label: getLabelForEntity(entity, record) },
+        throwOnError: true
+      });
+    });
+
+    restoreTx();
     res.json({ message: 'Item restored successfully.' });
   } catch (error) {
     console.error('Error restoring item:', error);
@@ -119,7 +132,7 @@ router.post('/restore/:entity/:id', authenticateToken, requireRole('admin'), (re
 
 // POST /api/admin/trash/bulk-restore/:entity
 // Restore multiple soft-deleted items
-router.post('/bulk-restore/:entity', authenticateToken, requireRole('admin'), (req, res) => {
+router.post('/bulk-restore/:entity', authenticateToken, requireRole('admin'), requirePermission('trash:restore'), (req, res) => {
   try {
     const { entity } = req.params;
     const { ids } = req.body;
@@ -148,7 +161,7 @@ router.post('/bulk-restore/:entity', authenticateToken, requireRole('admin'), (r
 
 // DELETE /api/admin/trash/permanent/:entity/:id
 // Permanently delete an item from the database
-router.delete('/permanent/:entity/:id', authenticateToken, requireRole('admin'), (req, res) => {
+router.delete('/permanent/:entity/:id', authenticateToken, requireRole('admin'), requirePermission('trash:delete_permanent'), (req, res) => {
   try {
     const { entity, id } = req.params;
     const config = ENTITY_TABLES[entity];
@@ -157,12 +170,29 @@ router.delete('/permanent/:entity/:id', authenticateToken, requireRole('admin'),
       return res.status(400).json({ error: 'Invalid entity type.' });
     }
 
+    if (config.table === 'users' && Number(id) === 1) {
+      return res.status(403).json({ error: 'Cannot permanently delete Super Administrator account.' });
+    }
+
     const record = db.prepare(`SELECT * FROM ${config.table} WHERE id = ?`).get(id);
     if (!record) return res.status(404).json({ error: 'Record not found.' });
 
-    db.prepare(`DELETE FROM ${config.table} WHERE id = ?`).run(id);
-    logTrashAction(entity, id, getLabelForEntity(entity, record), 'permanently_deleted', req.user.id);
+    const permDeleteTx = db.transaction(() => {
+      db.prepare(`DELETE FROM ${config.table} WHERE id = ?`).run(id);
+      logTrashAction(entity, id, getLabelForEntity(entity, record), 'permanently_deleted', req.user.id);
 
+      recordAuditEventFromReq(req, {
+        action: 'trash.delete_permanent',
+        module: 'trash',
+        resource: `${entity}:${id}`,
+        outcome: 'success',
+        beforeState: { entity, id, label: getLabelForEntity(entity, record) },
+        details: { entity, id },
+        throwOnError: true
+      });
+    });
+
+    permDeleteTx();
     res.json({ message: 'Item permanently deleted.' });
   } catch (error) {
     console.error('Error permanently deleting item:', error);
@@ -172,7 +202,7 @@ router.delete('/permanent/:entity/:id', authenticateToken, requireRole('admin'),
 
 // DELETE /api/admin/trash/bulk-permanent/:entity
 // Permanently delete multiple items
-router.delete('/bulk-permanent/:entity', authenticateToken, requireRole('admin'), (req, res) => {
+router.delete('/bulk-permanent/:entity', authenticateToken, requireRole('admin'), requirePermission('trash:delete_permanent'), (req, res) => {
   try {
     const { entity } = req.params;
     const { ids } = req.body;
@@ -180,6 +210,10 @@ router.delete('/bulk-permanent/:entity', authenticateToken, requireRole('admin')
 
     if (!config) return res.status(400).json({ error: 'Invalid entity type.' });
     if (!Array.isArray(ids) || ids.length === 0) return res.status(400).json({ error: 'No IDs provided.' });
+
+    if (config.table === 'users' && ids.some(id => Number(id) === 1)) {
+      return res.status(403).json({ error: 'Cannot permanently delete Super Administrator account.' });
+    }
 
     const transaction = db.transaction(() => {
       for (const id of ids) {

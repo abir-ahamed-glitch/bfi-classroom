@@ -7,5 +7,7 @@ for (const t of tables) {
   try {
     const c = db.prepare(`SELECT count(*) as count FROM ${t.name}`).get().count;
     if (c > 0) console.log(`  ${t.name}: ${c}`);
-  } catch (e) {}
+  } catch (e) {
+    /* empty */
+  }
 }

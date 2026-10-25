@@ -701,6 +701,10 @@ export async function recordClassAttendance(enrollmentId, classId, attended, upd
     if (progress && !progress.isLegacy) {
       syncPhaseResults(enrollmentId, progress.phases, db, options);
     }
+
+    if (options && typeof options.onCommitAudit === 'function') {
+      options.onCommitAudit(db, { progress, enrollmentId });
+    }
     return progress;
   });
 
@@ -871,6 +875,10 @@ export async function updateDefinedProgressAtomic(enrollmentId, payload, customD
       syncPhaseResults(enrollmentId, progress.phases, db, options);
     }
 
+    if (options && typeof options.onCommitAudit === 'function') {
+      options.onCommitAudit(db, { progress, enrollmentId });
+    }
+
     return progress;
   });
 
@@ -933,6 +941,18 @@ export async function admitStudentToPhase(enrollmentId, phaseNumber, customDb = 
       if (!p1FeeRes.isPaid) {
         throw new Error('Cannot admit to Phase 2: Phase 1 fees must be fully paid first.');
       }
+      const beforeState = {
+        phaseNumber: 2,
+        phase_id: 'phase_2',
+        admitted: enrollment.step3_completed ? 1 : 0,
+        step3_completed: enrollment.step3_completed ? 1 : 0
+      };
+      const afterState = {
+        phaseNumber: 2,
+        phase_id: 'phase_2',
+        admitted: 1,
+        step3_completed: 1
+      };
       db.transaction(() => {
         db.prepare(`
           UPDATE student_course_enrollments
@@ -944,6 +964,10 @@ export async function admitStudentToPhase(enrollmentId, phaseNumber, customDb = 
           SET phase2_admitted = 1, updated_at = datetime('now', 'localtime')
           WHERE user_id = ?
         `).run(enrollment.user_id);
+
+        if (options && typeof options.onCommitAudit === 'function') {
+          options.onCommitAudit(db, { enrollment, phaseNumber: pNum, targetPhaseId: 'phase_2', isLegacy: true, beforeState, afterState });
+        }
       })();
       return getEnrollmentProgressSync(enrollmentId, db, options);
     }
@@ -992,6 +1016,20 @@ export async function admitStudentToPhase(enrollmentId, phaseNumber, customDb = 
   }
 
   db.transaction(() => {
+    const existingPhaseResult = db.prepare('SELECT admitted, admitted_at FROM student_phase_results WHERE enrollment_id = ? AND phase_id = ?').get(enrollmentId, targetPhaseId);
+    const beforeState = {
+      phaseNumber: pNum,
+      phase_id: targetPhaseId,
+      admitted: existingPhaseResult ? (existingPhaseResult.admitted ? 1 : 0) : 0,
+      step3_completed: enrollment.step3_completed ? 1 : 0
+    };
+    const afterState = {
+      phaseNumber: pNum,
+      phase_id: targetPhaseId,
+      admitted: 1,
+      step3_completed: pNum === 2 ? 1 : (enrollment.step3_completed ? 1 : 0)
+    };
+
     db.prepare(`
       INSERT INTO student_phase_results (
         enrollment_id, phase_id, admitted, admitted_at, calculated_at
@@ -1012,6 +1050,10 @@ export async function admitStudentToPhase(enrollmentId, phaseNumber, customDb = 
         SET phase2_admitted = 1, updated_at = datetime('now', 'localtime')
         WHERE user_id = ?
       `).run(enrollment.user_id);
+    }
+
+    if (options && typeof options.onCommitAudit === 'function') {
+      options.onCommitAudit(db, { enrollment, phaseNumber: pNum, targetPhaseId, isLegacy: false, beforeState, afterState });
     }
   })();
 
@@ -1055,6 +1097,18 @@ export async function unadmitStudentFromPhase(enrollmentId, phaseNumber, customD
     if (pNum === 2 && enrollment.step4_completed === 1) {
       throw new Error('Cannot undo phase admission: Phase 2 has already been completed.');
     }
+    const beforeState = {
+      phaseNumber: 2,
+      phase_id: 'phase_2',
+      admitted: enrollment.step3_completed ? 1 : 0,
+      step3_completed: enrollment.step3_completed ? 1 : 0
+    };
+    const afterState = {
+      phaseNumber: 2,
+      phase_id: 'phase_2',
+      admitted: 0,
+      step3_completed: 0
+    };
     db.transaction(() => {
       if (pNum === 2) {
         db.prepare(`
@@ -1067,6 +1121,10 @@ export async function unadmitStudentFromPhase(enrollmentId, phaseNumber, customD
           SET phase2_admitted = 0, updated_at = datetime('now', 'localtime')
           WHERE user_id = ?
         `).run(enrollment.user_id);
+      }
+
+      if (options && typeof options.onCommitAudit === 'function') {
+        options.onCommitAudit(db, { enrollment, phaseNumber: pNum, targetPhaseId: 'phase_2', isLegacy: true, beforeState, afterState });
       }
     })();
 
@@ -1105,6 +1163,20 @@ export async function unadmitStudentFromPhase(enrollmentId, phaseNumber, customD
   }
 
   db.transaction(() => {
+    const existingPhaseResult = db.prepare('SELECT admitted, admitted_at FROM student_phase_results WHERE enrollment_id = ? AND phase_id = ?').get(enrollmentId, targetPhaseId);
+    const beforeState = {
+      phaseNumber: pNum,
+      phase_id: targetPhaseId,
+      admitted: existingPhaseResult ? (existingPhaseResult.admitted ? 1 : 0) : 0,
+      step3_completed: enrollment.step3_completed ? 1 : 0
+    };
+    const afterState = {
+      phaseNumber: pNum,
+      phase_id: targetPhaseId,
+      admitted: 0,
+      step3_completed: pNum === 2 ? 0 : (enrollment.step3_completed ? 1 : 0)
+    };
+
     db.prepare(`
       UPDATE student_phase_results
       SET admitted = 0, admitted_at = NULL
@@ -1122,6 +1194,10 @@ export async function unadmitStudentFromPhase(enrollmentId, phaseNumber, customD
         SET phase2_admitted = 0, updated_at = datetime('now', 'localtime')
         WHERE user_id = ?
       `).run(enrollment.user_id);
+    }
+
+    if (options && typeof options.onCommitAudit === 'function') {
+      options.onCommitAudit(db, { enrollment, phaseNumber: pNum, targetPhaseId, isLegacy: false, beforeState, afterState });
     }
   })();
 

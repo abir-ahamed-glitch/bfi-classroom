@@ -1,12 +1,14 @@
+import crypto from 'crypto';
 import express from 'express';
 import db from '../db/database.js';
-import { authenticateToken, requireRole } from '../middleware/auth.js';
+import { authenticateToken, requireRole, requirePermission } from '../middleware/auth.js';
+import { recordAuditEventFromReq } from '../services/auditLedgerService.js';
 import ExcelJS from 'exceljs';
 import { Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell, WidthType, AlignmentType, PageOrientation } from 'docx';
 import PDFDocument from 'pdfkit';
 
 const router = express.Router();
-const adminAuth = [authenticateToken, requireRole(['admin'])];
+const adminAuth = [authenticateToken, requireRole('admin'), requirePermission('students:export')];
 
 function getStudentsForExport(db, filters = {}) {
   let query = `
@@ -73,11 +75,84 @@ function parseFilters(query) {
   };
 }
 
+
+function setupExportLifecycle(req, res, format, resource = 'export:excel') {
+  const correlationId = req.headers['x-correlation-id'] || req.correlationId || (crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex'));
+  let finalized = false;
+
+  // 1. Persist the authorized attempt before exporting
+  recordAuditEventFromReq(req, {
+    action: 'student.export_attempted',
+    module: 'export',
+    resource,
+    outcome: 'success',
+    correlationId,
+    details: { format, filters: req.query || {} },
+    throwOnError: true
+  });
+
+  const recordTerminal = (action, outcome, details) => {
+    if (finalized) return;
+    finalized = true;
+    try {
+      recordAuditEventFromReq(req, {
+        action,
+        module: 'export',
+        resource,
+        outcome,
+        correlationId,
+        details,
+        throwOnError: false // Never pretend delivery can be rolled back after side effects
+      });
+    } catch (err) {
+      console.error(`[Export Audit Error] Failed to record ${action}:`, err.message);
+    }
+  };
+
+  res.on('finish', () => {
+    if (res.statusCode >= 200 && res.statusCode < 400) {
+      recordTerminal('student.export_completed', 'success', {
+        format,
+        serverCompleted: true,
+        statusCode: res.statusCode
+      });
+    }
+  });
+
+  res.on('close', () => {
+    if (!res.writableEnded && !finalized) {
+      recordTerminal('student.export_aborted', 'failed', {
+        format,
+        reason: 'stream_aborted_or_closed_prematurely',
+        writableEnded: false
+      });
+    }
+  });
+
+  return {
+    correlationId,
+    recordFailure: (err) => {
+      recordTerminal('student.export_failed', 'failed', {
+        format,
+        error: err ? err.message : 'Unknown generation failure'
+      });
+    }
+  };
+}
+
 function formatDateForFilename() {
   return new Date().toISOString().split('T')[0];
 }
 
 router.get('/excel', adminAuth, async (req, res) => {
+  let lifecycle;
+  try {
+    lifecycle = setupExportLifecycle(req, res, 'xlsx', 'export:excel');
+  } catch (auditErr) {
+    console.error('Failed to log export attempt:', auditErr);
+    return res.status(500).json({ error: 'Audit persistence failure: export attempt could not be recorded.' });
+  }
+
   try {
     const students = getStudentsForExport(db, parseFilters(req.query));
 
@@ -154,11 +229,24 @@ router.get('/excel', adminAuth, async (req, res) => {
     res.end();
   } catch (error) {
     console.error('Excel Export Error:', error);
-    res.status(500).json({ error: 'Failed to generate Excel export' });
+    lifecycle.recordFailure(error);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Failed to generate Excel export' });
+    } else {
+      res.destroy(error);
+    }
   }
 });
 
 router.get('/word', adminAuth, async (req, res) => {
+  let lifecycle;
+  try {
+    lifecycle = setupExportLifecycle(req, res, 'docx', 'export:word');
+  } catch (auditErr) {
+    console.error('Failed to log export attempt:', auditErr);
+    return res.status(500).json({ error: 'Audit persistence failure: export attempt could not be recorded.' });
+  }
+
   try {
     const students = getStudentsForExport(db, parseFilters(req.query));
 
@@ -274,11 +362,24 @@ router.get('/word', adminAuth, async (req, res) => {
     res.send(buffer);
   } catch (error) {
     console.error('Word Export Error:', error);
-    res.status(500).json({ error: 'Failed to generate Word export' });
+    lifecycle?.recordFailure(error);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Failed to generate Word export' });
+    } else {
+      res.destroy(error);
+    }
   }
 });
 
 router.get('/pdf', adminAuth, (req, res) => {
+  let lifecycle;
+  try {
+    lifecycle = setupExportLifecycle(req, res, 'pdf', 'export:pdf');
+  } catch (auditErr) {
+    console.error('Failed to log export attempt:', auditErr);
+    return res.status(500).json({ error: 'Audit persistence failure: export attempt could not be recorded.' });
+  }
+
   try {
     const students = getStudentsForExport(db, parseFilters(req.query));
 
@@ -396,8 +497,14 @@ router.get('/pdf', adminAuth, (req, res) => {
     doc.end();
   } catch (error) {
     console.error('PDF Export Error:', error);
-    res.status(500).json({ error: 'Failed to generate PDF export' });
+    lifecycle?.recordFailure(error);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Failed to generate PDF export' });
+    } else {
+      res.destroy(error);
+    }
   }
 });
 
+export { setupExportLifecycle, getStudentsForExport };
 export default router;

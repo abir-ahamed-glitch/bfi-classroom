@@ -5,7 +5,7 @@ import path from 'path';
 import rateLimit from 'express-rate-limit';
 import { fileURLToPath } from 'url';
 import db from '../db/database.js';
-import { authenticateToken, requireRole, sanitizeInput } from '../middleware/auth.js';
+import { authenticateToken, requireRole, sanitizeInput, requirePermission } from '../middleware/auth.js';
 import { optimizeBuffer } from '../utils/imageOptimizer.js';
 import { decryptMessageContent, encryptMessageContent } from '../utils/messageCrypto.js';
 
@@ -146,7 +146,7 @@ router.post('/upload-screenshot', authenticateToken, screenshotLimiter, (req, re
         bufferToWrite = opt.buffer;
         finalExt = 'webp';
       }
-    } catch (_) {}
+    } catch (_) { /* ignore */ }
 
     const filename = `report-screenshot-${req.user.id}-${Date.now()}.${finalExt}`;
     fs.writeFileSync(path.join(screenshotDirectory, filename), bufferToWrite);
@@ -282,7 +282,7 @@ router.post('/submit', authenticateToken, reportLimiter, sanitizeInput, (req, re
   }
 });
 
-router.get('/admin/unread-count', authenticateToken, requireRole('admin'), (_req, res) => {
+router.get('/admin/unread-count', authenticateToken, requireRole('admin'), requirePermission('reports:view'), (_req, res) => {
   try {
     const row = db.prepare("SELECT COUNT(*) AS count FROM reports WHERE status = 'pending'").get();
     res.json({ count: Number(row?.count || 0) });
@@ -292,7 +292,7 @@ router.get('/admin/unread-count', authenticateToken, requireRole('admin'), (_req
   }
 });
 
-router.get('/admin/all', authenticateToken, requireRole('admin'), (req, res) => {
+router.get('/admin/all', authenticateToken, requireRole('admin'), requirePermission('reports:view'), (req, res) => {
   try {
     const status = String(req.query.status || '').trim().toLowerCase();
     const type = String(req.query.type || '').trim().toLowerCase();
@@ -373,7 +373,7 @@ router.get('/admin/all', authenticateToken, requireRole('admin'), (req, res) => 
   }
 });
 
-router.patch('/admin/:id/action', authenticateToken, requireRole('admin'), sanitizeInput, (req, res) => {
+router.patch('/admin/:id/action', authenticateToken, requireRole('admin'), requirePermission('reports:moderate'), sanitizeInput, (req, res) => {
   try {
     const reportId = Number(req.params.id);
     const action = String(req.body.action || '').trim().toLowerCase();

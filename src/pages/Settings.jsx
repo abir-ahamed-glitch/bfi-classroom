@@ -356,8 +356,12 @@ export default function Settings() {
                   <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', padding: '0.6rem 1rem', borderRadius: '8px', background: 'linear-gradient(135deg, rgba(225,29,72,0.12), rgba(139,92,246,0.12))', border: '1px solid rgba(225,29,72,0.25)' }}>
                     <Shield size={16} style={{ color: 'var(--accent-primary)', flexShrink: 0 }} />
                     <div>
-                      <div style={{ fontWeight: 700, fontSize: '0.88rem', color: 'var(--accent-primary)', fontFamily: 'var(--font-display)', letterSpacing: '0.05em' }}>ADMIN — Control Panel</div>
-                      <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '1px' }}>Full platform administrative access</div>
+                      <div style={{ fontWeight: 700, fontSize: '0.88rem', color: 'var(--accent-primary)', fontFamily: 'var(--font-display)', letterSpacing: '0.05em' }}>
+                        {currentUser?.is_super_admin ? 'SUPER ADMIN — Primary Control Panel' : 'ADMIN — Control Panel'}
+                      </div>
+                      <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '1px' }}>
+                        {currentUser?.is_super_admin ? 'Super Administrator & Master Control Access' : 'Full platform administrative access'}
+                      </div>
                     </div>
                   </div>
                 ) : (

@@ -1,11 +1,12 @@
 import express from 'express';
 import db from '../db/database.js';
-import { authenticateToken, requireRole } from '../middleware/auth.js';
+import { authenticateToken, requireRole, requirePermission } from '../middleware/auth.js';
+import { recordAuditEventFromReq } from '../services/auditLedgerService.js';
 
 const router = express.Router();
 
 // GET all batch-wise course fees
-router.get('/batch-fees', authenticateToken, requireRole('admin'), (req, res) => {
+router.get('/batch-fees', authenticateToken, requireRole('admin'), requirePermission('finance:view'), (req, res) => {
   try {
     const fees = db.prepare(`
       SELECT bcf.*, b.course_definition_id, b.batch_name
@@ -21,7 +22,7 @@ router.get('/batch-fees', authenticateToken, requireRole('admin'), (req, res) =>
 });
 
 // GET available batches for a course (drawn from defined batches table and active enrollments)
-router.get('/batch-fees/available-batches', authenticateToken, requireRole('admin'), (req, res) => {
+router.get('/batch-fees/available-batches', authenticateToken, requireRole('admin'), requirePermission('finance:view'), (req, res) => {
   try {
     const { course_name, course_definition_id, format } = req.query;
     if (!course_name && !course_definition_id) {
@@ -77,7 +78,7 @@ router.get('/batch-fees/available-batches', authenticateToken, requireRole('admi
 });
 
 // POST (create or update) batch-wise course fee
-router.post('/batch-fees', authenticateToken, requireRole('admin'), (req, res) => {
+router.post('/batch-fees', authenticateToken, requireRole('admin'), requirePermission('finance:edit'), (req, res) => {
   try {
     const { batch_id, course_name, batch_number, phase1_fee, phase2_fee, full_fee } = req.body;
 
@@ -108,32 +109,43 @@ router.post('/batch-fees', authenticateToken, requireRole('admin'), (req, res) =
     const p2 = parseInt(phase2_fee, 10) || 0;
     const f = parseInt(full_fee, 10) || 0;
 
-    if (effectiveBatchId) {
-      // Upsert into batch_course_fees matching on batch_id
-      db.prepare(`
-        INSERT INTO batch_course_fees (batch_id, course_name, batch_number, phase1_fee, phase2_fee, full_fee, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
-        ON CONFLICT(batch_id) WHERE batch_id IS NOT NULL DO UPDATE SET
-          phase1_fee = excluded.phase1_fee,
-          phase2_fee = excluded.phase2_fee,
-          full_fee = excluded.full_fee,
-          course_name = excluded.course_name,
-          batch_number = excluded.batch_number,
-          updated_at = datetime('now')
-      `).run(effectiveBatchId, effectiveCourseName, effectiveBatchNumber, p1, p2, f);
-    } else {
-      // Legacy unlinked batch fee upsert matching on (course_name, batch_number) WHERE batch_id IS NULL
-      db.prepare(`
-        INSERT INTO batch_course_fees (batch_id, course_name, batch_number, phase1_fee, phase2_fee, full_fee, updated_at)
-        VALUES (NULL, ?, ?, ?, ?, ?, datetime('now'))
-        ON CONFLICT(course_name, batch_number) WHERE batch_id IS NULL DO UPDATE SET
-          phase1_fee = excluded.phase1_fee,
-          phase2_fee = excluded.phase2_fee,
-          full_fee = excluded.full_fee,
-          updated_at = datetime('now')
-      `).run(effectiveCourseName, effectiveBatchNumber, p1, p2, f);
-    }
+    const saveFeeTx = db.transaction(() => {
+      if (effectiveBatchId) {
+        db.prepare(`
+          INSERT INTO batch_course_fees (batch_id, course_name, batch_number, phase1_fee, phase2_fee, full_fee, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+          ON CONFLICT(batch_id) WHERE batch_id IS NOT NULL DO UPDATE SET
+            phase1_fee = excluded.phase1_fee,
+            phase2_fee = excluded.phase2_fee,
+            full_fee = excluded.full_fee,
+            course_name = excluded.course_name,
+            batch_number = excluded.batch_number,
+            updated_at = datetime('now')
+        `).run(effectiveBatchId, effectiveCourseName, effectiveBatchNumber, p1, p2, f);
+      } else {
+        db.prepare(`
+          INSERT INTO batch_course_fees (batch_id, course_name, batch_number, phase1_fee, phase2_fee, full_fee, updated_at)
+          VALUES (NULL, ?, ?, ?, ?, ?, datetime('now'))
+          ON CONFLICT(course_name, batch_number) WHERE batch_id IS NULL DO UPDATE SET
+            phase1_fee = excluded.phase1_fee,
+            phase2_fee = excluded.phase2_fee,
+            full_fee = excluded.full_fee,
+            updated_at = datetime('now')
+        `).run(effectiveCourseName, effectiveBatchNumber, p1, p2, f);
+      }
 
+      recordAuditEventFromReq(req, {
+        action: 'fee.create_or_update',
+        module: 'fees',
+        resource: `fee:${effectiveBatchId || effectiveCourseName}`,
+        outcome: 'success',
+        details: { batch_id: effectiveBatchId, course_name: effectiveCourseName, phase1_fee: p1, phase2_fee: p2, full_fee: f },
+        afterState: { batch_id: effectiveBatchId, course_name: effectiveCourseName, phase1_fee: p1, phase2_fee: p2, full_fee: f },
+        throwOnError: true
+      });
+    });
+
+    saveFeeTx();
     res.json({ message: 'Batch fee updated successfully.' });
   } catch (error) {
     console.error('[Fees API] Error saving batch fee:', error);
@@ -142,10 +154,23 @@ router.post('/batch-fees', authenticateToken, requireRole('admin'), (req, res) =
 });
 
 // DELETE a batch-wise course fee
-router.delete('/batch-fees/:id', authenticateToken, requireRole('admin'), (req, res) => {
+router.delete('/batch-fees/:id', authenticateToken, requireRole('admin'), requirePermission('finance:edit'), (req, res) => {
   try {
     const { id } = req.params;
-    db.prepare('DELETE FROM batch_course_fees WHERE id = ?').run(id);
+    const existing = db.prepare('SELECT * FROM batch_course_fees WHERE id = ?').get(id);
+    const deleteFeeTx = db.transaction(() => {
+      db.prepare('DELETE FROM batch_course_fees WHERE id = ?').run(id);
+      recordAuditEventFromReq(req, {
+        action: 'fee.delete',
+        module: 'fees',
+        resource: `fee:${id}`,
+        outcome: 'success',
+        beforeState: existing || null,
+        details: { id },
+        throwOnError: true
+      });
+    });
+    deleteFeeTx();
     res.json({ message: 'Batch fee deleted successfully.' });
   } catch (error) {
     console.error('[Fees API] Error deleting batch fee:', error);

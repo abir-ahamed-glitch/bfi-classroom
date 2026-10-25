@@ -453,9 +453,9 @@ const getOrdinalSuffix = (i) => {
   return num + "th";
 };
 
-const getRoleDisplayText = (role, batch) => {
+const getRoleDisplayText = (role, batch, user) => {
   if (role === 'student') return batch ? `Student - ${getOrdinalSuffix(batch)} Batch` : 'Student';
-  if (role === 'admin') return 'Admin';
+  if (role === 'admin') return (user?.is_super_admin || user?.isSuperAdmin) ? 'Super Admin' : 'Admin';
   if (role === 'instructor') return 'Teacher';
   return role || 'User';
 };

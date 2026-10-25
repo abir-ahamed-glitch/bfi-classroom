@@ -1,6 +1,7 @@
 import express from 'express';
 import db from '../db/database.js';
-import { authenticateToken, requireRole } from '../middleware/auth.js';
+import { authenticateToken, requireRole, requirePermission, isSuperAdmin } from '../middleware/auth.js';
+import { recordAuditEventFromReq } from '../services/auditLedgerService.js';
 import { resolvePhaseRoutine } from '../services/courseProgressService.js';
 
 const router = express.Router();
@@ -243,6 +244,12 @@ function validateCourseDefinitionPayload(data, isPublishing = false) {
 // ── 1. List Course Definitions ───────────────────────────────────────────────
 router.get('/', authenticateToken, (req, res) => {
   try {
+    if (req.user.role === 'admin' && !isSuperAdmin(req.user)) {
+      const has = db.prepare('SELECT 1 FROM admin_permissions WHERE user_id = ? AND permission = ?').get(req.user.id, 'courses:view');
+      if (!has) {
+        return res.status(403).json({ error: "Access denied: missing required permission 'courses:view'", requiredPermission: 'courses:view' });
+      }
+    }
     const { status, slug, latest_only } = req.query;
     let query = 'SELECT * FROM course_definitions WHERE 1=1';
     const params = [];
@@ -327,6 +334,12 @@ router.get('/', authenticateToken, (req, res) => {
 // ── 2a. Get Linked Batches for a Course Definition ──────────────────────────
 router.get('/:id/batches', authenticateToken, (req, res) => {
   try {
+    if (req.user.role === 'admin' && !isSuperAdmin(req.user)) {
+      const has = db.prepare('SELECT 1 FROM admin_permissions WHERE user_id = ? AND permission = ?').get(req.user.id, 'courses:view');
+      if (!has) {
+        return res.status(403).json({ error: "Access denied: missing required permission 'courses:view'", requiredPermission: 'courses:view' });
+      }
+    }
     const { id } = req.params;
     const def = db.prepare('SELECT id, name FROM course_definitions WHERE id = ?').get(id);
     if (!def) {
@@ -354,6 +367,12 @@ router.get('/:id/batches', authenticateToken, (req, res) => {
 // ── 2. Get Single Course Definition by ID or Slug ──────────────────────────
 router.get('/:idOrSlug', authenticateToken, (req, res) => {
   try {
+    if (req.user.role === 'admin' && !isSuperAdmin(req.user)) {
+      const has = db.prepare('SELECT 1 FROM admin_permissions WHERE user_id = ? AND permission = ?').get(req.user.id, 'courses:view');
+      if (!has) {
+        return res.status(403).json({ error: "Access denied: missing required permission 'courses:view'", requiredPermission: 'courses:view' });
+      }
+    }
     const { idOrSlug } = req.params;
     let row;
     if (/^\d+$/.test(idOrSlug)) {
@@ -449,7 +468,7 @@ router.get('/:idOrSlug', authenticateToken, (req, res) => {
 });
 
 // ── 3. Create Draft Course Definition ──────────────────────────────────────
-router.post('/', authenticateToken, requireRole('admin'), (req, res) => {
+router.post('/', authenticateToken, requireRole('admin'), requirePermission('courses:create'), (req, res) => {
   try {
     const errors = validateCourseDefinitionPayload(req.body, false);
     if (errors.length > 0) {
@@ -492,26 +511,43 @@ router.post('/', authenticateToken, requireRole('admin'), (req, res) => {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?)
     `);
 
-    const result = stmt.run(
-      slug,
-      version,
-      name,
-      course_type,
-      description,
-      duration_value,
-      duration_unit,
-      phase_count,
-      JSON.stringify(fullDefinition),
-      req.user.id,
-      req.user.id
-    );
+    const createCourseTx = db.transaction(() => {
+      const result = stmt.run(
+        slug,
+        version,
+        name,
+        course_type,
+        description,
+        duration_value,
+        duration_unit,
+        phase_count,
+        JSON.stringify(fullDefinition),
+        req.user.id,
+        req.user.id
+      );
+
+      const newId = result.lastInsertRowid;
+      recordAuditEventFromReq(req, {
+        action: 'course.create',
+        module: 'courses',
+        resource: `course:${newId}`,
+        outcome: 'success',
+        afterState: { id: newId, name, slug, version },
+        details: { name, slug, version },
+        throwOnError: true
+      });
+
+      return { id: newId, slug, version, phase_count };
+    });
+
+    const created = createCourseTx();
 
     res.status(201).json({
       success: true,
-      id: result.lastInsertRowid,
-      slug,
-      version,
-      phase_count,
+      id: created.id,
+      slug: created.slug,
+      version: created.version,
+      phase_count: created.phase_count,
       status: 'draft',
       message: 'Draft course definition created successfully'
     });
@@ -522,7 +558,7 @@ router.post('/', authenticateToken, requireRole('admin'), (req, res) => {
 });
 
 // ── 4. Update Draft Course Definition ──────────────────────────────────────
-router.put('/:id', authenticateToken, requireRole('admin'), (req, res) => {
+router.put('/:id', authenticateToken, requireRole('admin'), requirePermission('courses:edit'), (req, res) => {
   try {
     const { id } = req.params;
     const existing = db.prepare('SELECT * FROM course_definitions WHERE id = ?').get(id);
@@ -559,29 +595,48 @@ router.put('/:id', authenticateToken, requireRole('admin'), (req, res) => {
       completionPolicy
     };
 
-    db.prepare(`
-      UPDATE course_definitions SET
-        name = ?,
-        course_type = ?,
-        description = ?,
-        duration_value = ?,
-        duration_unit = ?,
-        phase_count = ?,
-        definition_json = ?,
-        updated_by = ?,
-        updated_at = datetime('now', 'localtime')
-      WHERE id = ?
-    `).run(
-      name,
-      course_type,
-      description,
-      duration_value,
-      duration_unit,
-      phase_count,
-      JSON.stringify(fullDefinition),
-      req.user.id,
-      id
-    );
+    const updateCourseTx = db.transaction(() => {
+      const beforeState = { id: existing.id, name: existing.name, course_type: existing.course_type, phase_count: existing.phase_count, version: existing.version };
+
+      db.prepare(`
+        UPDATE course_definitions SET
+          name = ?,
+          course_type = ?,
+          description = ?,
+          duration_value = ?,
+          duration_unit = ?,
+          phase_count = ?,
+          definition_json = ?,
+          updated_by = ?,
+          updated_at = datetime('now', 'localtime')
+        WHERE id = ?
+      `).run(
+        name,
+        course_type,
+        description,
+        duration_value,
+        duration_unit,
+        phase_count,
+        JSON.stringify(fullDefinition),
+        req.user.id,
+        id
+      );
+
+      const afterState = { id: existing.id, name, course_type, phase_count, version: existing.version };
+
+      recordAuditEventFromReq(req, {
+        action: 'course.update',
+        module: 'courses',
+        resource: `course:${id}`,
+        outcome: 'success',
+        beforeState,
+        afterState,
+        details: { name, phase_count },
+        throwOnError: true
+      });
+    });
+
+    updateCourseTx();
 
     res.json({ success: true, message: 'Draft updated successfully' });
   } catch (err) {
@@ -590,8 +645,44 @@ router.put('/:id', authenticateToken, requireRole('admin'), (req, res) => {
   }
 });
 
+// ── 4b. Delete Draft Course Definition ────────────────────────────────────
+router.delete('/:id', authenticateToken, requireRole('admin'), requirePermission('courses:delete'), (req, res) => {
+  try {
+    const { id } = req.params;
+    const existing = db.prepare('SELECT * FROM course_definitions WHERE id = ?').get(id);
+
+    if (!existing) {
+      return res.status(404).json({ error: 'Course definition not found' });
+    }
+
+    if (existing.status === 'published') {
+      return res.status(403).json({ error: 'Cannot delete a published course definition. Published definitions are strictly immutable.' });
+    }
+
+    const deleteCourseTx = db.transaction(() => {
+      const beforeState = { id: existing.id, name: existing.name, slug: existing.slug, version: existing.version };
+      db.prepare('DELETE FROM course_definitions WHERE id = ?').run(id);
+      recordAuditEventFromReq(req, {
+        action: 'course.delete',
+        module: 'courses',
+        resource: `course:${id}`,
+        outcome: 'success',
+        beforeState,
+        details: { name: existing.name },
+        throwOnError: true
+      });
+    });
+
+    deleteCourseTx();
+    res.json({ success: true, message: 'Draft course definition deleted successfully' });
+  } catch (err) {
+    console.error('Error deleting draft course definition:', err);
+    res.status(500).json({ error: 'Failed to delete course definition' });
+  }
+});
+
 // ── 5. Publish Course Definition ───────────────────────────────────────────
-router.post('/:id/publish', authenticateToken, requireRole('admin'), (req, res) => {
+router.post('/:id/publish', authenticateToken, requireRole('admin'), requirePermission('courses:publish'), (req, res) => {
   try {
     const { id } = req.params;
     const existing = db.prepare('SELECT * FROM course_definitions WHERE id = ?').get(id);
@@ -627,14 +718,32 @@ router.post('/:id/publish', authenticateToken, requireRole('admin'), (req, res) 
     const maxVer = db.prepare('SELECT MAX(version) as maxV FROM course_definitions WHERE slug = ?').get(existing.slug);
     const publishedVersion = Math.max(existing.version, (maxVer?.maxV || 0));
 
-    db.prepare(`
-      UPDATE course_definitions SET
-        status = 'published',
-        version = ?,
-        updated_by = ?,
-        updated_at = datetime('now', 'localtime')
-      WHERE id = ?
-    `).run(publishedVersion, req.user.id, id);
+    const publishCourseTx = db.transaction(() => {
+      const beforeState = { id: existing.id, status: existing.status, version: existing.version };
+      db.prepare(`
+        UPDATE course_definitions SET
+          status = 'published',
+          version = ?,
+          updated_by = ?,
+          updated_at = datetime('now', 'localtime')
+        WHERE id = ?
+      `).run(publishedVersion, req.user.id, id);
+
+      const afterState = { id: existing.id, status: 'published', version: publishedVersion };
+
+      recordAuditEventFromReq(req, {
+        action: 'course.publish',
+        module: 'courses',
+        resource: `course:${id}`,
+        outcome: 'success',
+        beforeState,
+        afterState,
+        details: { slug: existing.slug, version: publishedVersion },
+        throwOnError: true
+      });
+    });
+
+    publishCourseTx();
 
     res.json({
       success: true,
@@ -682,6 +791,13 @@ router.put('/:id/routine', authenticateToken, (req, res) => {
     // Role & permission check: Authorized admins and moderators only
     if (req.user.role !== 'admin' && req.user.role !== 'moderator') {
       return res.status(403).json({ error: 'Only authorized administrators and moderators can modify class routines.' });
+    }
+
+    if (req.user.role === 'admin' && !isSuperAdmin(req.user)) {
+      const has = db.prepare('SELECT 1 FROM admin_permissions WHERE user_id = ? AND permission = ?').get(req.user.id, 'courses:edit');
+      if (!has) {
+        return res.status(403).json({ error: "Access denied: missing required permission 'courses:edit'", requiredPermission: 'courses:edit' });
+      }
     }
 
     if (req.user.role === 'moderator') {

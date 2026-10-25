@@ -1,7 +1,8 @@
+import { recordAuditEventFromReq } from '../services/auditLedgerService.js';
 import express from 'express';
 import XLSX from 'xlsx';
 import db from '../db/database.js';
-import { authenticateToken, requireRole, sanitizeInput } from '../middleware/auth.js';
+import { authenticateToken, requireRole, requirePermission, sanitizeInput } from '../middleware/auth.js';
 import { encryptMessageContent } from '../utils/messageCrypto.js';
 import { parseFeeDetails, getBatchFee, getFeeStatus, extractFeeAmounts } from '../utils/feeResolver.js';
 
@@ -207,7 +208,7 @@ function buildStudentDataset(filters = {}) {
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /api/admin/fee-tracker/students
 // ─────────────────────────────────────────────────────────────────────────────
-router.get('/fee-tracker/students', authenticateToken, requireRole('admin'), (req, res) => {
+router.get('/fee-tracker/students', authenticateToken, requireRole('admin'), requirePermission('finance:view'), (req, res) => {
   try {
     const filters = {
       status: req.query.status || '',
@@ -239,7 +240,7 @@ router.get('/fee-tracker/students', authenticateToken, requireRole('admin'), (re
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /api/admin/fee-tracker/send-reminder
 // ─────────────────────────────────────────────────────────────────────────────
-router.post('/fee-tracker/send-reminder', authenticateToken, requireRole('admin'), sanitizeInput, (req, res) => {
+router.post('/fee-tracker/send-reminder', authenticateToken, requireRole('admin'), requirePermission('finance:edit'), sanitizeInput, (req, res) => {
   try {
     const { student_id, course_name, due_amount, next_due_date } = req.body;
 
@@ -308,6 +309,16 @@ router.post('/fee-tracker/send-reminder', authenticateToken, requireRole('admin'
         `INSERT INTO fee_reminder_log (admin_id, student_user_id) VALUES (?, ?)`
       ).run(req.user.id, studentUserId);
 
+      recordAuditEventFromReq(req, {
+        action: 'finance.send_reminder',
+        module: 'finance',
+        resource: `student:${studentUserId}`,
+        targetUserId: studentUserId,
+        outcome: 'success',
+        details: { student_id, course_name, due_amount, next_due_date },
+        throwOnError: true
+      });
+
       return notification.lastInsertRowid;
     });
 
@@ -365,7 +376,7 @@ const checkQueryToken = (req, res, next) => {
   next();
 };
 
-router.get('/fee-tracker/export', checkQueryToken, authenticateToken, requireRole('admin'), (req, res) => {
+router.get('/fee-tracker/export', checkQueryToken, authenticateToken, requireRole('admin'), requirePermission('finance:view'), (req, res) => {
   try {
     const filters = {
       status: req.query.status || '',

@@ -1,0 +1,1477 @@
+import express from 'express';
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
+import db from '../db/database.js';
+import { 
+  authenticateToken, 
+  requireSuperAdmin, 
+  requireRole, 
+  requireRecentAuth, 
+  sanitizeInput, 
+  validateEmail, 
+  validatePassword,
+  sudoAuthLimiter
+} from '../middleware/auth.js';
+import { PERMISSION_MODULES, ALL_PERMISSIONS, PERMISSION_DEPENDENCY_MAP } from '../config/permissions.js';
+import { 
+  generateTotpSecret, 
+  encryptSecret, 
+  decryptSecret, 
+  verifyTotpCode, 
+  generateRecoveryCodes 
+} from '../utils/totp.js';
+import { getJwtSecret } from '../config/security.js';
+import { securityEvents } from '../utils/security-events.js';
+import { recordAuditLog, formatDhakaTimestamp, redactSensitiveData } from '../services/auditLedgerService.js';
+
+const router = express.Router();
+
+function safeJsonParse(str) {
+  if (!str || typeof str !== 'string') return str;
+  try {
+    return JSON.parse(str);
+  } catch {
+    return str;
+  }
+}
+
+/**
+ * Record a failed privileged action without leaking sensitive payload data
+ */
+function recordFailedAuditLog(actorId, targetUserId, action, reason, ipAddress) {
+  try {
+    recordAuditLog({
+      actorId: actorId || null,
+      targetUserId: targetUserId || null,
+      action: action.startsWith('failed_') ? action : `failed_${action}`,
+      module: 'admin_management',
+      outcome: 'failed',
+      details: { reason: String(reason || '').slice(0, 500) },
+      ipAddress: ipAddress || '',
+      throwOnError: false
+    });
+  } catch (err) {
+    console.error('Failed to write failure audit log:', err.message);
+  }
+}
+
+/**
+ * Validates permission arrays, ensures no unknown permissions exist,
+ * validates prerequisites/dependencies, and deduplicates.
+ */
+function validatePermissionsInput(permissions) {
+  if (!Array.isArray(permissions)) {
+    return { error: 'Permissions must be provided as an array.' };
+  }
+
+  // Deduplicate
+  const uniquePerms = [...new Set(permissions)];
+
+  // Validate unknown permissions
+  for (const p of uniquePerms) {
+    if (!ALL_PERMISSIONS.includes(p)) {
+      return { error: `Unknown permission: '${p}'.` };
+    }
+  }
+
+  // Validate dependencies
+  for (const p of uniquePerms) {
+    const requiredPrereq = PERMISSION_DEPENDENCY_MAP[p];
+    if (requiredPrereq && !uniquePerms.includes(requiredPrereq)) {
+      return { error: `Invalid permission combination: '${p}' requires prerequisite '${requiredPrereq}'.` };
+    }
+  }
+
+  return { permissions: uniquePerms };
+}
+
+// -----------------------------------------------------------------------------
+// Sudo Mode / Sensitive-Action Verification
+// -----------------------------------------------------------------------------
+
+router.post('/auth/verify-password', sudoAuthLimiter, authenticateToken, requireRole('admin'), sanitizeInput, (req, res) => {
+  try {
+    const { password } = req.body;
+    if (!password) {
+      recordFailedAuditLog(req.user.id, null, 'verify_password', 'Missing password', req.ip);
+      return res.status(400).json({ error: 'Password is required' });
+    }
+
+    if (!req.user.sessionId) {
+      recordFailedAuditLog(req.user.id, null, 'verify_password', 'Active session required', req.ip);
+      return res.status(400).json({ error: 'An active session is required for privileged action verification' });
+    }
+
+    const session = db.prepare('SELECT id FROM sessions WHERE id = ? AND user_id = ?').get(req.user.sessionId, req.user.id);
+    if (!session) {
+      recordFailedAuditLog(req.user.id, null, 'verify_password', 'Session invalid or expired', req.ip);
+      return res.status(401).json({ error: 'Invalid or expired session' });
+    }
+
+    const user = db.prepare('SELECT id, password_hash, token_version FROM users WHERE id = ?').get(req.user.id);
+    if (!user || !bcrypt.compareSync(password, user.password_hash)) {
+      recordFailedAuditLog(req.user.id, null, 'verify_password', 'Incorrect password', req.ip);
+      return res.status(401).json({ error: 'Incorrect password' });
+    }
+
+    // Set sudo verification timestamp on the active session
+    try {
+      db.prepare("UPDATE sessions SET sudo_verified_at = datetime('now'), last_activity = datetime('now') WHERE id = ?").run(req.user.sessionId);
+    } catch (err) {
+      console.error('Failed to update session sudo timestamp:', err.message);
+    }
+
+    // Issue a 15-minute sudo token bound strictly to the current session and token_version
+    const sudoToken = jwt.sign(
+      { 
+        id: req.user.id, 
+        sessionId: req.user.sessionId, 
+        token_version: user.token_version || 1, 
+        type: 'sudo' 
+      },
+      getJwtSecret(),
+      { expiresIn: '15m' }
+    );
+
+    const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+    res.json({ success: true, sudoToken, expiresAt });
+  } catch (err) {
+    console.error('Error in verify-password:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// -----------------------------------------------------------------------------
+// Privileged Session Management
+// -----------------------------------------------------------------------------
+
+// List active sessions for the current admin
+router.get('/sessions', authenticateToken, requireRole('admin'), (req, res) => {
+  try {
+    const sessions = db.prepare(`
+      SELECT id, ip_address, user_agent, created_at, last_activity, expires_at
+      FROM sessions
+      WHERE user_id = ? AND datetime(expires_at) > datetime('now')
+      ORDER BY datetime(COALESCE(last_activity, created_at)) DESC
+    `).all(req.user.id);
+
+    const result = sessions.map(s => ({
+      id: s.id,
+      ip_address: s.ip_address,
+      user_agent: s.user_agent,
+      created_at: s.created_at,
+      last_activity: s.last_activity || s.created_at,
+      expires_at: s.expires_at,
+      is_current: req.user.sessionId ? s.id === req.user.sessionId : false
+    }));
+
+    res.json({ sessions: result });
+  } catch (err) {
+    console.error('Error fetching sessions:', err);
+    res.status(500).json({ error: 'Failed to fetch sessions' });
+  }
+});
+
+// Revoke a specific session
+router.delete('/sessions/:id', authenticateToken, requireRole('admin'), (req, res) => {
+  try {
+    const sessionId = Number(req.params.id);
+    if (!Number.isInteger(sessionId) || sessionId <= 0) {
+      return res.status(400).json({ error: 'Invalid session ID' });
+    }
+
+    const session = db.prepare('SELECT id FROM sessions WHERE id = ? AND user_id = ?').get(sessionId, req.user.id);
+    if (!session) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    db.prepare('DELETE FROM sessions WHERE id = ?').run(sessionId);
+
+    // Notify connected sockets to disconnect
+    securityEvents.emit('revoke_session', { userId: req.user.id, sessionId });
+
+    recordAuditLog({
+      actorId: req.user.id,
+      targetUserId: req.user.id,
+      action: 'admin.revoke_session',
+      module: 'security',
+      resource: `session:${sessionId}`,
+      outcome: 'success',
+      details: { revoked_session_id: sessionId },
+      ipAddress: req.ip || '',
+      throwOnError: true
+    });
+
+    res.json({ success: true, message: 'Session revoked successfully' });
+  } catch (err) {
+    console.error('Error revoking session:', err);
+    res.status(500).json({ error: 'Failed to revoke session' });
+  }
+});
+
+// Revoke all other sessions
+router.post('/sessions/revoke-others', authenticateToken, requireRole('admin'), (req, res) => {
+  try {
+    if (!req.user.sessionId) {
+      return res.status(400).json({ error: 'Current session ID could not be identified' });
+    }
+
+    const deleteStmt = db.prepare('DELETE FROM sessions WHERE user_id = ? AND id != ?');
+    const result = deleteStmt.run(req.user.id, req.user.sessionId);
+
+    // Notify connected sockets to disconnect
+    securityEvents.emit('revoke_other_sessions', { userId: req.user.id, currentSessionId: req.user.sessionId });
+
+    // Record audit log
+    db.prepare(`
+      INSERT INTO admin_audit_logs (actor_id, target_user_id, action, details, ip_address)
+      VALUES (?, ?, 'revoke_other_sessions', ?, ?)
+    `).run(
+      req.user.id,
+      req.user.id,
+      JSON.stringify({ revoked_count: result.changes, preserved_session_id: req.user.sessionId }),
+      req.ip || ''
+    );
+
+    res.json({ success: true, message: `Revoked ${result.changes} other session(s)` });
+  } catch (err) {
+    console.error('Error revoking other sessions:', err);
+    res.status(500).json({ error: 'Failed to revoke other sessions' });
+  }
+});
+
+// -----------------------------------------------------------------------------
+// Privileged Multi-Factor Authentication (TOTP RFC 6238)
+// -----------------------------------------------------------------------------
+
+// Get MFA status for current admin
+router.get('/mfa/status', authenticateToken, requireRole('admin'), (req, res) => {
+  try {
+    const user = db.prepare('SELECT two_factor_enabled FROM users WHERE id = ?').get(req.user.id);
+    const countRow = db.prepare('SELECT COUNT(*) as remaining FROM admin_mfa_recovery_codes WHERE user_id = ? AND used = 0').get(req.user.id);
+
+    res.json({
+      mfaEnabled: Boolean(user?.two_factor_enabled),
+      recoveryCodesRemaining: countRow?.remaining || 0
+    });
+  } catch (err) {
+    console.error('Error fetching MFA status:', err);
+    res.status(500).json({ error: 'Failed to fetch MFA status' });
+  }
+});
+
+// Start MFA enrollment or re-enrollment (requires recent sudo auth + existing factor verification if already enrolled)
+router.post('/mfa/setup', authenticateToken, requireRole('admin'), requireRecentAuth, sanitizeInput, (req, res) => {
+  try {
+    const user = db.prepare('SELECT id, username, email, two_factor_enabled, two_factor_secret, last_totp_timestamp FROM users WHERE id = ?').get(req.user.id);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const isReplacement = user.two_factor_enabled === 1;
+
+    let recoveryCodeIdToConsume = null;
+    let totpStepToRecord = null;
+
+    if (isReplacement) {
+      const { currentCode, recoveryCode } = req.body || {};
+      if (!currentCode && !recoveryCode) {
+        recordFailedAuditLog(req.user.id, req.user.id, 'mfa_replace_setup', 'Existing factor verification required', req.ip);
+        return res.status(400).json({ 
+          error: 'Existing factor verification required to replace two-factor authentication. Please provide a current verification code or recovery code.',
+          code: 'EXISTING_FACTOR_REQUIRED'
+        });
+      }
+
+      if (currentCode) {
+        if (!user.two_factor_secret) {
+          return res.status(400).json({ error: 'MFA is not properly configured on your account.' });
+        }
+        const plainSecret = decryptSecret(user.two_factor_secret);
+        const verification = verifyTotpCode(plainSecret, currentCode, {
+          lastTimestamp: user.last_totp_timestamp || 0
+        });
+        if (!verification.valid) {
+          if (verification.reason === 'REPLAY_DETECTED') {
+            recordFailedAuditLog(req.user.id, req.user.id, 'mfa_replace_setup', 'TOTP replay detected in authorization', req.ip);
+            return res.status(400).json({ 
+              error: 'This verification code was already used. Please wait for a new code.', 
+              code: 'TOTP_REPLAY_DETECTED' 
+            });
+          }
+          recordFailedAuditLog(req.user.id, req.user.id, 'mfa_replace_setup', 'Invalid existing verification code', req.ip);
+          return res.status(400).json({ error: 'Invalid current verification code. Please check your existing authenticator app.' });
+        }
+        totpStepToRecord = verification.step;
+      } else if (recoveryCode) {
+        const cleanRecovery = String(recoveryCode).trim().toUpperCase();
+        const unusedCodes = db.prepare('SELECT id, code_hash FROM admin_mfa_recovery_codes WHERE user_id = ? AND used = 0').all(user.id);
+        for (const item of unusedCodes) {
+          if (bcrypt.compareSync(cleanRecovery, item.code_hash)) {
+            recoveryCodeIdToConsume = item.id;
+            break;
+          }
+        }
+        if (!recoveryCodeIdToConsume) {
+          recordFailedAuditLog(req.user.id, req.user.id, 'mfa_replace_setup', 'Invalid existing recovery code', req.ip);
+          return res.status(400).json({ error: 'Invalid or already used recovery code.' });
+        }
+      }
+    }
+
+    // Generate fresh 160-bit Base32 secret
+    const secretBase32 = generateTotpSecret(20);
+    const encrypted = encryptSecret(secretBase32);
+
+    // Generate 8 recovery codes
+    const plainRecoveryCodes = generateRecoveryCodes(8);
+    const recoveryHashes = plainRecoveryCodes.map(code => bcrypt.hashSync(code, 10));
+
+    // Save pending secret, recovery hashes, and session authorization as JSON payload.
+    // CRITICAL: Keep existing active credentials and remaining recovery codes intact until replacement enrollment is verified!
+    const pendingPayload = JSON.stringify({
+      secret: encrypted,
+      recoveryHashes,
+      authorizedSessionId: req.user.sessionId,
+      authorizedUserId: user.id,
+      authorizedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+      existingFactorVerified: isReplacement ? true : false,
+      isReplacement,
+      consumedFactorType: recoveryCodeIdToConsume ? 'recovery_code' : (totpStepToRecord ? 'totp' : null),
+      consumedRecoveryCodeId: recoveryCodeIdToConsume || null
+    });
+
+    const authorizeReplacementTx = db.transaction(() => {
+      if (isReplacement) {
+        if (recoveryCodeIdToConsume) {
+          // Atomically consume recovery code; ensure concurrency safety
+          const consumeRes = db.prepare(`
+            UPDATE admin_mfa_recovery_codes 
+            SET used = 1, used_at = datetime('now')
+            WHERE id = ? AND user_id = ? AND used = 0
+          `).run(recoveryCodeIdToConsume, user.id);
+
+          if (consumeRes.changes === 0) {
+            throw new Error('FACTOR_ALREADY_USED');
+          }
+        } else if (totpStepToRecord) {
+          // Record TOTP consumption; ensure timestamp hasn't advanced or been replayed
+          const totpRes = db.prepare(`
+            UPDATE users 
+            SET last_totp_timestamp = ?
+            WHERE id = ? AND (last_totp_timestamp IS NULL OR last_totp_timestamp < ?)
+          `).run(totpStepToRecord, user.id, totpStepToRecord);
+
+          if (totpRes.changes === 0) {
+            throw new Error('TOTP_REPLAY_DETECTED');
+          }
+        }
+      }
+
+      // Persist pending authorization payload; if user row is missing, throw to rollback factor consumption
+      const updateRes = db.prepare('UPDATE users SET pending_two_factor_secret = ? WHERE id = ?').run(pendingPayload, user.id);
+      if (updateRes.changes === 0) {
+        throw new Error('PERSIST_PENDING_FAILED');
+      }
+
+      if (isReplacement) {
+        db.prepare(`
+          INSERT INTO admin_audit_logs (actor_id, target_user_id, action, details, ip_address)
+          VALUES (?, ?, 'mfa_replace_authorized', ?, ?)
+        `).run(
+          req.user.id,
+          user.id,
+          JSON.stringify({
+            factor_type: recoveryCodeIdToConsume ? 'recovery_code' : 'totp',
+            authorized_session_id: req.user.sessionId
+          }),
+          req.ip || ''
+        );
+      }
+    });
+
+    try {
+      authorizeReplacementTx();
+    } catch (txErr) {
+      if (txErr.message === 'FACTOR_ALREADY_USED') {
+        recordFailedAuditLog(req.user.id, req.user.id, 'mfa_replace_setup', 'Recovery code already used (concurrency/replay)', req.ip);
+        return res.status(400).json({ error: 'This recovery code has already been used.', code: 'FACTOR_ALREADY_USED' });
+      }
+      if (txErr.message === 'TOTP_REPLAY_DETECTED') {
+        recordFailedAuditLog(req.user.id, req.user.id, 'mfa_replace_setup', 'TOTP replay detected in authorization', req.ip);
+        return res.status(400).json({ error: 'This verification code was already used. Please wait for a new code.', code: 'TOTP_REPLAY_DETECTED' });
+      }
+      throw txErr;
+    }
+
+    const otpauthUrl = `otpauth://totp/BFI%20Classroom:${encodeURIComponent(user.username)}?secret=${secretBase32}&issuer=BFI%20Classroom`;
+
+    res.json({
+      secret: secretBase32,
+      otpauthUrl,
+      recoveryCodes: plainRecoveryCodes,
+      isReplacement
+    });
+  } catch (err) {
+    console.error('Error initiating MFA setup:', err);
+    res.status(500).json({ error: 'Failed to initiate MFA setup' });
+  }
+});
+
+// Complete MFA enrollment by verifying the first code from the NEW secret
+router.post('/mfa/verify-setup', authenticateToken, requireRole('admin'), sanitizeInput, (req, res) => {
+  try {
+    const { code } = req.body;
+    if (!code) {
+      return res.status(400).json({ error: 'Verification code is required' });
+    }
+
+    const user = db.prepare('SELECT id, two_factor_enabled, pending_two_factor_secret, last_totp_timestamp FROM users WHERE id = ?').get(req.user.id);
+    if (!user || !user.pending_two_factor_secret) {
+      return res.status(400).json({ error: 'No MFA enrollment in progress. Please start setup again.' });
+    }
+
+    let parsed = null;
+    let pendingSecretEncrypted = user.pending_two_factor_secret;
+    let pendingRecoveryHashes = [];
+
+    try {
+      parsed = JSON.parse(user.pending_two_factor_secret);
+      if (parsed && parsed.secret) {
+        pendingSecretEncrypted = parsed.secret;
+        pendingRecoveryHashes = parsed.recoveryHashes || [];
+      }
+    } catch {
+      // Fallback for legacy plain encrypted secret format
+    }
+
+    // Enforce replacement security constraints if user already has MFA enabled or payload is a replacement
+    if (user.two_factor_enabled === 1 || parsed?.isReplacement) {
+      if (!parsed || parsed.existingFactorVerified !== true) {
+        recordFailedAuditLog(req.user.id, req.user.id, 'mfa_verify_setup', 'Existing factor verification required for replacement', req.ip);
+        return res.status(403).json({ 
+          error: 'Existing factor verification required to replace two-factor authentication.', 
+          code: 'EXISTING_FACTOR_NOT_VERIFIED' 
+        });
+      }
+
+      if (parsed.authorizedSessionId && parsed.authorizedSessionId !== req.user.sessionId) {
+        recordFailedAuditLog(req.user.id, req.user.id, 'mfa_verify_setup', 'Session mismatch on MFA replacement', req.ip);
+        return res.status(403).json({ 
+          error: 'MFA replacement must be completed from the specific session where it was authorized.', 
+          code: 'SESSION_MISMATCH' 
+        });
+      }
+
+      if (parsed.expiresAt && new Date(parsed.expiresAt) <= new Date()) {
+        recordFailedAuditLog(req.user.id, req.user.id, 'mfa_verify_setup', 'MFA replacement authorization expired', req.ip);
+        return res.status(400).json({ 
+          error: 'MFA replacement authorization has expired. Please authorize again.', 
+          code: 'REPLACEMENT_EXPIRED' 
+        });
+      }
+    }
+
+    // Verify code against the NEW secret (first code for this new secret enrollment)
+    const plainSecret = decryptSecret(pendingSecretEncrypted);
+    const verification = verifyTotpCode(plainSecret, code);
+
+    if (!verification.valid) {
+      recordFailedAuditLog(req.user.id, req.user.id, 'mfa_verify_setup', 'Invalid verification code', req.ip);
+      return res.status(400).json({ error: 'Invalid verification code. Please check your authenticator app.' });
+    }
+
+    const isReplacement = Boolean(user.two_factor_enabled === 1 || parsed?.isReplacement);
+
+    // Atomically commit MFA activation, replace recovery codes, revoke other sessions, and record audit log
+    const activateTx = db.transaction(() => {
+      db.prepare(`
+        UPDATE users 
+        SET two_factor_secret = ?,
+            pending_two_factor_secret = NULL,
+            two_factor_enabled = 1,
+            last_totp_timestamp = ?,
+            updated_at = datetime('now')
+        WHERE id = ?
+      `).run(pendingSecretEncrypted, verification.step, req.user.id);
+
+      // Replace old recovery codes with the new ones atomically upon verified enrollment
+      if (pendingRecoveryHashes.length > 0) {
+        db.prepare('DELETE FROM admin_mfa_recovery_codes WHERE user_id = ?').run(req.user.id);
+        const insertCode = db.prepare('INSERT INTO admin_mfa_recovery_codes (user_id, code_hash, used) VALUES (?, ?, 0)');
+        for (const hash of pendingRecoveryHashes) {
+          insertCode.run(req.user.id, hash);
+        }
+      }
+
+      // If replacing an existing factor: Revoke all OTHER sessions for this user and invalidate outstanding challenges
+      let revokedCount = 0;
+      if (isReplacement) {
+        if (req.user.sessionId) {
+          const deleteSessions = db.prepare('DELETE FROM sessions WHERE user_id = ? AND id != ?').run(req.user.id, req.user.sessionId);
+          revokedCount = deleteSessions.changes;
+        }
+
+        // Invalidate all outstanding login challenges for this user
+        db.prepare("UPDATE mfa_login_challenges SET consumed = 1, consumed_at = datetime('now') WHERE user_id = ? AND consumed = 0").run(req.user.id);
+      }
+
+      db.prepare(`
+        INSERT INTO admin_audit_logs (actor_id, target_user_id, action, details, ip_address)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(
+        req.user.id,
+        req.user.id,
+        isReplacement ? 'mfa_replaced' : 'mfa_enrolled',
+        JSON.stringify({ 
+          status: 'active', 
+          step: verification.step, 
+          is_replacement: isReplacement,
+          other_sessions_revoked: revokedCount 
+        }),
+        req.ip || ''
+      );
+
+      return { isReplacement, revokedCount };
+    });
+
+    const result = activateTx();
+
+    if (result.isReplacement && req.user.sessionId) {
+      // Disconnect all other active WebSockets for this user
+      securityEvents.emit('revoke_other_sessions', { userId: req.user.id, currentSessionId: req.user.sessionId });
+    }
+
+    res.json({ 
+      success: true, 
+      message: result.isReplacement 
+        ? 'Two-factor authentication successfully replaced. All other active sessions have been terminated for security.' 
+        : 'Two-factor authentication successfully enabled',
+      isReplacement: result.isReplacement,
+      otherSessionsRevoked: result.isReplacement
+    });
+  } catch (err) {
+    console.error('Error verifying MFA setup:', err);
+    res.status(500).json({ error: 'Failed to verify MFA setup' });
+  }
+});
+
+// Cancel MFA setup / replacement without modifying existing settings
+router.post('/mfa/cancel-setup', authenticateToken, requireRole('admin'), (req, res) => {
+  try {
+    db.prepare('UPDATE users SET pending_two_factor_secret = NULL WHERE id = ?').run(req.user.id);
+    res.json({ success: true, message: 'Two-factor setup has been cancelled. Existing settings remain unchanged.' });
+  } catch (err) {
+    console.error('Error cancelling MFA setup:', err);
+    res.status(500).json({ error: 'Failed to cancel MFA setup' });
+  }
+});
+
+// Disable MFA (requires recent sudo auth and factor verification if enrolled)
+router.post('/mfa/disable', authenticateToken, requireRole('admin'), requireRecentAuth, sanitizeInput, (req, res) => {
+  try {
+    const user = db.prepare('SELECT id, two_factor_enabled, two_factor_secret, last_totp_timestamp FROM users WHERE id = ?').get(req.user.id);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // If MFA is currently active, require factor verification (TOTP code or recovery code)
+    if (user.two_factor_enabled === 1) {
+      const { code, recoveryCode } = req.body || {};
+      if (!code && !recoveryCode) {
+        recordFailedAuditLog(req.user.id, req.user.id, 'mfa_disable', 'Missing MFA verification factor', req.ip);
+        return res.status(400).json({ error: 'Verification code or recovery code is required to disable two-factor authentication.' });
+      }
+
+      if (code) {
+        if (!user.two_factor_secret) {
+          return res.status(400).json({ error: 'MFA is not properly configured.' });
+        }
+        const plainSecret = decryptSecret(user.two_factor_secret);
+        const verification = verifyTotpCode(plainSecret, code, {
+          lastTimestamp: user.last_totp_timestamp || 0
+        });
+        if (!verification.valid) {
+          recordFailedAuditLog(req.user.id, req.user.id, 'mfa_disable', 'Invalid verification code', req.ip);
+          return res.status(400).json({ error: 'Invalid verification code.' });
+        }
+      } else if (recoveryCode) {
+        const cleanRecovery = String(recoveryCode).trim().toUpperCase();
+        const unusedCodes = db.prepare('SELECT id, code_hash FROM admin_mfa_recovery_codes WHERE user_id = ? AND used = 0').all(user.id);
+        let matchedId = null;
+        for (const item of unusedCodes) {
+          if (bcrypt.compareSync(cleanRecovery, item.code_hash)) {
+            matchedId = item.id;
+            break;
+          }
+        }
+        if (!matchedId) {
+          recordFailedAuditLog(req.user.id, req.user.id, 'mfa_disable', 'Invalid recovery code', req.ip);
+          return res.status(400).json({ error: 'Invalid or already used recovery code.' });
+        }
+        // Mark used recovery code
+        db.prepare("UPDATE admin_mfa_recovery_codes SET used = 1, used_at = datetime('now') WHERE id = ?").run(matchedId);
+      }
+    }
+
+    const disableTx = db.transaction(() => {
+      db.prepare(`
+        UPDATE users 
+        SET two_factor_secret = NULL,
+            pending_two_factor_secret = NULL,
+            two_factor_enabled = 0,
+            updated_at = datetime('now')
+        WHERE id = ?
+      `).run(req.user.id);
+
+      db.prepare('DELETE FROM admin_mfa_recovery_codes WHERE user_id = ?').run(req.user.id);
+
+      db.prepare(`
+        INSERT INTO admin_audit_logs (actor_id, target_user_id, action, details, ip_address)
+        VALUES (?, ?, 'mfa_disabled', ?, ?)
+      `).run(
+        req.user.id,
+        req.user.id,
+        JSON.stringify({ status: 'disabled' }),
+        req.ip || ''
+      );
+    });
+
+    disableTx();
+    res.json({ success: true, message: 'Two-factor authentication has been disabled' });
+  } catch (err) {
+    console.error('Error disabling MFA:', err);
+    res.status(500).json({ error: 'Failed to disable MFA' });
+  }
+});
+
+// -----------------------------------------------------------------------------
+// Administrator Accounts & Permissions Management
+// -----------------------------------------------------------------------------
+
+// 1. GET /api/admin/administrators - List all administrator accounts
+router.get('/administrators', authenticateToken, requireSuperAdmin, (req, res) => {
+  try {
+    const admins = db.prepare(`
+      SELECT u.id, u.username, u.email, u.first_name, u.last_name, u.profile_picture, u.is_active,
+             u.is_super_admin, u.permissions_version, u.last_login, u.created_at, u.created_by_admin_id,
+             c.username as creator_username, c.email as creator_email
+      FROM users u
+      LEFT JOIN users c ON c.id = u.created_by_admin_id
+      WHERE u.role = 'admin' AND u.deleted_at IS NULL
+      ORDER BY u.id ASC
+    `).all();
+
+    const getPerms = db.prepare('SELECT permission FROM admin_permissions WHERE user_id = ?');
+
+    const result = admins.map(a => {
+      const isSuper = Number(a.id) === 1 && Boolean(a.is_super_admin);
+      const permissions = isSuper ? ['*'] : getPerms.all(a.id).map(p => p.permission);
+      const creatorName = a.created_by_admin_id ? (a.creator_username || a.creator_email || `Admin #${a.created_by_admin_id}`) : 'Unknown/Legacy';
+      return {
+        ...a,
+        is_super_admin: isSuper ? 1 : 0,
+        isSuperAdmin: isSuper,
+        permissions_version: a.permissions_version || 1,
+        permissions,
+        creatorName,
+        creator: a.created_by_admin_id ? { id: a.created_by_admin_id, username: a.creator_username, email: a.creator_email } : { id: null, username: 'Unknown/Legacy', email: null },
+        created_at_dhaka: formatDhakaTimestamp(a.created_at),
+        last_login_dhaka: formatDhakaTimestamp(a.last_login)
+      };
+    });
+
+    res.json({ administrators: result });
+  } catch (err) {
+    console.error('Error fetching administrators:', err);
+    res.status(500).json({ error: 'Failed to fetch administrators' });
+  }
+});
+
+
+// 1B. GET /api/admin/administrators/accountability/summary - Server-derived KPI counts & creator attribution
+router.get('/administrators/accountability/summary', authenticateToken, requireSuperAdmin, (req, res) => {
+  try {
+    const { startDate, endDate, creatorId } = req.query;
+
+    const totalRow = db.prepare("SELECT COUNT(*) as total FROM users WHERE role = 'admin' AND deleted_at IS NULL").get();
+    const activeRow = db.prepare("SELECT COUNT(*) as active FROM users WHERE role = 'admin' AND deleted_at IS NULL AND is_active = 1").get();
+    const inactiveRow = db.prepare("SELECT COUNT(*) as inactive FROM users WHERE role = 'admin' AND deleted_at IS NULL AND is_active = 0").get();
+
+    const rangeConditions = ["role = 'admin'", "deleted_at IS NULL"];
+    const rangeParams = [];
+
+    if (startDate) {
+      rangeConditions.push("created_at >= ?");
+      rangeParams.push(startDate);
+    }
+    if (endDate) {
+      const endFormatted = endDate.length === 10 ? `${endDate} 23:59:59` : endDate;
+      rangeConditions.push("created_at <= ?");
+      rangeParams.push(endFormatted);
+    }
+    if (creatorId !== undefined && creatorId !== '') {
+      if (creatorId === 'null' || creatorId === 'legacy') {
+        rangeConditions.push("created_by_admin_id IS NULL");
+      } else {
+        rangeConditions.push("created_by_admin_id = ?");
+        rangeParams.push(Number(creatorId));
+      }
+    }
+
+    const rangeRow = db.prepare(`
+      SELECT COUNT(*) as range_count 
+      FROM users 
+      WHERE ${rangeConditions.join(' AND ')}
+    `).get(...rangeParams);
+
+    const creatorRows = db.prepare(`
+      SELECT 
+        u.created_by_admin_id as creator_id,
+        c.username as creator_username,
+        c.first_name as creator_first_name,
+        c.last_name as creator_last_name,
+        c.email as creator_email,
+        COUNT(u.id) as count
+      FROM users u
+      LEFT JOIN users c ON c.id = u.created_by_admin_id
+      WHERE u.role = 'admin' AND u.deleted_at IS NULL
+      GROUP BY u.created_by_admin_id
+      ORDER BY count DESC
+    `).all();
+
+    const creatorBreakdown = creatorRows.map(row => {
+      if (!row.creator_id) {
+        return {
+          creatorId: null,
+          creatorName: 'Unknown/Legacy',
+          creatorEmail: null,
+          count: row.count
+        };
+      }
+      const fullName = `${row.creator_first_name || ''} ${row.creator_last_name || ''}`.trim();
+      return {
+        creatorId: row.creator_id,
+        creatorName: fullName || row.creator_username || `Admin #${row.creator_id}`,
+        creatorUsername: row.creator_username,
+        creatorEmail: row.creator_email,
+        count: row.count
+      };
+    });
+
+    res.json({
+      total: totalRow?.total || 0,
+      active: activeRow?.active || 0,
+      inactive: inactiveRow?.inactive || 0,
+      rangeCount: rangeRow?.range_count || 0,
+      creators: creatorBreakdown
+    });
+  } catch (err) {
+    console.error('Error fetching accountability summary:', err);
+    res.status(500).json({ error: 'Failed to fetch accountability summary' });
+  }
+});
+
+// 1C. GET /api/admin/administrators/:id/accountability-profile - Deep accountability profile with dual timelines
+router.get('/administrators/:id/accountability-profile', authenticateToken, requireSuperAdmin, (req, res) => {
+  try {
+    const adminId = Number(req.params.id);
+    if (!Number.isInteger(adminId) || adminId <= 0) {
+      return res.status(400).json({ error: 'Invalid administrator ID' });
+    }
+
+    const admin = db.prepare(`
+      SELECT 
+        u.id, u.username, u.email, u.first_name, u.last_name, u.profile_picture,
+        u.role, u.is_active, u.is_super_admin, u.permissions_version, u.last_login,
+        u.created_at, u.updated_at, u.created_by_admin_id,
+        ap.whatsapp_number as phone_number, ap.full_name, ap.bio,
+        c.username as creator_username, c.email as creator_email,
+        c.first_name as creator_first_name, c.last_name as creator_last_name
+      FROM users u
+      LEFT JOIN admin_profiles ap ON ap.user_id = u.id
+      LEFT JOIN users c ON c.id = u.created_by_admin_id
+      WHERE u.id = ? AND u.role = 'admin' AND u.deleted_at IS NULL
+    `).get(adminId);
+
+    if (!admin) {
+      return res.status(404).json({ error: 'Administrator not found' });
+    }
+
+    const isSuper = Number(admin.id) === 1 && Boolean(admin.is_super_admin);
+    const getPerms = db.prepare('SELECT permission FROM admin_permissions WHERE user_id = ?');
+    const effectivePermissions = isSuper ? ['*'] : getPerms.all(adminId).map(p => p.permission);
+
+    // Creator Attribution
+    let creator = {
+      id: null,
+      name: 'Unknown/Legacy',
+      username: null,
+      email: null,
+      isLegacy: true
+    };
+    if (admin.created_by_admin_id) {
+      const creatorFullName = `${admin.creator_first_name || ''} ${admin.creator_last_name || ''}`.trim();
+      creator = {
+        id: admin.created_by_admin_id,
+        name: creatorFullName || admin.creator_username || `Admin #${admin.created_by_admin_id}`,
+        username: admin.creator_username,
+        email: admin.creator_email,
+        isLegacy: false
+      };
+    }
+
+    // Permission change history
+    const permissionHistory = db.prepare(`
+      SELECT l.id, l.actor_id, l.action, l.details, l.created_at, l.outcome,
+             u.username as actor_username, u.first_name as actor_first_name, u.last_name as actor_last_name
+      FROM admin_audit_logs l
+      LEFT JOIN users u ON u.id = l.actor_id
+      WHERE l.target_user_id = ? AND (
+        lower(l.action) LIKE '%perm%' OR lower(l.action) LIKE '%role%'
+      )
+      ORDER BY l.id DESC
+      LIMIT 50
+    `).all(adminId).map(row => ({
+      ...row,
+      dhaka_time: formatDhakaTimestamp(row.created_at),
+      details: typeof row.details === 'string' ? safeJsonParse(row.details) : row.details
+    }));
+
+    // Timeline 1: Actions performed BY this admin
+    const actionsPerformed = db.prepare(`
+      SELECT 
+        l.id, l.action, l.module, l.resource, l.outcome, l.details, l.ip_address,
+        l.correlation_id, l.created_at, l.before_state, l.after_state,
+        t.username as target_username
+      FROM admin_audit_logs l
+      LEFT JOIN users t ON t.id = l.target_user_id
+      WHERE l.actor_id = ?
+      ORDER BY l.id DESC
+      LIMIT 100
+    `).all(adminId).map(row => ({
+      ...row,
+      dhaka_time: formatDhakaTimestamp(row.created_at),
+      details: typeof row.details === 'string' ? safeJsonParse(row.details) : row.details,
+      before_state: typeof row.before_state === 'string' ? safeJsonParse(row.before_state) : row.before_state,
+      after_state: typeof row.after_state === 'string' ? safeJsonParse(row.after_state) : row.after_state
+    }));
+
+    // Timeline 2: Changes made TO this admin account
+    const changesReceived = db.prepare(`
+      SELECT 
+        l.id, l.actor_id, l.action, l.module, l.resource, l.outcome, l.details,
+        l.ip_address, l.correlation_id, l.created_at, l.before_state, l.after_state,
+        a.username as actor_username, a.first_name as actor_first_name, a.last_name as actor_last_name
+      FROM admin_audit_logs l
+      LEFT JOIN users a ON a.id = l.actor_id
+      WHERE l.target_user_id = ? AND (l.actor_id != ? OR l.actor_id IS NULL)
+      ORDER BY l.id DESC
+      LIMIT 100
+    `).all(adminId, adminId).map(row => ({
+      ...row,
+      dhaka_time: formatDhakaTimestamp(row.created_at),
+      details: typeof row.details === 'string' ? safeJsonParse(row.details) : row.details,
+      before_state: typeof row.before_state === 'string' ? safeJsonParse(row.before_state) : row.before_state,
+      after_state: typeof row.after_state === 'string' ? safeJsonParse(row.after_state) : row.after_state
+    }));
+
+    // Security history: Active sessions & security-related audit events
+    const activeSessions = db.prepare(`
+      SELECT id, ip_address, user_agent, created_at, expires_at
+      FROM sessions
+      WHERE user_id = ?
+      ORDER BY id DESC
+      LIMIT 20
+    `).all(adminId).map(s => ({
+      ...s,
+      created_at_dhaka: formatDhakaTimestamp(s.created_at),
+      expires_at_dhaka: formatDhakaTimestamp(s.expires_at)
+    }));
+
+    const mfaRow = db.prepare('SELECT two_factor_enabled FROM users WHERE id = ?').get(adminId);
+    const recoveryCountRow = db.prepare('SELECT COUNT(*) as count FROM admin_mfa_recovery_codes WHERE user_id = ? AND used = 0').get(adminId);
+
+    const securityAuditEvents = db.prepare(`
+      SELECT l.id, l.actor_id, l.action, l.module, l.resource, l.outcome, l.details, l.ip_address, l.created_at
+      FROM admin_audit_logs l
+      WHERE (l.target_user_id = ? OR l.actor_id = ?)
+        AND (
+          l.module = 'security'
+          OR lower(l.action) LIKE '%mfa%'
+          OR lower(l.action) LIKE '%session%'
+          OR lower(l.action) LIKE '%auth%'
+          OR lower(l.action) LIKE '%login%'
+          OR lower(l.action) LIKE '%password%'
+          OR lower(l.action) LIKE '%sudo%'
+          OR lower(l.action) LIKE '%token%'
+        )
+      ORDER BY l.id DESC
+      LIMIT 50
+    `).all(adminId, adminId).map(row => ({
+      ...row,
+      dhaka_time: formatDhakaTimestamp(row.created_at),
+      details: typeof row.details === 'string' ? safeJsonParse(row.details) : row.details
+    }));
+
+    res.json({
+      admin: {
+        id: admin.id,
+        username: admin.username,
+        email: admin.email,
+        firstName: admin.first_name,
+        lastName: admin.last_name,
+        fullName: admin.full_name || `${admin.first_name || ''} ${admin.last_name || ''}`.trim(),
+        role: admin.role,
+        isActive: Boolean(admin.is_active),
+        isSuperAdmin: isSuper,
+        createdAt: admin.created_at,
+        createdAtDhaka: formatDhakaTimestamp(admin.created_at),
+        lastLogin: admin.last_login,
+        lastLoginDhaka: formatDhakaTimestamp(admin.last_login),
+        creator
+      },
+      effectivePermissions,
+      permissionHistory,
+      actionsPerformedTimeline: actionsPerformed,
+      changesReceivedTimeline: changesReceived,
+      security: {
+        mfaEnabled: Boolean(mfaRow?.two_factor_enabled),
+        remainingRecoveryCodes: recoveryCountRow?.count || 0,
+        activeSessions,
+        events: securityAuditEvents
+      }
+    });
+  } catch (err) {
+    console.error('Error fetching accountability profile:', err);
+    res.status(500).json({ error: 'Failed to fetch administrator accountability profile' });
+  }
+});
+
+// 2. GET /api/admin/administrators/audit-logs - Searchable, paginated audit trail across all modules
+// Placed BEFORE /administrators/:id to prevent route shadowing
+router.get('/administrators/audit-logs', authenticateToken, requireSuperAdmin, (req, res) => {
+  try {
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 25));
+    const offset = (page - 1) * limit;
+    const search = String(req.query.search || '').trim().toLowerCase();
+    const actionFilter = String(req.query.action || '').trim().toLowerCase();
+    const moduleFilter = String(req.query.module || '').trim().toLowerCase();
+    const outcomeFilter = String(req.query.outcome || '').trim().toLowerCase();
+    const startDate = String(req.query.startDate || '').trim();
+    const endDate = String(req.query.endDate || '').trim();
+    const correlationId = String(req.query.correlationId || '').trim();
+    const actorId = parseInt(req.query.actorId, 10);
+    const targetUserId = parseInt(req.query.targetUserId, 10);
+
+    const conditions = [];
+    const params = [];
+
+    if (actionFilter && actionFilter !== 'all') {
+      conditions.push('lower(l.action) = ?');
+      params.push(actionFilter);
+    }
+
+    if (moduleFilter && moduleFilter !== 'all') {
+      conditions.push('lower(l.module) = ?');
+      params.push(moduleFilter);
+    }
+
+    if (outcomeFilter && outcomeFilter !== 'all') {
+      conditions.push('lower(l.outcome) = ?');
+      params.push(outcomeFilter);
+    }
+
+    if (startDate) {
+      conditions.push('l.created_at >= ?');
+      params.push(startDate);
+    }
+
+    if (endDate) {
+      const endFormatted = endDate.length === 10 ? `${endDate} 23:59:59` : endDate;
+      conditions.push('l.created_at <= ?');
+      params.push(endFormatted);
+    }
+
+    if (correlationId) {
+      conditions.push('l.correlation_id = ?');
+      params.push(correlationId);
+    }
+
+    if (Number.isInteger(actorId) && actorId > 0) {
+      conditions.push('l.actor_id = ?');
+      params.push(actorId);
+    }
+
+    if (Number.isInteger(targetUserId) && targetUserId > 0) {
+      conditions.push('l.target_user_id = ?');
+      params.push(targetUserId);
+    }
+
+    if (search) {
+      conditions.push(`(
+        lower(COALESCE(l.action, '')) LIKE ?
+        OR lower(COALESCE(l.details, '')) LIKE ?
+        OR lower(COALESCE(l.module, '')) LIKE ?
+        OR lower(COALESCE(l.resource, '')) LIKE ?
+        OR lower(COALESCE(u_actor.username, '')) LIKE ?
+        OR lower(COALESCE(u_actor.first_name || ' ' || u_actor.last_name, '')) LIKE ?
+        OR lower(COALESCE(u_target.username, '')) LIKE ?
+        OR lower(COALESCE(u_target.first_name || ' ' || u_target.last_name, '')) LIKE ?
+      )`);
+      const term = `%${search}%`;
+      params.push(term, term, term, term, term, term, term, term);
+    }
+
+    const whereClause = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+
+    const countRow = db.prepare(`
+      SELECT COUNT(*) as total
+      FROM admin_audit_logs l
+      LEFT JOIN users u_actor ON u_actor.id = l.actor_id
+      LEFT JOIN users u_target ON u_target.id = l.target_user_id
+      ${whereClause}
+    `).get(...params);
+
+    const total = countRow?.total || 0;
+
+    const logs = db.prepare(`
+      SELECT 
+        l.id, l.actor_id, l.target_user_id, l.action, l.module, l.resource, l.outcome,
+        l.correlation_id, l.details, l.ip_address, l.before_state, l.after_state, l.created_at,
+        u_actor.username as actor_username, u_actor.first_name as actor_first_name, u_actor.last_name as actor_last_name,
+        u_target.username as target_username, u_target.first_name as target_first_name, u_target.last_name as target_last_name
+      FROM admin_audit_logs l
+      LEFT JOIN users u_actor ON u_actor.id = l.actor_id
+      LEFT JOIN users u_target ON u_target.id = l.target_user_id
+      ${whereClause}
+      ORDER BY l.id DESC
+      LIMIT ? OFFSET ?
+    `).all(...params, limit, offset);
+
+    const formatted = logs.map(row => {
+      return {
+        ...row,
+        details: typeof row.details === 'string' ? safeJsonParse(row.details) : row.details,
+        before_state: typeof row.before_state === 'string' ? safeJsonParse(row.before_state) : row.before_state,
+        after_state: typeof row.after_state === 'string' ? safeJsonParse(row.after_state) : row.after_state,
+        dhaka_time: formatDhakaTimestamp(row.created_at)
+      };
+    });
+
+    res.json({
+      auditLogs: formatted,
+      logs: formatted,
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit)
+    });
+  } catch (err) {
+    console.error('Error fetching audit logs:', err);
+    res.status(500).json({ error: 'Failed to fetch audit logs' });
+  }
+});
+
+
+// 3. POST /api/admin/administrators - Create a new ordinary administrator (Atomic & Sudo Protected)
+router.post('/administrators', authenticateToken, requireSuperAdmin, requireRecentAuth, sanitizeInput, (req, res) => {
+  try {
+    const { username, email, password, firstName, lastName, permissions } = req.body;
+
+    if (!username || !email || !password || !firstName) {
+      recordFailedAuditLog(req.user.id, null, 'create_administrator', 'Missing required fields', req.ip);
+      return res.status(400).json({ error: 'Username, email, password, and first name are required.' });
+    }
+
+    const trimmedUsername = username.trim();
+    const trimmedEmail = email.trim().toLowerCase();
+
+    // Enforce administrative username convention
+    if (!trimmedUsername.toLowerCase().startsWith('admin@')) {
+      recordFailedAuditLog(req.user.id, null, 'create_administrator', 'Username must start with admin@', req.ip);
+      return res.status(400).json({ error: 'Administrator usernames must start with "admin@" (e.g., admin@john).' });
+    }
+
+    if (!validateEmail(trimmedEmail)) {
+      recordFailedAuditLog(req.user.id, null, 'create_administrator', 'Invalid email format', req.ip);
+      return res.status(400).json({ error: 'Please enter a valid email address.' });
+    }
+
+    if (!validatePassword(password)) {
+      recordFailedAuditLog(req.user.id, null, 'create_administrator', 'Password policy violation', req.ip);
+      return res.status(400).json({ 
+        error: 'Password must be at least 8 characters long and contain at least 1 uppercase letter, 1 lowercase letter, 1 number, and 1 special character.' 
+      });
+    }
+
+    // Check duplicate username or email
+    const existing = db.prepare(`
+      SELECT id, username, email FROM users 
+      WHERE username = ? COLLATE NOCASE OR email = ? COLLATE NOCASE
+    `).get(trimmedUsername, trimmedEmail);
+
+    if (existing) {
+      recordFailedAuditLog(req.user.id, null, 'create_administrator', 'Duplicate username or email', req.ip);
+      return res.status(409).json({ error: 'An account with this username or email already exists.' });
+    }
+
+    // Resolve permissions to assign
+    let permsToAssign = [];
+    if (permissions !== undefined) {
+      const validation = validatePermissionsInput(permissions);
+      if (validation.error) {
+        recordFailedAuditLog(req.user.id, null, 'create_administrator', validation.error, req.ip);
+        return res.status(400).json({ error: validation.error });
+      }
+      permsToAssign = validation.permissions;
+    } else {
+      const defs = db.prepare('SELECT permission FROM admin_default_permissions WHERE is_default = 1').all();
+      permsToAssign = defs.map(d => d.permission);
+    }
+
+    const passwordHash = bcrypt.hashSync(password, 10);
+
+    // Atomic transaction: account creation and audit write rollback together if anything fails
+    const createTx = db.transaction(() => {
+      const insertUser = db.prepare(`
+        INSERT INTO users (
+          username, email, password_hash, role, first_name, last_name, is_active, is_super_admin, token_version, permissions_version, created_by_admin_id
+        ) VALUES (
+          ?, ?, ?, 'admin', ?, ?, 1, 0, 1, 1, ?
+        )
+      `).run(trimmedUsername, trimmedEmail, passwordHash, firstName.trim(), (lastName || '').trim(), req.user.id);
+
+      const newUserId = insertUser.lastInsertRowid;
+
+      // Create admin profile record
+      db.prepare(`
+        INSERT INTO admin_profiles (user_id, full_name)
+        VALUES (?, ?)
+      `).run(newUserId, `${firstName.trim()} ${(lastName || '').trim()}`.trim());
+
+      // Assign modular permissions
+      const insertPerm = db.prepare(`
+        INSERT INTO admin_permissions (user_id, permission, granted_by)
+        VALUES (?, ?, ?)
+      `);
+      for (const perm of permsToAssign) {
+        insertPerm.run(newUserId, perm, req.user.id);
+      }
+
+      // Record audit log atomically via auditLedgerService
+      recordAuditLog({
+        actorId: req.user.id,
+        targetUserId: newUserId,
+        action: 'create_administrator',
+        module: 'admin_management',
+        resource: `admin:${newUserId}`,
+        outcome: 'success',
+        correlationId: req.correlationId,
+        details: {
+          username: trimmedUsername,
+          email: trimmedEmail,
+          firstName: firstName.trim(),
+          lastName: (lastName || '').trim(),
+          assigned_permissions: permsToAssign,
+          creator_id: req.user.id
+        },
+        afterState: {
+          id: newUserId,
+          username: trimmedUsername,
+          email: trimmedEmail,
+          permissions: permsToAssign
+        },
+        ipAddress: req.ip || '',
+        dbInstance: db
+      });
+
+      return {
+        id: newUserId,
+        username: trimmedUsername,
+        email: trimmedEmail,
+        firstName: firstName.trim(),
+        lastName: (lastName || '').trim(),
+        role: 'admin',
+        is_active: 1,
+        is_super_admin: 0,
+        isSuperAdmin: false,
+        permissions_version: 1,
+        permissions: permsToAssign,
+        created_by_admin_id: req.user.id,
+        creatorName: req.user.username || 'Super Admin',
+        creator: { id: req.user.id, username: req.user.username }
+      };
+    });
+
+    const newAdmin = createTx();
+    res.status(201).json({ success: true, message: 'Administrator created successfully', user: newAdmin, administrator: newAdmin });
+  } catch (err) {
+    console.error('Error creating administrator:', err);
+    res.status(500).json({ error: 'Failed to create administrator' });
+  }
+});
+
+// 4. GET /api/admin/administrators/:id - Fetch details and permissions of an administrator
+router.get('/administrators/:id', authenticateToken, requireSuperAdmin, (req, res) => {
+  try {
+    const adminId = Number(req.params.id);
+    if (!Number.isInteger(adminId) || adminId <= 0) {
+      return res.status(400).json({ error: 'Invalid administrator ID' });
+    }
+
+    const admin = db.prepare(`
+      SELECT id, username, email, first_name, last_name, profile_picture, is_active, is_super_admin, permissions_version, last_login, created_at
+      FROM users
+      WHERE id = ? AND role = 'admin' AND deleted_at IS NULL
+    `).get(adminId);
+
+    if (!admin) {
+      return res.status(404).json({ error: 'Administrator not found' });
+    }
+
+    const isSuper = Number(admin.id) === 1 && Boolean(admin.is_super_admin);
+    const permissions = isSuper
+      ? ['*']
+      : db.prepare('SELECT permission FROM admin_permissions WHERE user_id = ?').all(admin.id).map(p => p.permission);
+
+    res.json({
+      administrator: {
+        ...admin,
+        is_super_admin: isSuper ? 1 : 0,
+        isSuperAdmin: isSuper,
+        permissions_version: admin.permissions_version || 1,
+        permissions
+      }
+    });
+  } catch (err) {
+    console.error('Error fetching administrator details:', err);
+    res.status(500).json({ error: 'Failed to fetch administrator details' });
+  }
+});
+
+// 5. PUT /api/admin/administrators/:id/permissions - Update permissions (Atomic, Sudo Protected, Optimistic Locking)
+router.put('/administrators/:id/permissions', authenticateToken, requireSuperAdmin, requireRecentAuth, sanitizeInput, (req, res) => {
+  try {
+    const targetId = Number(req.params.id);
+    const { permissions, expected_version } = req.body;
+
+    const validation = validatePermissionsInput(permissions);
+    if (validation.error) {
+      recordFailedAuditLog(req.user.id, targetId, 'update_permissions', validation.error, req.ip);
+      return res.status(400).json({ error: validation.error });
+    }
+    const validPerms = validation.permissions;
+
+    // Protection: Super Admin inherent permissions cannot be modified
+    if (targetId === 1) {
+      recordFailedAuditLog(req.user.id, targetId, 'update_permissions', 'Attempted to modify Super Admin inherent permissions', req.ip);
+      return res.status(403).json({ error: 'Cannot modify Super Administrator inherent permissions.' });
+    }
+
+    const targetUser = db.prepare('SELECT id, username, role, permissions_version FROM users WHERE id = ? AND deleted_at IS NULL').get(targetId);
+    if (!targetUser || targetUser.role !== 'admin') {
+      return res.status(404).json({ error: 'Administrator not found.' });
+    }
+
+    // Optimistic Concurrency Control: detect stale form submissions
+    if (expected_version !== undefined && expected_version !== null) {
+      const currentVersion = Number(targetUser.permissions_version || 1);
+      if (Number(expected_version) !== currentVersion) {
+        recordFailedAuditLog(req.user.id, targetId, 'update_permissions', `Concurrency conflict: expected version ${expected_version} but found ${currentVersion}`, req.ip);
+        return res.status(409).json({ 
+          error: 'Conflict: Permissions were modified by another session. Please reload and review the current permissions before saving.',
+          code: 'CONCURRENCY_CONFLICT',
+          currentVersion
+        });
+      }
+    }
+
+    const updateTx = db.transaction(() => {
+      const oldPerms = db.prepare('SELECT permission FROM admin_permissions WHERE user_id = ?').all(targetId).map(p => p.permission);
+
+      // Replace permissions
+      db.prepare('DELETE FROM admin_permissions WHERE user_id = ?').run(targetId);
+
+      const insertPerm = db.prepare(`
+        INSERT INTO admin_permissions (user_id, permission, granted_by)
+        VALUES (?, ?, ?)
+      `);
+      for (const p of validPerms) {
+        insertPerm.run(targetId, p, req.user.id);
+      }
+
+      // Increment permissions_version
+      db.prepare("UPDATE users SET permissions_version = permissions_version + 1, updated_at = datetime('now') WHERE id = ?").run(targetId);
+
+      // Record audit log atomically
+      recordAuditLog({
+        actorId: req.user.id,
+        targetUserId: targetId,
+        action: 'admin.update_permissions',
+        module: 'admin_management',
+        resource: `admin:${targetId}`,
+        outcome: 'success',
+        correlationId: req.correlationId,
+        beforeState: { permissions: oldPerms },
+        afterState: { permissions: validPerms },
+        details: {
+          added: validPerms.filter(p => !oldPerms.includes(p)),
+          removed: oldPerms.filter(p => !validPerms.includes(p))
+        },
+        ipAddress: req.ip || '',
+        throwOnError: true
+      });
+
+      return validPerms;
+    });
+
+    const updatedPermissions = updateTx();
+    res.json({ message: 'Permissions updated successfully', permissions: updatedPermissions });
+  } catch (err) {
+    console.error('Error updating permissions:', err);
+    res.status(500).json({ error: 'Failed to update permissions' });
+  }
+});
+
+// 6. PATCH /api/admin/administrators/:id/status - Activate or deactivate administrator (Atomic, Session Revoking & Sudo Protected)
+router.patch('/administrators/:id/status', authenticateToken, requireSuperAdmin, requireRecentAuth, sanitizeInput, (req, res) => {
+  try {
+    const targetId = Number(req.params.id);
+    const { is_active } = req.body;
+
+    if (is_active !== 0 && is_active !== 1) {
+      recordFailedAuditLog(req.user.id, targetId, 'update_status', 'Invalid is_active value', req.ip);
+      return res.status(400).json({ error: 'is_active must be 0 or 1.' });
+    }
+
+    if (targetId === 1) {
+      recordFailedAuditLog(req.user.id, targetId, 'update_status', 'Attempted to deactivate Super Admin account', req.ip);
+      return res.status(403).json({ error: 'Cannot deactivate the Super Administrator account.' });
+    }
+
+    const targetUser = db.prepare('SELECT id, username, role, is_active FROM users WHERE id = ? AND deleted_at IS NULL').get(targetId);
+    if (!targetUser || targetUser.role !== 'admin') {
+      return res.status(404).json({ error: 'Administrator not found.' });
+    }
+
+    // Atomic transaction: Status change, token_version invalidation, session revocation, and audit log write
+    const updateStatusTx = db.transaction(() => {
+      // Bumping token_version guarantees that all previously issued access tokens are immediately rejected
+      db.prepare("UPDATE users SET is_active = ?, token_version = token_version + 1, updated_at = datetime('now') WHERE id = ?").run(is_active, targetId);
+
+      // Permanently revoke all active sessions on deactivation or reactivation
+      db.prepare('DELETE FROM sessions WHERE user_id = ?').run(targetId);
+      db.prepare("UPDATE mfa_login_challenges SET consumed = 1, consumed_at = datetime('now') WHERE user_id = ? AND consumed = 0").run(targetId);
+
+      // Record audit log atomically
+      recordAuditLog({
+        actorId: req.user.id,
+        targetUserId: targetId,
+        action: is_active === 1 ? 'activate_administrator' : 'deactivate_administrator',
+        module: 'admin_management',
+        resource: `admin:${targetId}`,
+        outcome: 'success',
+        correlationId: req.correlationId,
+        beforeState: { is_active: targetUser.is_active },
+        afterState: { is_active },
+        details: { previous_status: targetUser.is_active, new_status: is_active },
+        ipAddress: req.ip || '',
+        throwOnError: true
+      });
+    });
+
+    updateStatusTx();
+
+    // Disconnect active socket connections for the targeted user
+    securityEvents.emit('revoke_user', { userId: targetId });
+
+    res.json({
+      message: is_active === 1 ? 'Administrator activated successfully' : 'Administrator deactivated successfully',
+      is_active
+    });
+  } catch (err) {
+    console.error('Error updating administrator status:', err);
+    res.status(500).json({ error: 'Failed to update administrator status' });
+  }
+});
+
+// 7. GET /api/admin/permissions/catalog - Permission catalog and modules
+router.get('/permissions/catalog', authenticateToken, requireRole('admin'), (req, res) => {
+  res.json({
+    modules: PERMISSION_MODULES,
+    allPermissions: ALL_PERMISSIONS
+  });
+});
+
+// 8. GET /api/admin/permissions/defaults - Get configured default permissions for new admins
+router.get('/permissions/defaults', authenticateToken, requireSuperAdmin, (req, res) => {
+  try {
+    const rows = db.prepare('SELECT permission FROM admin_default_permissions WHERE is_default = 1').all();
+    const defaults = rows.map(r => r.permission);
+    // Provide both defaultPermissions and default_permissions for contract compatibility
+    res.json({ defaultPermissions: defaults, default_permissions: defaults });
+  } catch (err) {
+    console.error('Error fetching default permissions:', err);
+    res.status(500).json({ error: 'Failed to fetch default permissions' });
+  }
+});
+
+// 9. PUT /api/admin/permissions/defaults - Update configured default permissions for future admins (Atomic & Sudo Protected)
+router.put('/permissions/defaults', authenticateToken, requireSuperAdmin, requireRecentAuth, sanitizeInput, (req, res) => {
+  try {
+    const { permissions } = req.body;
+    const validation = validatePermissionsInput(permissions);
+    if (validation.error) {
+      recordFailedAuditLog(req.user.id, null, 'update_default_permissions', validation.error, req.ip);
+      return res.status(400).json({ error: validation.error });
+    }
+    const validPerms = validation.permissions;
+
+    const updateDefaultsTx = db.transaction(() => {
+      const oldDefaults = db.prepare('SELECT permission FROM admin_default_permissions WHERE is_default = 1').all().map(r => r.permission);
+
+      db.prepare('UPDATE admin_default_permissions SET is_default = 0').run();
+
+      const setDef = db.prepare(`
+        UPDATE admin_default_permissions 
+        SET is_default = 1, updated_by = ?, updated_at = datetime('now')
+        WHERE permission = ?
+      `);
+      for (const p of validPerms) {
+        setDef.run(req.user.id, p);
+      }
+
+      // Record audit log atomically
+      recordAuditLog({
+        actorId: req.user.id,
+        action: 'admin.update_default_permissions',
+        module: 'admin_management',
+        resource: 'permissions:defaults',
+        outcome: 'success',
+        correlationId: req.correlationId,
+        beforeState: { default_permissions: oldDefaults },
+        afterState: { default_permissions: validPerms },
+        ipAddress: req.ip || '',
+        throwOnError: true
+      });
+
+      return validPerms;
+    });
+
+    const newDefaults = updateDefaultsTx();
+    // Provide both defaultPermissions and default_permissions for contract compatibility
+    res.json({ 
+      message: 'Default permissions updated successfully', 
+      defaultPermissions: newDefaults,
+      default_permissions: newDefaults
+    });
+  } catch (err) {
+    console.error('Error updating default permissions:', err);
+    res.status(500).json({ error: 'Failed to update default permissions' });
+  }
+});
+
+export default router;

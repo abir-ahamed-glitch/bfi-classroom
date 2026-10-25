@@ -48,7 +48,7 @@ export function createFeeResolverContext(customDb = null) {
       let parsed = null;
       try {
         parsed = typeof d.definition_json === 'string' ? JSON.parse(d.definition_json) : d.definition_json;
-      } catch {}
+      } catch { /* ignore */ }
       definitionById.set(d.id, { ...d, parsed });
     }
 

@@ -248,7 +248,9 @@ export default function PublicProfile() {
   };
 
   const getRoleDisplay = () => {
-    if (role === 'admin') return 'Administrator';
+    if (role === 'admin') {
+      return (profile?.is_super_admin || profile?.isSuperAdmin) ? 'Super Admin' : 'Administrator';
+    }
     if (role === 'instructor') return 'Teacher';
     if (role === 'student') return batch_number ? `Student - ${getOrdinalSuffix(batch_number)} Batch` : 'Student';
     return role;

@@ -5,7 +5,8 @@ import { logTrashAction } from '../utils/trashLogger.js';
 import multer from 'multer';
 import { fileURLToPath } from 'url';
 import db from '../db/database.js';
-import { authenticateToken, requireRole, sanitizeInput } from '../middleware/auth.js';
+import { authenticateToken, requireRole, requirePermission, isSuperAdmin, sanitizeInput } from '../middleware/auth.js';
+import { recordAuditEventFromReq, recordAuditLog } from '../services/auditLedgerService.js';
 import { optimizeUploadedImage } from '../utils/imageOptimizer.js';
 import { encryptMessageContent } from '../utils/messageCrypto.js';
 
@@ -61,7 +62,15 @@ const broadcastUpload = multer({
 function broadcastAuth(req, res, next) {
   if (!req.user) return res.status(401).json({ error: 'Authentication required' });
 
-  if (req.user.role === 'admin') return next();
+  if (req.user.role === 'admin') {
+    if (isSuperAdmin(req.user)) return next();
+    const required = req.method === 'GET' ? 'communications:view' : 'communications:send';
+    const hasPerm = db.prepare('SELECT 1 FROM admin_permissions WHERE user_id = ? AND permission = ?').get(req.user.id, required);
+    if (!hasPerm) {
+      return res.status(403).json({ error: `Access denied: missing required permission '${required}'`, requiredPermission: required });
+    }
+    return next();
+  }
 
   if (req.user.role === 'instructor') {
     const permission = db.prepare(`
@@ -297,6 +306,25 @@ export async function deliverBroadcast(broadcastId, students, io) {
     WHERE id = ?
   `).run(finalStatus, deliveredCount, failedCount, broadcastId);
 
+  try {
+    recordAuditLog({
+      actorId: broadcast.sender_id,
+      action: finalStatus === 'sent' ? 'broadcast.delivery_completed' : 'broadcast.delivery_failed',
+      module: 'broadcasts',
+      resource: `broadcast:${broadcastId}`,
+      outcome: finalStatus === 'sent' ? 'success' : 'failed',
+      details: {
+        totalRecipients: students.length,
+        deliveredCount,
+        failedCount,
+        finalStatus
+      },
+      throwOnError: false
+    });
+  } catch (deliveryAuditErr) {
+    console.error('[Broadcast Audit Error] Failed to log delivery completion:', deliveryAuditErr.message);
+  }
+
   console.log(`[Broadcast #${broadcastId}] Complete. Delivered: ${deliveredCount}, Failed: ${failedCount}`);
 }
 
@@ -344,7 +372,7 @@ router.get('/file/base64', (req, res) => {
 });
 
 // ── Endpoint 11: Teacher Permission Management (MUST come before /:id routes) ──
-router.get('/permissions', authenticateToken, requireRole('admin'), (req, res) => {
+router.get('/permissions', authenticateToken, requireRole('admin'), requirePermission('communications:view'), (req, res) => {
   try {
     const teachers = db.prepare(`
       SELECT u.id, u.first_name, u.last_name, u.profile_picture,
@@ -528,6 +556,16 @@ router.post('/', authenticateToken, broadcastAuth, sanitizeInput, (req, res) => 
       }
     }
 
+    recordAuditEventFromReq(req, {
+      action: 'broadcast.create',
+      module: 'broadcasts',
+      resource: `broadcast:${broadcastId}`,
+      outcome: 'success',
+      afterState: { id: broadcastId, title, audience_type, priority, status },
+      details: { title, audience_type, audience_value, status },
+      throwOnError: true
+    });
+
     const broadcast = db.prepare('SELECT * FROM broadcasts WHERE id = ?').get(broadcastId);
     res.status(201).json({ broadcast });
   } catch (error) {
@@ -558,9 +596,32 @@ router.post('/:id/send', authenticateToken, broadcastAuth, async (req, res) => {
       return res.status(400).json({ error: 'No students found for the selected audience' });
     }
 
-    db.prepare(`
-      UPDATE broadcasts SET status = 'sending', total_recipients = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
-    `).run(students.length, broadcast.id);
+    recordAuditEventFromReq(req, {
+      action: 'broadcast.send_attempted',
+      module: 'broadcasts',
+      resource: `broadcast:${broadcast.id}`,
+      outcome: 'success',
+      details: { title: broadcast.title, audience_type: broadcast.audience_type, recipientCount: students.length },
+      throwOnError: true
+    });
+
+    const sendTx = db.transaction(() => {
+      db.prepare(`
+        UPDATE broadcasts SET status = 'sending', total_recipients = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
+      `).run(students.length, broadcast.id);
+
+      recordAuditEventFromReq(req, {
+        action: 'broadcast.send',
+        module: 'broadcasts',
+        resource: `broadcast:${broadcast.id}`,
+        outcome: 'success',
+        beforeState: { id: broadcast.id, status: broadcast.status },
+        afterState: { id: broadcast.id, status: 'sending', total_recipients: students.length },
+        details: { title: broadcast.title, recipientCount: students.length },
+        throwOnError: true
+      });
+    });
+    sendTx();
 
     res.json({
       success: true,
@@ -603,7 +664,7 @@ router.post('/:id/send', authenticateToken, broadcastAuth, async (req, res) => {
 
 
 // ── Endpoint 5: Schedule Broadcast ───────────────────────────────────────────
-router.post('/:id/schedule', authenticateToken, requireRole('admin'), (req, res) => {
+router.post('/:id/schedule', authenticateToken, requireRole('admin'), requirePermission('communications:schedule'), (req, res) => {
   try {
     const { scheduled_at } = req.body;
     if (!scheduled_at) return res.status(400).json({ error: 'scheduled_at is required' });
@@ -617,9 +678,24 @@ router.post('/:id/schedule', authenticateToken, requireRole('admin'), (req, res)
     if (broadcast.status !== 'draft') {
       return res.status(400).json({ error: 'Only draft broadcasts can be scheduled' });
     }
-    db.prepare(`
-      UPDATE broadcasts SET status = 'scheduled', scheduled_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
-    `).run(scheduled_at, broadcast.id);
+    const scheduleTx = db.transaction(() => {
+      db.prepare(`
+        UPDATE broadcasts SET status = 'scheduled', scheduled_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
+      `).run(scheduled_at, broadcast.id);
+
+      recordAuditEventFromReq(req, {
+        action: 'broadcast.schedule',
+        module: 'broadcasts',
+        resource: `broadcast:${broadcast.id}`,
+        outcome: 'success',
+        beforeState: { id: broadcast.id, status: broadcast.status, scheduled_at: broadcast.scheduled_at },
+        afterState: { id: broadcast.id, status: 'scheduled', scheduled_at },
+        details: { title: broadcast.title, scheduled_at },
+        throwOnError: true
+      });
+    });
+    scheduleTx();
+
     const updated = db.prepare('SELECT * FROM broadcasts WHERE id = ?').get(broadcast.id);
     res.json({ broadcast: updated });
   } catch (error) {
@@ -629,16 +705,31 @@ router.post('/:id/schedule', authenticateToken, requireRole('admin'), (req, res)
 });
 
 // ── Endpoint 6: Cancel Scheduled ─────────────────────────────────────────────
-router.post('/:id/cancel', authenticateToken, requireRole('admin'), (req, res) => {
+router.post('/:id/cancel', authenticateToken, requireRole('admin'), requirePermission('communications:delete'), (req, res) => {
   try {
     const broadcast = db.prepare('SELECT * FROM broadcasts WHERE id = ?').get(req.params.id);
     if (!broadcast) return res.status(404).json({ error: 'Broadcast not found' });
     if (broadcast.status !== 'scheduled') {
       return res.status(400).json({ error: 'Only scheduled broadcasts can be cancelled' });
     }
-    db.prepare(`
-      UPDATE broadcasts SET status = 'draft', scheduled_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?
-    `).run(broadcast.id);
+    const cancelTx = db.transaction(() => {
+      db.prepare(`
+        UPDATE broadcasts SET status = 'draft', scheduled_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?
+      `).run(broadcast.id);
+
+      recordAuditEventFromReq(req, {
+        action: 'broadcast.cancel',
+        module: 'broadcasts',
+        resource: `broadcast:${broadcast.id}`,
+        outcome: 'success',
+        beforeState: { id: broadcast.id, status: broadcast.status, scheduled_at: broadcast.scheduled_at },
+        afterState: { id: broadcast.id, status: 'draft', scheduled_at: null },
+        details: { title: broadcast.title },
+        throwOnError: true
+      });
+    });
+    cancelTx();
+
     const updated = db.prepare('SELECT * FROM broadcasts WHERE id = ?').get(broadcast.id);
     res.json({ broadcast: updated });
   } catch (error) {
@@ -702,7 +793,7 @@ router.get('/search-students', authenticateToken, broadcastAuth, (req, res) => {
 });
 
 // ── Endpoint 8: Bulk Delete (MUST be before /:id routes) ─────────────────────
-router.post('/bulk-delete', authenticateToken, requireRole('admin'), (req, res) => {
+router.post('/bulk-delete', authenticateToken, requireRole('admin'), requirePermission('communications:delete'), (req, res) => {
   try {
     const { items } = req.body;
     if (!items || !Array.isArray(items) || items.length === 0) {
@@ -836,7 +927,7 @@ router.get('/:id', authenticateToken, broadcastAuth, (req, res) => {
 });
 
 // ── Endpoint 9: Retry Failed Deliveries ──────────────────────────────────────
-router.post('/:id/retry', authenticateToken, requireRole('admin'), async (req, res) => {
+router.post('/:id/retry', authenticateToken, requireRole('admin'), requirePermission('communications:send'), async (req, res) => {
   try {
     const broadcast = db.prepare('SELECT * FROM broadcasts WHERE id = ?').get(req.params.id);
     if (!broadcast) return res.status(404).json({ error: 'Broadcast not found' });
@@ -851,18 +942,33 @@ router.post('/:id/retry', authenticateToken, requireRole('admin'), async (req, r
       return res.json({ message: 'No failed recipients to retry' });
     }
 
-    db.prepare(`
-      DELETE FROM broadcast_recipients
-      WHERE broadcast_id = ?
-        AND inbox_delivered = 0 AND notification_delivered = 0 AND notice_delivered = 0
-    `).run(broadcast.id);
-
     const studentIds = failedRecipients.map(r => r.student_id);
     const students = db.prepare(
       `SELECT u.id, u.first_name, u.last_name, sp.batch_number
        FROM users u LEFT JOIN student_profiles sp ON sp.user_id = u.id
        WHERE u.id IN (${studentIds.map(() => '?').join(',')})`
     ).all(...studentIds);
+
+    const retryTx = db.transaction(() => {
+      db.prepare(`
+        DELETE FROM broadcast_recipients
+        WHERE broadcast_id = ?
+          AND inbox_delivered = 0 AND notification_delivered = 0 AND notice_delivered = 0
+      `).run(broadcast.id);
+
+      recordAuditEventFromReq(req, {
+        action: 'broadcast.retry',
+        module: 'broadcasts',
+        resource: `broadcast:${broadcast.id}`,
+        outcome: 'success',
+        details: {
+          broadcastId: broadcast.id,
+          retryRecipientsCount: students.length
+        },
+        throwOnError: true
+      });
+    });
+    retryTx();
 
     res.json({ message: `Retrying delivery to ${students.length} students...` });
 
@@ -879,19 +985,33 @@ router.post('/:id/retry', authenticateToken, requireRole('admin'), async (req, r
 });
 
 // ── Endpoint 10: Delete/Unsend Broadcast (any status for admin) ─────────────
-router.delete('/:id', authenticateToken, requireRole('admin'), (req, res) => {
+router.delete('/:id', authenticateToken, requireRole('admin'), requirePermission('communications:delete'), (req, res) => {
   try {
     const broadcast = db.prepare('SELECT * FROM broadcasts WHERE id = ?').get(req.params.id);
     if (!broadcast) return res.status(404).json({ error: 'Broadcast not found' });
     
-    // Soft-delete the broadcast itself (move to trash)
-    db.prepare("UPDATE broadcasts SET deleted_at = datetime('now'), deleted_by_admin_id = ? WHERE id = ?").run(req.user.id, broadcast.id);
-    logTrashAction('broadcasts', broadcast.id, broadcast.title, 'deleted', req.user.id);
+    const deleteTx = db.transaction(() => {
+      // Soft-delete the broadcast itself (move to trash)
+      db.prepare("UPDATE broadcasts SET deleted_at = datetime('now'), deleted_by_admin_id = ? WHERE id = ?").run(req.user.id, broadcast.id);
+      logTrashAction('broadcasts', broadcast.id, broadcast.title, 'deleted', req.user.id);
 
-    // Delete/unsend delivered messages, announcements, and notifications for all users
-    db.prepare("DELETE FROM messages WHERE broadcast_id = ?").run(broadcast.id);
-    db.prepare("DELETE FROM announcements WHERE broadcast_id = ?").run(broadcast.id);
-    db.prepare("DELETE FROM notifications WHERE broadcast_id = ?").run(broadcast.id);
+      // Delete/unsend delivered messages, announcements, and notifications for all users
+      db.prepare("DELETE FROM messages WHERE broadcast_id = ?").run(broadcast.id);
+      db.prepare("DELETE FROM announcements WHERE broadcast_id = ?").run(broadcast.id);
+      db.prepare("DELETE FROM notifications WHERE broadcast_id = ?").run(broadcast.id);
+
+      recordAuditEventFromReq(req, {
+        action: 'broadcast.delete',
+        module: 'broadcasts',
+        resource: `broadcast:${broadcast.id}`,
+        outcome: 'success',
+        beforeState: { id: broadcast.id, title: broadcast.title, status: broadcast.status },
+        afterState: { id: broadcast.id, status: 'deleted' },
+        details: { title: broadcast.title },
+        throwOnError: true
+      });
+    });
+    deleteTx();
 
     // Emit Socket.io event for real-time unsend
     const io = req.app.get('io');
@@ -907,19 +1027,13 @@ router.delete('/:id', authenticateToken, requireRole('admin'), (req, res) => {
 });
 
 // ── Endpoint 11: Retry Single Failed Delivery ───────────────────────────────
-router.post('/:id/retry-single', authenticateToken, requireRole('admin'), async (req, res) => {
+router.post('/:id/retry-single', authenticateToken, requireRole('admin'), requirePermission('communications:send'), async (req, res) => {
   try {
     const broadcast = db.prepare('SELECT * FROM broadcasts WHERE id = ?').get(req.params.id);
     if (!broadcast) return res.status(404).json({ error: 'Broadcast not found' });
 
     const { student_id } = req.body;
     if (!student_id) return res.status(400).json({ error: 'student_id is required' });
-
-    // Delete or reset the previous recipient entry
-    db.prepare(`
-      DELETE FROM broadcast_recipients
-      WHERE broadcast_id = ? AND student_id = ?
-    `).run(broadcast.id, student_id);
 
     const student = db.prepare(`
       SELECT u.id, u.first_name, u.last_name, sp.batch_number
@@ -929,6 +1043,27 @@ router.post('/:id/retry-single', authenticateToken, requireRole('admin'), async 
     `).get(student_id);
 
     if (!student) return res.status(404).json({ error: 'Student not found' });
+
+    const retrySingleTx = db.transaction(() => {
+      db.prepare(`
+        DELETE FROM broadcast_recipients
+        WHERE broadcast_id = ? AND student_id = ?
+      `).run(broadcast.id, student_id);
+
+      recordAuditEventFromReq(req, {
+        action: 'broadcast.retry_student',
+        module: 'broadcasts',
+        resource: `broadcast:${broadcast.id}`,
+        targetUserId: student.id,
+        outcome: 'success',
+        details: {
+          broadcastId: broadcast.id,
+          studentId: student.id
+        },
+        throwOnError: true
+      });
+    });
+    retrySingleTx();
 
     res.json({ success: true, message: 'Retrying delivery...' });
 

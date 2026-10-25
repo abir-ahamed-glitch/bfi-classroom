@@ -139,6 +139,15 @@ export default function CourseMaterialsManager() {
   const [customSubjects, setCustomSubjects] = useState([]);
   const fileRef = useRef(null);
 
+  const handleFileSelect = (selectedFile) => {
+    if (!selectedFile) return;
+    if (isVideoFile(selectedFile)) {
+      alert('Direct video uploads are disabled. Please use "External URL" to share a video link instead.');
+      return;
+    }
+    setFile(selectedFile);
+  };
+
   const token = localStorage.getItem('token');
   const headers = { Authorization: `Bearer ${token}` };
 

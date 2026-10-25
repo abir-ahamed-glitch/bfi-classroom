@@ -40,6 +40,7 @@ import Analytics from './pages/admin/Analytics';
 import Reports from './pages/admin/Reports';
 import AdditionalOptions from './pages/admin/AdditionalOptions';
 import CourseMaker from './pages/admin/CourseMaker';
+import AdminManagement from './pages/admin/AdminManagement';
 import BroadcastManager from './pages/admin/BroadcastManager';
 import Certificates from './pages/Certificates';
 import StudentPortal from './pages/StudentPortal';
@@ -52,7 +53,7 @@ import NotificationToast from './components/NotificationToast';
 
 
 // Protected Route Wrapper
-const ProtectedRoute = ({ children, requiredRole }) => {
+const ProtectedRoute = ({ children, requiredRole, requireSuperAdmin = false, requiredPermission = null, requiredAnyPermission = null }) => {
   const { currentUser, loading } = useAuth();
 
   if (loading) {
@@ -69,6 +70,22 @@ const ProtectedRoute = ({ children, requiredRole }) => {
 
   if (requiredRole && !requiredRole.includes(currentUser.role)) {
     return <Navigate to="/" replace />;
+  }
+
+  const isSuperAdminUser = Boolean(currentUser?.is_super_admin || currentUser?.isSuperAdmin || currentUser?.permissions?.includes('*'));
+
+  if (requireSuperAdmin && !isSuperAdminUser) {
+    return <Navigate to="/" replace />;
+  }
+
+  if (currentUser.role === 'admin' && !isSuperAdminUser) {
+    const userPerms = Array.isArray(currentUser.permissions) ? currentUser.permissions : [];
+    if (requiredPermission && !userPerms.includes(requiredPermission)) {
+      return <Navigate to="/" replace />;
+    }
+    if (requiredAnyPermission && !requiredAnyPermission.some(p => userPerms.includes(p))) {
+      return <Navigate to="/" replace />;
+    }
   }
 
   return children;
@@ -356,41 +373,41 @@ function App() {
             </ProtectedRoute>
           } />
            <Route path="/admin/studentsmanager" element={
-            <ProtectedRoute requiredRole={['admin']}>
+            <ProtectedRoute requiredRole={['admin']} requiredPermission="students:view">
               <Layout><StudentManager /></Layout>
             </ProtectedRoute>
           } />
           <Route path="/admin/students" element={<Navigate to="/admin/studentsmanager" replace />} />
           <Route path="/admin/batchmanager" element={
-            <ProtectedRoute requiredRole={['admin']}>
+            <ProtectedRoute requiredRole={['admin']} requiredPermission="batches:view">
               <Layout><BatchManager /></Layout>
             </ProtectedRoute>
           } />
           <Route path="/admin/batchmanager/:slug" element={
-            <ProtectedRoute requiredRole={['admin']}>
+            <ProtectedRoute requiredRole={['admin']} requiredPermission="batches:view">
               <Layout><BatchDetail /></Layout>
             </ProtectedRoute>
           } />
           <Route path="/admin/batches/:slug" element={
-            <ProtectedRoute requiredRole={['admin']}>
+            <ProtectedRoute requiredRole={['admin']} requiredPermission="batches:view">
               <Layout><BatchDetail /></Layout>
             </ProtectedRoute>
           } />
           <Route path="/admin/batches" element={<Navigate to="/admin/batchmanager" replace />} />
           <Route path="/admin/teachers" element={
-            <ProtectedRoute requiredRole={['admin']}>
+            <ProtectedRoute requiredRole={['admin']} requiredPermission="teachers:view">
               <Layout><TeacherManager /></Layout>
             </ProtectedRoute>
           } />
           <Route path="/admin/certificate-designer" element={
-            <ProtectedRoute requiredRole={['admin']}>
+            <ProtectedRoute requiredRole={['admin']} requiredAnyPermission={['settings:view', 'courses:view']}>
               <Layout>
                 <CertificateDesigner />
               </Layout>
             </ProtectedRoute>
           } />
           <Route path="/admin/announcements" element={
-            <ProtectedRoute requiredRole={['admin', 'instructor']}>
+            <ProtectedRoute requiredRole={['admin', 'instructor']} requiredAnyPermission={['notices:view', 'communications:view']}>
               <Layout>
                 <BroadcastManager />
               </Layout>
@@ -400,7 +417,7 @@ function App() {
             <Navigate to="/admin/announcements" replace />
           } />
           <Route path="/admin/course-materials" element={
-            <ProtectedRoute requiredRole={['admin']}>
+            <ProtectedRoute requiredRole={['admin']} requiredAnyPermission={['courses:view', 'batches:view']}>
               <Layout>
                 <CourseMaterialsManager />
               </Layout>
@@ -408,14 +425,14 @@ function App() {
           } />
 
           <Route path="/admin/analytics" element={
-            <ProtectedRoute requiredRole={['admin']}>
+            <ProtectedRoute requiredRole={['admin']} requiredPermission="reports:view">
               <Layout>
                 <Analytics />
               </Layout>
             </ProtectedRoute>
           } />
           <Route path="/admin/reports" element={
-            <ProtectedRoute requiredRole={['admin']}>
+            <ProtectedRoute requiredRole={['admin']} requiredPermission="reports:view">
               <Layout>
                 <Reports />
               </Layout>
@@ -426,9 +443,17 @@ function App() {
           <Route path="/admin/fee-tracker" element={<Navigate to="/admin/additional-options?view=fee-tracker" replace />} />
 
           <Route path="/admin/course-maker" element={
-            <ProtectedRoute requiredRole={['admin']}>
+            <ProtectedRoute requiredRole={['admin']} requiredPermission="courses:view">
               <Layout>
                 <CourseMaker />
+              </Layout>
+            </ProtectedRoute>
+          } />
+
+          <Route path="/admin/administrators" element={
+            <ProtectedRoute requiredRole={['admin']} requireSuperAdmin={true}>
+              <Layout>
+                <AdminManagement />
               </Layout>
             </ProtectedRoute>
           } />

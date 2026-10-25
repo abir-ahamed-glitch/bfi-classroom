@@ -78,7 +78,7 @@ export async function optimizeUploadedImage(filePath, options = {}) {
 
     // If for some reason the output is larger (rare with WebP), and original was already WebP, keep original
     if (newSize >= originalSize && ext === '.webp') {
-      try { fs.unlinkSync(tempOutputPath); } catch (_) {}
+      try { fs.unlinkSync(tempOutputPath); } catch (_) { /* ignore */ }
       return {
         path: filePath,
         filename: path.basename(filePath),
@@ -89,9 +89,9 @@ export async function optimizeUploadedImage(filePath, options = {}) {
 
     // Safely remove original and rename temp to target webp filename
     const finalOutputPath = path.join(dir, newFilename);
-    try { fs.unlinkSync(filePath); } catch (_) {}
+    try { fs.unlinkSync(filePath); } catch (_) { /* ignore */ }
     if (fs.existsSync(finalOutputPath)) {
-      try { fs.unlinkSync(finalOutputPath); } catch (_) {}
+      try { fs.unlinkSync(finalOutputPath); } catch (_) { /* ignore */ }
     }
     fs.renameSync(tempOutputPath, finalOutputPath);
 
@@ -221,8 +221,8 @@ function cleanupOldAvatars(avatarDir, userId, keepFilename) {
     const prefix = `avatar-${userId}-`;
     for (const file of files) {
       if (file.startsWith(prefix) && file !== keepFilename) {
-        try { fs.unlinkSync(path.join(avatarDir, file)); } catch (_) {}
+        try { fs.unlinkSync(path.join(avatarDir, file)); } catch (_) { /* ignore */ }
       }
     }
-  } catch (_) {}
+  } catch (_) { /* ignore */ }
 }

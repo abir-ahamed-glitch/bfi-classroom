@@ -7,8 +7,15 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+import fs from 'fs';
+
 export const TEST_DB_PATH = path.resolve(__dirname, '../server/test_isolated_bfi.db');
-export const PROD_DB_PATH = path.resolve(__dirname, '../server/bfi_classroom.db');
+
+// Resolve authoritative production database path (checking if executed inside git worktree)
+const worktreeParentProd = path.resolve(__dirname, '../../../server/bfi_classroom.db');
+export const PROD_DB_PATH = (fs.existsSync(worktreeParentProd) && fs.statSync(worktreeParentProd).size > 1000000)
+  ? worktreeParentProd
+  : path.resolve(__dirname, '../server/bfi_classroom.db');
 export const TEST_SERVER_PORT = process.env.TEST_PORT || '3099';
 
 let testServerProcess = null;
@@ -278,11 +285,21 @@ export async function initIsolatedTestDatabase(dbPath = TEST_DB_PATH) {
     db.prepare(`
       INSERT INTO users (username, email, password_hash, role, first_name, last_name)
       VALUES (?, ?, ?, ?, ?, ?)
-    `).run('admin', 'admin@abir', hash, 'admin', 'System', 'Administrator');
+    `).run('admin@abir', 'k.eye.films@gmail.com', hash, 'admin', 'Abir', 'Ahmad');
     db.prepare(`
       INSERT OR IGNORE INTO users (username, email, password_hash, role, first_name, last_name)
       VALUES (?, ?, ?, ?, ?, ?)
     `).run('admin_bfi', 'admin@bfibd.org', hash, 'admin', 'BFI', 'Admin');
+  }
+
+  const studentExists = db.prepare("SELECT id FROM users WHERE role = 'student' LIMIT 1").get();
+  if (!studentExists) {
+    const salt = bcrypt.genSaltSync(10);
+    const hash = bcrypt.hashSync('password', salt);
+    db.prepare(`
+      INSERT INTO users (username, email, password_hash, role, first_name, last_name, is_active)
+      VALUES (?, ?, ?, ?, ?, ?, 1)
+    `).run('student_default', 'student@bfibd.org', hash, 'student', 'Default', 'Student');
   }
 
   return db;

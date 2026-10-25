@@ -1,12 +1,18 @@
 import express from 'express';
 import bcrypt from 'bcryptjs';
 import db from '../db/database.js';
-import { authenticateToken, requireRole, sanitizeInput, validateEmail } from '../middleware/auth.js';
+import { authenticateToken, requireRole, requireSuperAdmin, requirePermission, requireAnyPermission, isSuperAdmin, sanitizeInput, validateEmail } from '../middleware/auth.js';
+import { recordAuditEventFromReq } from '../services/auditLedgerService.js';
 import { logTrashAction } from '../utils/trashLogger.js';
 import courseProgressService from '../services/courseProgressService.js';
 import { resolveDiscountAmount, resolvePhaseFee } from '../utils/feeResolver.js';
 
 const router = express.Router();
+
+// Verification endpoint for Super Admin access
+router.get('/super-admin/verify', authenticateToken, requireSuperAdmin, (req, res) => {
+  res.json({ success: true, message: 'Super Administrator authorization verified', user: req.user });
+});
 
 // Utility function to generate a random string
 const generateRandomString = (length) => {
@@ -20,7 +26,7 @@ const generateRandomString = (length) => {
 
 // Route to create a new student account
 // Accessible only by admins
-router.post('/students', authenticateToken, requireRole('admin'), sanitizeInput, (req, res) => {
+router.post('/students', authenticateToken, requireRole('admin'), requirePermission('students:create'), sanitizeInput, (req, res) => {
   try {
     const { 
       firstName, 
@@ -115,13 +121,21 @@ router.post('/students', authenticateToken, requireRole('admin'), sanitizeInput,
         }
       }
 
+      recordAuditEventFromReq(req, {
+        action: 'student.create',
+        module: 'students',
+        resource: `student:${studentId}`,
+        targetUserId: userId,
+        outcome: 'success',
+        details: { firstName, lastName, email, studentId },
+        afterState: { id: userId, username, email, studentId },
+        throwOnError: true
+      });
+
       return { userId, studentId };
     });
 
-    const { studentId } = transaction();
-
-    // SUCCESS - Return the generated credentials to the admin so they can share them
-    // Note: In a production app, you might also trigger an email sending service here.
+    const { userId, studentId } = transaction();
     res.status(201).json({
       message: 'Student account created successfully.',
       student: {
@@ -152,7 +166,7 @@ router.post('/students', authenticateToken, requireRole('admin'), sanitizeInput,
 });
 
 // Route for Bulk Importing Students
-router.post('/students/bulk', authenticateToken, requireRole('admin'), sanitizeInput, (req, res) => {
+router.post('/students/bulk', authenticateToken, requireRole('admin'), requirePermission('students:create'), sanitizeInput, (req, res) => {
   try {
     const { students, batchNumber, courses } = req.body;
     
@@ -406,7 +420,7 @@ router.post('/students/bulk', authenticateToken, requireRole('admin'), sanitizeI
 });
 
 // Bulk upload exam results for a batch
-router.post('/batches/:id/results/bulk', authenticateToken, requireRole('admin'), sanitizeInput, (req, res) => {
+router.post('/batches/:id/results/bulk', authenticateToken, requireRole('admin'), requirePermission('batches:results_upload'), sanitizeInput, (req, res) => {
   const batchId = req.params.id;
   const { results } = req.body;
   if (!Array.isArray(results)) {
@@ -520,7 +534,7 @@ router.post('/batches/:id/results/bulk', authenticateToken, requireRole('admin')
 });
 
 // Get all registered leads (not admitted)
-router.get('/students/leads', authenticateToken, requireRole('admin'), (req, res) => {
+router.get('/students/leads', authenticateToken, requireRole('admin'), requirePermission('students:view'), (req, res) => {
   try {
     const leads = db.prepare(`
       SELECT 
@@ -553,7 +567,7 @@ router.get('/students/leads', authenticateToken, requireRole('admin'), (req, res
 
 
 // Admit a lead student
-router.post('/students/leads/:id/admit', authenticateToken, requireRole('admin'), sanitizeInput, (req, res) => {
+router.post('/students/leads/:id/admit', authenticateToken, requireRole('admin'), requirePermission('students:create'), sanitizeInput, (req, res) => {
   try {
     const userId = req.params.id;
     const { batchNumber, snNo, month, year, course = 'Online Filmmaking Course' } = req.body;
@@ -613,8 +627,9 @@ router.post('/students/leads/:id/admit', authenticateToken, requireRole('admin')
 
     // Execute updates
     const transaction = db.transaction(() => {
-      // 1. Update user
-      db.prepare(`UPDATE users SET username = ?, password_hash = ? WHERE id = ?`).run(username, passwordHash, userId);
+      // 1. Update user and revoke old sessions
+      db.prepare("UPDATE users SET username = ?, password_hash = ?, token_version = token_version + 1, updated_at = datetime('now') WHERE id = ?").run(username, passwordHash, userId);
+      db.prepare('DELETE FROM sessions WHERE user_id = ?').run(userId);
       
       // 2. Ensure a profile row exists (some leads may not have one)
       db.prepare(`INSERT OR IGNORE INTO student_profiles (user_id, full_name) VALUES (?, ?)`).
@@ -642,6 +657,33 @@ router.post('/students/leads/:id/admit', authenticateToken, requireRole('admin')
       } else if (batchId && !existingEnrollment.batch_id) {
         db.prepare('UPDATE student_course_enrollments SET batch_id = ? WHERE id = ?').run(batchId, existingEnrollment.id);
       }
+
+      recordAuditEventFromReq(req, {
+        action: 'student.admit',
+        module: 'students',
+        resource: `student:${userId}`,
+        targetUserId: Number(userId),
+        outcome: 'success',
+        beforeState: {
+          id: user.id,
+          username: user.username,
+          batch_number: profile?.batch_number || null,
+          student_id: profile?.student_id || null
+        },
+        afterState: {
+          id: user.id,
+          username,
+          batch_number: cleanBatch,
+          student_id: studentId,
+          course
+        },
+        details: {
+          batchNumber: cleanBatch,
+          studentId,
+          course
+        },
+        throwOnError: true
+      });
     });
 
 
@@ -664,9 +706,12 @@ router.post('/students/leads/:id/admit', authenticateToken, requireRole('admin')
 });
 
 // Soft Delete a lead student
-router.delete('/students/leads/:id', authenticateToken, requireRole('admin'), (req, res) => {
+router.delete('/students/leads/:id', authenticateToken, requireRole('admin'), requirePermission('students:delete'), (req, res) => {
   try {
     const userId = req.params.id;
+    if (Number(userId) === 1) {
+      return res.status(403).json({ error: 'Cannot delete or alter Super Administrator account.' });
+    }
 
     // Check if the user exists and is indeed a student lead (not admitted)
     const user = db.prepare("SELECT * FROM users WHERE id = ? AND role = 'student'").get(userId);
@@ -695,7 +740,7 @@ router.delete('/students/leads/:id', authenticateToken, requireRole('admin'), (r
 });
 
 // Save bulk import history manually (used when importing sequentially from frontend)
-router.post('/imports/save-history', authenticateToken, requireRole('admin'), sanitizeInput, (req, res) => {
+router.post('/imports/save-history', authenticateToken, requireRole('admin'), requirePermission('students:create'), sanitizeInput, (req, res) => {
   try {
     const { batchNumber, results } = req.body;
     if (!results || !Array.isArray(results)) {
@@ -720,7 +765,7 @@ router.post('/imports/save-history', authenticateToken, requireRole('admin'), sa
 });
 
 // Get import history list
-router.get('/imports/history', authenticateToken, requireRole('admin'), (req, res) => {
+router.get('/imports/history', authenticateToken, requireRole('admin'), requirePermission('students:view'), (req, res) => {
   try {
     const history = db.prepare(`
       SELECT id, filename, batch_number, title, imported_by, created_at 
@@ -735,7 +780,7 @@ router.get('/imports/history', authenticateToken, requireRole('admin'), (req, re
 });
 
 // Rename import history title
-router.put('/imports/history/:id/rename', authenticateToken, requireRole('admin'), sanitizeInput, (req, res) => {
+router.put('/imports/history/:id/rename', authenticateToken, requireRole('admin'), requirePermission('students:edit'), sanitizeInput, (req, res) => {
   try {
     const { title } = req.body;
     const { id } = req.params;
@@ -755,7 +800,7 @@ router.put('/imports/history/:id/rename', authenticateToken, requireRole('admin'
 });
 
 // Get specific import details
-router.get('/imports/history/:id', authenticateToken, requireRole('admin'), (req, res) => {
+router.get('/imports/history/:id', authenticateToken, requireRole('admin'), requirePermission('students:view'), (req, res) => {
   try {
     const record = db.prepare('SELECT results_json FROM bulk_import_history WHERE id = ?').get(req.params.id);
     if (!record) return res.status(404).json({ error: 'History not found' });
@@ -767,7 +812,7 @@ router.get('/imports/history/:id', authenticateToken, requireRole('admin'), (req
 });
 
 // Delete import history record
-router.delete('/imports/history/:id', authenticateToken, requireRole('admin'), (req, res) => {
+router.delete('/imports/history/:id', authenticateToken, requireRole('admin'), requirePermission('students:delete'), (req, res) => {
   try {
     const { id } = req.params;
     const result = db.prepare('DELETE FROM bulk_import_history WHERE id = ?').run(id);
@@ -784,7 +829,7 @@ router.delete('/imports/history/:id', authenticateToken, requireRole('admin'), (
 // Route to update a student's Phase 2 attendance (Shooting + Editing parts)
 // Only for Online Filmmaking Course. If both parts attended => step4_completed = 1
 // IMPORTANT: This must be declared BEFORE the generic PUT /students/:id route.
-router.put('/students/:id/phase2-attendance/:courseId', authenticateToken, requireRole('admin'), (req, res) => {
+router.put('/students/:id/phase2-attendance/:courseId', authenticateToken, requireRole('admin'), requirePermission('students:academic_records'), (req, res) => {
   try {
     const studentId = req.params.id;
     const courseId = req.params.courseId;
@@ -825,9 +870,12 @@ router.put('/students/:id/phase2-attendance/:courseId', authenticateToken, requi
 });
 
 // Update a student account
-router.put('/students/:id', authenticateToken, requireRole('admin'), sanitizeInput, (req, res) => {
+router.put('/students/:id', authenticateToken, requireRole('admin'), requirePermission('students:edit'), sanitizeInput, (req, res) => {
   try {
     const { id } = req.params;
+    if (Number(id) === 1) {
+      return res.status(403).json({ error: 'Cannot modify Super Administrator account via student endpoints.' });
+    }
     const { 
       firstName, lastName, email, mobileNumber, username, batchNumber, phase1_fee, phase2_fee, courses, snNo, year, course_fees,
       enrollment_id, enrollmentId, batch_id, batchId
@@ -982,17 +1030,22 @@ router.put('/students/:id', authenticateToken, requireRole('admin'), sanitizeInp
       }
     }
 
+    const beforeUser = db.prepare('SELECT id, first_name, last_name, email, mobile_number, username FROM users WHERE id = ?').get(id);
+    const beforeProfile = db.prepare('SELECT full_name, batch_number, student_id FROM student_profiles WHERE user_id = ?').get(id);
+
     const transaction = db.transaction(() => {
       const finalEmail = (email && email.trim() && validateEmail(email.trim())) 
         ? email.trim() 
         : (username ? `${username}@bfi-app.org` : `student.${id}@bfi-app.org`);
+
+      const finalUsername = (username && username.trim()) ? username.trim() : (beforeUser?.username || `student.${id}`);
 
       // 1. Update users
       db.prepare(`
         UPDATE users 
         SET first_name = ?, last_name = ?, email = ?, mobile_number = ?, username = ?
         WHERE id = ?
-      `).run(firstName, lastName, finalEmail, mobileNumber, username, id);
+      `).run(firstName, lastName, finalEmail, mobileNumber, finalUsername, id);
 
       // 2. Update student_profiles
       const fullName = `${firstName} ${lastName}`;
@@ -1103,6 +1156,55 @@ router.put('/students/:id', authenticateToken, requireRole('admin'), sanitizeInp
           }
         }
       }
+
+      recordAuditEventFromReq(req, {
+        action: 'student.update',
+        module: 'students',
+        resource: `student:${id}`,
+        targetUserId: Number(id),
+        outcome: 'success',
+        beforeState: {
+          firstName: beforeUser?.first_name || '',
+          lastName: beforeUser?.last_name || '',
+          email: beforeUser?.email || '',
+          mobileNumber: beforeUser?.mobile_number || '',
+          username: beforeUser?.username || '',
+          batchNumber: beforeProfile?.batch_number || '',
+          studentId: beforeProfile?.student_id || ''
+        },
+        afterState: {
+          firstName: firstName || '',
+          lastName: lastName || '',
+          email: finalEmail,
+          mobileNumber: mobileNumber || '',
+          username: username || '',
+          batchNumber: batchNumber || '',
+          studentId: studentIdStr
+        },
+        details: {
+          studentId: studentIdStr,
+          courses: newCourses,
+          hasFeeUpdate: Boolean(course_fees)
+        },
+        throwOnError: true
+      });
+
+      if (course_fees && Object.keys(course_fees).length > 0) {
+        recordAuditEventFromReq(req, {
+          action: 'finance.update_student_fees',
+          module: 'finance',
+          resource: `student:${id}`,
+          targetUserId: Number(id),
+          outcome: 'success',
+          details: {
+            studentId: studentIdStr,
+            courses: Object.keys(course_fees),
+            phase1_fee: phase1_fee || null,
+            phase2_fee: phase2_fee || null
+          },
+          throwOnError: true
+        });
+      }
     });
 
     transaction();
@@ -1132,7 +1234,7 @@ router.put('/students/:id', authenticateToken, requireRole('admin'), sanitizeInp
 });
 
 // Route to create a new teacher account
-router.post('/teachers', authenticateToken, requireRole('admin'), sanitizeInput, (req, res) => {
+router.post('/teachers', authenticateToken, requireRole('admin'), requirePermission('teachers:create'), sanitizeInput, (req, res) => {
   try {
     const { 
       firstName, 
@@ -1219,7 +1321,7 @@ router.post('/teachers', authenticateToken, requireRole('admin'), sanitizeInput,
 });
 
 // Route to list all students (for the admin dashboard)
-router.get('/students', authenticateToken, requireRole('admin'), async (req, res) => {
+router.get('/students', authenticateToken, requireRole('admin'), requirePermission('students:view'), async (req, res) => {
   try {
     const students = db.prepare(`
       SELECT 
@@ -1256,7 +1358,7 @@ router.get('/students', authenticateToken, requireRole('admin'), async (req, res
 });
 
 // Route to get a specific student details
-router.get('/students/:id', authenticateToken, requireRole('admin'), async (req, res) => {
+router.get('/students/:id', authenticateToken, requireRole('admin'), requirePermission('students:view'), async (req, res) => {
   try {
     const { id } = req.params;
     const student = db.prepare(`
@@ -1292,7 +1394,7 @@ router.get('/students/:id', authenticateToken, requireRole('admin'), async (req,
 });
 
 // Route to list all teachers
-router.get('/teachers', authenticateToken, requireRole('admin'), (req, res) => {
+router.get('/teachers', authenticateToken, requireRole('admin'), requirePermission('teachers:view'), (req, res) => {
   try {
     const teachers = db.prepare(`
       SELECT 
@@ -1323,9 +1425,12 @@ router.get('/teachers', authenticateToken, requireRole('admin'), (req, res) => {
 // Note: The student update logic is handled by the PUT /students/:id route defined above.
 
 // Route to soft-delete a student account
-router.delete('/students/:id', authenticateToken, requireRole('admin'), (req, res) => {
+router.delete('/students/:id', authenticateToken, requireRole('admin'), requirePermission('students:delete'), (req, res) => {
   try {
     const studentIdNum = parseInt(req.params.id, 10);
+    if (Number(studentIdNum) === 1) {
+      return res.status(403).json({ error: 'Cannot delete Super Administrator account.' });
+    }
 
     // Verify it's actually a student
     const student = db.prepare("SELECT * FROM users WHERE id = ? AND role = 'student'").get(studentIdNum);
@@ -1333,10 +1438,23 @@ router.delete('/students/:id', authenticateToken, requireRole('admin'), (req, re
       return res.status(404).json({ error: 'Student not found.' });
     }
 
-    // Soft delete the user. Related cascaded tables do not need to be physically deleted.
-    db.prepare("UPDATE users SET deleted_at = datetime('now'), deleted_by_admin_id = ? WHERE id = ?").run(req.user.id, studentIdNum);
-    logTrashAction('students', studentIdNum, `${student.first_name || ''} ${student.last_name || ''}`.trim(), 'deleted', req.user.id);
+    const deleteStudentTx = db.transaction(() => {
+      db.prepare("UPDATE users SET deleted_at = datetime('now'), deleted_by_admin_id = ? WHERE id = ?").run(req.user.id, studentIdNum);
+      logTrashAction('students', studentIdNum, `${student.first_name || ''} ${student.last_name || ''}`.trim(), 'deleted', req.user.id);
 
+      recordAuditEventFromReq(req, {
+        action: 'student.delete',
+        module: 'students',
+        resource: `student:${studentIdNum}`,
+        targetUserId: studentIdNum,
+        outcome: 'success',
+        beforeState: { id: student.id, username: student.username, email: student.email },
+        details: { fullName: `${student.first_name || ''} ${student.last_name || ''}`.trim() },
+        throwOnError: true
+      });
+    });
+
+    deleteStudentTx();
     res.json({ message: 'Student account moved to Trash' });
   } catch (error) {
     console.error('Error moving student to trash:', error);
@@ -1345,9 +1463,12 @@ router.delete('/students/:id', authenticateToken, requireRole('admin'), (req, re
 });
 
 // Route to edit a teacher's basic profile details
-router.put('/teachers/:id', authenticateToken, requireRole('admin'), sanitizeInput, (req, res) => {
+router.put('/teachers/:id', authenticateToken, requireRole('admin'), requirePermission('teachers:edit'), sanitizeInput, (req, res) => {
   try {
     const teacherIdNum = parseInt(req.params.id, 10);
+    if (Number(teacherIdNum) === 1) {
+      return res.status(403).json({ error: 'Cannot modify Super Administrator account via teacher endpoints.' });
+    }
     const { firstName, lastName, email, mobileNumber, gender, username, subjects } = req.body;
 
     if (!firstName || !lastName || !email || !username) {
@@ -1392,9 +1513,12 @@ router.put('/teachers/:id', authenticateToken, requireRole('admin'), sanitizeInp
 });
 
 // Route to soft-delete a teacher account
-router.delete('/teachers/:id', authenticateToken, requireRole('admin'), (req, res) => {
+router.delete('/teachers/:id', authenticateToken, requireRole('admin'), requirePermission('teachers:delete'), (req, res) => {
   try {
     const teacherIdNum = parseInt(req.params.id, 10);
+    if (Number(teacherIdNum) === 1) {
+      return res.status(403).json({ error: 'Cannot delete Super Administrator account.' });
+    }
 
     // Verify it's actually a teacher
     const teacher = db.prepare("SELECT id, first_name, last_name FROM users WHERE id = ? AND role = 'instructor'").get(teacherIdNum);
@@ -1414,7 +1538,7 @@ router.delete('/teachers/:id', authenticateToken, requireRole('admin'), (req, re
 });
 
 // Route to update a student's course progression (checkmarks)
-router.patch('/students/:id/progress', authenticateToken, requireRole('admin'), (req, res) => {
+router.patch('/students/:id/progress', authenticateToken, requireRole('admin'), requirePermission('students:academic_records'), (req, res) => {
   try {
     const { course_id, step1_completed, step2_completed, step3_completed, step4_completed } = req.body;
     const studentId = req.params.id; // user_id
@@ -1480,10 +1604,43 @@ router.patch('/students/:id/progress', authenticateToken, requireRole('admin'), 
       WHERE id = ? AND user_id = ?
     `;
     
-    const result = db.prepare(query).run(...params);
+    const progressTx = db.transaction(() => {
+      const result = db.prepare(query).run(...params);
+      if (result.changes === 0) {
+        throw new Error('Course Enrollment not found for this student.');
+      }
 
-    if (result.changes === 0) {
-      return res.status(404).json({ error: 'Course Enrollment not found for this student.' });
+      recordAuditEventFromReq(req, {
+        action: 'academic.progress_update',
+        module: 'academic',
+        resource: `enrollment:${course_id}`,
+        targetUserId: parseInt(studentId, 10),
+        outcome: 'success',
+        beforeState: {
+          step1_completed: enrollment.step1_completed,
+          step2_completed: enrollment.step2_completed,
+          step3_completed: enrollment.step3_completed,
+          step4_completed: enrollment.step4_completed
+        },
+        afterState: {
+          step1_completed: step1_completed !== undefined ? (step1_completed ? 1 : 0) : enrollment.step1_completed,
+          step2_completed: step2_completed !== undefined ? (step2_completed ? 1 : 0) : enrollment.step2_completed,
+          step3_completed: step3_completed !== undefined ? (step3_completed ? 1 : 0) : enrollment.step3_completed,
+          step4_completed: step4_completed !== undefined ? (step4_completed ? 1 : 0) : enrollment.step4_completed
+        },
+        details: { course_name: enrollment.course_name, enrollmentId: course_id },
+        throwOnError: true
+      });
+      return result;
+    });
+
+    try {
+      progressTx();
+    } catch (txErr) {
+      if (txErr.message.includes('not found')) {
+        return res.status(404).json({ error: txErr.message });
+      }
+      throw txErr;
     }
 
     const io = req.app.get('io');
@@ -1499,7 +1656,7 @@ router.patch('/students/:id/progress', authenticateToken, requireRole('admin'), 
 });
 
 // Route to update a student's academic records
-router.put('/students/:id/academic-records/:courseId', authenticateToken, requireRole('admin'), (req, res) => {
+router.put('/students/:id/academic-records/:courseId', authenticateToken, requireRole('admin'), requirePermission('students:academic_records'), (req, res) => {
   try {
     const studentId = req.params.id;
     const courseId = req.params.courseId;
@@ -1733,6 +1890,31 @@ router.put('/students/:id/academic-records/:courseId', authenticateToken, requir
           }
         }
       }
+
+      recordAuditEventFromReq(req, {
+        action: 'academic.update_records',
+        module: 'academic',
+        resource: `enrollment:${courseId}`,
+        targetUserId: Number(studentId),
+        outcome: 'success',
+        beforeState: {
+          attendance_classes: enrollment.attendance_classes,
+          attendance_total: enrollment.attendance_total,
+          exam_written: enrollment.exam_written
+        },
+        afterState: {
+          attendance_classes: attendance,
+          attendance_total: totalAttendance,
+          exam_written: exam,
+          step2_completed: targetStudentPassed
+        },
+        details: {
+          course_name: enrollment.course_name,
+          batch_id: enrollment.batch_id,
+          isPassed: targetStudentPassed
+        },
+        throwOnError: true
+      });
       
       return targetStudentPassed;
     });
@@ -1754,6 +1936,10 @@ router.put('/students/:id/academic-records/:courseId', authenticateToken, requir
 // Route to get a student's defined course progress
 router.get('/students/:id/courses/:courseId/defined-progress', authenticateToken, requireRole('admin', 'moderator'), async (req, res) => {
   try {
+    if (req.user.role === 'admin' && !isSuperAdmin(req.user)) {
+      const hasPerm = db.prepare('SELECT 1 FROM admin_permissions WHERE user_id = ? AND permission = ?').get(req.user.id, 'students:view');
+      if (!hasPerm) return res.status(403).json({ error: "Access denied: missing required permission 'students:view'", requiredPermission: 'students:view' });
+    }
     const studentId = parseInt(req.params.id, 10);
     const courseId = parseInt(req.params.courseId, 10);
 
@@ -1785,6 +1971,10 @@ router.get('/students/:id/courses/:courseId/defined-progress', authenticateToken
 // Route to update a student's defined course progress (attendance, assignments, exams) atomically
 router.put('/students/:id/courses/:courseId/defined-progress', authenticateToken, requireRole('admin', 'moderator'), async (req, res) => {
   try {
+    if (req.user.role === 'admin' && !isSuperAdmin(req.user)) {
+      const hasPerm = db.prepare('SELECT 1 FROM admin_permissions WHERE user_id = ? AND permission = ?').get(req.user.id, 'students:academic_records');
+      if (!hasPerm) return res.status(403).json({ error: "Access denied: missing required permission 'students:academic_records'", requiredPermission: 'students:academic_records' });
+    }
     const studentId = parseInt(req.params.id, 10);
     const courseId = parseInt(req.params.courseId, 10);
     const { attendance, assignments, exam_marks } = req.body;
@@ -1946,7 +2136,24 @@ router.put('/students/:id/courses/:courseId/defined-progress', authenticateToken
       }
     }
 
-    // 6. Execute atomic update across attendance, assignments, and exams in a single transaction
+    // Capture beforeState for atomic audit logging
+    const existingAtt = (Array.isArray(attendance) && attendance.length > 0)
+      ? db.prepare(`SELECT class_id, attended FROM student_class_attendance WHERE enrollment_id = ? AND class_id IN (${attendance.map(() => '?').join(',')})`).all(courseId, ...attendance.map(a => a.class_id))
+      : [];
+    const existingAsg = (Array.isArray(assignments) && assignments.length > 0)
+      ? db.prepare(`SELECT assignment_id, marks_obtained, submission_status FROM student_assignment_grades WHERE enrollment_id = ? AND assignment_id IN (${assignments.map(() => '?').join(',')})`).all(courseId, ...assignments.map(a => a.assignment_id))
+      : [];
+    const existingExam = exam_marks
+      ? db.prepare('SELECT phase_id, exam_marks FROM student_phase_results WHERE enrollment_id = ?').all(courseId)
+      : [];
+
+    const beforeSnapshot = {
+      attendance: existingAtt,
+      assignments: existingAsg,
+      exam_marks: existingExam
+    };
+
+    // 6. Execute atomic update across attendance, assignments, and exams in a single transaction with audit log inside
     const updatedProgress = await courseProgressService.updateDefinedProgressAtomic(
       courseId,
       {
@@ -1956,7 +2163,31 @@ router.put('/students/:id/courses/:courseId/defined-progress', authenticateToken
         updatedBy: req.user.id
       },
       null,
-      batchOpt
+      {
+        ...batchOpt,
+        onCommitAudit: (txDb) => {
+          recordAuditEventFromReq(req, {
+            action: 'academic.defined_progress_update',
+            module: 'academic',
+            resource: `enrollment:${courseId}`,
+            targetUserId: studentId,
+            outcome: 'success',
+            details: {
+              attendanceCount: Array.isArray(attendance) ? attendance.length : 0,
+              assignmentCount: Array.isArray(assignments) ? assignments.length : 0,
+              examCount: Array.isArray(exam_marks) ? (Array.isArray(exam_marks) ? exam_marks.length : 1) : 0
+            },
+            beforeState: beforeSnapshot,
+            afterState: {
+              attendance: Array.isArray(attendance) ? attendance.map(a => ({ class_id: a.class_id, attended: a.attended ? 1 : 0 })) : [],
+              assignments: Array.isArray(assignments) ? assignments.map(a => ({ assignment_id: a.assignment_id, marks: a.marks_obtained !== undefined ? a.marks_obtained : a.marks, status: a.submission_status || 'graded' })) : [],
+              exam_marks: Array.isArray(exam_marks) ? exam_marks : (exam_marks ? [exam_marks] : [])
+            },
+            dbInstance: txDb,
+            throwOnError: true
+          });
+        }
+      }
     );
 
     const io = req.app.get('io');
@@ -1974,6 +2205,10 @@ router.put('/students/:id/courses/:courseId/defined-progress', authenticateToken
 // Route to admit a student to a specific phase (1–5) of a course
 router.post('/students/:id/courses/:courseId/phases/:phaseNumber/admit', authenticateToken, requireRole('admin', 'moderator'), async (req, res) => {
   try {
+    if (req.user.role === 'admin' && !isSuperAdmin(req.user)) {
+      const hasPerm = db.prepare('SELECT 1 FROM admin_permissions WHERE user_id = ? AND permission = ?').get(req.user.id, 'students:academic_records');
+      if (!hasPerm) return res.status(403).json({ error: "Access denied: missing required permission 'students:academic_records'", requiredPermission: 'students:academic_records' });
+    }
     const studentId = parseInt(req.params.id, 10);
     const enrollmentId = parseInt(req.params.courseId, 10);
     const phaseNumber = parseInt(req.params.phaseNumber, 10);
@@ -1993,7 +2228,37 @@ router.post('/students/:id/courses/:courseId/phases/:phaseNumber/admit', authent
       }
     }
 
-    const updatedProgress = await courseProgressService.admitStudentToPhase(enrollmentId, phaseNumber, db, { batchId: enrollment.batch_id });
+    const updatedProgress = await courseProgressService.admitStudentToPhase(enrollmentId, phaseNumber, db, {
+      batchId: enrollment.batch_id,
+      onCommitAudit: (txDb, meta) => {
+        recordAuditEventFromReq(req, {
+          action: 'academic.phase_admit',
+          module: 'academic',
+          resource: `enrollment:${enrollmentId}`,
+          targetUserId: studentId,
+          outcome: 'success',
+          details: {
+            phaseNumber,
+            phaseId: meta?.targetPhaseId || meta?.beforeState?.phase_id || `phase_${phaseNumber}`,
+            enrollmentId
+          },
+          beforeState: meta?.beforeState || {
+            phaseNumber,
+            phase_id: meta?.targetPhaseId || `phase_${phaseNumber}`,
+            admitted: 0,
+            step3_completed: enrollment.step3_completed ? 1 : 0
+          },
+          afterState: meta?.afterState || {
+            phaseNumber,
+            phase_id: meta?.targetPhaseId || `phase_${phaseNumber}`,
+            admitted: 1,
+            step3_completed: phaseNumber === 2 ? 1 : (enrollment.step3_completed ? 1 : 0)
+          },
+          dbInstance: txDb,
+          throwOnError: true
+        });
+      }
+    });
     
     const io = req.app.get('io');
     if (io) {
@@ -2003,13 +2268,18 @@ router.post('/students/:id/courses/:courseId/phases/:phaseNumber/admit', authent
     res.json({ success: true, progress: updatedProgress });
   } catch (error) {
     console.error('Error admitting student to phase:', error);
-    res.status(400).json({ error: error.message || 'Failed to admit student to phase.' });
+    const status = (error.message && (error.message.includes('Audit ledger') || error.message.includes('SqliteError') || error.message.includes('constraint'))) ? 500 : 400;
+    res.status(status).json({ error: error.message || 'Failed to admit student to phase.' });
   }
 });
 
 // Route to undo phase admission (unadmit) with strict payment restriction defense
 router.post('/students/:id/courses/:courseId/phases/:phaseNumber/unadmit', authenticateToken, requireRole('admin', 'moderator'), async (req, res) => {
   try {
+    if (req.user.role === 'admin' && !isSuperAdmin(req.user)) {
+      const hasPerm = db.prepare('SELECT 1 FROM admin_permissions WHERE user_id = ? AND permission = ?').get(req.user.id, 'students:academic_records');
+      if (!hasPerm) return res.status(403).json({ error: "Access denied: missing required permission 'students:academic_records'", requiredPermission: 'students:academic_records' });
+    }
     const studentId = parseInt(req.params.id, 10);
     const enrollmentId = parseInt(req.params.courseId, 10);
     const phaseNumber = parseInt(req.params.phaseNumber, 10);
@@ -2029,7 +2299,37 @@ router.post('/students/:id/courses/:courseId/phases/:phaseNumber/unadmit', authe
       }
     }
 
-    const updatedProgress = await courseProgressService.unadmitStudentFromPhase(enrollmentId, phaseNumber, db, { batchId: enrollment.batch_id });
+    const updatedProgress = await courseProgressService.unadmitStudentFromPhase(enrollmentId, phaseNumber, db, {
+      batchId: enrollment.batch_id,
+      onCommitAudit: (txDb, meta) => {
+        recordAuditEventFromReq(req, {
+          action: 'academic.phase_unadmit',
+          module: 'academic',
+          resource: `enrollment:${enrollmentId}`,
+          targetUserId: studentId,
+          outcome: 'success',
+          details: {
+            phaseNumber,
+            phaseId: meta?.targetPhaseId || meta?.beforeState?.phase_id || `phase_${phaseNumber}`,
+            enrollmentId
+          },
+          beforeState: meta?.beforeState || {
+            phaseNumber,
+            phase_id: meta?.targetPhaseId || `phase_${phaseNumber}`,
+            admitted: 1,
+            step3_completed: enrollment.step3_completed ? 1 : 0
+          },
+          afterState: meta?.afterState || {
+            phaseNumber,
+            phase_id: meta?.targetPhaseId || `phase_${phaseNumber}`,
+            admitted: 0,
+            step3_completed: phaseNumber === 2 ? 0 : (enrollment.step3_completed ? 1 : 0)
+          },
+          dbInstance: txDb,
+          throwOnError: true
+        });
+      }
+    });
     
     const io = req.app.get('io');
     if (io) {
@@ -2039,12 +2339,13 @@ router.post('/students/:id/courses/:courseId/phases/:phaseNumber/unadmit', authe
     res.json({ success: true, progress: updatedProgress });
   } catch (error) {
     console.error('Error undoing phase admission:', error);
-    res.status(400).json({ error: error.message || 'Failed to undo phase admission.' });
+    const status = (error.message && (error.message.includes('Audit ledger') || error.message.includes('SqliteError') || error.message.includes('constraint'))) ? 500 : 400;
+    res.status(status).json({ error: error.message || 'Failed to undo phase admission.' });
   }
 });
 
 // Explicit Migration Endpoint: Migrate a legacy enrollment to a defined course definition
-router.post('/students/:id/courses/:courseId/migrate-to-defined', authenticateToken, requireRole('admin'), async (req, res) => {
+router.post('/students/:id/courses/:courseId/migrate-to-defined', authenticateToken, requireRole('admin'), requirePermission('students:academic_records'), async (req, res) => {
   try {
     const studentId = parseInt(req.params.id, 10);
     const enrollmentId = parseInt(req.params.courseId, 10);
@@ -2237,7 +2538,7 @@ router.post('/students/:id/courses/:courseId/migrate-to-defined', authenticateTo
 });
 
 // Create global announcement
-router.post('/announcements', authenticateToken, requireRole('admin'), sanitizeInput, (req, res) => {
+router.post('/announcements', authenticateToken, requireRole('admin'), requirePermission('notices:create'), sanitizeInput, (req, res) => {
   try {
     const { title, content, priority = 'normal', targetCourse = null, targetBatch = null, image_url = null, scheduled_at = null } = req.body;
     if (!title || !content) {
@@ -2256,8 +2557,20 @@ router.post('/announcements', authenticateToken, requireRole('admin'), sanitizeI
       scheduledAtValue = scheduledDate.toISOString();
     }
     
-    const stmt = db.prepare('INSERT INTO announcements (admin_id, title, content, priority, target_course, target_batch, image_url, scheduled_at, scheduled_notified) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
-    const info = stmt.run(req.user.id, title, content, priority, targetCourse || null, targetBatch || null, image_url || null, scheduledAtValue, 0);
+    const createNoticeTx = db.transaction(() => {
+      const stmt = db.prepare('INSERT INTO announcements (admin_id, title, content, priority, target_course, target_batch, image_url, scheduled_at, scheduled_notified) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
+      const info = stmt.run(req.user.id, title, content, priority, targetCourse || null, targetBatch || null, image_url || null, scheduledAtValue, 0);
+      recordAuditEventFromReq(req, {
+        action: 'notice.create',
+        module: 'notices',
+        resource: `notice:${info.lastInsertRowid}`,
+        outcome: 'success',
+        details: { title, priority, targetCourse, targetBatch },
+        throwOnError: true
+      });
+      return info;
+    });
+    const info = createNoticeTx();
     
     if (!scheduledAtValue) {
       // Insert into notifications table for relevant users
@@ -2355,22 +2668,33 @@ router.post('/announcements', authenticateToken, requireRole('admin'), sanitizeI
 });
 
 // Soft Delete global announcement
-router.delete('/announcements/:id', authenticateToken, requireRole('admin'), (req, res) => {
+router.delete('/announcements/:id', authenticateToken, requireRole('admin'), requirePermission('notices:delete'), (req, res) => {
   try {
     const announcement = db.prepare("SELECT title FROM announcements WHERE id = ?").get(req.params.id);
     if (!announcement) {
       return res.status(404).json({ error: 'Announcement not found.' });
     }
 
-    const stmt = db.prepare("UPDATE announcements SET deleted_at = datetime('now'), deleted_by_admin_id = ? WHERE id = ?");
-    const result = stmt.run(req.user.id, req.params.id);
-    logTrashAction('announcements', req.params.id, announcement.title, 'deleted', req.user.id);
+    const deleteNoticeTx = db.transaction(() => {
+      const stmt = db.prepare("UPDATE announcements SET deleted_at = datetime('now'), deleted_by_admin_id = ? WHERE id = ?");
+      stmt.run(req.user.id, req.params.id);
+      logTrashAction('announcements', req.params.id, announcement.title, 'deleted', req.user.id);
 
-    // Delete associated bell notifications
-    db.prepare("DELETE FROM notifications WHERE link = ? OR link = ?").run(
-      `/notices?expand=${req.params.id}`,
-      `/notice-board?expand=${req.params.id}`
-    );
+      db.prepare("DELETE FROM notifications WHERE link = ? OR link = ?").run(
+        `/notices?expand=${req.params.id}`,
+        `/notice-board?expand=${req.params.id}`
+      );
+
+      recordAuditEventFromReq(req, {
+        action: 'notice.delete',
+        module: 'notices',
+        resource: `notice:${req.params.id}`,
+        outcome: 'success',
+        details: { title: announcement.title },
+        throwOnError: true
+      });
+    });
+    deleteNoticeTx();
 
     // Emit Socket.io event for real-time notice recall
     const io = req.app.get('io');
@@ -2386,7 +2710,7 @@ router.delete('/announcements/:id', authenticateToken, requireRole('admin'), (re
 });
 
 // Get all active announcements
-router.get('/announcements', authenticateToken, requireRole('admin'), (req, res) => {
+router.get('/announcements', authenticateToken, requireRole('admin'), requirePermission('notices:view'), (req, res) => {
   try {
     const announcements = db.prepare(`
       SELECT a.*, u.first_name || ' ' || u.last_name as admin_name 
@@ -2403,7 +2727,7 @@ router.get('/announcements', authenticateToken, requireRole('admin'), (req, res)
 });
 
 // Get options for targeting announcements
-router.get('/targeting-options', authenticateToken, requireRole('admin'), (req, res) => {
+router.get('/targeting-options', authenticateToken, requireRole('admin'), requireAnyPermission('notices:view', 'communications:view'), (req, res) => {
   try {
     const courses = db.prepare("SELECT DISTINCT course_name FROM student_course_enrollments WHERE course_name IS NOT NULL AND course_name != ''").all().map(r => r.course_name);
     const batches = db.prepare(`
@@ -2436,7 +2760,7 @@ router.get('/targeting-options', authenticateToken, requireRole('admin'), (req, 
 });
 
 // Get all custom subjects
-router.get('/custom-subjects', authenticateToken, requireRole('admin'), (req, res) => {
+router.get('/custom-subjects', authenticateToken, requireRole('admin'), requirePermission('settings:view'), (req, res) => {
   try {
     const subjects = db.prepare(`
       SELECT 
@@ -2457,7 +2781,7 @@ router.get('/custom-subjects', authenticateToken, requireRole('admin'), (req, re
 });
 
 // Create a new custom subject
-router.post('/custom-subjects', authenticateToken, requireRole('admin'), sanitizeInput, (req, res) => {
+router.post('/custom-subjects', authenticateToken, requireRole('admin'), requirePermission('settings:edit'), sanitizeInput, (req, res) => {
   try {
     const { name, course_name, phase, parts_count, class_type, has_live_qa, duration_minutes, part_durations, teacher_id } = req.body;
     if (!name || !name.trim()) {
@@ -2559,7 +2883,7 @@ router.post('/custom-subjects', authenticateToken, requireRole('admin'), sanitiz
 });
 
 // Reorder custom subjects
-router.put('/custom-subjects/reorder', authenticateToken, requireRole('admin'), (req, res) => {
+router.put('/custom-subjects/reorder', authenticateToken, requireRole('admin'), requirePermission('settings:edit'), (req, res) => {
   try {
     const { orders } = req.body; // Array of { id, sort_order }
     if (!orders || !Array.isArray(orders)) {
@@ -2582,7 +2906,7 @@ router.put('/custom-subjects/reorder', authenticateToken, requireRole('admin'), 
 });
 
 // Update a custom subject
-router.put('/custom-subjects/:id', authenticateToken, requireRole('admin'), sanitizeInput, (req, res) => {
+router.put('/custom-subjects/:id', authenticateToken, requireRole('admin'), requirePermission('settings:edit'), sanitizeInput, (req, res) => {
   try {
     const { id } = req.params;
     const { name, parts_count, class_type, has_live_qa, duration_minutes, part_durations, teacher_id } = req.body;
@@ -2765,7 +3089,7 @@ router.put('/custom-subjects/:id', authenticateToken, requireRole('admin'), sani
 });
 
 // Delete a custom subject
-router.delete('/custom-subjects/:id', authenticateToken, requireRole('admin'), (req, res) => {
+router.delete('/custom-subjects/:id', authenticateToken, requireRole('admin'), requirePermission('settings:edit'), (req, res) => {
   try {
     const { id } = req.params;
     
@@ -3020,7 +3344,7 @@ export function startAnnouncementScheduler(io) {
 // POST /api/admin/sms/bulk
 // Body: { recipients: [{name, phone}], message: string, senderId?: string }
 // Returns: { sent: number, failed: number, results: [{name, phone, ok, error?}] }
-router.post('/sms/bulk', authenticateToken, requireRole('admin'), async (req, res) => {
+router.post('/sms/bulk', authenticateToken, requireRole('admin'), requirePermission('communications:send'), async (req, res) => {
   try {
     const { recipients, message, senderId } = req.body;
 
@@ -3110,7 +3434,7 @@ router.post('/sms/bulk', authenticateToken, requireRole('admin'), async (req, re
 
 // POST /api/admin/sms/schedule
 // Body: { senderId, recipients: [{name, phone}], message, scheduledAt }
-router.post('/sms/schedule', authenticateToken, requireRole('admin'), async (req, res) => {
+router.post('/sms/schedule', authenticateToken, requireRole('admin'), requirePermission('communications:schedule'), async (req, res) => {
   try {
     const { senderId, recipients, message, scheduledAt } = req.body;
 
@@ -3146,7 +3470,7 @@ router.post('/sms/schedule', authenticateToken, requireRole('admin'), async (req
 });
 
 // GET /api/admin/sms/scheduled
-router.get('/sms/scheduled', authenticateToken, requireRole('admin'), async (req, res) => {
+router.get('/sms/scheduled', authenticateToken, requireRole('admin'), requirePermission('communications:view'), async (req, res) => {
   try {
     const list = db.prepare(`
       SELECT id, sender_id, recipients, message, scheduled_at, status, error_message, created_at
@@ -3172,7 +3496,7 @@ router.get('/sms/scheduled', authenticateToken, requireRole('admin'), async (req
 });
 
 // DELETE /api/admin/sms/scheduled/:id
-router.delete('/sms/scheduled/:id', authenticateToken, requireRole('admin'), async (req, res) => {
+router.delete('/sms/scheduled/:id', authenticateToken, requireRole('admin'), requirePermission('communications:delete'), async (req, res) => {
   try {
     const { id } = req.params;
     db.prepare(`

@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
-import { useSearchParams } from 'react-router-dom';
-import { Plus, Trash2, BookOpen, Settings, AlertCircle, CheckCircle, Edit2, Check, X, DollarSign, Wallet, ChevronUp, ChevronDown, Search, GripVertical, UploadCloud, Layers } from 'lucide-react';
+import { useSearchParams, useNavigate } from 'react-router-dom';
+import { Plus, Trash2, BookOpen, Settings, AlertCircle, CheckCircle, Edit2, Check, X, DollarSign, Wallet, ChevronUp, ChevronDown, Search, GripVertical, UploadCloud, Layers, ShieldAlert } from 'lucide-react';
+import { useAuth } from '../../context/AuthContext';
 import { useModal } from '../../components/BFIModal';
 import BatchFeeManager from './BatchFeeManager';
 import CourseSettingsManager from './CourseSettingsManager';
@@ -14,7 +15,24 @@ import ErrorBoundary from '../../components/ErrorBoundary';
 
 function AdditionalOptionsContent() {
   const { showConfirm } = useModal();
+  const { currentUser } = useAuth();
+  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
+
+  const isSuperAdminUser = Boolean(currentUser?.is_super_admin || currentUser?.isSuperAdmin || currentUser?.permissions?.includes('*'));
+  const hasAdminPerm = (perm) => isSuperAdminUser || (Array.isArray(currentUser?.permissions) && currentUser.permissions.includes(perm));
+  const hasAnyAdminPerm = (...perms) => isSuperAdminUser || (Array.isArray(currentUser?.permissions) && perms.some(p => currentUser.permissions.includes(p)));
+
+  const canAccessCurrentView = (view) => {
+    if (view === 'dashboard') return true;
+    if (view === 'course-maker') return hasAdminPerm('courses:view');
+    if (view === 'custom-subjects') return hasAdminPerm('settings:view');
+    if (view === 'course-settings') return hasAnyAdminPerm('settings:view', 'courses:view');
+    if (view === 'batch-fees' || view === 'fee-tracker') return hasAdminPerm('finance:view');
+    if (view === 'bulk-register') return hasAnyAdminPerm('students:view', 'students:create');
+    if (view === 'trash') return hasAdminPerm('trash:view');
+    return false;
+  };
   
   let rawView = searchParams.get('view') || 'dashboard';
   if (rawView === 'subjects') {
@@ -370,356 +388,440 @@ function AdditionalOptionsContent() {
 
       {currentView === 'dashboard' ? (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '1.5rem', marginTop: '1rem' }}>
-          <button
-            onClick={() => setCurrentView('course-maker')}
-            style={{
-              background: 'rgba(255, 255, 255, 0.02)',
-              border: '1px solid var(--glass-border)',
-              borderRadius: '16px',
-              padding: '2rem',
-              textAlign: 'left',
-              cursor: 'pointer',
-              transition: 'background 0.2s, border-color 0.2s, box-shadow 0.2s',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '1rem',
-              position: 'relative',
-              overflow: 'hidden',
-              color: 'inherit'
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.background = 'rgba(255, 255, 255, 0.04)';
-              e.currentTarget.style.borderColor = 'var(--accent-primary)';
-              e.currentTarget.style.boxShadow = '0 12px 30px rgba(0, 0, 0, 0.4)';
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.background = 'rgba(255, 255, 255, 0.02)';
-              e.currentTarget.style.borderColor = 'var(--glass-border)';
-              e.currentTarget.style.boxShadow = 'none';
-            }}
-          >
-            <div style={{
-              background: 'rgba(225, 29, 72, 0.1)',
-              color: 'var(--accent-primary)',
-              width: '48px',
-              height: '48px',
-              borderRadius: '12px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center'
-            }}>
-              <Layers size={24} />
-            </div>
-            <div>
-              <h3 style={{ fontSize: '1.2rem', fontWeight: 600, marginBottom: '0.4rem', color: 'var(--text-primary)' }}>
-                Course Maker
-              </h3>
-              <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', lineHeight: '1.4' }}>
-                Create and configure courses or workshops with 1–5 phases, routines, grading, and completion rules.
-              </p>
-            </div>
-          </button>
+          {Boolean(currentUser?.is_super_admin) && (
+            <button
+              onClick={() => navigate('/admin/administrators')}
+              style={{
+                background: 'rgba(225, 29, 72, 0.03)',
+                border: '1px solid rgba(225, 29, 72, 0.25)',
+                borderRadius: '16px',
+                padding: '2rem',
+                textAlign: 'left',
+                cursor: 'pointer',
+                transition: 'background 0.2s, border-color 0.2s, box-shadow 0.2s',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '1rem',
+                position: 'relative',
+                overflow: 'hidden',
+                color: 'inherit'
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = 'rgba(225, 29, 72, 0.08)';
+                e.currentTarget.style.borderColor = '#fb7185';
+                e.currentTarget.style.boxShadow = '0 12px 30px rgba(225, 29, 72, 0.2)';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = 'rgba(225, 29, 72, 0.03)';
+                e.currentTarget.style.borderColor = 'rgba(225, 29, 72, 0.25)';
+                e.currentTarget.style.boxShadow = 'none';
+              }}
+            >
+              <div style={{
+                background: 'rgba(225, 29, 72, 0.15)',
+                color: '#fb7185',
+                width: '48px',
+                height: '48px',
+                borderRadius: '12px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center'
+              }}>
+                <ShieldAlert size={24} />
+              </div>
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '0.4rem' }}>
+                  <h3 style={{ fontSize: '1.2rem', fontWeight: 600, color: 'var(--text-primary)' }}>
+                    Administrator Management
+                  </h3>
+                  <span style={{
+                    fontSize: '0.65rem',
+                    fontWeight: 700,
+                    textTransform: 'uppercase',
+                    background: 'rgba(225, 29, 72, 0.2)',
+                    color: '#fb7185',
+                    padding: '1px 6px',
+                    borderRadius: '4px'
+                  }}>Super Admin</span>
+                </div>
+                <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', lineHeight: '1.4' }}>
+                  Manage platform administrators, configure fine-grained permissions, and audit administrative actions.
+                </p>
+              </div>
+            </button>
+          )}
 
-          <button
-            onClick={() => setCurrentView('subjects')}
-            style={{
-              background: 'rgba(255, 255, 255, 0.02)',
-              border: '1px solid var(--glass-border)',
-              borderRadius: '16px',
-              padding: '2rem',
-              textAlign: 'left',
-              cursor: 'pointer',
-              transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '1rem',
-              position: 'relative',
-              overflow: 'hidden',
-              color: 'inherit'
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.background = 'rgba(255, 255, 255, 0.04)';
-              e.currentTarget.style.borderColor = 'var(--accent-primary)';
-              e.currentTarget.style.boxShadow = '0 12px 30px rgba(0, 0, 0, 0.4)';
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.background = 'rgba(255, 255, 255, 0.02)';
-              e.currentTarget.style.borderColor = 'var(--glass-border)';
-              e.currentTarget.style.boxShadow = 'none';
-            }}
-          >
-            <div style={{
-              background: 'rgba(225, 29, 72, 0.1)',
-              color: 'var(--accent-primary)',
-              width: '48px',
-              height: '48px',
-              borderRadius: '12px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center'
-            }}>
-              <Plus size={24} />
-            </div>
-            <div>
-              <h3 style={{ fontSize: '1.2rem', fontWeight: 600, marginBottom: '0.4rem', color: 'var(--text-primary)' }}>
-                Create Custom Subject
-              </h3>
-              <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', lineHeight: '1.4' }}>
-                Manage default and custom classroom subjects, edit names, and delete subjects from the catalog.
-              </p>
-            </div>
-          </button>
+          {hasAdminPerm('courses:view') && (
+            <button
+              onClick={() => setCurrentView('course-maker')}
+              style={{
+                background: 'rgba(255, 255, 255, 0.02)',
+                border: '1px solid var(--glass-border)',
+                borderRadius: '16px',
+                padding: '2rem',
+                textAlign: 'left',
+                cursor: 'pointer',
+                transition: 'background 0.2s, border-color 0.2s, box-shadow 0.2s',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '1rem',
+                position: 'relative',
+                overflow: 'hidden',
+                color: 'inherit'
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = 'rgba(255, 255, 255, 0.04)';
+                e.currentTarget.style.borderColor = 'var(--accent-primary)';
+                e.currentTarget.style.boxShadow = '0 12px 30px rgba(0, 0, 0, 0.4)';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = 'rgba(255, 255, 255, 0.02)';
+                e.currentTarget.style.borderColor = 'var(--glass-border)';
+                e.currentTarget.style.boxShadow = 'none';
+              }}
+            >
+              <div style={{
+                background: 'rgba(225, 29, 72, 0.1)',
+                color: 'var(--accent-primary)',
+                width: '48px',
+                height: '48px',
+                borderRadius: '12px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center'
+              }}>
+                <Layers size={24} />
+              </div>
+              <div>
+                <h3 style={{ fontSize: '1.2rem', fontWeight: 600, marginBottom: '0.4rem', color: 'var(--text-primary)' }}>
+                  Course Maker
+                </h3>
+                <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', lineHeight: '1.4' }}>
+                  Create and configure courses or workshops with 1–5 phases, routines, grading, and completion rules.
+                </p>
+              </div>
+            </button>
+          )}
 
-          
-          <button
-            onClick={() => setCurrentView('course-settings')}
-            style={{
-              background: 'rgba(255, 255, 255, 0.02)',
-              border: '1px solid var(--glass-border)',
-              borderRadius: '16px',
-              padding: '2rem',
-              textAlign: 'left',
-              cursor: 'pointer',
-              transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '1rem',
-              position: 'relative',
-              overflow: 'hidden',
-              color: 'inherit'
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.background = 'rgba(255, 255, 255, 0.04)';
-              e.currentTarget.style.borderColor = 'var(--accent-primary)';
-              e.currentTarget.style.boxShadow = '0 12px 30px rgba(0, 0, 0, 0.4)';
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.background = 'rgba(255, 255, 255, 0.02)';
-              e.currentTarget.style.borderColor = 'var(--glass-border)';
-              e.currentTarget.style.boxShadow = 'none';
-            }}
-          >
-            <div style={{
-              background: 'rgba(225, 29, 72, 0.1)',
-              color: 'var(--accent-primary)',
-              width: '48px',
-              height: '48px',
-              borderRadius: '12px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center'
-            }}>
-              <Settings size={24} />
-            </div>
-            <div>
-              <h3 style={{ fontSize: '1.2rem', fontWeight: 600, marginBottom: '0.4rem', color: 'var(--text-primary)' }}>
-                Course Settings Manager
-              </h3>
-              <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', lineHeight: '1.4' }}>
-                Configure global and batch-specific course settings, including total classes, exam scores, passing marks, and assignments.
-              </p>
-            </div>
-          </button>
+          {hasAdminPerm('settings:view') && (
+            <button
+              onClick={() => setCurrentView('subjects')}
+              style={{
+                background: 'rgba(255, 255, 255, 0.02)',
+                border: '1px solid var(--glass-border)',
+                borderRadius: '16px',
+                padding: '2rem',
+                textAlign: 'left',
+                cursor: 'pointer',
+                transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '1rem',
+                position: 'relative',
+                overflow: 'hidden',
+                color: 'inherit'
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = 'rgba(255, 255, 255, 0.04)';
+                e.currentTarget.style.borderColor = 'var(--accent-primary)';
+                e.currentTarget.style.boxShadow = '0 12px 30px rgba(0, 0, 0, 0.4)';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = 'rgba(255, 255, 255, 0.02)';
+                e.currentTarget.style.borderColor = 'var(--glass-border)';
+                e.currentTarget.style.boxShadow = 'none';
+              }}
+            >
+              <div style={{
+                background: 'rgba(225, 29, 72, 0.1)',
+                color: 'var(--accent-primary)',
+                width: '48px',
+                height: '48px',
+                borderRadius: '12px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center'
+              }}>
+                <Plus size={24} />
+              </div>
+              <div>
+                <h3 style={{ fontSize: '1.2rem', fontWeight: 600, marginBottom: '0.4rem', color: 'var(--text-primary)' }}>
+                  Create Custom Subject
+                </h3>
+                <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', lineHeight: '1.4' }}>
+                  Manage default and custom classroom subjects, edit names, and delete subjects from the catalog.
+                </p>
+              </div>
+            </button>
+          )}
 
-          <button
-            onClick={() => setCurrentView('batch-fees')}
-            style={{
-              background: 'rgba(255, 255, 255, 0.02)',
-              border: '1px solid var(--glass-border)',
-              borderRadius: '16px',
-              padding: '2rem',
-              textAlign: 'left',
-              cursor: 'pointer',
-              transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '1rem',
-              position: 'relative',
-              overflow: 'hidden',
-              color: 'inherit'
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.background = 'rgba(255, 255, 255, 0.04)';
-              e.currentTarget.style.borderColor = 'var(--accent-primary)';
-              e.currentTarget.style.boxShadow = '0 12px 30px rgba(0, 0, 0, 0.4)';
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.background = 'rgba(255, 255, 255, 0.02)';
-              e.currentTarget.style.borderColor = 'var(--glass-border)';
-              e.currentTarget.style.boxShadow = 'none';
-            }}
-          >
-            <div style={{
-              background: 'rgba(225, 29, 72, 0.1)',
-              color: 'var(--accent-primary)',
-              width: '48px',
-              height: '48px',
-              borderRadius: '12px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center'
-            }}>
-              <DollarSign size={24} />
-            </div>
-            <div>
-              <h3 style={{ fontSize: '1.2rem', fontWeight: 600, marginBottom: '0.4rem', color: 'var(--text-primary)' }}>
-                Batch Fee Manager
-              </h3>
-              <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', lineHeight: '1.4' }}>
-                Define course fees per batch — used as the default when student fees are not manually set.
-              </p>
-            </div>
-          </button>
+          {hasAnyAdminPerm('settings:view', 'courses:view') && (
+            <button
+              onClick={() => setCurrentView('course-settings')}
+              style={{
+                background: 'rgba(255, 255, 255, 0.02)',
+                border: '1px solid var(--glass-border)',
+                borderRadius: '16px',
+                padding: '2rem',
+                textAlign: 'left',
+                cursor: 'pointer',
+                transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '1rem',
+                position: 'relative',
+                overflow: 'hidden',
+                color: 'inherit'
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = 'rgba(255, 255, 255, 0.04)';
+                e.currentTarget.style.borderColor = 'var(--accent-primary)';
+                e.currentTarget.style.boxShadow = '0 12px 30px rgba(0, 0, 0, 0.4)';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = 'rgba(255, 255, 255, 0.02)';
+                e.currentTarget.style.borderColor = 'var(--glass-border)';
+                e.currentTarget.style.boxShadow = 'none';
+              }}
+            >
+              <div style={{
+                background: 'rgba(225, 29, 72, 0.1)',
+                color: 'var(--accent-primary)',
+                width: '48px',
+                height: '48px',
+                borderRadius: '12px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center'
+              }}>
+                <Settings size={24} />
+              </div>
+              <div>
+                <h3 style={{ fontSize: '1.2rem', fontWeight: 600, marginBottom: '0.4rem', color: 'var(--text-primary)' }}>
+                  Course Settings Manager
+                </h3>
+                <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', lineHeight: '1.4' }}>
+                  Configure global and batch-specific course settings, including total classes, exam scores, passing marks, and assignments.
+                </p>
+              </div>
+            </button>
+          )}
 
-          <button
-            onClick={() => setCurrentView('fee-tracker')}
-            style={{
-              background: 'rgba(255, 255, 255, 0.02)',
-              border: '1px solid var(--glass-border)',
-              borderRadius: '16px',
-              padding: '2rem',
-              textAlign: 'left',
-              cursor: 'pointer',
-              transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '1rem',
-              position: 'relative',
-              overflow: 'hidden',
-              color: 'inherit'
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.background = 'rgba(255, 255, 255, 0.04)';
-              e.currentTarget.style.borderColor = 'var(--accent-primary)';
-              e.currentTarget.style.boxShadow = '0 12px 30px rgba(0, 0, 0, 0.4)';
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.background = 'rgba(255, 255, 255, 0.02)';
-              e.currentTarget.style.borderColor = 'var(--glass-border)';
-              e.currentTarget.style.boxShadow = 'none';
-            }}
-          >
-            <div style={{
-              background: 'rgba(225, 29, 72, 0.1)',
-              color: 'var(--accent-primary)',
-              width: '48px',
-              height: '48px',
-              borderRadius: '12px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center'
-            }}>
-              <Wallet size={24} />
-            </div>
-            <div>
-              <h3 style={{ fontSize: '1.2rem', fontWeight: 600, marginBottom: '0.4rem', color: 'var(--text-primary)' }}>
-                Fee Tracker
-              </h3>
-              <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', lineHeight: '1.4' }}>
-                Monitor student payments, send reminders, and track outstanding fees.
-              </p>
-            </div>
-          </button>
+          {hasAdminPerm('finance:view') && (
+            <button
+              onClick={() => setCurrentView('batch-fees')}
+              style={{
+                background: 'rgba(255, 255, 255, 0.02)',
+                border: '1px solid var(--glass-border)',
+                borderRadius: '16px',
+                padding: '2rem',
+                textAlign: 'left',
+                cursor: 'pointer',
+                transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '1rem',
+                position: 'relative',
+                overflow: 'hidden',
+                color: 'inherit'
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = 'rgba(255, 255, 255, 0.04)';
+                e.currentTarget.style.borderColor = 'var(--accent-primary)';
+                e.currentTarget.style.boxShadow = '0 12px 30px rgba(0, 0, 0, 0.4)';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = 'rgba(255, 255, 255, 0.02)';
+                e.currentTarget.style.borderColor = 'var(--glass-border)';
+                e.currentTarget.style.boxShadow = 'none';
+              }}
+            >
+              <div style={{
+                background: 'rgba(225, 29, 72, 0.1)',
+                color: 'var(--accent-primary)',
+                width: '48px',
+                height: '48px',
+                borderRadius: '12px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center'
+              }}>
+                <DollarSign size={24} />
+              </div>
+              <div>
+                <h3 style={{ fontSize: '1.2rem', fontWeight: 600, marginBottom: '0.4rem', color: 'var(--text-primary)' }}>
+                  Batch Fee Manager
+                </h3>
+                <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', lineHeight: '1.4' }}>
+                  Define course fees per batch — used as the default when student fees are not manually set.
+                </p>
+              </div>
+            </button>
+          )}
 
-          <button
-            onClick={() => setCurrentView('bulk-register')}
-            style={{
-              background: 'rgba(255, 255, 255, 0.02)',
-              border: '1px solid var(--glass-border)',
-              borderRadius: '16px',
-              padding: '2rem',
-              textAlign: 'left',
-              cursor: 'pointer',
-              transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '1rem',
-              position: 'relative',
-              overflow: 'hidden',
-              color: 'inherit'
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.background = 'rgba(255, 255, 255, 0.04)';
-              e.currentTarget.style.borderColor = 'var(--accent-primary)';
-              e.currentTarget.style.boxShadow = '0 12px 30px rgba(0, 0, 0, 0.4)';
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.background = 'rgba(255, 255, 255, 0.02)';
-              e.currentTarget.style.borderColor = 'var(--glass-border)';
-              e.currentTarget.style.boxShadow = 'none';
-            }}
-          >
-            <div style={{
-              background: 'rgba(14, 165, 233, 0.1)',
-              color: 'var(--accent-primary)',
-              width: '48px',
-              height: '48px',
-              borderRadius: '12px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center'
-            }}>
-              <UploadCloud size={24} />
-            </div>
-            <div>
-              <h3 style={{ fontSize: '1.2rem', fontWeight: 600, marginBottom: '0.4rem', color: 'var(--text-primary)' }}>
-                Bulk Import Registrations
-              </h3>
-              <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', lineHeight: '1.4' }}>
-                Smartly upload unregistered students to keep track of leads and prospects without batching them immediately.
-              </p>
-            </div>
-          </button>
+          {hasAdminPerm('finance:view') && (
+            <button
+              onClick={() => setCurrentView('fee-tracker')}
+              style={{
+                background: 'rgba(255, 255, 255, 0.02)',
+                border: '1px solid var(--glass-border)',
+                borderRadius: '16px',
+                padding: '2rem',
+                textAlign: 'left',
+                cursor: 'pointer',
+                transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '1rem',
+                position: 'relative',
+                overflow: 'hidden',
+                color: 'inherit'
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = 'rgba(255, 255, 255, 0.04)';
+                e.currentTarget.style.borderColor = 'var(--accent-primary)';
+                e.currentTarget.style.boxShadow = '0 12px 30px rgba(0, 0, 0, 0.4)';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = 'rgba(255, 255, 255, 0.02)';
+                e.currentTarget.style.borderColor = 'var(--glass-border)';
+                e.currentTarget.style.boxShadow = 'none';
+              }}
+            >
+              <div style={{
+                background: 'rgba(225, 29, 72, 0.1)',
+                color: 'var(--accent-primary)',
+                width: '48px',
+                height: '48px',
+                borderRadius: '12px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center'
+              }}>
+                <Wallet size={24} />
+              </div>
+              <div>
+                <h3 style={{ fontSize: '1.2rem', fontWeight: 600, marginBottom: '0.4rem', color: 'var(--text-primary)' }}>
+                  Fee Tracker
+                </h3>
+                <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', lineHeight: '1.4' }}>
+                  Monitor student payments, send reminders, and track outstanding fees.
+                </p>
+              </div>
+            </button>
+          )}
 
-          <button
-            onClick={() => setCurrentView('trash')}
-            style={{
-              background: 'rgba(255, 255, 255, 0.02)',
-              border: '1px solid var(--glass-border)',
-              borderRadius: '16px',
-              padding: '2rem',
-              textAlign: 'left',
-              cursor: 'pointer',
-              transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '1rem',
-              position: 'relative',
-              overflow: 'hidden',
-              color: 'inherit'
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.background = 'rgba(255, 255, 255, 0.04)';
-              e.currentTarget.style.borderColor = 'var(--accent-primary)';
-              e.currentTarget.style.boxShadow = '0 12px 30px rgba(0, 0, 0, 0.4)';
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.background = 'rgba(255, 255, 255, 0.02)';
-              e.currentTarget.style.borderColor = 'var(--glass-border)';
-              e.currentTarget.style.boxShadow = 'none';
-            }}
-          >
-            <div style={{
-              background: 'rgba(239, 68, 68, 0.1)',
-              color: '#ef4444',
-              width: '48px',
-              height: '48px',
-              borderRadius: '12px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center'
-            }}>
-              <Trash2 size={24} />
+          {hasAnyAdminPerm('students:view', 'students:create') && (
+            <button
+              onClick={() => setCurrentView('bulk-register')}
+              style={{
+                background: 'rgba(255, 255, 255, 0.02)',
+                border: '1px solid var(--glass-border)',
+                borderRadius: '16px',
+                padding: '2rem',
+                textAlign: 'left',
+                cursor: 'pointer',
+                transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '1rem',
+                position: 'relative',
+                overflow: 'hidden',
+                color: 'inherit'
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = 'rgba(255, 255, 255, 0.04)';
+                e.currentTarget.style.borderColor = 'var(--accent-primary)';
+                e.currentTarget.style.boxShadow = '0 12px 30px rgba(0, 0, 0, 0.4)';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = 'rgba(255, 255, 255, 0.02)';
+                e.currentTarget.style.borderColor = 'var(--glass-border)';
+                e.currentTarget.style.boxShadow = 'none';
+              }}
+            >
+              <div style={{
+                background: 'rgba(14, 165, 233, 0.1)',
+                color: 'var(--accent-primary)',
+                width: '48px',
+                height: '48px',
+                borderRadius: '12px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center'
+              }}>
+                <UploadCloud size={24} />
+              </div>
+              <div>
+                <h3 style={{ fontSize: '1.2rem', fontWeight: 600, marginBottom: '0.4rem', color: 'var(--text-primary)' }}>
+                  Bulk Import Registrations
+                </h3>
+                <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', lineHeight: '1.4' }}>
+                  Smartly upload unregistered students to keep track of leads and prospects without batching them immediately.
+                </p>
+              </div>
+            </button>
+          )}
+
+          {hasAdminPerm('trash:view') && (
+            <button
+              onClick={() => setCurrentView('trash')}
+              style={{
+                background: 'rgba(255, 255, 255, 0.02)',
+                border: '1px solid var(--glass-border)',
+                borderRadius: '16px',
+                padding: '2rem',
+                textAlign: 'left',
+                cursor: 'pointer',
+                transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '1rem',
+                position: 'relative',
+                overflow: 'hidden',
+                color: 'inherit'
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = 'rgba(255, 255, 255, 0.04)';
+                e.currentTarget.style.borderColor = 'var(--accent-primary)';
+                e.currentTarget.style.boxShadow = '0 12px 30px rgba(0, 0, 0, 0.4)';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = 'rgba(255, 255, 255, 0.02)';
+                e.currentTarget.style.borderColor = 'var(--glass-border)';
+                e.currentTarget.style.boxShadow = 'none';
+              }}
+            >
+              <div style={{
+                background: 'rgba(239, 68, 68, 0.1)',
+                color: '#ef4444',
+                width: '48px',
+                height: '48px',
+                borderRadius: '12px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center'
+              }}>
+                <Trash2 size={24} />
+              </div>
+              <div>
+                <h3 style={{ fontSize: '1.2rem', fontWeight: 600, marginBottom: '0.4rem', color: 'var(--text-primary)' }}>
+                  Trash Manager
+                </h3>
+                <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', lineHeight: '1.4' }}>
+                  View, restore, or permanently delete soft-deleted records across the system.
+                </p>
+              </div>
+            </button>
+          )}
+
+          {hasAnyAdminPerm('courses:view', 'settings:view', 'finance:view', 'students:view', 'students:create', 'trash:view') === false && !isSuperAdminUser && (
+            <div style={{ gridColumn: '1 / -1', padding: '3rem 2rem', textAlign: 'center', color: 'var(--text-secondary)', background: 'rgba(255,255,255,0.02)', borderRadius: '16px', border: '1px solid var(--glass-border)' }}>
+              <ShieldAlert size={40} style={{ color: 'var(--text-muted)', marginBottom: '1rem', display: 'inline-block' }} />
+              <h3 style={{ fontSize: '1.1rem', color: 'var(--text-primary)', marginBottom: '0.4rem' }}>No Available Tools</h3>
+              <p style={{ fontSize: '0.9rem', maxWidth: '400px', margin: '0 auto' }}>You have not been granted access to any administrative tools or settings modules.</p>
             </div>
-            <div>
-              <h3 style={{ fontSize: '1.2rem', fontWeight: 600, marginBottom: '0.4rem', color: 'var(--text-primary)' }}>
-                Trash Manager
-              </h3>
-              <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', lineHeight: '1.4' }}>
-                View, restore, or permanently delete soft-deleted records across the system.
-              </p>
-            </div>
-          </button>
+          )}
         </div>
       ) : (
         <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid var(--glass-border)', borderRadius: '16px', minHeight: '600px', display: 'flex', flexDirection: 'column' }}>
@@ -767,6 +869,14 @@ function AdditionalOptionsContent() {
           </div>
           
           <div style={{ flex: 1, position: 'relative' }}>
+            {!canAccessCurrentView(currentView) ? (
+              <div style={{ padding: '4rem 2rem', textAlign: 'center', color: 'var(--text-secondary)' }}>
+                <ShieldAlert size={48} style={{ color: '#ef4444', marginBottom: '1rem', display: 'inline-block' }} />
+                <h3 style={{ fontSize: '1.3rem', color: 'var(--text-primary)', marginBottom: '0.5rem' }}>Access Denied</h3>
+                <p>You do not have the required administrative permissions to access this configuration module.</p>
+              </div>
+            ) : (
+              <>
             {currentView === 'custom-subjects' && (
             <>
               {/* Course Tabs Selector */}
@@ -1597,6 +1707,8 @@ function AdditionalOptionsContent() {
           {currentView === 'course-maker' && (
             <CourseMaker />
           )}
+              </>
+            )}
           </div>
         </div>
       )}

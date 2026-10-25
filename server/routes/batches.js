@@ -1,6 +1,7 @@
 import express from 'express';
 import db from '../db/database.js';
-import { authenticateToken, requireRole } from '../middleware/auth.js';
+import { authenticateToken, requireRole, requirePermission } from '../middleware/auth.js';
+import { recordAuditEventFromReq } from '../services/auditLedgerService.js';
 import { runBatchStatusAutomation } from '../utils/batchStatusAutomation.js';
 import { getBatchFee } from '../utils/feeResolver.js';
 import { logTrashAction } from '../utils/trashLogger.js';
@@ -15,7 +16,7 @@ const router = express.Router();
 // NOTE: This route MUST appear before /:id routes or Express will treat
 //       'run-automation' as an :id parameter and never reach this handler.
 // ─────────────────────────────────────────────────────────────────────────────
-router.post('/run-automation', authenticateToken, requireRole('admin'), (req, res) => {
+router.post('/run-automation', authenticateToken, requireRole('admin'), requirePermission('batches:edit'), (req, res) => {
   try {
     console.log(`[BatchAutomation] Manual trigger by admin ${req.user.id}`);
 
@@ -40,7 +41,7 @@ router.post('/run-automation', authenticateToken, requireRole('admin'), (req, re
 // Endpoint 1 — GET /api/admin/batches
 // Purpose: List all batches with student counts
 // ─────────────────────────────────────────────────────────────────────────────
-router.get('/', authenticateToken, requireRole('admin'), (req, res) => {
+router.get('/', authenticateToken, requireRole('admin'), requirePermission('batches:view'), (req, res) => {
   try {
     const status = req.query.status || null;
     const course = req.query.course || null;
@@ -94,7 +95,7 @@ router.get('/', authenticateToken, requireRole('admin'), (req, res) => {
 // Endpoint 2 — GET /api/admin/batches/:id
 // Purpose: Get a single batch's full details
 // ─────────────────────────────────────────────────────────────────────────────
-router.get('/:id', authenticateToken, requireRole('admin'), (req, res) => {
+router.get('/:id', authenticateToken, requireRole('admin'), requirePermission('batches:view'), (req, res) => {
   try {
     const slugOrId = req.params.id;
     const batchRecordLookup = db.prepare('SELECT id FROM batches WHERE id = ? OR slug = ?').get(slugOrId, slugOrId);
@@ -156,7 +157,7 @@ router.get('/:id', authenticateToken, requireRole('admin'), (req, res) => {
 // Endpoint 3 — POST /api/admin/batches
 // Purpose: Create a new batch
 // ─────────────────────────────────────────────────────────────────────────────
-router.post('/', authenticateToken, requireRole('admin'), (req, res) => {
+router.post('/', authenticateToken, requireRole('admin'), requirePermission('batches:create'), (req, res) => {
   try {
     const { batch_name, batch_number, course_name, status, start_date, end_date, description, course_definition_id } = req.body;
 
@@ -221,26 +222,43 @@ router.post('/', authenticateToken, requireRole('admin'), (req, res) => {
       }
     }
 
-    const result = db.prepare(`
-      INSERT INTO batches (
-        batch_name, batch_number, course_name, status, start_date, end_date, description, created_by,
-        course_definition_id, course_version
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      batch_name, 
-      batch_number, 
-      finalCourseName, 
-      finalStatus, 
-      start_date || null, 
-      end_date || null, 
-      description || null, 
-      req.user.id,
-      courseDefId,
-      courseVersion
-    );
+    const createBatchTx = db.transaction(() => {
+      const result = db.prepare(`
+        INSERT INTO batches (
+          batch_name, batch_number, course_name, status, start_date, end_date, description, created_by,
+          course_definition_id, course_version
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        batch_name, 
+        batch_number, 
+        finalCourseName, 
+        finalStatus, 
+        start_date || null, 
+        end_date || null, 
+        description || null, 
+        req.user.id,
+        courseDefId,
+        courseVersion
+      );
 
-    const newBatch = db.prepare('SELECT * FROM batches WHERE id = ?').get(result.lastInsertRowid);
+      const newId = result.lastInsertRowid;
+      const createdRecord = db.prepare('SELECT * FROM batches WHERE id = ?').get(newId);
+
+      recordAuditEventFromReq(req, {
+        action: 'batch.create',
+        module: 'batches',
+        resource: `batch:${newId}`,
+        outcome: 'success',
+        afterState: createdRecord,
+        details: { batch_name, course_name: finalCourseName, batch_number },
+        throwOnError: true
+      });
+
+      return createdRecord;
+    });
+
+    const newBatch = createBatchTx();
     res.status(201).json(newBatch);
   } catch (error) {
     console.error('[Batches] POST / error:', error);
@@ -252,7 +270,7 @@ router.post('/', authenticateToken, requireRole('admin'), (req, res) => {
 // Endpoint 4 — PATCH /api/admin/batches/:id
 // Purpose: Update an existing batch
 // ─────────────────────────────────────────────────────────────────────────────
-router.patch('/:id', authenticateToken, requireRole('admin'), (req, res) => {
+router.patch('/:id', authenticateToken, requireRole('admin'), requirePermission('batches:edit'), (req, res) => {
   try {
     const slugOrId = req.params.id;
     console.log(`[PATCH /:id] slugOrId = ${slugOrId}`);
@@ -388,25 +406,42 @@ router.patch('/:id', authenticateToken, requireRole('admin'), (req, res) => {
       params.batch_number = req.body.batch_number.trim();
     }
 
-    if (updates.length > 0) {
-      updates.push('updated_at = datetime(\'now\')');
-      params.id = batchId;
+    const updateBatchTx = db.transaction(() => {
+      if (updates.length > 0) {
+        updates.push('updated_at = datetime(\'now\')');
+        params.id = batchId;
 
-      db.prepare(`
-        UPDATE batches 
-        SET ${updates.join(', ')}
-        WHERE id = :id
-      `).run(params);
-    }
+        db.prepare(`
+          UPDATE batches 
+          SET ${updates.join(', ')}
+          WHERE id = :id
+        `).run(params);
+      }
 
-    const updatedBatch = db.prepare(`
-      SELECT b.*, COUNT(bs.id) as student_count
-      FROM batches b
-      LEFT JOIN batch_students bs ON bs.batch_id = b.id
-      WHERE b.id = ?
-      GROUP BY b.id
-    `).get(batchId);
+      const updatedRecord = db.prepare(`
+        SELECT b.*, COUNT(bs.id) as student_count
+        FROM batches b
+        LEFT JOIN batch_students bs ON bs.batch_id = b.id
+        WHERE b.id = ?
+        GROUP BY b.id
+      `).get(batchId);
 
+      const isStatusChange = req.body.status !== undefined && req.body.status !== current.status;
+      recordAuditEventFromReq(req, {
+        action: isStatusChange ? 'batch.status_change' : 'batch.update',
+        module: 'batches',
+        resource: `batch:${batchId}`,
+        outcome: 'success',
+        beforeState: current,
+        afterState: updatedRecord,
+        details: { isStatusChange, newStatus: req.body.status },
+        throwOnError: true
+      });
+
+      return updatedRecord;
+    });
+
+    const updatedBatch = updateBatchTx();
     res.json(updatedBatch);
   } catch (error) {
     console.error('[Batches] PATCH /:id error:', error);
@@ -418,7 +453,7 @@ router.patch('/:id', authenticateToken, requireRole('admin'), (req, res) => {
 // Endpoint 5 — DELETE /api/admin/batches/:id
 // Purpose: Delete a batch (strictly controlled)
 // ─────────────────────────────────────────────────────────────────────────────
-router.delete('/:id', authenticateToken, requireRole('admin'), (req, res) => {
+router.delete('/:id', authenticateToken, requireRole('admin'), requirePermission('batches:delete'), (req, res) => {
   try {
     const slugOrId = req.params.id;
     const batchRecordLookup = db.prepare('SELECT id FROM batches WHERE id = ? OR slug = ?').get(slugOrId, slugOrId);
@@ -430,10 +465,23 @@ router.delete('/:id', authenticateToken, requireRole('admin'), (req, res) => {
       return res.status(404).json({ error: 'Batch not found' });
     }
 
-    // Soft Delete the batch
-    db.prepare("UPDATE batches SET deleted_at = datetime('now'), deleted_by_admin_id = ? WHERE id = ?").run(req.user.id, batchId);
-    logTrashAction('batches', batchId, batch.batch_name, 'deleted', req.user.id);
-    
+    const deleteBatchTx = db.transaction(() => {
+      // Soft Delete the batch
+      db.prepare("UPDATE batches SET deleted_at = datetime('now'), deleted_by_admin_id = ? WHERE id = ?").run(req.user.id, batchId);
+      logTrashAction('batches', batchId, batch.batch_name, 'deleted', req.user.id);
+
+      recordAuditEventFromReq(req, {
+        action: 'batch.delete',
+        module: 'batches',
+        resource: `batch:${batchId}`,
+        outcome: 'success',
+        beforeState: batch,
+        details: { batch_name: batch.batch_name },
+        throwOnError: true
+      });
+    });
+
+    deleteBatchTx();
     res.json({ success: true, message: 'Batch moved to Trash.' });
   } catch (error) {
     console.error('[Batches] DELETE /:id error:', error);
@@ -445,7 +493,7 @@ router.delete('/:id', authenticateToken, requireRole('admin'), (req, res) => {
 // Endpoint 6 — GET /api/admin/batches/:id/students
 // Purpose: List all students assigned to a specific batch
 // ─────────────────────────────────────────────────────────────────────────────
-router.get('/:id/students', authenticateToken, requireRole('admin'), async (req, res) => {
+router.get('/:id/students', authenticateToken, requireRole('admin'), requirePermission('batches:view'), async (req, res) => {
   try {
     const slug = req.params.id;
     const batchRecordLookup = db.prepare('SELECT id FROM batches WHERE slug = ? OR CAST(id AS TEXT) = ?').get(String(slug), String(slug));
@@ -569,7 +617,7 @@ router.get('/:id/students', authenticateToken, requireRole('admin'), async (req,
 // Endpoint 7 — GET /api/admin/batches/:id/available-students
 // Purpose: List students not yet assigned to this specific batch
 // ─────────────────────────────────────────────────────────────────────────────
-router.get('/:id/available-students', authenticateToken, requireRole('admin'), (req, res) => {
+router.get('/:id/available-students', authenticateToken, requireRole('admin'), requirePermission('batches:view'), (req, res) => {
   try {
     const slug = req.params.id;
     const batchRecordLookup = db.prepare('SELECT id FROM batches WHERE slug = ? OR CAST(id AS TEXT) = ?').get(String(slug), String(slug));
@@ -610,7 +658,7 @@ router.get('/:id/available-students', authenticateToken, requireRole('admin'), (
 // Endpoint 8 — POST /api/admin/batches/:id/students
 // Purpose: Assign multiple students to a batch
 // ─────────────────────────────────────────────────────────────────────────────
-router.post('/:id/students', authenticateToken, requireRole('admin'), (req, res) => {
+router.post('/:id/students', authenticateToken, requireRole('admin'), requirePermission('batches:edit'), (req, res) => {
   try {
     const slug = req.params.id;
     const batchRecordLookup = db.prepare('SELECT id FROM batches WHERE slug = ? OR CAST(id AS TEXT) = ?').get(String(slug), String(slug));
@@ -775,7 +823,7 @@ router.post('/:id/students', authenticateToken, requireRole('admin'), (req, res)
 // Endpoint 9 — DELETE /api/admin/batches/:id/students/:studentId
 // Purpose: Remove a single student from a batch
 // ─────────────────────────────────────────────────────────────────────────────
-router.delete('/:id/students/:studentId', authenticateToken, requireRole('admin'), (req, res) => {
+router.delete('/:id/students/:studentId', authenticateToken, requireRole('admin'), requirePermission('batches:edit'), (req, res) => {
   try {
     const slug = req.params.id;
     const batchRecordLookup = db.prepare('SELECT id FROM batches WHERE slug = ? OR CAST(id AS TEXT) = ?').get(String(slug), String(slug));
@@ -819,7 +867,7 @@ router.delete('/:id/students/:studentId', authenticateToken, requireRole('admin'
 // Endpoint 9B — POST /api/admin/batches/:id/students/:studentId/admit-phase/:phaseNumber
 // Purpose: Admit a student to a specific phase of a batch's course (1–5 phases)
 // ─────────────────────────────────────────────────────────────────────────────
-router.post('/:id/students/:studentId/admit-phase/:phaseNumber', authenticateToken, requireRole('admin'), async (req, res) => {
+router.post('/:id/students/:studentId/admit-phase/:phaseNumber', authenticateToken, requireRole('admin'), requirePermission('batches:edit'), async (req, res) => {
   try {
     const slug = req.params.id;
     const batchRecordLookup = db.prepare('SELECT id, course_name, course_definition_id FROM batches WHERE slug = ? OR CAST(id AS TEXT) = ?').get(String(slug), String(slug));
@@ -847,7 +895,7 @@ router.post('/:id/students/:studentId/admit-phase/:phaseNumber', authenticateTok
 });
 
 // Legacy backward-compatibility alias for Phase 2
-router.post('/:id/students/:studentId/admit-phase2', authenticateToken, requireRole('admin'), async (req, res) => {
+router.post('/:id/students/:studentId/admit-phase2', authenticateToken, requireRole('admin'), requirePermission('batches:edit'), async (req, res) => {
   try {
     const slug = req.params.id;
     const batchRecordLookup = db.prepare('SELECT id, course_name, course_definition_id FROM batches WHERE slug = ? OR CAST(id AS TEXT) = ?').get(String(slug), String(slug));
@@ -877,7 +925,7 @@ router.post('/:id/students/:studentId/admit-phase2', authenticateToken, requireR
 // Endpoint 9C — POST /api/admin/batches/:id/students/:studentId/unadmit-phase/:phaseNumber
 // Purpose: Undo phase admission with strict payment restriction defense
 // ─────────────────────────────────────────────────────────────────────────────
-router.post('/:id/students/:studentId/unadmit-phase/:phaseNumber', authenticateToken, requireRole('admin'), async (req, res) => {
+router.post('/:id/students/:studentId/unadmit-phase/:phaseNumber', authenticateToken, requireRole('admin'), requirePermission('batches:edit'), async (req, res) => {
   try {
     const slug = req.params.id;
     const batchRecordLookup = db.prepare('SELECT id, course_name, course_definition_id FROM batches WHERE slug = ? OR CAST(id AS TEXT) = ?').get(String(slug), String(slug));
@@ -904,7 +952,7 @@ router.post('/:id/students/:studentId/unadmit-phase/:phaseNumber', authenticateT
   }
 });
 
-router.post('/:id/students/:studentId/unadmit-phase2', authenticateToken, requireRole('admin'), async (req, res) => {
+router.post('/:id/students/:studentId/unadmit-phase2', authenticateToken, requireRole('admin'), requirePermission('batches:edit'), async (req, res) => {
   try {
     const slug = req.params.id;
     const batchRecordLookup = db.prepare('SELECT id, course_name, course_definition_id FROM batches WHERE slug = ? OR CAST(id AS TEXT) = ?').get(String(slug), String(slug));
@@ -934,7 +982,7 @@ router.post('/:id/students/:studentId/unadmit-phase2', authenticateToken, requir
 // Endpoint 10 — GET /api/admin/batches/:id/progress
 // Purpose: Group-level progress metrics for a batch
 // ─────────────────────────────────────────────────────────────────────────────
-router.get('/:id/progress', authenticateToken, requireRole('admin'), (req, res) => {
+router.get('/:id/progress', authenticateToken, requireRole('admin'), requirePermission('batches:view'), (req, res) => {
   try {
     const slug = req.params.id;
     const batchRecordLookup = db.prepare('SELECT id FROM batches WHERE slug = ? OR CAST(id AS TEXT) = ?').get(String(slug), String(slug));
@@ -1360,7 +1408,7 @@ router.get('/:id/progress', authenticateToken, requireRole('admin'), (req, res) 
 // Purpose: Retrieve the status transition history for a specific batch
 //          Returns transitions ordered newest-first for timeline display
 // ─────────────────────────────────────────────────────────────────────────────
-router.get('/:id/transitions', authenticateToken, requireRole('admin'), (req, res) => {
+router.get('/:id/transitions', authenticateToken, requireRole('admin'), requirePermission('batches:view'), (req, res) => {
   try {
     const slug = req.params.id;
     const batchRecordLookup = db.prepare('SELECT id FROM batches WHERE slug = ? OR CAST(id AS TEXT) = ?').get(String(slug), String(slug));

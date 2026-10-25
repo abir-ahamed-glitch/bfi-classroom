@@ -488,13 +488,15 @@ function sendPostReactionNotification(postId, likerId, rxType, io) {
 router.get('/posts/:id/reactors', authenticateToken, (req, res) => {
   try {
     const postId = req.params.id;
+    const isViewerAdmin = req.user?.role === 'admin';
     const reactors = db.prepare(`
       SELECT pl.user_id, pl.reaction_type,
-             u.first_name, u.last_name, u.username, u.profile_picture, u.role
+             u.first_name, u.last_name, u.username, u.profile_picture, u.role,
+             CASE WHEN ? = 'admin' THEN u.is_super_admin ELSE 0 END as is_super_admin
       FROM post_likes pl
       JOIN users u ON pl.user_id = u.id
       WHERE pl.post_id = ?
-    `).all(postId);
+    `).all(isViewerAdmin ? 'admin' : 'student', postId);
     res.json(reactors);
   } catch (err) {
     console.error('Error fetching post reactors:', err);
@@ -506,13 +508,15 @@ router.get('/posts/:id/reactors', authenticateToken, (req, res) => {
 router.get('/comments/:id/reactors', authenticateToken, (req, res) => {
   try {
     const commentId = req.params.id;
+    const isViewerAdmin = req.user?.role === 'admin';
     const reactors = db.prepare(`
       SELECT cl.user_id, cl.reaction_type,
-             u.first_name, u.last_name, u.username, u.profile_picture, u.role
+             u.first_name, u.last_name, u.username, u.profile_picture, u.role,
+             CASE WHEN ? = 'admin' THEN u.is_super_admin ELSE 0 END as is_super_admin
       FROM comment_likes cl
       JOIN users u ON cl.user_id = u.id
       WHERE cl.comment_id = ?
-    `).all(commentId);
+    `).all(isViewerAdmin ? 'admin' : 'student', commentId);
     res.json(reactors);
   } catch (err) {
     console.error('Error fetching comment reactors:', err);
@@ -527,6 +531,7 @@ router.get('/posts/:id', authenticateToken, (req, res) => {
     const post = db.prepare(`
       SELECT p.id, p.user_id, p.content, p.image_url as media_url, p.created_at, p.is_pinned, p.audience, p.shares_count, p.scheduled_at,
       u.first_name, u.last_name, u.username, u.profile_picture, u.role,
+      CASE WHEN :viewerRole = 'admin' THEN u.is_super_admin ELSE 0 END as is_super_admin,
       EXISTS(SELECT 1 FROM awards WHERE user_id = p.user_id) OR EXISTS(SELECT 1 FROM student_experiences WHERE user_id = p.user_id AND experience_type = 'Award') as has_awards,
       ip.subjects as instructor_subjects,
       CASE 
@@ -548,6 +553,8 @@ router.get('/posts/:id', authenticateToken, (req, res) => {
             'first_name', cu.first_name, 
             'last_name', cu.last_name,
             'profile_picture', cu.profile_picture,
+            'role', cu.role,
+            'is_super_admin', (CASE WHEN :viewerRole = 'admin' THEN cu.is_super_admin ELSE 0 END),
             'has_awards', EXISTS(SELECT 1 FROM awards WHERE user_id = c.user_id) OR EXISTS(SELECT 1 FROM student_experiences WHERE user_id = c.user_id AND experience_type = 'Award'),
             'likes_count', (SELECT count(*) FROM comment_likes WHERE comment_id = c.id),
             'is_liked', EXISTS(SELECT 1 FROM comment_likes WHERE comment_id = c.id AND user_id = :viewerId),
@@ -678,6 +685,7 @@ router.get('/posts', authenticateToken, (req, res) => {
     const posts = db.prepare(`
       SELECT p.id, p.user_id, p.content, p.image_url as media_url, p.created_at, p.is_pinned, p.audience, p.shares_count, p.scheduled_at,
       u.first_name, u.last_name, u.username, u.profile_picture, u.role,
+      CASE WHEN :viewerRole = 'admin' THEN u.is_super_admin ELSE 0 END as is_super_admin,
       EXISTS(SELECT 1 FROM awards WHERE user_id = p.user_id) OR EXISTS(SELECT 1 FROM student_experiences WHERE user_id = p.user_id AND experience_type = 'Award') as has_awards,
       ip.subjects as instructor_subjects,
       CASE 
@@ -699,6 +707,8 @@ router.get('/posts', authenticateToken, (req, res) => {
             'first_name', cu.first_name, 
             'last_name', cu.last_name,
             'profile_picture', cu.profile_picture,
+            'role', cu.role,
+            'is_super_admin', (CASE WHEN :viewerRole = 'admin' THEN cu.is_super_admin ELSE 0 END),
             'has_awards', EXISTS(SELECT 1 FROM awards WHERE user_id = c.user_id) OR EXISTS(SELECT 1 FROM student_experiences WHERE user_id = c.user_id AND experience_type = 'Award'),
             'likes_count', (SELECT count(*) FROM comment_likes WHERE comment_id = c.id),
             'is_liked', EXISTS(SELECT 1 FROM comment_likes WHERE comment_id = c.id AND user_id = :viewerId),

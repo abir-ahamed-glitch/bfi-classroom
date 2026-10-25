@@ -1,6 +1,6 @@
 import express from 'express';
 import db from '../db/database.js';
-import { authenticateToken, requireRole } from '../middleware/auth.js';
+import { authenticateToken, requireRole, requirePermission, requireAnyPermission } from '../middleware/auth.js';
 import { parseFeeDetails, getBatchFee, getFeeStatus, extractFeeAmounts, resolvePhaseFee, createFeeResolverContext, resolveEnrollmentFinancials } from '../utils/feeResolver.js';
 
 const router = express.Router();
@@ -94,7 +94,7 @@ function getMissingAttendanceRows() {
 // GET /api/analytics/urgent
 // Returns counts for the 4 urgent action cards
 // ─────────────────────────────────────────────────────────────────────────────
-router.get('/urgent', authenticateToken, requireRole('admin'), (req, res) => {
+router.get('/urgent', authenticateToken, requireRole('admin'), requirePermission('reports:view'), (req, res) => {
   try {
     // 1. Completed and fully paid courses that have not reached certificate issuance.
     const pendingCertificates = getPendingCertificateRows();
@@ -130,7 +130,7 @@ router.get('/urgent', authenticateToken, requireRole('admin'), (req, res) => {
 // GET /api/analytics/stats
 // Returns the 9 overall institute statistics
 // ─────────────────────────────────────────────────────────────────────────────
-router.get('/stats', authenticateToken, requireRole('admin'), (req, res) => {
+router.get('/stats', authenticateToken, requireRole('admin'), requirePermission('reports:view'), (req, res) => {
   try {
     const data = getCachedOrCompute('stats', () => {
       // Total registered students
@@ -155,7 +155,7 @@ router.get('/stats', authenticateToken, requireRole('admin'), (req, res) => {
         let parsed = null;
         try {
           parsed = typeof d.definition_json === 'string' ? JSON.parse(d.definition_json) : d.definition_json;
-        } catch {}
+        } catch { /* ignore */ }
         defDetailsMap.set(d.id, { ...d, parsed });
       }
 
@@ -427,7 +427,7 @@ router.get('/stats', authenticateToken, requireRole('admin'), (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-router.get('/students/all', authenticateToken, requireRole('admin'), (req, res) => {
+router.get('/students/all', authenticateToken, requireRole('admin'), requireAnyPermission('reports:view', 'students:view'), (req, res) => {
   try {
     const rows = db.prepare(`
       SELECT
@@ -452,7 +452,7 @@ router.get('/students/all', authenticateToken, requireRole('admin'), (req, res) 
 });
 
 // GET /api/analytics/students/attendance
-router.get('/students/attendance', authenticateToken, requireRole('admin'), (req, res) => {
+router.get('/students/attendance', authenticateToken, requireRole('admin'), requireAnyPermission('reports:view', 'students:view'), (req, res) => {
   try {
     const course = req.query.course;
     const queryStr = `
@@ -492,7 +492,7 @@ router.get('/students/attendance', authenticateToken, requireRole('admin'), (req
 });
 
 // GET /api/analytics/students/assignments
-router.get('/students/assignments', authenticateToken, requireRole('admin'), (req, res) => {
+router.get('/students/assignments', authenticateToken, requireRole('admin'), requireAnyPermission('reports:view', 'students:view'), (req, res) => {
   try {
     const course = req.query.course;
     const queryStr = `
@@ -521,7 +521,7 @@ router.get('/students/assignments', authenticateToken, requireRole('admin'), (re
 });
 
 // GET /api/analytics/students/phase2-attendance
-router.get('/students/phase2-attendance', authenticateToken, requireRole('admin'), (req, res) => {
+router.get('/students/phase2-attendance', authenticateToken, requireRole('admin'), requireAnyPermission('reports:view', 'students:view'), (req, res) => {
   try {
     const course = req.query.course;
     const queryStr = `
@@ -550,7 +550,7 @@ router.get('/students/phase2-attendance', authenticateToken, requireRole('admin'
 });
 
 // GET /api/analytics/students/admitted
-router.get('/students/admitted', authenticateToken, requireRole('admin'), (req, res) => {
+router.get('/students/admitted', authenticateToken, requireRole('admin'), requireAnyPermission('reports:view', 'students:view'), (req, res) => {
   try {
     const course = req.query.course;
     const queryStr = `
@@ -578,7 +578,7 @@ router.get('/students/admitted', authenticateToken, requireRole('admin'), (req, 
 });
 
 // GET /api/analytics/students/admitted-phase2
-router.get('/students/admitted-phase2', authenticateToken, requireRole('admin'), (req, res) => {
+router.get('/students/admitted-phase2', authenticateToken, requireRole('admin'), requireAnyPermission('reports:view', 'students:view'), (req, res) => {
   try {
     const course = req.query.course;
     const queryStr = `
@@ -606,7 +606,7 @@ router.get('/students/admitted-phase2', authenticateToken, requireRole('admin'),
 });
 
 // GET /api/analytics/students/enrolled
-router.get('/students/enrolled', authenticateToken, requireRole('admin'), (req, res) => {
+router.get('/students/enrolled', authenticateToken, requireRole('admin'), requireAnyPermission('reports:view', 'students:view'), (req, res) => {
   try {
     const course = req.query.course;
     const queryStr = `
@@ -680,7 +680,7 @@ router.get('/students/enrolled', authenticateToken, requireRole('admin'), (req, 
 });
 
 // GET /api/analytics/students/passed-exam
-router.get('/students/passed-exam', authenticateToken, requireRole('admin'), (req, res) => {
+router.get('/students/passed-exam', authenticateToken, requireRole('admin'), requireAnyPermission('reports:view', 'students:view'), (req, res) => {
   try {
     const course = req.query.course;
     const queryStr = `
@@ -709,7 +709,7 @@ router.get('/students/passed-exam', authenticateToken, requireRole('admin'), (re
 });
 
 // GET /api/analytics/students/failed-exam
-router.get('/students/failed-exam', authenticateToken, requireRole('admin'), (req, res) => {
+router.get('/students/failed-exam', authenticateToken, requireRole('admin'), requireAnyPermission('reports:view', 'students:view'), (req, res) => {
   try {
     const rows = db.prepare(`
       SELECT
@@ -741,7 +741,7 @@ router.get('/students/failed-exam', authenticateToken, requireRole('admin'), (re
 });
 
 // GET /api/analytics/students/completed-phase1
-router.get('/students/completed-phase1', authenticateToken, requireRole('admin'), (req, res) => {
+router.get('/students/completed-phase1', authenticateToken, requireRole('admin'), requireAnyPermission('reports:view', 'students:view'), (req, res) => {
   try {
     const course = req.query.course;
     const queryStr = `
@@ -769,7 +769,7 @@ router.get('/students/completed-phase1', authenticateToken, requireRole('admin')
 });
 
 // GET /api/analytics/students/completed-phase2
-router.get('/students/completed-phase2', authenticateToken, requireRole('admin'), (req, res) => {
+router.get('/students/completed-phase2', authenticateToken, requireRole('admin'), requireAnyPermission('reports:view', 'students:view'), (req, res) => {
   try {
     const course = req.query.course;
     const queryStr = `
@@ -797,7 +797,7 @@ router.get('/students/completed-phase2', authenticateToken, requireRole('admin')
 });
 
 // GET /api/analytics/students/submitted-film
-router.get('/students/submitted-film', authenticateToken, requireRole('admin'), (req, res) => {
+router.get('/students/submitted-film', authenticateToken, requireRole('admin'), requireAnyPermission('reports:view', 'students:view'), (req, res) => {
   try {
     const course = req.query.course;
     const queryStr = `
@@ -825,7 +825,7 @@ router.get('/students/submitted-film', authenticateToken, requireRole('admin'), 
 });
 
 // GET /api/analytics/students/certificates-issued
-router.get('/students/certificates-issued', authenticateToken, requireRole('admin'), (req, res) => {
+router.get('/students/certificates-issued', authenticateToken, requireRole('admin'), requireAnyPermission('reports:view', 'students:view'), (req, res) => {
   try {
     const course = req.query.course;
     const queryStr = `
@@ -870,7 +870,7 @@ router.get('/students/certificates-issued', authenticateToken, requireRole('admi
 // GET /api/analytics/students-per-batch
 // Returns grouped bar chart data: total enrolled vs. completed per batch
 // ─────────────────────────────────────────────────────────────────────────────
-router.get('/students-per-batch', authenticateToken, requireRole('admin'), (req, res) => {
+router.get('/students-per-batch', authenticateToken, requireRole('admin'), requireAnyPermission('reports:view', 'batches:view'), (req, res) => {
   try {
     const rows = db.prepare(`
       SELECT
@@ -902,7 +902,7 @@ router.get('/students-per-batch', authenticateToken, requireRole('admin'), (req,
 // GET /api/analytics/funnel
 // Returns funnel chart data: Registered → Admitted → Exam Passed → Phase 2 → Film → Certified
 // ─────────────────────────────────────────────────────────────────────────────
-router.get('/funnel', authenticateToken, requireRole('admin'), (req, res) => {
+router.get('/funnel', authenticateToken, requireRole('admin'), requirePermission('reports:view'), (req, res) => {
   try {
     const registered = db.prepare(`SELECT COUNT(*) as count FROM users WHERE role = 'student'`).get();
     const admitted = db.prepare(`SELECT COUNT(DISTINCT user_id) as count FROM student_course_enrollments WHERE step1_completed = 1`).get();
@@ -929,7 +929,7 @@ router.get('/funnel', authenticateToken, requireRole('admin'), (req, res) => {
 // GET /api/analytics/fee-status
 // Returns pie chart data + totals from fee_details JSON
 // ─────────────────────────────────────────────────────────────────────────────
-router.get('/fee-status', authenticateToken, requireRole('admin'), (req, res) => {
+router.get('/fee-status', authenticateToken, requireRole('admin'), requireAnyPermission('reports:view', 'finance:view'), (req, res) => {
   try {
     const data = getCachedOrCompute('fee-status', () => {
       const feeContext = createFeeResolverContext(db);
@@ -992,7 +992,7 @@ router.get('/fee-status', authenticateToken, requireRole('admin'), (req, res) =>
 // GET /api/analytics/login-activity
 // Returns last 30 days of unique student login counts per day
 // ─────────────────────────────────────────────────────────────────────────────
-router.get('/login-activity', authenticateToken, requireRole('admin'), (req, res) => {
+router.get('/login-activity', authenticateToken, requireRole('admin'), requirePermission('reports:view'), (req, res) => {
   try {
     const rows = db.prepare(`
       SELECT
@@ -1032,7 +1032,7 @@ router.get('/login-activity', authenticateToken, requireRole('admin'), (req, res
 // GET /api/analytics/recent-activity
 // Returns the last 15 notable platform events
 // ─────────────────────────────────────────────────────────────────────────────
-router.get('/recent-activity', authenticateToken, requireRole('admin'), (req, res) => {
+router.get('/recent-activity', authenticateToken, requireRole('admin'), requirePermission('reports:view'), (req, res) => {
   try {
     const events = [];
 
@@ -1124,7 +1124,7 @@ router.get('/recent-activity', authenticateToken, requireRole('admin'), (req, re
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /api/analytics/pending-certificates
 // ─────────────────────────────────────────────────────────────────────────────
-router.get('/pending-certificates', authenticateToken, requireRole('admin'), (req, res) => {
+router.get('/pending-certificates', authenticateToken, requireRole('admin'), requireAnyPermission('reports:view', 'students:view'), (req, res) => {
   try {
     res.json(getPendingCertificateRows());
   } catch (error) {
@@ -1136,7 +1136,7 @@ router.get('/pending-certificates', authenticateToken, requireRole('admin'), (re
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /api/analytics/inactive-students
 // ─────────────────────────────────────────────────────────────────────────────
-router.get('/inactive-students', authenticateToken, requireRole('admin'), (req, res) => {
+router.get('/inactive-students', authenticateToken, requireRole('admin'), requireAnyPermission('reports:view', 'students:view'), (req, res) => {
   try {
     const thirtyDaysAgo = new Date();
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
@@ -1166,7 +1166,7 @@ router.get('/inactive-students', authenticateToken, requireRole('admin'), (req, 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /api/analytics/failed-students
 // ─────────────────────────────────────────────────────────────────────────────
-router.get('/failed-students', authenticateToken, requireRole('admin'), (req, res) => {
+router.get('/failed-students', authenticateToken, requireRole('admin'), requireAnyPermission('reports:view', 'students:view'), (req, res) => {
   try {
     const rows = db.prepare(`
       SELECT 
@@ -1200,7 +1200,7 @@ router.get('/failed-students', authenticateToken, requireRole('admin'), (req, re
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /api/analytics/missing-attendance
 // ─────────────────────────────────────────────────────────────────────────────
-router.get('/missing-attendance', authenticateToken, requireRole('admin'), (req, res) => {
+router.get('/missing-attendance', authenticateToken, requireRole('admin'), requireAnyPermission('reports:view', 'students:view'), (req, res) => {
   try {
     res.json(getMissingAttendanceRows());
   } catch (error) {
@@ -1212,7 +1212,7 @@ router.get('/missing-attendance', authenticateToken, requireRole('admin'), (req,
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /api/analytics/unpaid-students
 // ─────────────────────────────────────────────────────────────────────────────
-router.get('/unpaid-students', authenticateToken, requireRole('admin'), (req, res) => {
+router.get('/unpaid-students', authenticateToken, requireRole('admin'), requireAnyPermission('reports:view', 'finance:view'), (req, res) => {
   try {
     const targetStatus = req.query.status || 'unpaid';
     const feeContext = createFeeResolverContext(db);

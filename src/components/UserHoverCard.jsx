@@ -106,7 +106,7 @@ export default function UserHoverCard({ userId, children, className = '', style 
           <div className="uhc-title-area">
             <h3 className="uhc-name">{first_name} {last_name}</h3>
             <div className="uhc-role">
-              {role === 'admin' ? 'Admin' : role === 'instructor' ? 'Teacher' : batch_number ? `Student - ${getOrdinalSuffix(batch_number)} Batch` : 'Student'}
+              {role === 'admin' ? ((profileData?.is_super_admin || profileData?.isSuperAdmin) ? 'Super Admin' : 'Admin') : role === 'instructor' ? 'Teacher' : batch_number ? `Student - ${getOrdinalSuffix(batch_number)} Batch` : 'Student'}
             </div>
             {bio && isFullAccess && <p className="uhc-bio">{bio}</p>}
           </div>

@@ -51,8 +51,7 @@ function cleanupTestArtifacts(database) {
 test.beforeAll(async () => {
   await verifyServerIsolation(API_BASE);
   db = await initIsolatedTestDatabase(DB_PATH);
-  adminUser = db.prepare("SELECT * FROM users WHERE role = 'admin' LIMIT 1").get();
-  studentUser = db.prepare("SELECT * FROM users WHERE role = 'student' LIMIT 1").get();
+  adminUser = db.prepare("SELECT * FROM users WHERE role = 'admin' ORDER BY id ASC LIMIT 1").get();
 
   cleanupTestArtifacts(db);
 
@@ -71,42 +70,50 @@ test.beforeAll(async () => {
     VALUES (99996, 'test_student_assoc', 'assoc_student@bfibd.org', 'test_hash', 'student', 'Assoc', 'Student', 1)
   `).run();
 
+  studentUser = db.prepare("SELECT * FROM users WHERE role = 'student' LIMIT 1").get();
+
   db.prepare(`
     INSERT OR REPLACE INTO users (id, username, email, password_hash, role, first_name, last_name, is_active)
     VALUES (99995, 'test_multibatch', 'multibatch_test@bfibd.org', 'test_hash', 'student', 'Multi', 'BatchStudent', 1)
   `).run();
 
   db.prepare(`
-    INSERT OR REPLACE INTO users (id, username, email, password_hash, role, first_name, last_name, is_active)
-    VALUES (99994, 'test_student_archived', 'archived_student@bfibd.org', 'test_hash', 'student', 'Archived', 'Student', 1)
+    INSERT OR REPLACE INTO users (id, username, email, password_hash, role, first_name, last_name, is_active, token_version)
+    VALUES (99994, 'test_student_archived', 'archived_student@bfibd.org', 'test_hash', 'student', 'Archived', 'Student', 1, 1)
   `).run();
 
+  const insertSession = db.prepare(`
+    INSERT INTO sessions (user_id, token_hash, ip_address, user_agent, expires_at, created_at, last_activity, sudo_verified_at)
+    VALUES (?, 'test_session_hash', '127.0.0.1', 'playwright_test', datetime('now', '+1 day'), datetime('now'), datetime('now'), datetime('now'))
+  `).run(adminUser.id);
+  const adminSessionId = insertSession.lastInsertRowid;
+
   adminToken = jwt.sign(
-    { id: adminUser.id, username: adminUser.username, role: adminUser.role },
+    { id: adminUser.id, username: adminUser.username, role: adminUser.role, type: 'access', sessionId: adminSessionId, token_version: adminUser.token_version || 1 },
     JWT_SECRET,
     { expiresIn: '1d' }
   );
 
   moderatorToken = jwt.sign(
-    { id: 99998, username: 'test_moderator', role: 'moderator' },
+    { id: 99998, username: 'test_moderator', role: 'moderator', type: 'access' },
     JWT_SECRET,
     { expiresIn: '1d' }
   );
 
   instructorToken = jwt.sign(
-    { id: 99997, username: 'test_instructor', role: 'instructor' },
+    { id: 99997, username: 'test_instructor', role: 'instructor', type: 'access' },
     JWT_SECRET,
     { expiresIn: '1d' }
   );
 
   studentToken = jwt.sign(
-    { id: studentUser.id, username: studentUser.username, role: studentUser.role },
+    { id: studentUser.id, username: studentUser.username, role: studentUser.role, type: 'access' },
     JWT_SECRET,
     { expiresIn: '1d' }
   );
 
   multiBatchStudentToken = jwt.sign(
-    { id: 99995, username: 'test_multibatch', role: 'student' },
+    { id: 99995, username: 'test_multibatch', role: 'student', type: 'access' },
     JWT_SECRET,
     { expiresIn: '1d' }
   );

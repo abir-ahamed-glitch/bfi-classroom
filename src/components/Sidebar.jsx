@@ -25,6 +25,7 @@ import {
   Sun,
   Moon,
   Shield,
+  ShieldAlert,
   Briefcase,
   UsersRound,
   ScrollText,
@@ -52,6 +53,17 @@ export default function Sidebar({ isNotifOpen, setIsNotifOpen }) {
   const currentUserIdRef = useRef(null);
   const socketUrl = import.meta.env.VITE_SOCKET_URL || '';
   const hideBottomNav = isOpen;
+
+  const isSuperAdminUser = Boolean(currentUser?.is_super_admin || currentUser?.isSuperAdmin || currentUser?.permissions?.includes('*'));
+  const hasAdminPerm = (perm) => isSuperAdminUser || (Array.isArray(currentUser?.permissions) && currentUser.permissions.includes(perm));
+  const hasAnyAdminPerm = (...perms) => isSuperAdminUser || (Array.isArray(currentUser?.permissions) && perms.some(p => currentUser.permissions.includes(p)));
+
+  const hasAnyAdminSectionAccess = currentUser?.role === 'admin' && (
+    isSuperAdminUser || hasAnyAdminPerm(
+      'reports:view', 'students:view', 'batches:view', 'teachers:view', 'courses:view',
+      'settings:view', 'notices:view', 'communications:view', 'finance:view', 'trash:view'
+    )
+  );
 
   const toggleSidebar = () => setIsOpen(!isOpen);
   const closeSidebar = () => setIsOpen(false);
@@ -357,7 +369,7 @@ export default function Sidebar({ isNotifOpen, setIsNotifOpen }) {
 
           <p className="nav-subtitle">My Studio</p>
           <NavLink to="/profile" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
-            <User size={20} /> {currentUser?.role === 'admin' ? 'Admin Profile' : currentUser?.role === 'instructor' ? 'Teacher Profile' : 'Student Profile'}
+            <User size={20} /> {currentUser?.role === 'admin' ? (currentUser?.is_super_admin ? 'Super Admin Profile' : 'Admin Profile') : currentUser?.role === 'instructor' ? 'Teacher Profile' : 'Student Profile'}
           </NavLink>
 
           {currentUser?.role === 'student' && (
@@ -382,45 +394,72 @@ export default function Sidebar({ isNotifOpen, setIsNotifOpen }) {
             <Globe size={20} /> BFIAA Network
           </NavLink>
 
-          {(currentUser?.role === 'admin' || (currentUser?.role === 'instructor' && hasBroadcastPermission)) && (
+          {(hasAnyAdminSectionAccess || (currentUser?.role === 'instructor' && hasBroadcastPermission)) && (
             <>
               <p className="nav-subtitle">Administration</p>
               {currentUser?.role === 'admin' && (
                 <>
-                  <NavLink to="/admin/analytics" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
-                    <BarChart2 size={20} /> Analytics
-                  </NavLink>
-                  <NavLink to="/admin/reports" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
-                    <Flag size={20} /> Reports
-                    {unreadReportCount > 0 && <span className="nav-badge">{unreadReportCount > 99 ? '99+' : unreadReportCount}</span>}
-                  </NavLink>
-                  <NavLink to="/admin/studentsmanager" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
-                    <Settings size={20} /> Student Manager
-                  </NavLink>
-                  <NavLink to="/admin/batchmanager" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
-                    <Users size={20} /> Batch Manager
-                  </NavLink>
-                  <NavLink to="/admin/teachers" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
-                    <Settings size={20} /> Teacher Manager
-                  </NavLink>
-                  <NavLink to="/admin/course-materials" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
-                    <BookOpen size={20} /> Course Materials
-                  </NavLink>
-                  <NavLink to="/admin/course-maker" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
-                    <Layers size={20} /> Course Maker
-                  </NavLink>
-                  <NavLink to="/admin/certificate-designer" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
-                    <FileSignature size={20} /> Certificate Designer
-                  </NavLink>
+                  {hasAdminPerm('reports:view') && (
+                    <NavLink to="/admin/analytics" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
+                      <BarChart2 size={20} /> Analytics
+                    </NavLink>
+                  )}
+                  {hasAdminPerm('reports:view') && (
+                    <NavLink to="/admin/reports" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
+                      <Flag size={20} /> Reports
+                      {unreadReportCount > 0 && <span className="nav-badge">{unreadReportCount > 99 ? '99+' : unreadReportCount}</span>}
+                    </NavLink>
+                  )}
+                  {hasAdminPerm('students:view') && (
+                    <NavLink to="/admin/studentsmanager" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
+                      <Settings size={20} /> Student Manager
+                    </NavLink>
+                  )}
+                  {hasAdminPerm('batches:view') && (
+                    <NavLink to="/admin/batchmanager" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
+                      <Users size={20} /> Batch Manager
+                    </NavLink>
+                  )}
+                  {hasAdminPerm('teachers:view') && (
+                    <NavLink to="/admin/teachers" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
+                      <Settings size={20} /> Teacher Manager
+                    </NavLink>
+                  )}
+                  {hasAnyAdminPerm('courses:view', 'batches:view') && (
+                    <NavLink to="/admin/course-materials" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
+                      <BookOpen size={20} /> Course Materials
+                    </NavLink>
+                  )}
+                  {hasAdminPerm('courses:view') && (
+                    <NavLink to="/admin/course-maker" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
+                      <Layers size={20} /> Course Maker
+                    </NavLink>
+                  )}
+                  {hasAnyAdminPerm('settings:view', 'courses:view') && (
+                    <NavLink to="/admin/certificate-designer" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
+                      <FileSignature size={20} /> Certificate Designer
+                    </NavLink>
+                  )}
                 </>
               )}
-              <NavLink to="/admin/announcements" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
-                <Megaphone size={20} /> Announcements & Broadcasts
-              </NavLink>
-              {currentUser?.role === 'admin' && (
-                <NavLink to="/admin/additional-options" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
-                  <Sliders size={20} /> Additional Options
+              {((currentUser?.role === 'admin' && hasAnyAdminPerm('notices:view', 'communications:view')) || (currentUser?.role === 'instructor' && hasBroadcastPermission)) && (
+                <NavLink to="/admin/announcements" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
+                  <Megaphone size={20} /> Announcements & Broadcasts
                 </NavLink>
+              )}
+              {currentUser?.role === 'admin' && (
+                <>
+                  {isSuperAdminUser && (
+                    <NavLink to="/admin/administrators" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
+                      <ShieldAlert size={20} /> Administrator Management
+                    </NavLink>
+                  )}
+                  {hasAnyAdminPerm('settings:view', 'finance:view', 'trash:view', 'students:view', 'courses:view') && (
+                    <NavLink to="/admin/additional-options" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
+                      <Sliders size={20} /> Additional Options
+                    </NavLink>
+                  )}
+                </>
               )}
             </>
           )}
