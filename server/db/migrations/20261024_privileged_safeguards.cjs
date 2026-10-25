@@ -21,7 +21,7 @@ function runPrivilegedSafeguardsMigration(db) {
 
   const alreadyRun = db.prepare('SELECT 1 FROM app_migrations WHERE name = ?').get(MIGRATION_NAME);
   if (alreadyRun) {
-    return;
+    return { applied: false, reason: 'Already applied' };
   }
 
   const tx = db.transaction(() => {

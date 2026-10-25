@@ -5262,7 +5262,8 @@ test.describe('Super Admin Architecture & Role Governance Suite', () => {
     expect(data.inactiveStudents).toBeDefined();
   });
 
-  test('85. Integrated Main: Global Search Super Admin Privileges & Role Guard', async ({ request }) => {
+  test('85. Integrated Main: Global Search Role-Based Indexing & Super Admin Privileges', async ({ browser, request }) => {
+    // Part 1: API Route Guard Verification
     const { token: saToken } = issueAdminSessionToken(SUPER_ADMIN_ID);
 
     // Super Admin can access administrator management
@@ -5287,6 +5288,76 @@ test.describe('Super Admin Architecture & Role Governance Suite', () => {
     expect(ordRes.status()).toBe(403);
     const ordData = await ordRes.json();
     expect(ordData.error).toContain('Super Administrator privilege required');
+
+    // Part 2: Browser Global Search Role-Based Indexing Verification
+    // 2a. Super Admin browser session: Administrator Management MUST be indexed
+    const saContext = await browser.newContext();
+    const saPage = await saContext.newPage();
+    await setupTestRouteProxy(saPage);
+    await saPage.addInitScript(({ token, user }) => {
+      localStorage.setItem('token', token);
+      localStorage.setItem('user', JSON.stringify(user));
+    }, {
+      token: saToken,
+      user: {
+        id: 1,
+        username: 'admin@abir',
+        email: 'k.eye.films@gmail.com',
+        role: 'admin',
+        firstName: 'Abir',
+        lastName: 'Ahmad',
+        is_super_admin: 1,
+        isSuperAdmin: true
+      }
+    });
+
+    await saPage.goto('');
+    await saPage.waitForLoadState('domcontentloaded');
+
+    // Type "administrators" into sidebar Global Search input
+    const saSearchInput = saPage.locator('.sidebar-search-input');
+    await expect(saSearchInput).toBeVisible();
+    await saSearchInput.fill('administrators');
+
+    // Verify search results appear and contain "Administrator Management"
+    const saResult = saPage.locator('.sidebar-search-item').filter({ hasText: 'Administrator Management' });
+    await expect(saResult).toBeVisible();
+
+    await saContext.close();
+
+    // 2b. Ordinary Admin browser session: Administrator Management MUST NOT be indexed
+    const ordContext = await browser.newContext();
+    const ordPage = await ordContext.newPage();
+    await setupTestRouteProxy(ordPage);
+    await ordPage.addInitScript(({ token, user }) => {
+      localStorage.setItem('token', token);
+      localStorage.setItem('user', JSON.stringify(user));
+    }, {
+      token: ordinaryToken,
+      user: {
+        id: ordinaryAdminId,
+        username: ordinaryAdminUsername,
+        email: `${ordinaryAdminUsername.replace('@', '_')}@bfibd.org`,
+        role: 'admin',
+        firstName: 'Ordinary',
+        lastName: 'Admin',
+        is_super_admin: 0,
+        isSuperAdmin: false
+      }
+    });
+
+    await ordPage.goto('');
+    await ordPage.waitForLoadState('domcontentloaded');
+
+    const ordSearchInput = ordPage.locator('.sidebar-search-input');
+    await expect(ordSearchInput).toBeVisible();
+    await ordSearchInput.fill('administrators');
+
+    // Verify "Administrator Management" is NOT present for ordinary admin
+    const ordResult = ordPage.locator('.sidebar-search-item').filter({ hasText: 'Administrator Management' });
+    await expect(ordResult).toHaveCount(0);
+
+    await ordContext.close();
 
     // Cleanup
     db.prepare('DELETE FROM sessions WHERE id = ?').run(ordSessId);
