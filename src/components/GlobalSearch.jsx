@@ -28,9 +28,50 @@ import {
   Pencil,
   LogOut,
   Settings,
-  Shield
+  Shield,
+  Plus,
+  DollarSign,
+  Wallet,
+  UploadCloud,
+  Trash2,
+  Sparkles
 } from 'lucide-react';
 import './GlobalSearch.css';
+
+// ── Levenshtein Distance for typo tolerance & intelligent suggestions ─────────
+function levenshtein(a, b) {
+  if (a === b) return 0;
+  if (!a.length) return b.length;
+  if (!b.length) return a.length;
+  const matrix = [];
+  for (let i = 0; i <= b.length; i++) matrix[i] = [i];
+  for (let j = 0; j <= a.length; j++) matrix[0][j] = j;
+  for (let i = 1; i <= b.length; i++) {
+    for (let j = 1; j <= a.length; j++) {
+      if (b.charAt(i - 1) === a.charAt(j - 1)) {
+        matrix[i][j] = matrix[i - 1][j - 1];
+      } else {
+        matrix[i][j] = Math.min(
+          matrix[i - 1][j - 1] + 1, // substitution
+          matrix[i][j - 1] + 1,     // insertion
+          matrix[i - 1][j] + 1      // deletion
+        );
+      }
+    }
+  }
+  return matrix[b.length][a.length];
+}
+
+// Word similarity: 1.0 = exact/contains, down to 0.5 for close typos
+function wordSimilarity(word, target) {
+  if (!word || !target) return 0;
+  if (target.includes(word)) return 1.0;
+  if (word.includes(target)) return 0.9;
+  const dist = levenshtein(word, target);
+  const maxLen = Math.max(word.length, target.length);
+  const sim = 1 - dist / maxLen;
+  return sim >= 0.55 ? sim : 0;
+}
 
 export default function GlobalSearch({ onNavigate }) {
   const [query, setQuery] = useState('');
@@ -66,9 +107,10 @@ export default function GlobalSearch({ onNavigate }) {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isSearching]);
 
-  // Complete index of every sidebar menu and option
+  // Comprehensive index of every option, feature, sub-view, and menu according to role
   const allItems = useMemo(() => {
     const role = currentUser?.role || 'student';
+
     const items = [
       // ── Main Menu ──────────────────────────
       {
@@ -77,7 +119,8 @@ export default function GlobalSearch({ onNavigate }) {
         category: 'Main Menu',
         path: '/',
         icon: <Home size={16} />,
-        keywords: 'dashboard home overview feed film catalog welcome',
+        desc: 'Overview, film catalog, and quick access',
+        keywords: 'dashboard home overview feed film catalog welcome main',
       },
       {
         id: 'notices',
@@ -85,7 +128,8 @@ export default function GlobalSearch({ onNavigate }) {
         category: 'Main Menu',
         path: '/notices',
         icon: <Megaphone size={16} />,
-        keywords: 'notice board announcements circulars news broadcast alerts',
+        desc: 'Official institutional announcements and circulars',
+        keywords: 'notice board announcements circulars news broadcast alerts circular circulars bulletin',
       },
       {
         id: 'inbox',
@@ -93,7 +137,8 @@ export default function GlobalSearch({ onNavigate }) {
         category: 'Main Menu',
         path: '/inbox',
         icon: <Inbox size={16} />,
-        keywords: 'inbox messages chat conversations direct communication messaging',
+        desc: 'Direct messages, class discussions, and chat',
+        keywords: 'inbox messages chat conversations direct communication messaging dm chats',
       },
 
       // ── BFI Classroom ──────────────────────
@@ -103,7 +148,8 @@ export default function GlobalSearch({ onNavigate }) {
         category: 'BFI Classroom',
         path: '/student-portal',
         icon: <Award size={16} />,
-        keywords: 'student portal grades attendance academic results',
+        desc: 'Academic records, grades, and course status',
+        keywords: 'student portal grades attendance academic results status marks report card',
       }] : []),
       {
         id: 'classroom',
@@ -111,7 +157,8 @@ export default function GlobalSearch({ onNavigate }) {
         category: 'BFI Classroom',
         path: '/classroom',
         icon: <BookOpen size={16} />,
-        keywords: 'classroom lessons courses lectures syllabus video learning',
+        desc: 'Course lessons, video modules, and curriculum',
+        keywords: 'classroom lessons courses lectures syllabus video learning zoom live class curriculum modules',
       },
       {
         id: 'registry',
@@ -119,7 +166,8 @@ export default function GlobalSearch({ onNavigate }) {
         category: 'BFI Classroom',
         path: '/registry',
         icon: <UsersRound size={16} />,
-        keywords: 'registry records students batchmates academic database roster',
+        desc: role === 'student' ? 'View and connect with your batchmates' : 'Student database, batch rosters, and transcripts',
+        keywords: 'registry records students batchmates academic database roster classmates batch cohort',
       },
       {
         id: 'instructors',
@@ -127,7 +175,8 @@ export default function GlobalSearch({ onNavigate }) {
         category: 'BFI Classroom',
         path: '/instructors',
         icon: <Award size={16} />,
-        keywords: 'instructors teachers faculty directory professors mentors',
+        desc: 'Faculty members, course mentors, and directors',
+        keywords: 'instructors teachers faculty directory professors mentors directors staff teaching',
       },
 
       // ── My Studio ──────────────────────────
@@ -137,7 +186,8 @@ export default function GlobalSearch({ onNavigate }) {
         category: 'My Studio',
         path: '/profile',
         icon: <User size={16} />,
-        keywords: 'profile my account student teacher admin details bio avatar identity',
+        desc: 'Personal details, portfolio, and identity',
+        keywords: 'profile my account student teacher admin details bio avatar identity information edit photo',
       },
       ...(role === 'student' ? [{
         id: 'certificates',
@@ -145,7 +195,8 @@ export default function GlobalSearch({ onNavigate }) {
         category: 'My Studio',
         path: '/certificates',
         icon: <ScrollText size={16} />,
-        keywords: 'certificates awards achievements diploma degree credentials verification',
+        desc: 'Issued certificates, diplomas, and credentials',
+        keywords: 'certificates awards achievements diploma degree credentials verification download verify',
       }] : []),
       ...(role !== 'admin' ? [{
         id: 'courses',
@@ -153,7 +204,8 @@ export default function GlobalSearch({ onNavigate }) {
         category: 'My Studio',
         path: '/courses',
         icon: <BookOpen size={16} />,
-        keywords: 'course materials syllabus notes pdf download study resources',
+        desc: 'Downloadable syllabus, lecture notes, and study PDFs',
+        keywords: 'course materials syllabus notes pdf download study resources reading files slides',
       }] : []),
 
       // ── Learning Hub ───────────────────────
@@ -163,7 +215,8 @@ export default function GlobalSearch({ onNavigate }) {
         category: 'Learning Hub',
         path: '/community',
         icon: <Users size={16} />,
-        keywords: 'community forum discussion posts group social feed film collab',
+        desc: 'Student posts, film discussions, and collaborations',
+        keywords: 'community forum discussion posts group social feed film collab networking feed',
       },
       {
         id: 'directory',
@@ -171,7 +224,8 @@ export default function GlobalSearch({ onNavigate }) {
         category: 'Learning Hub',
         path: '/directory',
         icon: <BookUser size={16} />,
-        keywords: 'directory alumni graduates members list filmmakers contact',
+        desc: 'Directory of all graduated BFI filmmakers',
+        keywords: 'directory alumni graduates members list filmmakers contact graduates network',
       },
       {
         id: 'bfiaa',
@@ -179,7 +233,8 @@ export default function GlobalSearch({ onNavigate }) {
         category: 'Learning Hub',
         path: '/bfiaa',
         icon: <Globe size={16} />,
-        keywords: 'bfiaa alumni network global film association chapter',
+        desc: 'Bangladesh Film Institute Alumni Association network',
+        keywords: 'bfiaa alumni network global film association chapter association bfi',
       },
 
       // ── Administration (Admin only) ────────
@@ -190,7 +245,8 @@ export default function GlobalSearch({ onNavigate }) {
           category: 'Administration',
           path: '/admin/analytics',
           icon: <BarChart2 size={16} />,
-          keywords: 'analytics statistics metrics data charts visitors traffic performance',
+          desc: 'Platform traffic, logins, and engagement metrics',
+          keywords: 'analytics statistics metrics data charts visitors traffic performance stats tracking',
         },
         {
           id: 'admin-reports',
@@ -198,7 +254,8 @@ export default function GlobalSearch({ onNavigate }) {
           category: 'Administration',
           path: '/admin/reports',
           icon: <Flag size={16} />,
-          keywords: 'reports flags moderation issues tickets logs audit',
+          desc: 'Moderation queue, user flags, and issue reports',
+          keywords: 'reports flags moderation issues tickets logs audit violations complaints',
         },
         {
           id: 'admin-studentsmanager',
@@ -206,7 +263,8 @@ export default function GlobalSearch({ onNavigate }) {
           category: 'Administration',
           path: '/admin/studentsmanager',
           icon: <Users size={16} />,
-          keywords: 'student manager users enrollment accounts admissions access',
+          desc: 'Enrollments, user permissions, and access status',
+          keywords: 'student manager users enrollment accounts admissions access approve students edit student',
         },
         {
           id: 'admin-batchmanager',
@@ -214,7 +272,8 @@ export default function GlobalSearch({ onNavigate }) {
           category: 'Administration',
           path: '/admin/batchmanager',
           icon: <Users size={16} />,
-          keywords: 'batch manager classes cohorts batches groups intake',
+          desc: 'Create and manage student batches and cohorts',
+          keywords: 'batch manager classes cohorts batches groups intake create batch assign batch',
         },
         {
           id: 'admin-teachers',
@@ -222,7 +281,8 @@ export default function GlobalSearch({ onNavigate }) {
           category: 'Administration',
           path: '/admin/teachers',
           icon: <Shield size={16} />,
-          keywords: 'teachers manager faculty instructors staff assign instructors',
+          desc: 'Faculty assignments and teacher management',
+          keywords: 'teachers manager faculty instructors staff assign instructors faculty directory add teacher',
         },
         {
           id: 'admin-course-materials',
@@ -230,7 +290,8 @@ export default function GlobalSearch({ onNavigate }) {
           category: 'Administration',
           path: '/admin/course-materials',
           icon: <BookOpen size={16} />,
-          keywords: 'admin course materials upload files resources pdf video curriculum',
+          desc: 'Upload and organize course files and resources',
+          keywords: 'admin course materials upload files resources pdf video curriculum class docs',
         },
         {
           id: 'admin-course-maker',
@@ -238,7 +299,8 @@ export default function GlobalSearch({ onNavigate }) {
           category: 'Administration',
           path: '/admin/course-maker',
           icon: <Layers size={16} />,
-          keywords: 'course maker builder curriculum syllabus modules lessons create',
+          desc: 'Design and build interactive course modules',
+          keywords: 'course maker builder curriculum syllabus modules lessons create new course phases routine',
         },
         {
           id: 'admin-certificate-designer',
@@ -246,7 +308,8 @@ export default function GlobalSearch({ onNavigate }) {
           category: 'Administration',
           path: '/admin/certificate-designer',
           icon: <FileSignature size={16} />,
-          keywords: 'certificate designer template design issue credentials generator',
+          desc: 'Design templates and generate graduate certificates',
+          keywords: 'certificate designer template design issue credentials generator templates diplomas',
         },
         {
           id: 'admin-announcements',
@@ -254,7 +317,8 @@ export default function GlobalSearch({ onNavigate }) {
           category: 'Administration',
           path: '/admin/announcements',
           icon: <Megaphone size={16} />,
-          keywords: 'announcements broadcast notices push send alert notice board',
+          desc: 'Send push announcements and bulk notices',
+          keywords: 'announcements broadcast notices push send alert notice board sms email mass notice',
         },
         {
           id: 'admin-additional-options',
@@ -262,18 +326,85 @@ export default function GlobalSearch({ onNavigate }) {
           category: 'Administration',
           path: '/admin/additional-options',
           icon: <Sliders size={16} />,
-          keywords: 'additional options settings fees fee tracker finance configuration',
+          desc: 'Overview of all advanced administrative classroom tools',
+          keywords: 'additional options settings tools admin controls extra features overview',
+        },
+
+        // ── Specific Features inside Additional Options ───────
+        {
+          id: 'create-custom-subject',
+          title: 'Create Custom Subject',
+          category: 'Additional Options',
+          path: '/admin/additional-options?view=custom-subjects',
+          icon: <Plus size={16} />,
+          desc: 'Manage default & custom classroom subjects, edit names, and delete subjects',
+          keywords: 'create custom subject subjects curriculum topics course subject class subject add subject edit subject delete subject custom subject',
+        },
+        {
+          id: 'course-settings-manager',
+          title: 'Course Settings Manager',
+          category: 'Additional Options',
+          path: '/admin/additional-options?view=course-settings',
+          icon: <Settings size={16} />,
+          desc: 'Configure total classes, exam scores, passing marks, and assignments per course',
+          keywords: 'course settings manager grading pass marks passing score total classes exam assignments evaluation rules',
+        },
+        {
+          id: 'batch-fee-manager',
+          title: 'Batch Fee Manager',
+          category: 'Additional Options',
+          path: '/admin/additional-options?view=batch-fees',
+          icon: <DollarSign size={16} />,
+          desc: 'Define course fees per batch used as the default fee',
+          keywords: 'batch fee manager course fee tuition price pricing cost installment payment fee structure',
+        },
+        {
+          id: 'fee-tracker',
+          title: 'Fee Tracker',
+          category: 'Additional Options',
+          path: '/admin/additional-options?view=fee-tracker',
+          icon: <Wallet size={16} />,
+          desc: 'Monitor student payments, send payment reminders, and track dues',
+          keywords: 'fee tracker monitor payments student fees paid dues unpaid payment reminders ledger balance accounts',
+        },
+        {
+          id: 'bulk-import-registrations',
+          title: 'Bulk Import Registrations',
+          category: 'Additional Options',
+          path: '/admin/additional-options?view=bulk-import',
+          icon: <UploadCloud size={16} />,
+          desc: 'Upload unregistered students from CSV/Excel to track leads and prospects',
+          keywords: 'bulk import registrations upload students excel csv leads prospects admissions bulk import upload file spreadsheet',
+        },
+        {
+          id: 'trash-activity-log',
+          title: 'Trash & Activity Log',
+          category: 'Additional Options',
+          path: '/admin/additional-options?view=trash',
+          icon: <Trash2 size={16} />,
+          desc: 'Restore deleted items, review audit activity log, and view system trash',
+          keywords: 'trash activity log restore deleted items audit history recycle bin logs deletions recovery',
+        },
+        {
+          id: 'leads-table',
+          title: 'Registered Leads Table',
+          category: 'Additional Options',
+          path: '/admin/additional-options?view=leads',
+          icon: <Users size={16} />,
+          desc: 'View prospective student leads and admission inquiries',
+          keywords: 'leads table registered leads prospective students inquiry inquiries admission contacts',
         },
       ] : []),
 
-      // ── Settings & Preferences ─────────────
+      // ── Settings & Preferences (All Users) ─────────────
       {
         id: 'settings',
         title: 'Account Settings',
         category: 'Settings',
         path: '/settings',
         icon: <Settings size={16} />,
-        keywords: 'settings account preferences options configuration',
+        desc: 'Preferences, security, appearance, and profile details',
+        keywords: 'account settings preferences configuration user settings options account setup',
       },
       {
         id: 'settings-display-mode',
@@ -282,7 +413,8 @@ export default function GlobalSearch({ onNavigate }) {
         path: '/settings',
         action: 'toggle-mode',
         icon: mode === 'dark' ? <Moon size={16} /> : <Sun size={16} />,
-        keywords: 'display mode dark light theme appearance contrast night day switch toggle',
+        desc: `Switch between dark and light interface (Currently ${mode === 'dark' ? 'Dark' : 'Light'})`,
+        keywords: 'display mode dark light theme appearance contrast night day switch toggle ui light mode dark mode',
       },
       {
         id: 'settings-colour-theme',
@@ -290,7 +422,8 @@ export default function GlobalSearch({ onNavigate }) {
         category: 'Settings',
         path: '/settings',
         icon: <Palette size={16} />,
-        keywords: 'colour color theme accent palette tint style look aesthetic crimson emerald cyan',
+        desc: 'Customize accent color palette (Crimson, Emerald, Cyan, Purple, Amber)',
+        keywords: 'colour color theme accent palette tint style look aesthetic crimson emerald cyan purple amber palette',
       },
       {
         id: 'settings-profile-details',
@@ -298,7 +431,8 @@ export default function GlobalSearch({ onNavigate }) {
         category: 'Settings',
         path: '/settings',
         icon: <Pencil size={16} />,
-        keywords: 'profile details edit name username recovery email change name',
+        desc: 'Update your display name, username, and recovery email',
+        keywords: 'profile details edit name username recovery email change name first name last name display name',
       },
       {
         id: 'settings-change-password',
@@ -306,7 +440,8 @@ export default function GlobalSearch({ onNavigate }) {
         category: 'Settings',
         path: '/settings',
         icon: <Key size={16} />,
-        keywords: 'change password security update password credentials current new confirm',
+        desc: 'Update your account login password',
+        keywords: 'change password security update password credentials current password new password reset credentials',
       },
 
       // ── Actions ────────────────────────────
@@ -316,26 +451,99 @@ export default function GlobalSearch({ onNavigate }) {
         category: 'Actions',
         action: 'logout',
         icon: <LogOut size={16} />,
-        keywords: 'logout sign out exit quit disconnect',
+        desc: 'Sign out of your BFI Classroom account',
+        keywords: 'logout sign out exit quit disconnect end session log off',
       },
     ];
 
     return items;
   }, [currentUser?.role, mode]);
 
-  // Filter items based on query - only when query is NOT empty
-  const filteredItems = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) {
-      return [];
+  // Intelligent search matching: exact + typo-tolerant fuzzy suggestions
+  const { results, isSuggestion } = useMemo(() => {
+    const raw = query.trim().toLowerCase();
+    if (!raw) {
+      return { results: [], isSuggestion: false };
     }
-    return allItems.filter((item) => {
-      return (
-        item.title.toLowerCase().includes(q) ||
-        item.category.toLowerCase().includes(q) ||
-        item.keywords.toLowerCase().includes(q)
-      );
+
+    const queryWords = raw.split(/\s+/).filter(Boolean);
+
+    // Score all items
+    const scored = allItems.map((item) => {
+      const titleLower = item.title.toLowerCase();
+      const catLower = item.category.toLowerCase();
+      const kwLower = (item.keywords || '').toLowerCase();
+      const descLower = (item.desc || '').toLowerCase();
+
+      // 1. Direct exact phrase match (highest score)
+      if (titleLower.includes(raw)) return { item, score: 3.0, isExact: true };
+      if (kwLower.includes(raw)) return { item, score: 2.5, isExact: true };
+      if (descLower.includes(raw)) return { item, score: 2.0, isExact: true };
+      if (catLower.includes(raw)) return { item, score: 1.8, isExact: true };
+
+      // 2. Multi-word token match
+      let totalTokenScore = 0;
+      let matchedTokens = 0;
+
+      for (const qw of queryWords) {
+        let bestTokenScore = 0;
+
+        // Check against title words
+        const titleWords = titleLower.split(/[\s—\-/,]+/);
+        for (const tw of titleWords) {
+          bestTokenScore = Math.max(bestTokenScore, wordSimilarity(qw, tw) * 1.5);
+        }
+
+        // Check against keyword words
+        const kwWords = kwLower.split(/[\s—\-/,]+/);
+        for (const kw of kwWords) {
+          bestTokenScore = Math.max(bestTokenScore, wordSimilarity(qw, kw) * 1.2);
+        }
+
+        // Check against category words
+        const catWords = catLower.split(/[\s—\-/,]+/);
+        for (const cw of catWords) {
+          bestTokenScore = Math.max(bestTokenScore, wordSimilarity(qw, cw) * 1.0);
+        }
+
+        if (bestTokenScore >= 0.6) {
+          matchedTokens++;
+          totalTokenScore += bestTokenScore;
+        }
+      }
+
+      const avgScore = totalTokenScore / queryWords.length;
+      const allMatched = matchedTokens === queryWords.length;
+
+      return {
+        item,
+        score: allMatched ? avgScore * 1.3 : avgScore * 0.8,
+        isExact: false,
+      };
     });
+
+    // Exact or strong matches (score >= 0.8)
+    const exactMatches = scored
+      .filter((s) => s.isExact || s.score >= 0.85)
+      .sort((a, b) => b.score - a.score)
+      .map((s) => s.item);
+
+    if (exactMatches.length > 0) {
+      return { results: exactMatches, isSuggestion: false };
+    }
+
+    // If no strong/exact matches, look for close fuzzy suggestions (score >= 0.55)
+    const suggestions = scored
+      .filter((s) => s.score >= 0.55)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 5)
+      .map((s) => s.item);
+
+    if (suggestions.length > 0) {
+      return { results: suggestions, isSuggestion: true };
+    }
+
+    return { results: [], isSuggestion: false };
   }, [allItems, query]);
 
   const handleSelect = (item) => {
@@ -357,22 +565,22 @@ export default function GlobalSearch({ onNavigate }) {
   };
 
   const handleKeyDown = (e) => {
-    if (!isSearching || filteredItems.length === 0) return;
+    if (!isSearching || results.length === 0) return;
 
     if (e.key === 'ArrowDown') {
       e.preventDefault();
-      const next = (selectedIndex + 1) % filteredItems.length;
+      const next = (selectedIndex + 1) % results.length;
       setSelectedIndex(next);
       itemRefs.current[next]?.scrollIntoView({ block: 'nearest' });
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
-      const prev = (selectedIndex - 1 + filteredItems.length) % filteredItems.length;
+      const prev = (selectedIndex - 1 + results.length) % results.length;
       setSelectedIndex(prev);
       itemRefs.current[prev]?.scrollIntoView({ block: 'nearest' });
     } else if (e.key === 'Enter') {
       e.preventDefault();
-      if (filteredItems[selectedIndex]) {
-        handleSelect(filteredItems[selectedIndex]);
+      if (results[selectedIndex]) {
+        handleSelect(results[selectedIndex]);
       }
     }
   };
@@ -386,7 +594,7 @@ export default function GlobalSearch({ onNavigate }) {
           ref={inputRef}
           type="text"
           className="sidebar-search-input"
-          placeholder="Search menus & settings…"
+          placeholder="Search menus, features & tools…"
           value={query}
           onChange={(e) => {
             setQuery(e.target.value);
@@ -415,20 +623,29 @@ export default function GlobalSearch({ onNavigate }) {
         )}
       </div>
 
-      {/* ── Results appear ONLY when people start typing ─────────────────── */}
+      {/* ── Results appear ONLY when user types ───────────────────────────── */}
       {isSearching && (
         <div className="sidebar-search-results-panel" role="listbox">
           <div className="sidebar-search-results-header">
-            <span>Search Results</span>
-            <span>{filteredItems.length} found</span>
+            {isSuggestion ? (
+              <span style={{ display: 'flex', alignItems: 'center', gap: '5px', color: 'var(--accent-primary)' }}>
+                <Sparkles size={12} /> Closest Suggestions
+              </span>
+            ) : (
+              <span>Search Results</span>
+            )}
+            <span>{results.length} found</span>
           </div>
 
-          {filteredItems.length === 0 ? (
+          {results.length === 0 ? (
             <div className="sidebar-search-results-empty">
-              No menu or option matches “<strong>{query}</strong>”
+              <div>No option matches “<strong>{query}</strong>”</div>
+              <div style={{ marginTop: '0.4rem', fontSize: '0.74rem', color: 'var(--text-muted)' }}>
+                Try searching for: <span style={{ color: 'var(--accent-primary)' }}>Custom Subject, Password, Batch, Classroom</span>
+              </div>
             </div>
           ) : (
-            filteredItems.map((item, idx) => {
+            results.map((item, idx) => {
               const isSelected = idx === selectedIndex;
               return (
                 <button
@@ -445,9 +662,11 @@ export default function GlobalSearch({ onNavigate }) {
                     {item.icon}
                   </div>
                   <div className="sidebar-search-item-content">
-                    {/* Full Name Shown without truncation */}
+                    {/* Full Name Always Shown without truncation */}
                     <div className="sidebar-search-item-title">{item.title}</div>
-                    <div className="sidebar-search-item-category">{item.category}</div>
+                    <div className="sidebar-search-item-category">
+                      {item.category} {item.desc ? `• ${item.desc}` : ''}
+                    </div>
                   </div>
                 </button>
               );
