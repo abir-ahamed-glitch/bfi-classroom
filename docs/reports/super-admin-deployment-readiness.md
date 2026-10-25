@@ -3,7 +3,8 @@
 **Prepared Date:** October 25, 2026  
 **Candidate Worktree:** `.worktrees/super-admin-integration`  
 **Candidate Branch:** `integration/super-admin-candidate`  
-**Exact Code Release Candidate Commit SHA:** `1b421a22378ba6029a2e20849720eb780ffba112`  
+**Exact Code Release Candidate Commit SHA:** `21f3cbe7163f924f5b30c172dc1f6542c3c6f4cd`  
+**Previous Documentation Head SHA:** `7b21c6c5ac91a43e01532314e5bc7920f76a09f5`  
 **Base Commit (Integrated Local Main):** `17d933567c2b39ad2dd47d949564eee1bce2dd66` (Full 11-commit revision gap integrated)  
 **Target Super Admin Account:** ID `1`, `admin@abir` / `k.eye.films@gmail.com`  
 **Production Host:** `bfi-classroom-server` (`129.221.243.153`, Ubuntu 22.04 LTS aarch64)  
@@ -21,9 +22,9 @@ All local integration, regression testing, deployment safety, rollback hardening
 | **Fail-Closed Safety Gates** | **PASS** | All `\|\| true` eliminated; `set -e` enforced; 14/14 subprocess fail-closed rehearsal vectors pass. |
 | **Unified Migration Runner** | **PASS** | `scripts/run_migrations.cjs` built with explicit path support, chronological order, and 10/10 post-migration schema integrity assertions. |
 | **Migration Distinction Rehearsals** | **PASS** | **Scenario A (True Pre-Upgrade DB):** All 5 migrations applied sequentially, User 1 promoted, 36 permissions seeded for ordinary admins.<br>**Scenario B (Repeat / Idempotency):** All 5 migrations skipped cleanly (`applied: false`), 0 duplicate permissions, schema verified. |
-| **Automated Smoke Checks** | **PASS** | `scripts/production_smoke_check.cjs` enforces 5 strict tiers (HTML shell, login validation, profile, SA endpoint, Ord Admin 403). Rehearsed across 5 failure/timeout vectors. |
-| **Automated Test Regression** | **PASS** | **122 / 122 Tests Passing** across all 4 suites (including Test 85 real browser Global Search role-indexing verification). |
-| **Code Quality & Build** | **PASS** | **0 ESLint Errors** (168 warnings); clean production Vite build (`dist/index.html` & `dist/404.html` generated in 1.11s). |
+| **Automated Smoke Checks** | **PASS** | `scripts/production_smoke_check.cjs` enforces 5 strict tiers (HTML shell, login validation, profile, SA endpoint, Ord Admin 403). Missing or empty credentials exit nonzero (fail-closed); 32/32 CLI test vectors pass; tokens never printed. |
+| **Automated Test Regression** | **PASS** | **123 / 123 Tests Passing** across all 5 suites (including Test 85 browser Global Search role-indexing and smoke CLI specification). |
+| **Code Quality & Build** | **PASS** | **0 ESLint Errors** (168 warnings); clean production Vite build (`dist/index.html` & `dist/404.html` generated in 1.07s). |
 | **Pristine Root Database** | **PASS** | Root database SHA-256 verified unchanged (`BF37A89C...5F1E`). |
 | **Live Host Read-Only Inspection** | **VERIFIED** | Ubuntu 22.04 aarch64, Node v22.23.4, PM2 v7.1.0, 91GB disk available, Nginx proxy active, `lsof`/`fuser` available. |
 | **Edge Maintenance Mode Bypass** | **UNVERIFIED** | Edge Cloudflare/proxy 503 maintenance bypass rule must be verified by the system operator before maintenance window. |
@@ -45,7 +46,7 @@ All local integration, regression testing, deployment safety, rollback hardening
 10. `13d719f` feat(batches): implement HTTP 304 ETag conditional caching and server-side pagination with load more
 11. `17d9335` fix(analytics): dynamic unread reports count and ESLint compliance
 
-### 2.2 Complete Release Candidate File Inventory (Code Release Commit `1b421a2`)
+### 2.2 Complete Release Candidate File Inventory (Code Release Commit `21f3cbe`)
 * **Core Application Entry & Security:**
   * `server/server.js`: Express router mounting, security headers, rate limiters, session tracking.
   * `server/middleware/auth.js`: Real-time RBAC middleware, `requireSuperAdmin`, `requirePermission`, `requireSudo`, `authLimiter`.
@@ -58,7 +59,8 @@ All local integration, regression testing, deployment safety, rollback hardening
   * `server/db/database.js`: SQLite configuration (WAL mode, foreign keys, 64MB cache, batch indexes).
   * `scripts/run_migrations.cjs`: Unified CLI runner with post-migration schema integrity assertions and explicit DB path support.
   * `scripts/preflight_lockdown_check.cjs`: Fail-closed writer and database handle inspection tool.
-  * `scripts/production_smoke_check.cjs`: Automated fail-closed production smoke checker with strict multi-tier HTTP assertions.
+  * `scripts/production_smoke_check.cjs`: Automated fail-closed production smoke checker with strict multi-tier HTTP assertions and credential enforcement.
+  * `scripts/test_production_smoke_check.cjs`: 32-vector standalone executable CLI test suite for smoke verification.
   * `server/db/migrations/20261023_super_admin.cjs`: Account promotion & schema preparation.
   * `server/db/migrations/20261023_admin_permissions.cjs`: Granular RBAC tables & default catalog.
   * `server/db/migrations/20261024_privileged_safeguards.cjs`: Sudo mode, token versions, MFA recovery codes (idempotent `{ applied: false }` return).
@@ -75,10 +77,11 @@ All local integration, regression testing, deployment safety, rollback hardening
   * `tests/course-definitions-api.spec.js`: 12 automated tests covering definition immutability and routines.
   * `tests/course-maker-e2e.spec.js`: 10 automated tests covering full lifecycle and student progress.
   * `tests/same-title-batch-collision.spec.js`: 15 automated tests covering multi-batch isolation.
+  * `tests/production-smoke-check.spec.js`: 1 automated test executing the 32-vector smoke CLI specification test suite.
 
 ### 2.3 Release Distribution Boundary & Prerequisite
 > [!IMPORTANT]
-> **Candidate Distribution Prerequisite:** Because development, hardening, and verification were performed locally in isolated worktree `.worktrees/super-admin-integration` on branch `integration/super-admin-candidate`, the code release commit `1b421a22378ba6029a2e20849720eb780ffba112` is not yet present on remote `origin`.
+> **Candidate Distribution Prerequisite:** Because development, hardening, and verification were performed locally in isolated worktree `.worktrees/super-admin-integration` on branch `integration/super-admin-candidate`, the code release commit `21f3cbe7163f924f5b30c172dc1f6542c3c6f4cd` is not yet present on remote `origin`.
 > 
 > The production server (`bfi-classroom-server`) **cannot** fetch this revision (`git fetch origin`) until the operator reviews and pushes the candidate branch to `origin`.
 > 
@@ -113,8 +116,8 @@ All local integration, regression testing, deployment safety, rollback hardening
 
 ## 4. Full Automated Test Regression & Rehearsal Evidence
 
-### 4.1 Full Regression Execution (122 / 122 Tests Passed)
-All 4 test suites executed against isolated test environment:
+### 4.1 Full Regression Execution (123 / 123 Tests Passed)
+All 5 test suites executed against isolated test environment:
 
 ```
 ================================================================================
@@ -144,10 +147,13 @@ Suite 4: Same-Title Batch Collision & Multi-Batch Registry (tests/same-title-bat
   -> Covers: Identical course title isolation, batch fee overrides, course settings
      isolation, student portal separation, and instructor scope filtering.
 
+Suite 5: Production Smoke Check CLI Specification (tests/production-smoke-check.spec.js)
+  -> 1 / 1 Passed (executing 32 discrete requirement vectors in scripts/test_production_smoke_check.cjs)
+
 --------------------------------------------------------------------------------
-TOTAL REGRESSION VERDICT: 122 / 122 TESTS PASSED (100% PASS RATE)
+TOTAL REGRESSION VERDICT: 123 / 123 TESTS PASSED (100% PASS RATE)
 LINT VERDICT: 0 ERRORS (168 warnings)
-BUILD VERDICT: VITE PRODUCTION BUILD PASSED (dist/index.html & dist/404.html in 1.11s)
+BUILD VERDICT: VITE PRODUCTION BUILD PASSED (dist/index.html & dist/404.html in 1.07s)
 ROOT DATABASE INTEGRITY: SHA-256 BF37A89C3F0DA1038E2E9A8FA18916D9A2986541A062C9AB40EE51E4987F5F1E (UNMODIFIED)
 ================================================================================
 ```
@@ -169,13 +175,19 @@ The distinction between an initial migration from a true pre-upgrade database an
   * Result: Exactly 5/5 migrations returned `{ applied: false, reason: 'Already applied' }` and logged `ℹ️ [Skipped] Already applied`.
   * Verified: 0 duplicated permissions (ordinary admin permissions remained exactly 36), 0 duplicated migration rows (remained exactly 5), schema integrity verified, exit code `0`.
 
-### 4.3 Automated Smoke Check Rehearsal Evidence
-`scripts/production_smoke_check.cjs` was rehearsed against a disposable HTTP server across 5 controlled vectors:
-1. **Happy Path:** Valid 200/400/200/200/403 responses -> Passed all 15 sub-assertions, exit code `0`.
-2. **HTTP 500 Status on Login:** Rejected unexpected status code, exited immediately with code `1`.
-3. **Malformed HTML Body instead of JSON:** Rejected unparseable JSON payload, exited immediately with code `1`.
-4. **Connection Refusal (ECONNREFUSED):** Handled unreachable host gracefully, printed diagnostic and exited with code `1`.
-5. **Request Timeout:** Handled slow endpoint exceeding threshold, aborted connection and exited with code `1`.
+### 4.3 Automated Smoke Check CLI Test Suite Evidence (32 Vectors)
+Executed `node scripts/test_production_smoke_check.cjs` with 32 passed assertions across 9 core test categories:
+1. **Neither Credential Supplied:** Exits with code 1; reports fatal missing credentials; rejects deployment gate.
+2. **Only Super Admin Credential Supplied:** Exits with code 1; identifies Ordinary Admin token as missing.
+3. **Only Ordinary Admin Credential Supplied:** Exits with code 1; identifies Super Admin token as missing.
+4. **Whitespace-Only Credentials:** Exits with code 1; identifies credentials as missing/empty.
+5. **Both Credentials Supplied:** Exits with code 0; verifies all 5 tiers (Tier 1.1–1.3, Tier 2.1–2.3, Tier 3.1–3.6, Tier 4a.1–4a.3, Tier 4b.1–4b.3); clears deployment gate.
+6. **Credential Confidentiality:** Secret token strings are NEVER printed in stdout or stderr under any condition.
+7. **Partial Diagnostics Mode (`--diagnostics`):** Runs unauthenticated tiers for troubleshooting; exits 0 without clearing deployment gate; explicitly outputs `DOES NOT authorize deployment`.
+8. **Protected Endpoint Unexpected Status (RBAC Leak):** Endpoint returning 200 instead of 403 exits with code 1 and logs status mismatch assertion.
+9. **Protected Endpoint Malformed JSON:** Endpoint returning HTML instead of JSON exits with code 1 and logs parse failure.
+10. **Connection Failure (ECONNREFUSED):** Handled gracefully with code 1.
+11. **Request Timeout:** Handled gracefully with code 1 on exceeding timeout threshold.
 
 ---
 
@@ -194,7 +206,7 @@ cd /home/ubuntu/bfi-classroom
 git fetch origin
 
 # 2. Stage the reviewed preflight inspection script
-git checkout 1b421a22378ba6029a2e20849720eb780ffba112 -- scripts/preflight_lockdown_check.cjs
+git checkout 21f3cbe7163f924f5b30c172dc1f6542c3c6f4cd -- scripts/preflight_lockdown_check.cjs
 
 # 3. Verify script presence and file integrity without executing operational checks
 test -s scripts/preflight_lockdown_check.cjs
@@ -298,7 +310,7 @@ sha256sum scripts/preflight_lockdown_check.cjs
 ### Phase 3: Reproducible Code Update & Build Sequence
 1. **Checkout Pinned Release Candidate Commit:**
    ```bash
-   git checkout 1b421a22378ba6029a2e20849720eb780ffba112
+   git checkout 21f3cbe7163f924f5b30c172dc1f6542c3c6f4cd
    ```
 2. **Install Dependencies (Including DevDependencies for Vite):**
    ```bash
@@ -328,13 +340,14 @@ sha256sum scripts/preflight_lockdown_check.cjs
    pm2 status
    ```
 2. **Execute Automated Fail-Closed Smoke Check:**
+   Pass tokens securely via protected environment variables:
    ```bash
-   # Run automated multi-tier smoke checker (exits nonzero on status mismatch, malformed JSON, or connection failure)
-   node scripts/production_smoke_check.cjs http://127.0.0.1:3001 --super-admin-token "$SA_TOKEN" --admin-token "$ORD_TOKEN"
+   # Run automated multi-tier smoke checker (exits nonzero on missing tokens, status mismatch, malformed JSON, or connection failure)
+   SUPER_ADMIN_TOKEN="$SA_TOKEN" ADMIN_TOKEN="$ORD_TOKEN" node scripts/production_smoke_check.cjs http://127.0.0.1:3001
    ```
    *Gate:* If `production_smoke_check.cjs` exits with code `1`, **DO NOT REOPEN TRAFFIC**. Trigger Rollback Runbook (Window A).
 3. **Reopen Public Traffic:**
-   * Remove 503 maintenance page on Cloudflare / reverse proxy. Monitor PM2 logs for 15 minutes:
+   * Remove 503 maintenance page on Cloudflare / reverse proxy ONLY after smoke check exits with code 0. Monitor PM2 logs for 15 minutes:
    ```bash
    pm2 logs bfi-classroom --lines 100
    ```

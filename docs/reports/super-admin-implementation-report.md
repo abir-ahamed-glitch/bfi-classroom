@@ -4,8 +4,8 @@
 **Date:** October 25, 2026  
 **Target Super Admin Account:** Abir Ahmad (`admin@abir` / `k.eye.films@gmail.com`)  
 **Verified Stable Database User ID:** `1`  
-**Branch & Revision:** `integration/super-admin-candidate` in isolated worktree `.worktrees/super-admin-integration` (commit `1b421a22378ba6029a2e20849720eb780ffba112`, base `main` `17d933567c2b39ad2dd47d949564eee1bce2dd66` with full 11-commit revision gap integrated)  
-**Status:** ✅ Fully Implemented, Hardened, Tested & Verified (122/122 Tests Passing: 85/85 Super Admin Suite, 37/37 Regression Suites: 12 Course Definitions API, 10 Course Maker E2E, 15 Same-Title Batch Collision; 0 ESLint Errors)
+**Branch & Revision:** `integration/super-admin-candidate` in isolated worktree `.worktrees/super-admin-integration` (commit `21f3cbe7163f924f5b30c172dc1f6542c3c6f4cd`, base `main` `17d933567c2b39ad2dd47d949564eee1bce2dd66` with full 11-commit revision gap integrated)  
+**Status:** ✅ Fully Implemented, Hardened, Tested & Verified (123/123 Tests Passing: 85/85 Super Admin Suite, 38/38 Regression Suites: 12 Course Definitions API, 10 Course Maker E2E, 15 Same-Title Batch Collision, 1 Production Smoke Check CLI spec [32 vectors]; 0 ESLint Errors)
 
 ---
 
