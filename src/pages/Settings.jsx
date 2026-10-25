@@ -1,7 +1,16 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
-import { Shield, Key, User, Save, AlertCircle, Palette, Check, Sun, Moon, Pencil, X } from 'lucide-react';
+import { Shield, Key, User, Save, AlertCircle, Palette, Check, Sun, Moon, Pencil, X, Search } from 'lucide-react';
+
+// Searchable metadata for each settings section
+const SECTIONS_META = [
+  { id: 'display-mode',     keywords: 'display mode dark light interface night day appearance' },
+  { id: 'colour-theme',    keywords: 'colour theme color accent palette tint style look' },
+  { id: 'account-info',    keywords: 'account info username role status badge verified' },
+  { id: 'profile-details', keywords: 'profile details name first last recovery email edit' },
+  { id: 'change-password', keywords: 'change password security current new confirm update' },
+];
 
 export default function Settings() {
   const { currentUser, updateUser } = useAuth();
@@ -19,6 +28,18 @@ export default function Settings() {
   const [nameMessage, setNameMessage] = useState({ type: '', text: '' });
   const [usernameStatus, setUsernameStatus] = useState({ state: 'idle', message: '' });
   const usernameBlocked = usernameStatus.state === 'taken' || usernameStatus.state === 'error' || usernameStatus.state === 'checking';
+  const [searchQuery, setSearchQuery] = useState('');
+
+  // Derive which section IDs are visible based on the current search query
+  const visibleSections = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return null; // null = show all
+    return SECTIONS_META
+      .filter(({ keywords }) => keywords.includes(q))
+      .map(({ id }) => id);
+  }, [searchQuery]);
+
+  const show = (id) => !visibleSections || visibleSections.includes(id);
 
   useEffect(() => {
     const username = nameForm.username.trim();
@@ -160,17 +181,37 @@ export default function Settings() {
 
   return (
     <div className="page-container container" style={{ paddingBottom: '4rem' }}>
-      <div style={{ marginBottom: '3rem' }}>
+      <div style={{ marginBottom: '2rem' }}>
         <h1 className="text-gradient font-display" style={{ fontSize: '2.5rem' }}>Account Settings</h1>
         <p style={{ color: 'var(--text-secondary)', marginTop: '0.4rem' }}>
           Manage your account details, security preferences, and appearance.
         </p>
       </div>
 
+      {/* ── Settings Search ───────────────────────────────────────────────── */}
+      <div style={{ marginBottom: '2rem', position: 'relative', maxWidth: '480px' }}>
+        <Search
+          size={17}
+          style={{
+            position: 'absolute', left: '0.9rem', top: '50%',
+            transform: 'translateY(-50%)',
+            color: 'var(--text-muted)', pointerEvents: 'none',
+          }}
+        />
+        <input
+          type="search"
+          className="input-glass"
+          placeholder="Search settings…"
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          style={{ paddingLeft: '2.5rem', width: '100%' }}
+        />
+      </div>
+
       <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
 
         {/* ── Dark / Light Mode Toggle ──────────────────────────────────────── */}
-        <section className="glass-panel" style={{ padding: '2rem' }}>
+        {show('display-mode') && <section className="glass-panel" style={{ padding: '2rem' }}>
           <h3 className="font-display" style={{ marginBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.75rem', fontSize: '1.2rem' }}>
             {isLight ? <Sun size={20} style={{ color: 'var(--accent-primary)' }} /> : <Moon size={20} style={{ color: 'var(--accent-primary)' }} />}
             Display Mode
@@ -247,10 +288,10 @@ export default function Settings() {
               );
             })}
           </div>
-        </section>
+        </section>}
 
         {/* ── Theme Colour Switcher ─────────────────────────────────────────── */}
-        <section className="glass-panel" style={{ padding: '2rem' }}>
+        {show('colour-theme') && <section className="glass-panel" style={{ padding: '2rem' }}>
           <h3 className="font-display" style={{ marginBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.75rem', fontSize: '1.2rem' }}>
             <Palette size={20} style={{ color: 'var(--accent-primary)' }} /> Colour Theme
           </h3>
@@ -307,13 +348,13 @@ export default function Settings() {
               );
             })}
           </div>
-        </section>
+        </section>}
 
         {/* ── Account Info + Name Edit + Password ─────────────────────────── */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '2rem' }}>
 
           {/* Account Info */}
-          <section className="glass-panel" style={{ padding: '2rem' }}>
+          {show('account-info') && <section className="glass-panel" style={{ padding: '2rem' }}>
             <h3 className="font-display" style={{ marginBottom: '1.5rem', display: 'flex', alignItems: 'center', gap: '0.75rem', fontSize: '1.2rem' }}>
               <User size={20} style={{ color: 'var(--accent-primary)' }} /> Account Info
             </h3>
@@ -371,10 +412,10 @@ export default function Settings() {
                 <span className="badge-pill">Active &amp; Verified</span>
               </div>
             </div>
-          </section>
+          </section>}
 
           {/* Profile Editor */}
-          <section className="glass-panel" style={{ padding: '2rem' }}>
+          {show('profile-details') && <section className="glass-panel" style={{ padding: '2rem' }}>
             <h3 className="font-display" style={{ marginBottom: '0.4rem', display: 'flex', alignItems: 'center', gap: '0.75rem', fontSize: '1.2rem' }}>
               <Pencil size={20} style={{ color: 'var(--accent-primary)' }} /> Profile Details
             </h3>
@@ -465,10 +506,10 @@ export default function Settings() {
                 {nameLoading ? 'Saving...' : usernameBlocked ? 'Fix Username First' : <><Save size={17} /> Save Profile</>}
               </button>
             </form>
-          </section>
+          </section>}
 
           {/* Change Password */}
-          <section className="glass-panel" style={{ padding: '2rem' }}>
+          {show('change-password') && <section className="glass-panel" style={{ padding: '2rem' }}>
             <h3 className="font-display" style={{ marginBottom: '1.5rem', display: 'flex', alignItems: 'center', gap: '0.75rem', fontSize: '1.2rem' }}>
               <Key size={20} style={{ color: 'var(--accent-primary)' }} /> Change Password
             </h3>
@@ -494,11 +535,23 @@ export default function Settings() {
                 {loading ? 'Updating...' : <><Save size={18} /> Update Password</>}
               </button>
             </form>
-          </section>
+          </section>}
 
         </div>
 
       </div>
+
+      {/* No-results empty state */}
+      {visibleSections && visibleSections.length === 0 && (
+        <div style={{
+          textAlign: 'center', padding: '4rem 2rem',
+          color: 'var(--text-muted)', fontSize: '0.95rem',
+          display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.75rem',
+        }}>
+          <Search size={32} style={{ opacity: 0.3 }} />
+          <span>No settings match <strong style={{ color: 'var(--text-secondary)' }}>“{searchQuery}”</strong></span>
+        </div>
+      )}
     </div>
   );
 }
