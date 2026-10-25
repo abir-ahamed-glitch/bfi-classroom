@@ -42,7 +42,7 @@ import GlobalSearch from './GlobalSearch';
 
 export default function Sidebar({ isNotifOpen, setIsNotifOpen }) {
   const { currentUser, logout } = useAuth();
-  const { currentTheme, mode, toggleMode } = useTheme();
+  const { mode, toggleMode } = useTheme();
   const location = useLocation();
   const navigate = useNavigate();
   const [isOpen, setIsOpen] = useState(false);
@@ -443,7 +443,7 @@ export default function Sidebar({ isNotifOpen, setIsNotifOpen }) {
           {/* Dark / Light Mode Toggle */}
           <button
             onClick={toggleMode}
-            className="theme-toggle-btn"
+            className="theme-toggle-btn" style={{ marginBottom: '1rem' }}
             title={mode === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
           >
             <span style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
@@ -466,16 +466,6 @@ export default function Sidebar({ isNotifOpen, setIsNotifOpen }) {
             </div>
           </button>
 
-          <NavLink to="/settings" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`} style={{ marginBottom: '1rem', position: 'relative' }}>
-            <Settings size={20} /> Account Settings
-            <span title={`Theme: ${currentTheme?.name}`} style={{
-              position: 'absolute', right: '0.75rem', top: '50%', transform: 'translateY(-50%)',
-              width: '8px', height: '8px', borderRadius: '50%',
-              background: currentTheme?.accent || 'var(--accent-primary)',
-              boxShadow: `0 0 6px ${currentTheme?.accent || 'var(--accent-primary)'}`,
-              flexShrink: 0,
-            }} />
-          </NavLink>
           <div className="user-mini-profile">
             <div className="avatar" style={{ overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
               {currentUser?.profile_picture ? (
