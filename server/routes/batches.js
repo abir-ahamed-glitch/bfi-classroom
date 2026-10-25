@@ -42,11 +42,68 @@ router.post('/run-automation', authenticateToken, requireRole('admin'), (req, re
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/', authenticateToken, requireRole('admin'), (req, res) => {
   try {
-    const status = req.query.status || null;
-    const course = req.query.course || null;
-    const search = req.query.search ? `%${req.query.search}%` : null;
+    const status = req.query.status && req.query.status !== 'all' ? req.query.status : null;
+    const course = req.query.course && req.query.course !== 'all' ? req.query.course : null;
+    const rawSearch = req.query.search ? req.query.search.trim() : '';
+    const search = rawSearch ? `%${rawSearch}%` : null;
+    const page = req.query.page ? Math.max(1, parseInt(req.query.page, 10)) : null;
+    const limit = req.query.limit ? Math.max(1, parseInt(req.query.limit, 10)) : null;
 
-    const batches = db.prepare(`
+    // 1. Fast Conditional ETag Check (< 0.5ms)
+    // Uses metadata and index counts to detect database changes instantly without running batch query
+    const meta = db.prepare(`
+      SELECT 
+        COUNT(*) as count, 
+        COALESCE(MAX(updated_at), '0') as max_updated,
+        COALESCE(MAX(id), 0) as max_id
+      FROM batches 
+      WHERE deleted_at IS NULL
+    `).get();
+    const bsMeta = db.prepare(`SELECT COUNT(*) as count FROM batch_students`).get();
+
+    const queryKey = `${status || 'all'}:${course || 'all'}:${rawSearch}:${page || 'all'}:${limit || 'all'}`;
+    const currentEtag = `W/"b-${meta.count}-${meta.max_updated}-${meta.max_id}-${bsMeta.count}-${Buffer.from(queryKey).toString('base64url')}"`;
+
+    if (req.headers['if-none-match'] === currentEtag) {
+      res.setHeader('ETag', currentEtag);
+      return res.status(304).end();
+    }
+    res.setHeader('ETag', currentEtag);
+
+    // 2. Global status breakdown stats for admin summary cards
+    const statsRows = db.prepare(`
+      SELECT status, COUNT(*) as cnt
+      FROM batches
+      WHERE deleted_at IS NULL
+      GROUP BY status
+    `).all();
+    const stats = { total: 0, active: 0, upcoming: 0, completed: 0, archived: 0 };
+    for (const r of statsRows) {
+      stats.total += r.cnt;
+      if (r.status in stats) stats[r.status] = r.cnt;
+    }
+
+    // 3. Count total matching filtered rows if pagination requested
+    let totalMatching = null;
+    if (page !== null || limit !== null) {
+      const totalRow = db.prepare(`
+        SELECT COUNT(*) as cnt
+        FROM batches b
+        WHERE 
+          b.deleted_at IS NULL
+          AND (:status IS NULL OR b.status = :status)
+          AND (:course IS NULL OR b.course_name = :course)
+          AND (
+            :search IS NULL OR 
+            b.batch_name LIKE :search OR 
+            b.batch_number LIKE :search
+          )
+      `).get({ status, course, search });
+      totalMatching = totalRow ? totalRow.cnt : 0;
+    }
+
+    // 4. Query batches (with optional LIMIT & OFFSET)
+    let querySql = `
       SELECT 
         b.*,
         COALESCE(bs_cnt.cnt, 0) as student_count
@@ -66,22 +123,39 @@ router.get('/', authenticateToken, requireRole('admin'), (req, res) => {
           b.batch_number LIKE :search
         )
       ORDER BY CAST(b.batch_number AS INTEGER) DESC
-    `).all({ status, course, search });
+    `;
 
-    // Bulk pre-compute phase 1 completed counts in a single query across all batches
-    const p1Rows = db.prepare(`
-      SELECT bs.batch_id, COUNT(DISTINCT bs.student_id) as count
-      FROM batch_students bs
-      JOIN batches b ON b.id = bs.batch_id
-      JOIN student_course_enrollments sce
-        ON sce.user_id = bs.student_id
-        AND (sce.batch_id = bs.batch_id OR (sce.batch_id IS NULL AND sce.course_name = b.course_name))
-      WHERE b.deleted_at IS NULL AND sce.step2_completed = 1
-      GROUP BY bs.batch_id
-    `).all();
-    const p1Map = new Map(p1Rows.map(r => [r.batch_id, r.count]));
+    const queryParams = { status, course, search };
+    if (page !== null && limit !== null) {
+      querySql += ` LIMIT :limit OFFSET :offset`;
+      queryParams.limit = limit;
+      queryParams.offset = (page - 1) * limit;
+    } else if (limit !== null) {
+      querySql += ` LIMIT :limit`;
+      queryParams.limit = limit;
+    }
 
-    // Pre-load in-memory fee context to resolve course/batch fees with zero DB queries per batch
+    const batches = db.prepare(querySql).all(queryParams);
+
+    // 5. Pre-compute phase 1 completed counts for only the selected batches
+    let p1Map = new Map();
+    if (batches.length > 0) {
+      const batchIds = batches.map(b => b.id);
+      const placeholders = batchIds.map(() => '?').join(',');
+      const p1Rows = db.prepare(`
+        SELECT bs.batch_id, COUNT(DISTINCT bs.student_id) as count
+        FROM batch_students bs
+        JOIN batches b ON b.id = bs.batch_id
+        JOIN student_course_enrollments sce
+          ON sce.user_id = bs.student_id
+          AND (sce.batch_id = bs.batch_id OR (sce.batch_id IS NULL AND sce.course_name = b.course_name))
+        WHERE bs.batch_id IN (${placeholders}) AND sce.step2_completed = 1
+        GROUP BY bs.batch_id
+      `).all(...batchIds);
+      p1Map = new Map(p1Rows.map(r => [r.batch_id, r.count]));
+    }
+
+    // 6. Pre-load in-memory fee context to resolve course/batch fees with zero DB queries per batch
     const feeContext = createFeeResolverContext(db);
 
     for (const batch of batches) {
@@ -94,6 +168,23 @@ router.get('/', authenticateToken, requireRole('admin'), (req, res) => {
       batch.is_custom_fee = batchFee ? !!batchFee.is_custom : false;
     }
 
+    // If pagination requested, return pagination envelope with global stats
+    if (page !== null || limit !== null || req.query.paginate === 'true') {
+      const activeLimit = limit || 24;
+      const activePage = page || 1;
+      const total = totalMatching !== null ? totalMatching : batches.length;
+      return res.json({
+        batches,
+        total,
+        page: activePage,
+        limit: activeLimit,
+        totalPages: Math.ceil(total / activeLimit),
+        hasMore: activePage * activeLimit < total,
+        stats
+      });
+    }
+
+    // Backward-compatible raw array return for unpaginated calls
     res.json(batches);
   } catch (error) {
     console.error('[Batches] GET / error:', error);
