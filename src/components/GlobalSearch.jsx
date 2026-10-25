@@ -320,6 +320,15 @@ export default function GlobalSearch({ onNavigate }) {
           desc: 'Send push announcements and bulk notices',
           keywords: 'announcements broadcast notices push send alert notice board sms email mass notice',
         },
+                ...(currentUser?.is_super_admin || currentUser?.id === 1 ? [{
+          id: 'admin-administrators',
+          title: 'Administrator Management',
+          category: 'Administration',
+          path: '/admin/administrators',
+          icon: <Shield size={16} />,
+          desc: 'Manage administrator accounts, assign granular permissions, and view audit ledger',
+          keywords: 'super admin administrators rbac permissions accounts audit security mfa logs staff privileges roles',
+        }] : []),
         {
           id: 'admin-additional-options',
           title: 'Additional Options',
