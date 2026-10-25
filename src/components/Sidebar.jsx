@@ -38,6 +38,7 @@ import {
   Layers
 } from 'lucide-react';
 import './Sidebar.css';
+import GlobalSearch from './GlobalSearch';
 
 export default function Sidebar({ isNotifOpen, setIsNotifOpen }) {
   const { currentUser, logout } = useAuth();
@@ -327,6 +328,9 @@ export default function Sidebar({ isNotifOpen, setIsNotifOpen }) {
         </button>
 
         <nav className="sidebar-nav">
+          <div className="sidebar-mobile-search-wrap">
+            <GlobalSearch inSidebar={true} onNavigate={closeSidebar} />
+          </div>
           <p className="nav-subtitle">Main Menu</p>
           <NavLink to="/" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`} end>
             <Home size={20} /> Dashboard

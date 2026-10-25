@@ -44,6 +44,7 @@ import BroadcastManager from './pages/admin/BroadcastManager';
 import Certificates from './pages/Certificates';
 import StudentPortal from './pages/StudentPortal';
 import Sidebar from './components/Sidebar';
+import GlobalSearch from './components/GlobalSearch';
 import ErrorBoundary from './components/ErrorBoundary';
 import SkeletonLoader from './components/SkeletonLoader';
 import { IncomingCallAlert, ActiveCallScreen } from './components/CallComponents';
@@ -147,11 +148,14 @@ const Layout = ({ children }) => {
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'space-between',
-              padding: '14px 2rem',
+              padding: '10px 2rem',
               background: 'var(--bg-secondary)',
               borderBottom: '1px solid var(--glass-border)',
+              gap: '1.5rem',
             }}>
-              <div style={{ width: '40px' }}></div> {/* Spacer for symmetry */}
+              <div style={{ flex: 1, display: 'flex', alignItems: 'center', minWidth: 0 }}>
+                <GlobalSearch />
+              </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
                 <img src={`${import.meta.env.BASE_URL}bfi-logo.jpg`} alt="Logo" style={{ height: '28px', borderRadius: '6px' }} />
                 <div style={{ width: '1px', height: '20px', background: 'var(--glass-border)' }} />
@@ -159,7 +163,7 @@ const Layout = ({ children }) => {
                   Bangladesh Film Institute
                 </div>
               </div>
-              <div style={{ display: 'flex', alignItems: 'center' }}>
+              <div style={{ flex: 1, display: 'flex', justifyContent: 'flex-end', alignItems: 'center' }}>
                 <button 
                   onClick={() => setIsNotifOpen(true)}
                   style={{ 
