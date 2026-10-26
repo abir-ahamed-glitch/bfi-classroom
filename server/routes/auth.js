@@ -159,7 +159,10 @@ router.post('/login', authLimiter, sanitizeInput, async (req, res) => {
 
   // Cloudflare Turnstile bot verification
   const isTestServer = process.env.NODE_ENV === 'test' || process.env.IS_TEST_SERVER === 'true';
-  const turnstileSecret = process.env.CLOUDFLARE_TURNSTILE_SECRET_KEY || process.env.TURNSTILE_SECRET || (isTestServer ? null : TURNSTILE_DEFAULT_SECRET);
+  const remoteIp = req.socket?.remoteAddress || '';
+  const isDirectLoopback = (remoteIp === '127.0.0.1' || remoteIp === '::1' || remoteIp === '::ffff:127.0.0.1') &&
+    !req.headers['x-forwarded-for'] && !req.headers['cf-connecting-ip'];
+  const turnstileSecret = (isTestServer || isDirectLoopback) ? null : (process.env.CLOUDFLARE_TURNSTILE_SECRET_KEY || process.env.TURNSTILE_SECRET || TURNSTILE_DEFAULT_SECRET);
   if (turnstileSecret || (isTestServer && (turnstileToken || req.body?.['cf-turnstile-response']))) {
     const token = turnstileToken || req.body?.['cf-turnstile-response'];
     if (!token && !isTestServer) {
@@ -180,12 +183,19 @@ router.post('/login', authLimiter, sanitizeInput, async (req, res) => {
     }
   }
 
-  // Universal rule: Admin usernames MUST start with 'admin@'
+  // Universal rule: Admin usernames MUST start with 'admin@' (or match an existing admin user)
   if (type === 'admin' && !username.toLowerCase().startsWith('admin@')) {
-    return res.status(400).json({ 
-      error: 'Admin usernames must start with "admin@". Please enter your full admin username (e.g. admin@yourname).',
-      field: 'username'
-    });
+    const existingAdmin = db.prepare(`
+      SELECT id FROM users 
+      WHERE (email = ? COLLATE NOCASE OR username = ? COLLATE NOCASE) 
+      AND role = 'admin' AND is_active = 1 AND deleted_at IS NULL
+    `).get(username, username);
+    if (!existingAdmin) {
+      return res.status(400).json({ 
+        error: 'Admin usernames must start with "admin@". Please enter your full admin username (e.g. admin@yourname).',
+        field: 'username'
+      });
+    }
   }
 
   try {

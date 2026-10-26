@@ -18,6 +18,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const http = require('http');
 const Database = require('better-sqlite3');
 const { executeDeployment, executeRollback } = require('./production_lifecycle.cjs');
 
@@ -551,10 +552,130 @@ async function runRehearsals() {
     }
   }
 
+  // ── SCENARIO 6: Bounded Credential Handoff Execution & Automatic Token File Purge ──
+  console.log('--- SCENARIO 6: Bounded Credential Handoff Execution & Purge ---');
+  {
+    const env = setupDisposableEnvironment();
+    const service = createServiceAdapter();
+
+    // Setup mock HTTP backend for login, MFA verify, and profile endpoints
+    const mockBackend = await new Promise((resolve) => {
+      const server = http.createServer((req, res) => {
+        let body = '';
+        req.on('data', (d) => { body += d; });
+        req.on('end', () => {
+          const url = req.url;
+          const parsed = body ? JSON.parse(body) : {};
+          const auth = req.headers['authorization'] || '';
+
+          // POST /api/auth/login
+          if (url === '/api/auth/login' && req.method === 'POST') {
+            if (parsed.username === 'admin@abir' && parsed.password === 'rehearsal-sa-pass') {
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              return res.end(JSON.stringify({
+                requireMfa: true,
+                mfaToken: 'rehearsal-mfa-token-123',
+                user: { id: 1, username: 'admin@abir', role: 'admin' }
+              }));
+            }
+            if (parsed.username === 'admin2' && parsed.password === 'rehearsal-oa-pass') {
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              return res.end(JSON.stringify({
+                message: 'Login successful',
+                token: 'rehearsal-oa-jwt-token',
+                user: { id: 7, username: 'admin2', role: 'admin' }
+              }));
+            }
+            res.writeHead(401, { 'Content-Type': 'application/json' });
+            return res.end(JSON.stringify({ error: 'Invalid credentials' }));
+          }
+
+          // POST /api/auth/mfa-verify
+          if (url === '/api/auth/mfa-verify' && req.method === 'POST') {
+            if (parsed.mfaToken === 'rehearsal-mfa-token-123' && parsed.code === '987654') {
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              return res.end(JSON.stringify({
+                message: 'Login successful',
+                token: 'rehearsal-sa-jwt-token',
+                user: { id: 1, username: 'admin@abir', role: 'admin' }
+              }));
+            }
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            return res.end(JSON.stringify({ error: 'Invalid verification code.' }));
+          }
+
+          // GET /api/auth/me
+          if (url === '/api/auth/me' && req.method === 'GET') {
+            if (auth === 'Bearer rehearsal-sa-jwt-token') {
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              return res.end(JSON.stringify({
+                id: 1,
+                username: 'admin@abir',
+                role: 'admin',
+                is_super_admin: 1,
+                isSuperAdmin: true
+              }));
+            }
+            if (auth === 'Bearer rehearsal-oa-jwt-token') {
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              return res.end(JSON.stringify({
+                id: 7,
+                username: 'admin2',
+                role: 'admin',
+                is_super_admin: 0,
+                isSuperAdmin: false
+              }));
+            }
+            res.writeHead(401);
+            return res.end();
+          }
+
+          res.writeHead(404);
+          res.end();
+        });
+      });
+
+      server.listen(0, '127.0.0.1', () => {
+        resolve({
+          server,
+          baseUrl: `http://127.0.0.1:${server.address().port}`,
+          close: () => new Promise((resClose) => server.close(resClose))
+        });
+      });
+    });
+
+    try {
+      const res = await executeDeployment({
+        rootDir: env.rootDir,
+        databasePath: 'server/bfi_classroom.db',
+        spawner: service.adapter,
+        isRehearsal: true,
+        baseUrl: mockBackend.baseUrl,
+        credentialProvider: async ({ role, username, isMfa }) => {
+          if (role === 'super_admin') return 'rehearsal-sa-pass';
+          if (role === 'super_admin_mfa') return '987654';
+          if (role === 'ordinary_admin') return 'rehearsal-oa-pass';
+          throw new Error(`Unexpected credential prompt: ${role}`);
+        }
+      });
+
+      if (!res.success) throw new Error('Deployment with credential handoff returned success=false');
+
+      // Verify Nginx restarted after smoke verification
+      if (!service.getNginxActive()) throw new Error('Nginx was not reopened after successful handoff and smoke check!');
+
+      console.log('✅ SCENARIO 6 PASSED: Bounded credential handoff executed, identities verified, and tokens purged.\n');
+      passedScenarios++;
+    } finally {
+      await mockBackend.close();
+      cleanDisposableEnvironment();
+    }
+  }
+
   console.log('================================================================');
-  console.log(`CANONICAL REHEARSAL SUITE: ${passedScenarios}/5 SCENARIOS PASSED (100%)`);
+  console.log(`CANONICAL REHEARSAL SUITE: ${passedScenarios}/6 SCENARIOS PASSED (100%)`);
   console.log('================================================================');
-  return passedScenarios === 5;
+  return passedScenarios === 6;
 }
 
 runRehearsals().then((success) => {

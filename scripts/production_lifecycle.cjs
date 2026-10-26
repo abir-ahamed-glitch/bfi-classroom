@@ -23,6 +23,7 @@ const child_process = require('child_process');
 const Database = require('better-sqlite3');
 const { verifyIsolation } = require('./verify_isolation.cjs');
 const { runPreflightLockdown } = require('./preflight_lockdown_check.cjs');
+const { obtainSmokeCredentials } = require('./obtain_smoke_credentials.cjs');
 
 function logSection(title) {
   console.log('\n================================================================');
@@ -314,21 +315,49 @@ async function executeDeployment(options = {}) {
   logStep('5.3', 'Verifying PM2 is online and Nginx remains stopped (--allow-pm2)...');
   verifyIsolation({ spawner, allowPm2Online: true });
 
-  logStep('5.4', 'Executing 18-assertion production smoke check over loopback...');
-  const smokeRunnerPath = path.resolve(rootDir, 'scripts/production_smoke_check.cjs');
-  const smokeEnv = {
-    ...process.env,
-    SUPER_ADMIN_TOKEN: options.superAdminToken || process.env.SUPER_ADMIN_TOKEN || '',
-    ADMIN_TOKEN: options.adminToken || process.env.ADMIN_TOKEN || ''
-  };
-  if (options.superAdminTokenFile) smokeEnv.SUPER_ADMIN_TOKEN_FILE = options.superAdminTokenFile;
-  if (options.adminTokenFile) smokeEnv.ADMIN_TOKEN_FILE = options.adminTokenFile;
+  let smokeAuthCleanup = null;
+  let saToken = options.superAdminToken || process.env.SUPER_ADMIN_TOKEN || (options.isRehearsal && !options.credentialProvider ? 'mock-rehearsal-sa-token' : '');
+  let oaToken = options.adminToken || process.env.ADMIN_TOKEN || (options.isRehearsal && !options.credentialProvider ? 'mock-rehearsal-ord-token' : '');
+  let saTokenFile = options.superAdminTokenFile || process.env.SUPER_ADMIN_TOKEN_FILE || '';
+  let oaTokenFile = options.adminTokenFile || process.env.ADMIN_TOKEN_FILE || '';
 
-  runCommandStrict(spawner, process.execPath, [smokeRunnerPath, 'http://127.0.0.1:3001'], {
-    env: smokeEnv,
-    timeout: 30000
-  }, 'Production Smoke Check');
-  logStep('5.4', '✅ Production smoke verification passed: 18/18 assertions verified.');
+  try {
+    // 5.3.1 Bounded Credential Handoff
+    if ((!saToken && !saTokenFile) || (!oaToken && !oaTokenFile)) {
+      logStep('5.3.1', 'Initiating bounded credential handoff for smoke verification...');
+      const authResult = await obtainSmokeCredentials({
+        baseUrl: options.baseUrl || 'http://127.0.0.1:3001',
+        credentialProvider: options.credentialProvider,
+        timeoutMs: options.authTimeoutMs || 60000
+      });
+      saTokenFile = authResult.superAdminTokenFile;
+      oaTokenFile = authResult.adminTokenFile;
+      smokeAuthCleanup = authResult.cleanup;
+      logStep('5.3.1', '✅ Bounded credential handoff successful: both identities and roles verified.');
+    }
+
+    logStep('5.4', 'Executing 18-assertion production smoke check over loopback...');
+    const smokeRunnerPath = path.resolve(rootDir, 'scripts/production_smoke_check.cjs');
+    const smokeEnv = {
+      ...process.env
+    };
+    if (saToken) smokeEnv.SUPER_ADMIN_TOKEN = saToken;
+    if (oaToken) smokeEnv.ADMIN_TOKEN = oaToken;
+    if (saTokenFile) smokeEnv.SUPER_ADMIN_TOKEN_FILE = saTokenFile;
+    if (oaTokenFile) smokeEnv.ADMIN_TOKEN_FILE = oaTokenFile;
+
+    runCommandStrict(spawner, process.execPath, [smokeRunnerPath, options.baseUrl || 'http://127.0.0.1:3001'], {
+      env: smokeEnv,
+      timeout: 30000
+    }, 'Production Smoke Check');
+    logStep('5.4', '✅ Production smoke verification passed: 18/18 assertions verified.');
+  } finally {
+    if (smokeAuthCleanup) {
+      logStep('5.5', 'Securely zeroing and unlinking temporary smoke credentials...');
+      smokeAuthCleanup();
+      logStep('5.5', 'Temporary credentials purged.');
+    }
+  }
 
   // ── PHASE 6: Traffic Reopening Decision Point ──────────────────────────────
   logSection('PHASE 6: TRAFFIC REOPENING DECISION POINT (RESTARTING NGINX)');
