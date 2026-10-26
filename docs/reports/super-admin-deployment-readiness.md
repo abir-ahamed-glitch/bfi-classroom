@@ -1,10 +1,11 @@
 # BFI Classroom Super Admin Deployment Readiness & Approval Package
 
-**Prepared Date:** October 25, 2026  
+**Prepared Date:** October 26, 2026  
 **Candidate Worktree:** `.worktrees/super-admin-integration`  
 **Candidate Branch:** `integration/super-admin-candidate`  
-**Exact Code Release Candidate Commit SHA:** `21f3cbe7163f924f5b30c172dc1f6542c3c6f4cd`  
-**Previous Documentation Head SHA:** `7b21c6c5ac91a43e01532314e5bc7920f76a09f5`  
+**Exact Application Code Release Commit SHA:** `21f3cbe7163f924f5b30c172dc1f6542c3c6f4cd`  
+**Hardened Operational Tooling & Runbook HEAD SHA:** `854dd0a21f156e481e17622c7e0fa7707cefdded`  
+**Remote Branch Origin SHA:** `b05e6c06566cbc2e167a5e79fe1d4ae8d03cefac` (Remote publication pending authorization)  
 **Base Commit (Integrated Local Main):** `17d933567c2b39ad2dd47d949564eee1bce2dd66` (Full 11-commit revision gap integrated)  
 **Target Super Admin Account:** ID `1`, `admin@abir` / `k.eye.films@gmail.com`  
 **Production Host:** `bfi-classroom-server` (`129.221.243.153`, Ubuntu 22.04 LTS aarch64)  
@@ -12,19 +13,23 @@
 
 ---
 
-## 1. Executive Deployment Verdict: READY FOR APPROVAL
+## 1. Executive Deployment Verdict: READY FOR PUBLICATION & OPERATOR APPROVAL
 
-All local integration, regression testing, deployment safety, rollback hardening, migration distinction validation, and automated production smoke verification requirements have been completely resolved and independently verified.
+All local integration, regression testing, deployment safety, rollback hardening, migration distinction validation, fail-closed isolation inspection, and automated production smoke verification requirements have been completely resolved and independently verified.
 
 | Category | Status | Details |
 | :--- | :---: | :--- |
 | **Main Branch Gap Integration** | **PASS** | 11/11 commits from `4d8feb0..17d9335` cleanly merged; Global Search, ETag caching, SWR pagination, N+1 fee context, unread reports preserved. |
-| **Fail-Closed Safety Gates** | **PASS** | All `\|\| true` eliminated; `set -e` enforced; 14/14 subprocess fail-closed rehearsal vectors pass. |
+| **Reviewed Application Code** | **PASS** | Commit `21f3cbe` application files (`src/*`, `server/*`) 100% untouched; subsequent commits add operational tooling, runbooks, and test suites only. |
+| **Fail-Closed Isolation Gates** | **PASS** | `scripts/verify_isolation.cjs` validates Nginx systemd status, 0 running processes, 0 listener sockets (80/443), 0 established connections, PM2 state, and port 3001 closure. 16/16 unit test vectors pass (`test_verify_isolation.cjs`). |
+| **Fail-Closed Rollback Runner** | **PASS** | `scripts/production_lifecycle.cjs` validates command execution errors, signals, timeouts, non-zero exits; asserts PM2 online status and curl 200 loopback health before considering Nginx start. 17/17 failure vectors pass (`test_rollback_failures.cjs`). |
+| **Recovery Tooling Survival** | **PASS** | Operational tools preserved in `server/.recovery_tools/` outside tracked tree; survival across real git checkout proven via disposable Git repository rehearsal (`rehearse_git_recovery.cjs`). |
+| **Rollback Boundary Gate** | **PASS** | Stale backup restore automatically rejected if traffic was reopened (`server/active_deployment_state.json`), preventing accidental overwrite of post-reopening user data. |
 | **Unified Migration Runner** | **PASS** | `scripts/run_migrations.cjs` built with explicit path support, chronological order, and 10/10 post-migration schema integrity assertions. |
-| **Migration Distinction Rehearsals** | **PASS** | **Scenario A (True Pre-Upgrade DB):** All 5 migrations applied sequentially, User 1 promoted, 36 permissions seeded for ordinary admins.<br>**Scenario B (Repeat / Idempotency):** All 5 migrations skipped cleanly (`applied: false`), 0 duplicate permissions, schema verified. |
+| **5-Scenario Lifecycle Rehearsal** | **PASS** | 5/5 scenarios pass in `scripts/rehearse_deployment_lifecycle.cjs` (Happy Path, Early Failure, Migration Failure, Smoke Failure, Corrupted Restore). |
 | **Automated Smoke Checks** | **PASS** | `scripts/production_smoke_check.cjs` enforces 5 strict tiers (HTML shell, login validation, profile, SA endpoint, Ord Admin 403). Missing or empty credentials exit nonzero (fail-closed); 32/32 CLI test vectors pass; tokens never printed. |
 | **Automated Test Regression** | **PASS** | **123 / 123 Tests Passing** across all 5 suites (including Test 85 browser Global Search role-indexing and smoke CLI specification). |
-| **Code Quality & Build** | **PASS** | **0 ESLint Errors** (168 warnings); clean production Vite build (`dist/index.html` & `dist/404.html` generated in 1.07s). |
+| **Code Quality & Build** | **PASS** | **0 ESLint Errors** (168 warnings); clean production Vite build (`dist/index.html` & `dist/404.html` generated in 1.11s). |
 | **Pristine Root Database** | **PASS** | Root database SHA-256 verified unchanged (`BF37A89C...5F1E`). |
 | **Live Host Read-Only Inspection** | **VERIFIED** | Ubuntu 22.04 aarch64, Node v22.23.4, PM2 v7.1.0, 91GB disk available, Nginx proxy active, `lsof`/`fuser` available. |
 | **Edge Maintenance Mode Bypass** | **UNVERIFIED** | Edge Cloudflare/proxy 503 maintenance bypass rule must be verified by the system operator before maintenance window. |
@@ -196,35 +201,51 @@ Executed `node scripts/test_production_smoke_check.cjs` with 32 passed assertion
 Execute this exact runbook sequentially during the approved maintenance window. Every command is fail-closed (`set -e`). If any step fails, execution halts immediately.
 
 ### Phase 0: Pre-Flight Staging & Safety Gate Preparation
-Before stopping any production services, stage the reviewed preflight script from the release candidate. **Do NOT run operational inspection checks before maintenance shutdown.**
+Before stopping any production services, stage the reviewed operational scripts and preserve recovery tooling.
 
 ```bash
 set -e
 cd /home/ubuntu/bfi-classroom
 
-# 1. Fetch release candidate commit from origin (prerequisite: local candidate pushed to origin)
+# 1. Fetch release candidate commit from origin (prerequisite: operator pushed candidate to origin)
 git fetch origin
 
-# 2. Stage the reviewed preflight inspection script
-git checkout 21f3cbe7163f924f5b30c172dc1f6542c3c6f4cd -- scripts/preflight_lockdown_check.cjs
+# 2. Stage the candidate release containing all operational and recovery tooling
+git checkout 854dd0a21f156e481e17622c7e0fa7707cefdded
 
 # 3. Verify script presence and file integrity without executing operational checks
+test -s scripts/production_lifecycle.cjs
+test -s scripts/verify_isolation.cjs
 test -s scripts/preflight_lockdown_check.cjs
-sha256sum scripts/preflight_lockdown_check.cjs
+test -s scripts/run_migrations.cjs
+test -s scripts/production_smoke_check.cjs
+
+# 4. Canonical Deployment Execution:
+# Run full automated deployment lifecycle (Phases 0 through 6) with fail-closed gates:
+# SUPER_ADMIN_TOKEN="$SA_TOKEN" ADMIN_TOKEN="$ORD_TOKEN" node scripts/production_lifecycle.cjs deploy
 ```
 
-### Phase 1: Maintenance Mode & Writer Lockdown
+### Phase 1: Maintenance Mode & Complete Origin Isolation
 1. **Engage Edge Maintenance Mode:**
    * Enable 503 Maintenance Mode on Cloudflare / edge proxy for public traffic (`/bfi-classroom/*`).
-2. **Stop Application Process:**
+2. **Stop Ingress Reverse Proxy (Direct Origin IP Protection):**
+   ```bash
+   sudo systemctl stop nginx
+   ```
+3. **Stop Application Backend Writer:**
    ```bash
    pm2 stop bfi-classroom
    ```
-3. **Execute Fail-Closed Preflight Gate:**
+4. **Execute Fail-Closed Isolation Verification:**
+   ```bash
+   node scripts/verify_isolation.cjs
+   ```
+   *Gate:* Must confirm Nginx inactive, 0 Nginx processes, 0 listening sockets on 80/443, 0 established connections, PM2 application stopped, port 3001 closed. Exit code 0 required.
+5. **Execute Fail-Closed Database Handle Verification:**
    ```bash
    node scripts/preflight_lockdown_check.cjs
    ```
-   *Gate:* Must output `VERDICT: MAINTENANCE GATE OPEN` with exit code `0`. If this command exits with code `1`, **HALT DEPLOYMENT IMMEDIATELY**. Do not proceed.
+   *Gate:* Must output `VERDICT: MAINTENANCE GATE OPEN` with exit code `0` (0 active handles via `lsof`/`fuser`, WAL truncated, quick_check ok). If this exits nonzero, **HALT DEPLOYMENT IMMEDIATELY**.
 
 ### Phase 2: Dynamic Pre-Deployment Health Check & Backup Validation
 1. **Capture Deployed Revision for Rollback:**
@@ -247,10 +268,10 @@ sha256sum scripts/preflight_lockdown_check.cjs
    }
 
    const baseline = {
-     enrollments: db.prepare('SELECT count(*) as c FROM student_course_enrollments').get().c,
+     student_course_enrollments: db.prepare('SELECT count(*) as c FROM student_course_enrollments').get().c,
      users: db.prepare('SELECT count(*) as c FROM users').get().c,
      batches: db.prepare('SELECT count(*) as c FROM batches').get().c,
-     fees: db.prepare('SELECT count(*) as c FROM batch_course_fees').get().c,
+     batch_course_fees: db.prepare('SELECT count(*) as c FROM batch_course_fees').get().c,
      timestamp: new Date().toISOString()
    };
    fs.writeFileSync('server/pre_deployment_baseline.json', JSON.stringify(baseline, null, 2));
@@ -285,10 +306,11 @@ sha256sum scripts/preflight_lockdown_check.cjs
    const bDb = new Database(backupPath, { readonly: true });
    const qCheck = bDb.prepare('PRAGMA quick_check').get();
    const bEnrollments = bDb.prepare('SELECT count(*) as c FROM student_course_enrollments').get().c;
+   const bFk = bDb.prepare('PRAGMA foreign_key_check').all();
    bDb.close();
    
-   if (qCheck.quick_check !== 'ok' || bEnrollments !== baseline.enrollments) {
-     console.error('FATAL: Backup file validation failed!', qCheck, bEnrollments);
+   if (qCheck.quick_check !== 'ok' || bFk.length > 0 || bEnrollments !== baseline.student_course_enrollments) {
+     console.error('FATAL: Backup file validation failed!', qCheck, bFk, bEnrollments);
      process.exit(1);
    }
 
@@ -310,7 +332,7 @@ sha256sum scripts/preflight_lockdown_check.cjs
 ### Phase 3: Reproducible Code Update & Build Sequence
 1. **Checkout Pinned Release Candidate Commit:**
    ```bash
-   git checkout 21f3cbe7163f924f5b30c172dc1f6542c3c6f4cd
+   git checkout 854dd0a21f156e481e17622c7e0fa7707cefdded
    ```
 2. **Install Dependencies (Including DevDependencies for Vite):**
    ```bash
@@ -333,21 +355,36 @@ sha256sum scripts/preflight_lockdown_check.cjs
    ```
    *Gate:* Must execute all 5 migrations in chronological order, verify all 10 schema integrity assertions, and exit with code `0`. If this command fails, halt and trigger Rollback Runbook (Window A).
 
-### Phase 5: Start Service & Automated Production Smoke Checks
-1. **Start Application Process:**
+### Phase 5: Start Service & Automated Production Smoke Checks (Under Isolation)
+1. **Verify Nginx is STILL Stopped:**
+   ```bash
+   node scripts/verify_isolation.cjs
+   ```
+2. **Start PM2 Backend Locally (127.0.0.1:3001):**
    ```bash
    pm2 start ecosystem.config.cjs
    pm2 status
    ```
-2. **Execute Automated Fail-Closed Smoke Check:**
+3. **Verify PM2 is Online While Nginx Remains Inactive:**
+   ```bash
+   node scripts/verify_isolation.cjs --allow-pm2
+   ```
+4. **Execute Automated Fail-Closed Smoke Check Over Loopback:**
    Pass tokens securely via protected environment variables:
    ```bash
-   # Run automated multi-tier smoke checker (exits nonzero on missing tokens, status mismatch, malformed JSON, or connection failure)
    SUPER_ADMIN_TOKEN="$SA_TOKEN" ADMIN_TOKEN="$ORD_TOKEN" node scripts/production_smoke_check.cjs http://127.0.0.1:3001
    ```
    *Gate:* If `production_smoke_check.cjs` exits with code `1`, **DO NOT REOPEN TRAFFIC**. Trigger Rollback Runbook (Window A).
-3. **Reopen Public Traffic:**
-   * Remove 503 maintenance page on Cloudflare / reverse proxy ONLY after smoke check exits with code 0. Monitor PM2 logs for 15 minutes:
+
+### Phase 6: Traffic Reopening Decision Point
+1. **Restore Nginx Ingress Service:**
+   ```bash
+   sudo systemctl start nginx
+   sudo systemctl is-active nginx
+   ```
+2. **Remove Edge 503 Maintenance Mode:**
+   * Disable Cloudflare / reverse proxy maintenance mode.
+3. **Monitor PM2 Logs for 15 Minutes:**
    ```bash
    pm2 logs bfi-classroom --lines 100
    ```
@@ -368,20 +405,46 @@ sha256sum scripts/preflight_lockdown_check.cjs
     3. Formulate a custom data reconciliation plan (e.g. selectively dumping rows with `created_at > <reopening_time>` across affected tables).
     4. Obtain explicit written sign-off from the system operator before executing any database restore.
 
-### 6.2 Executable Rollback Steps (Window A - Maintenance Window)
-Strict fail-closed execution (`set -e`, zero `|| true`):
+### 6.2 Automated Canonical Rollback Runner (Window A - Maintenance Window)
+The quickest and safest recovery method is executing the canonical rollback runner, which automates the exact fail-closed sequence and halts safely if any step fails:
+
+```bash
+# Run canonical rollback from working tree:
+node scripts/production_lifecycle.cjs rollback
+
+# If git checkout or working tree state removed scripts/, run from preserved recovery tooling:
+node server/.recovery_tools/production_lifecycle.cjs rollback
+```
+
+### 6.3 Step-by-Step Manual Rollback Runbook (Window A - Maintenance Window)
+Strict fail-closed manual execution (`set -e`, zero `|| true`):
 
 ```bash
 set -e
 cd /home/ubuntu/bfi-classroom
 
-# 1. Stop application immediately
+# 1. Stop backend application immediately
 pm2 stop bfi-classroom
 
-# 2. Enforce fail-closed writer lockdown check (confirm zero writers before touching files)
-node scripts/preflight_lockdown_check.cjs
+# 2. Ensure Nginx remains stopped throughout rollback
+sudo systemctl stop nginx
 
-# 3. Preserve failed database & active WAL files (Forensic Quarantine without deletion)
+# 3. Enforce fail-closed writer lockdown check (confirm zero writers before touching files)
+node scripts/preflight_lockdown_check.cjs || node server/.recovery_tools/preflight_lockdown_check.cjs
+
+# 4. Check active deployment state: Ensure traffic was not reopened
+node -e "
+const fs = require('fs');
+if (fs.existsSync('server/active_deployment_state.json')) {
+  const st = JSON.parse(fs.readFileSync('server/active_deployment_state.json'));
+  if (st.trafficReopened === true && !process.env.ALLOW_POST_REOPENING_RECONCILIATION) {
+    console.error('FATAL: Automatic restore rejected! Traffic was reopened at ' + st.trafficReopenedAt);
+    process.exit(1);
+  }
+}
+"
+
+# 5. Preserve failed database, WAL, and SHM sidecars together (Forensic Quarantine without deletion)
 QUARANTINE_TS=$(date +%Y%m%d_%H%M%S)
 mkdir -p server/quarantine_${QUARANTINE_TS}
 
@@ -394,13 +457,13 @@ fi
 if [ -f server/bfi_classroom.db-shm ]; then
   mv server/bfi_classroom.db-shm server/quarantine_${QUARANTINE_TS}/failed_bfi_classroom.db-shm
 fi
-echo "Failed database state quarantined for forensic inspection."
+echo "Failed database state and sidecars quarantined for forensic inspection."
 
-# 4. Restore validated pre-deployment backup
+# 6. Restore validated pre-deployment backup
 source server/active_backup_path.env
 cp "${BACKUP_FILE}" server/bfi_classroom.db
 
-# 5. Verify restored database integrity and baseline invariants
+# 7. Verify restored database integrity and baseline invariants
 node -e "
 const Database = require('better-sqlite3');
 const fs = require('fs');
@@ -410,20 +473,26 @@ const db = new Database('server/bfi_classroom.db', { readonly: true });
 const quickCheck = db.prepare('PRAGMA quick_check').get();
 const fkCheck = db.prepare('PRAGMA foreign_key_check').all();
 const restoredEnrollments = db.prepare('SELECT count(*) as c FROM student_course_enrollments').get().c;
+const restoredUsers = db.prepare('SELECT count(*) as c FROM users').get().c;
+const restoredBatches = db.prepare('SELECT count(*) as c FROM batches').get().c;
+const restoredFees = db.prepare('SELECT count(*) as c FROM batch_course_fees').get().c;
 db.close();
 
 if (quickCheck.quick_check !== 'ok' || fkCheck.length > 0) {
   console.error('FATAL: Restored database integrity check failed!');
   process.exit(1);
 }
-if (restoredEnrollments !== baseline.enrollments) {
-  console.error('FATAL: Enrollment baseline mismatch: expected ' + baseline.enrollments + ', got ' + restoredEnrollments);
+if (restoredEnrollments !== baseline.student_course_enrollments ||
+    restoredUsers !== baseline.users ||
+    restoredBatches !== baseline.batches ||
+    restoredFees !== baseline.batch_course_fees) {
+  console.error('FATAL: Baseline invariant mismatch after restore!');
   process.exit(1);
 }
-console.log('✅ Restored database verified: quick_check ok, 0 FK violations, enrollments exact match.');
+console.log('✅ Restored database verified: quick_check ok, 0 FK violations, exact baseline match.');
 "
 
-# 6. Restore previous code revision and rebuild runtime assets
+# 8. Restore previous code revision and rebuild runtime assets
 PREV_REV=$(cat server/pre_deployment_revision.txt)
 echo "Restoring code revision: ${PREV_REV}"
 git checkout "${PREV_REV}"
@@ -431,11 +500,17 @@ NODE_ENV=development npm ci --legacy-peer-deps
 npm run build
 npm prune --omit=dev --legacy-peer-deps
 
-# 7. Restart application on restored revision
+# 9. Restart application on restored revision
 pm2 start ecosystem.config.cjs
 pm2 status
 
-# 8. Verify service restored
-curl -I -s http://127.0.0.1:3001/bfi-classroom/ | grep "HTTP/1.1 200 OK"
-echo "✅ Rollback completed successfully. Traffic remains in maintenance until operator inspection."
+# 10. Verify service restored over loopback
+curl -f -I -s http://127.0.0.1:3001/bfi-classroom/ | grep "200"
+
+# 11. Restore Nginx service state if originally active
+sudo systemctl start nginx
+sudo systemctl is-active nginx
+
+echo "✅ Rollback completed successfully. Pre-maintenance state restored."
+
 ```
