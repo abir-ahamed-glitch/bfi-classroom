@@ -56,3 +56,12 @@ playwright-report/
 .env.*
 *.env
 
+
+# Deployment recovery tools and state
+server/.recovery_tools/
+server/active_deployment_state.json
+server/pre_deployment_baseline.json
+server/pre_deployment_revision.txt
+server/pre_deployment_services.env
+server/active_backup_path.env
+server/quarantine_*

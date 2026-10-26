@@ -8,11 +8,13 @@
  * - executeDeployment(options)
  * - executeRollback(options)
  * 
- * Invoked directly via CLI:
- *   node scripts/production_lifecycle.cjs deploy
- *   node scripts/production_lifecycle.cjs rollback
+ * Fails closed on any command error, signal, timeout, non-zero status, or unexpected output.
+ * Preserves recovery tooling in `server/.recovery_tools/` to guarantee survivability across checkouts.
+ * Enforces rollback boundaries preventing automatic stale-backup restore after traffic reopens.
  * 
- * Or invoked programmatically in rehearsal test suites via dependency injection.
+ * Invocation:
+ *   node scripts/production_lifecycle.cjs deploy
+ *   node scripts/production_lifecycle.cjs rollback [--allow-post-reopening-reconciliation]
  */
 
 const fs = require('fs');
@@ -20,6 +22,7 @@ const path = require('path');
 const child_process = require('child_process');
 const Database = require('better-sqlite3');
 const { verifyIsolation } = require('./verify_isolation.cjs');
+const { runPreflightLockdown } = require('./preflight_lockdown_check.cjs');
 
 function logSection(title) {
   console.log('\n================================================================');
@@ -35,6 +38,27 @@ function logFatal(msg) {
   console.error(`❌ [LIFECYCLE FATAL] ${msg}`);
 }
 
+// Strict fail-closed command runner
+function runCommandStrict(spawner, cmd, args, options = {}, desc = '') {
+  const timeout = options.timeout || 60000;
+  const res = spawner(cmd, args, { encoding: 'utf8', timeout, shell: false, ...options });
+
+  if (res.error) {
+    logFatal(`${desc || cmd} failed with execution error: ${res.error.message || res.error.code}`);
+    throw new Error(`${desc || cmd} execution error: ${res.error.message || res.error.code}`);
+  }
+  if (res.signal) {
+    logFatal(`${desc || cmd} terminated by signal: ${res.signal}`);
+    throw new Error(`${desc || cmd} terminated by signal: ${res.signal}`);
+  }
+  if (res.status !== 0) {
+    const diag = ((res.stderr || '') + ' ' + (res.stdout || '')).trim();
+    logFatal(`${desc || cmd} exited with non-zero status (${res.status}): ${diag || 'Unknown error'}`);
+    throw new Error(`${desc || cmd} exited with code ${res.status}: ${diag || 'Unknown error'}`);
+  }
+  return res;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Production Deployment Procedure (Phases 0 - 6)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -44,21 +68,30 @@ async function executeDeployment(options = {}) {
   const rootDir = options.rootDir || process.cwd();
   const dbRelPath = options.databasePath || 'server/bfi_classroom.db';
   const dbPath = path.resolve(rootDir, dbRelPath);
-  const targetCommit = options.targetCommit || '21f3cbe7163f924f5b30c172dc1f6542c3c6f4cd';
+  const targetCommit = options.targetCommit || process.env.TARGET_COMMIT || 'integration/super-admin-candidate';
   const isRehearsal = Boolean(options.isRehearsal);
+  const serverDir = path.resolve(rootDir, 'server');
 
   logSection('BFI CLASSROOM CANONICAL PRODUCTION DEPLOYMENT');
   console.log(`Target DB:      ${dbPath}`);
   console.log(`Target Commit:  ${targetCommit}`);
   console.log(`Mode:           ${isRehearsal ? 'REHEARSAL (WITH SERVICE ADAPTERS)' : 'PRODUCTION EXECUTION'}`);
 
-  // ── PHASE 0: Pre-Flight Staging & Safety Gate Preparation ─────────────────
-  logSection('PHASE 0: PRE-FLIGHT STAGING & SAFETY SCRIPT VERIFICATION');
+  if (!fs.existsSync(serverDir)) fs.mkdirSync(serverDir, { recursive: true });
+
+  // ── PHASE 0: Staging & Tooling Preservation ───────────────────────────────
+  logSection('PHASE 0: PRE-FLIGHT STAGING & RECOVERY TOOLING PRESERVATION');
+
+  // Preserve recovery tooling in server/.recovery_tools outside git-managed tree
+  const recoveryToolsDir = path.join(serverDir, '.recovery_tools');
+  if (!fs.existsSync(recoveryToolsDir)) fs.mkdirSync(recoveryToolsDir, { recursive: true });
+
   const requiredScripts = [
     'scripts/preflight_lockdown_check.cjs',
     'scripts/verify_isolation.cjs',
     'scripts/run_migrations.cjs',
-    'scripts/production_smoke_check.cjs'
+    'scripts/production_smoke_check.cjs',
+    'scripts/production_lifecycle.cjs'
   ];
 
   for (const scriptRel of requiredScripts) {
@@ -67,8 +100,27 @@ async function executeDeployment(options = {}) {
       logFatal(`Required operational script missing: ${scriptRel}`);
       throw new Error(`Required script missing: ${scriptRel}`);
     }
-    logStep('0.1', `Verified presence of ${scriptRel}`);
+    const destPath = path.join(recoveryToolsDir, path.basename(scriptRel));
+    fs.copyFileSync(sPath, destPath);
+    logStep('0.1', `Preserved ${path.basename(scriptRel)} in ${recoveryToolsDir}`);
   }
+
+  // Initialize deployment state
+  const attemptId = `deploy_${Date.now()}`;
+  const stateFilePath = path.join(serverDir, 'active_deployment_state.json');
+  const deploymentState = {
+    attemptId,
+    startedAt: new Date().toISOString(),
+    preDeploymentRevision: null,
+    targetCommit,
+    backupFile: null,
+    backupValidated: false,
+    trafficReopened: false,
+    trafficReopenedAt: null,
+    nginxInitialState: 'unknown',
+    pm2InitialState: 'unknown'
+  };
+  fs.writeFileSync(stateFilePath, JSON.stringify(deploymentState, null, 2));
 
   // ── PHASE 1: Maintenance Mode & Writer Lockdown Gate ───────────────────────
   logSection('PHASE 1: MAINTENANCE MODE & WRITER LOCKDOWN GATE');
@@ -76,41 +128,30 @@ async function executeDeployment(options = {}) {
   // 1.1 Record pre-maintenance service states
   logStep('1.1', 'Recording pre-maintenance service states...');
   const nginxStateCheck = spawner('systemctl', ['is-active', 'nginx'], { encoding: 'utf8', timeout: 5000, shell: false });
-  const nginxInitialState = (nginxStateCheck.stdout || '').trim() || 'unknown';
+  deploymentState.nginxInitialState = (nginxStateCheck.stdout || '').trim() || 'unknown';
 
   const pm2StateCheck = spawner('pm2', ['jlist'], { encoding: 'utf8', timeout: 5000, shell: false });
-  let pm2InitialState = 'unknown';
   if (!pm2StateCheck.error && pm2StateCheck.status === 0) {
     try {
       const list = JSON.parse(pm2StateCheck.stdout);
       const app = list.find(a => a.name === 'bfi-classroom');
-      if (app && app.pm2_env) pm2InitialState = app.pm2_env.status;
+      if (app && app.pm2_env) deploymentState.pm2InitialState = app.pm2_env.status;
     } catch {}
   }
-
-  const serverDir = path.resolve(rootDir, 'server');
-  if (!fs.existsSync(serverDir)) fs.mkdirSync(serverDir, { recursive: true });
+  fs.writeFileSync(stateFilePath, JSON.stringify(deploymentState, null, 2));
   fs.writeFileSync(
     path.join(serverDir, 'pre_deployment_services.env'),
-    `NGINX_STATE=${nginxInitialState}\nPM2_STATE=${pm2InitialState}\n`
+    `NGINX_STATE=${deploymentState.nginxInitialState}\nPM2_STATE=${deploymentState.pm2InitialState}\n`
   );
-  logStep('1.1', `Service states recorded: NGINX=${nginxInitialState}, PM2=${pm2InitialState}`);
+  logStep('1.1', `Service states recorded: NGINX=${deploymentState.nginxInitialState}, PM2=${deploymentState.pm2InitialState}`);
 
   // 1.2 Stop Nginx
   logStep('1.2', 'Stopping Nginx to close public listeners 80/443 and terminate direct IP access...');
-  const stopNginxRes = spawner('sudo', ['systemctl', 'stop', 'nginx'], { encoding: 'utf8', timeout: 10000, shell: false });
-  if (stopNginxRes.error || stopNginxRes.status !== 0) {
-    logFatal(`Failed to stop Nginx: ${stopNginxRes.error ? stopNginxRes.error.message : stopNginxRes.stderr}`);
-    throw new Error('Failed to stop Nginx');
-  }
+  runCommandStrict(spawner, 'sudo', ['systemctl', 'stop', 'nginx'], { timeout: 10000 }, 'Stop Nginx');
 
   // 1.3 Stop PM2 backend writer
   logStep('1.3', 'Stopping PM2 application bfi-classroom...');
-  const stopPm2Res = spawner('pm2', ['stop', 'bfi-classroom'], { encoding: 'utf8', timeout: 10000, shell: false });
-  if (stopPm2Res.error || stopPm2Res.status !== 0) {
-    logFatal(`Failed to stop PM2: ${stopPm2Res.error ? stopPm2Res.error.message : stopPm2Res.stderr}`);
-    throw new Error('Failed to stop PM2');
-  }
+  runCommandStrict(spawner, 'pm2', ['stop', 'bfi-classroom'], { timeout: 10000 }, 'Stop PM2');
 
   // 1.4 Execute fail-closed isolation inspection
   logStep('1.4', 'Running fail-closed isolation inspection (ports, processes, connections, sockets)...');
@@ -119,27 +160,29 @@ async function executeDeployment(options = {}) {
 
   // 1.5 Execute fail-closed database handle inspection
   logStep('1.5', 'Running fail-closed database handle inspection...');
-  try {
-    const { runPreflightLockdown } = require('./preflight_lockdown_check.cjs');
-    runPreflightLockdown({ databasePath: dbPath, spawner, doNotExit: true });
-    logStep('1.5', 'Database handle gate: PASSED (Zero open handles on database files)');
-  } catch (err) {
-    logFatal(`Preflight lockdown check failed: ${err.message}`);
-    throw err;
-  }
+  runPreflightLockdown({ databasePath: dbPath, spawner, doNotExit: true });
+  logStep('1.5', 'Database handle gate: PASSED (Zero open handles on database files)');
 
   // ── PHASE 2: Dynamic Health Check & Backup Validation ─────────────────────
   logSection('PHASE 2: DYNAMIC HEALTH CHECK & BACKUP VALIDATION');
 
-  // 2.1 Capture current revision for rollback
-  const revCheck = spawner('git', ['rev-parse', 'HEAD'], { encoding: 'utf8', timeout: 5000, shell: false });
-  if (revCheck.error || revCheck.status !== 0) {
-    logFatal(`Failed to record deployed git revision: ${revCheck.error ? revCheck.error.message : revCheck.stderr}`);
-    throw new Error('Failed to record git revision');
+  // 2.1 Capture pre-deployment revision for rollback
+  const revFile = path.join(serverDir, 'pre_deployment_revision.txt');
+  let preRev = options.preDeploymentRevision;
+  if (!preRev && fs.existsSync(revFile)) {
+    const recorded = fs.readFileSync(revFile, 'utf8').trim();
+    if (recorded && recorded.length >= 7) {
+      preRev = recorded;
+    }
   }
-  const deployedRev = revCheck.stdout.trim();
-  fs.writeFileSync(path.join(serverDir, 'pre_deployment_revision.txt'), deployedRev + '\n');
-  logStep('2.1', `Pre-deployment revision recorded: ${deployedRev}`);
+  if (!preRev) {
+    const revCheck = runCommandStrict(spawner, 'git', ['rev-parse', 'HEAD'], { timeout: 5000 }, 'Record Git Revision');
+    preRev = revCheck.stdout.trim();
+  }
+  deploymentState.preDeploymentRevision = preRev;
+  fs.writeFileSync(revFile, deploymentState.preDeploymentRevision + '\n');
+  fs.writeFileSync(stateFilePath, JSON.stringify(deploymentState, null, 2));
+  logStep('2.1', `Pre-deployment revision recorded: ${deploymentState.preDeploymentRevision}`);
 
   // 2.2 Capture dynamic baseline invariants & verify PRAGMAs
   logStep('2.2', 'Capturing dynamic baseline invariants and verifying PRAGMA integrity...');
@@ -178,6 +221,7 @@ async function executeDeployment(options = {}) {
     const src = new Database(dbPath, { readonly: true });
     await src.backup(backupFile);
     src.close();
+    deploymentState.backupFile = backupFile;
     logStep('2.3', `Online backup created at: ${backupFile}`);
   }
 
@@ -205,6 +249,8 @@ async function executeDeployment(options = {}) {
       throw new Error('Backup baseline count mismatch');
     }
 
+    deploymentState.backupValidated = true;
+    fs.writeFileSync(stateFilePath, JSON.stringify(deploymentState, null, 2));
     fs.writeFileSync(path.join(serverDir, 'active_backup_path.env'), `BACKUP_FILE=${backupFile}\nBACKUP_VALIDATED=true\n`);
     logStep('2.4', '✅ Backup file validated: 0 FK violations, quick_check ok, exact baseline match.');
   }
@@ -212,47 +258,26 @@ async function executeDeployment(options = {}) {
   // ── PHASE 3: Reproducible Code Update & Build Sequence ─────────────────────
   logSection('PHASE 3: REPRODUCIBLE CODE UPDATE & BUILD SEQUENCE');
   logStep('3.1', `Checking out pinned release revision: ${targetCommit}...`);
-  const checkoutRes = spawner('git', ['checkout', targetCommit], { encoding: 'utf8', timeout: 30000, shell: false });
-  if (checkoutRes.error || checkoutRes.status !== 0) {
-    logFatal(`git checkout failed: ${checkoutRes.error ? checkoutRes.error.message : checkoutRes.stderr}`);
-    throw new Error('git checkout failed');
-  }
+  runCommandStrict(spawner, 'git', ['checkout', targetCommit], { timeout: 30000 }, 'Git Checkout Target Commit');
 
   logStep('3.2', 'Installing dependencies including devDependencies (NODE_ENV=development npm ci --legacy-peer-deps)...');
-  const ciRes = spawner('npm', ['ci', '--legacy-peer-deps'], {
+  runCommandStrict(spawner, 'npm', ['ci', '--legacy-peer-deps'], {
     env: { ...process.env, NODE_ENV: 'development' },
-    encoding: 'utf8',
     timeout: 120000,
     shell: true
-  });
-  if (ciRes.error || ciRes.status !== 0) {
-    logFatal(`npm ci failed: ${ciRes.error ? ciRes.error.message : ciRes.stderr}`);
-    throw new Error('npm ci failed');
-  }
+  }, 'npm ci');
 
   logStep('3.3', 'Building frontend production assets (npm run build)...');
-  const buildRes = spawner('npm', ['run', 'build'], { encoding: 'utf8', timeout: 120000, shell: true });
-  if (buildRes.error || buildRes.status !== 0) {
-    logFatal(`npm run build failed: ${buildRes.error ? buildRes.error.message : buildRes.stderr}`);
-    throw new Error('npm run build failed');
-  }
+  runCommandStrict(spawner, 'npm', ['run', 'build'], { timeout: 120000, shell: true }, 'npm run build');
 
   logStep('3.4', 'Pruning devDependencies for production runtime isolation (npm prune --omit=dev --legacy-peer-deps)...');
-  const pruneRes = spawner('npm', ['prune', '--omit=dev', '--legacy-peer-deps'], { encoding: 'utf8', timeout: 60000, shell: true });
-  if (pruneRes.error || pruneRes.status !== 0) {
-    logFatal(`npm prune failed: ${pruneRes.error ? pruneRes.error.message : pruneRes.stderr}`);
-    throw new Error('npm prune failed');
-  }
+  runCommandStrict(spawner, 'npm', ['prune', '--omit=dev', '--legacy-peer-deps'], { timeout: 60000, shell: true }, 'npm prune');
 
   // ── PHASE 4: Execute Database Migrations ───────────────────────────────────
   logSection('PHASE 4: DATABASE MIGRATION EXECUTION & ASSERTION VERIFICATION');
   logStep('4.1', `Executing unified migration runner on ${dbPath}...`);
   const migRunnerPath = path.resolve(rootDir, 'scripts/run_migrations.cjs');
-  const migRes = spawner(process.execPath, [migRunnerPath, dbPath], { encoding: 'utf8', timeout: 60000, shell: false });
-  if (migRes.error || migRes.status !== 0) {
-    logFatal(`Migration execution failed: ${migRes.error ? migRes.error.message : migRes.stderr || migRes.stdout}`);
-    throw new Error('Migration execution failed');
-  }
+  runCommandStrict(spawner, process.execPath, [migRunnerPath, dbPath], { timeout: 60000 }, 'Migration Runner');
   logStep('4.1', '✅ Migrations applied sequentially and verified (10/10 schema assertions passed).');
 
   // ── PHASE 5: Application Restart & Loopback Smoke Verification ─────────────
@@ -261,11 +286,7 @@ async function executeDeployment(options = {}) {
   verifyIsolation({ spawner, allowPm2Online: false });
 
   logStep('5.2', 'Starting PM2 backend process locally (isolated to 127.0.0.1:3001)...');
-  const startPm2Res = spawner('pm2', ['start', 'ecosystem.config.cjs'], { encoding: 'utf8', timeout: 15000, shell: false });
-  if (startPm2Res.error || startPm2Res.status !== 0) {
-    logFatal(`Failed to start PM2: ${startPm2Res.error ? startPm2Res.error.message : startPm2Res.stderr}`);
-    throw new Error('Failed to start PM2');
-  }
+  runCommandStrict(spawner, 'pm2', ['start', 'ecosystem.config.cjs'], { timeout: 15000 }, 'Start PM2');
 
   logStep('5.3', 'Verifying PM2 is online and Nginx remains stopped (--allow-pm2)...');
   verifyIsolation({ spawner, allowPm2Online: true });
@@ -280,42 +301,36 @@ async function executeDeployment(options = {}) {
   if (options.superAdminTokenFile) smokeEnv.SUPER_ADMIN_TOKEN_FILE = options.superAdminTokenFile;
   if (options.adminTokenFile) smokeEnv.ADMIN_TOKEN_FILE = options.adminTokenFile;
 
-  const smokeRes = spawner(process.execPath, [smokeRunnerPath, 'http://127.0.0.1:3001'], {
+  runCommandStrict(spawner, process.execPath, [smokeRunnerPath, 'http://127.0.0.1:3001'], {
     env: smokeEnv,
-    encoding: 'utf8',
-    timeout: 30000,
-    shell: false
-  });
-
-  if (smokeRes.error || smokeRes.status !== 0) {
-    logFatal(`Production smoke check failed (exit code ${smokeRes.status}): ${smokeRes.stderr || smokeRes.stdout}`);
-    throw new Error('Production smoke check failed');
-  }
+    timeout: 30000
+  }, 'Production Smoke Check');
   logStep('5.4', '✅ Production smoke verification passed: 18/18 assertions verified.');
 
   // ── PHASE 6: Traffic Reopening Decision Point ──────────────────────────────
   logSection('PHASE 6: TRAFFIC REOPENING DECISION POINT (RESTARTING NGINX)');
   logStep('6.1', 'Restarting Nginx to restore external reverse proxy routing...');
-  const startNginxRes = spawner('sudo', ['systemctl', 'start', 'nginx'], { encoding: 'utf8', timeout: 10000, shell: false });
-  if (startNginxRes.error || startNginxRes.status !== 0) {
-    logFatal(`Failed to start Nginx: ${startNginxRes.error ? startNginxRes.error.message : startNginxRes.stderr}`);
-    throw new Error('Failed to start Nginx');
-  }
+  runCommandStrict(spawner, 'sudo', ['systemctl', 'start', 'nginx'], { timeout: 10000 }, 'Start Nginx');
 
-  const nginxVerify = spawner('systemctl', ['is-active', 'nginx'], { encoding: 'utf8', timeout: 5000, shell: false });
-  if (nginxVerify.error || (nginxVerify.stdout || '').trim() !== 'active') {
+  const nginxVerify = runCommandStrict(spawner, 'systemctl', ['is-active', 'nginx'], { timeout: 5000 }, 'Verify Nginx Active');
+  if ((nginxVerify.stdout || '').trim() !== 'active') {
     logFatal(`Nginx failed to report active status after restart: ${nginxVerify.stdout}`);
     throw new Error('Nginx not active after restart');
   }
+
+  deploymentState.trafficReopened = true;
+  deploymentState.trafficReopenedAt = new Date().toISOString();
+  fs.writeFileSync(stateFilePath, JSON.stringify(deploymentState, null, 2));
+
   logStep('6.1', '✅ Nginx service active: direct origin and reverse proxy routing restored.');
   logStep('6.2', 'Traffic reopened. Operator can deactivate Cloudflare 503 maintenance page.');
 
   logSection('DEPLOYMENT COMPLETE: RELEASE CANDIDATE SUCCESSFULLY DEPLOYED');
-  return { success: true, backupFile, targetCommit };
+  return { success: true, backupFile, targetCommit, attemptId };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Production Rollback Procedure (Window A)
+// Production Rollback Procedure (Window A & B Boundary Enforcement)
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function executeRollback(options = {}) {
@@ -325,55 +340,71 @@ async function executeRollback(options = {}) {
   const dbPath = path.resolve(rootDir, dbRelPath);
   const serverDir = path.resolve(rootDir, 'server');
   const isRehearsal = Boolean(options.isRehearsal);
+  const allowPostReopening = Boolean(options.allowPostReopeningReconciliation);
 
-  logSection('BFI CLASSROOM HARDENED PRODUCTION ROLLBACK (WINDOW A)');
+  logSection('BFI CLASSROOM HARDENED PRODUCTION ROLLBACK');
   console.log(`Target DB:  ${dbPath}`);
   console.log(`Mode:       ${isRehearsal ? 'REHEARSAL (WITH SERVICE ADAPTERS)' : 'PRODUCTION EXECUTION'}`);
 
-  // 1. Verify validated backup exists before touching anything
-  logStep('R.1', 'Verifying validated backup exists before attempting restoration...');
-  const activeBackupEnvPath = path.join(serverDir, 'active_backup_path.env');
-  if (!fs.existsSync(activeBackupEnvPath)) {
-    logFatal('ABORT ROLLBACK: No active backup file recorded. Failure occurred before validated backup existed. Halting without database restoration to protect original database.');
-    throw new Error('ABORT ROLLBACK: No active backup file recorded.');
+  // 1. Verify deployment state and validated backup association
+  logStep('R.1', 'Verifying deployment attempt state and validated backup...');
+  const stateFilePath = path.join(serverDir, 'active_deployment_state.json');
+  let state = null;
+
+  if (fs.existsSync(stateFilePath)) {
+    try {
+      state = JSON.parse(fs.readFileSync(stateFilePath, 'utf8'));
+    } catch {}
   }
 
-  const envContent = fs.readFileSync(activeBackupEnvPath, 'utf8');
-  if (!envContent.includes('BACKUP_VALIDATED=true')) {
-    logFatal('ABORT ROLLBACK: Recorded backup was not validated. Halting without database restoration.');
-    throw new Error('ABORT ROLLBACK: Backup was not validated.');
+  // Fail-closed check: No validated backup recorded
+  if (!state || !state.backupFile || state.backupValidated !== true) {
+    // Check fallback active_backup_path.env
+    const envFile = path.join(serverDir, 'active_backup_path.env');
+    if (!fs.existsSync(envFile)) {
+      logFatal('ABORT ROLLBACK: No validated backup file recorded. Failure occurred before validated backup existed. Halting without database restoration to protect original database.');
+      throw new Error('ABORT ROLLBACK: No active backup file recorded.');
+    }
+    const envContent = fs.readFileSync(envFile, 'utf8');
+    if (!envContent.includes('BACKUP_VALIDATED=true')) {
+      logFatal('ABORT ROLLBACK: Recorded backup was not validated. Halting without database restoration.');
+      throw new Error('ABORT ROLLBACK: Backup was not validated.');
+    }
   }
 
-  const match = envContent.match(/BACKUP_FILE=(.+)/);
-  if (!match || !match[1]) {
-    logFatal('ABORT ROLLBACK: Active backup file path not found in active_backup_path.env.');
-    throw new Error('ABORT ROLLBACK: Missing BACKUP_FILE path.');
+  // Rollback Boundary Gate: Reject automatic rollback if traffic was already reopened
+  if (state && state.trafficReopened === true) {
+    if (!allowPostReopening) {
+      logFatal(`ABORT ROLLBACK: Automatic restore rejected! Traffic was reopened at ${state.trafficReopenedAt}. Restoring pre-deployment backup would cause data loss of subsequent user transactions. Strict Policy: Post-reopening restoration requires an approved reconciliation plan and explicit flag (--allow-post-reopening-reconciliation).`);
+      throw new Error(`ABORT ROLLBACK: Automatic restore rejected after traffic reopening at ${state.trafficReopenedAt}.`);
+    }
+    logStep('R.1', `⚠️ Post-reopening reconciliation authorized by operator. Proceeding with forensic restore.`);
   }
-  const backupFile = match[1].trim();
-  if (!fs.existsSync(backupFile)) {
-    logFatal(`ABORT ROLLBACK: Backup file does not exist on disk: ${backupFile}`);
+
+  const backupFile = (state && state.backupFile) ? state.backupFile : (() => {
+    const envContent = fs.readFileSync(path.join(serverDir, 'active_backup_path.env'), 'utf8');
+    const m = envContent.match(/BACKUP_FILE=(.+)/);
+    return m ? m[1].trim() : null;
+  })();
+
+  if (!backupFile || !fs.existsSync(backupFile)) {
+    logFatal(`ABORT ROLLBACK: Validated backup file missing on disk: ${backupFile}`);
     throw new Error(`ABORT ROLLBACK: Backup file missing at ${backupFile}`);
   }
   logStep('R.1', `Validated backup confirmed: ${backupFile}`);
 
   // 2. Stop application immediately
   logStep('R.2', 'Stopping PM2 application bfi-classroom...');
-  spawner('pm2', ['stop', 'bfi-classroom'], { encoding: 'utf8', timeout: 10000, shell: false });
+  runCommandStrict(spawner, 'pm2', ['stop', 'bfi-classroom'], { timeout: 10000 }, 'Stop PM2');
 
   // 3. Ensure Nginx remains stopped
   logStep('R.3', 'Ensuring Nginx remains stopped...');
-  spawner('sudo', ['systemctl', 'stop', 'nginx'], { encoding: 'utf8', timeout: 10000, shell: false });
+  runCommandStrict(spawner, 'sudo', ['systemctl', 'stop', 'nginx'], { timeout: 10000 }, 'Stop Nginx');
 
   // 4. Verify closed database handles before touching files
   logStep('R.4', 'Verifying zero open database handles...');
-  try {
-    const { runPreflightLockdown } = require('./preflight_lockdown_check.cjs');
-    runPreflightLockdown({ databasePath: dbPath, spawner, doNotExit: true });
-    logStep('R.4', 'Database handles confirmed closed.');
-  } catch (err) {
-    logFatal(`Cannot restore database: active database writers or open handles detected: ${err.message}`);
-    throw err;
-  }
+  runPreflightLockdown({ databasePath: dbPath, spawner, doNotExit: true });
+  logStep('R.4', 'Database handles confirmed closed.');
 
   // 5. Quarantine failed database, WAL, and SHM together
   logStep('R.5', 'Quarantining failed database, WAL, and SHM sidecars together...');
@@ -461,55 +492,95 @@ async function executeRollback(options = {}) {
   }
   const prevRev = fs.readFileSync(revFile, 'utf8').trim();
   logStep('R.8', `Checking out original revision: ${prevRev}`);
-  spawner('git', ['checkout', prevRev], { encoding: 'utf8', timeout: 30000, shell: false });
+  runCommandStrict(spawner, 'git', ['checkout', prevRev], { timeout: 30000 }, 'Rollback Git Checkout');
 
   logStep('R.8', 'Rebuilding original revision assets...');
-  spawner('npm', ['ci', '--legacy-peer-deps'], { env: { ...process.env, NODE_ENV: 'development' }, encoding: 'utf8', timeout: 120000, shell: true });
-  spawner('npm', ['run', 'build'], { encoding: 'utf8', timeout: 120000, shell: true });
-  spawner('npm', ['prune', '--omit=dev', '--legacy-peer-deps'], { encoding: 'utf8', timeout: 60000, shell: true });
+  runCommandStrict(spawner, 'npm', ['ci', '--legacy-peer-deps'], {
+    env: { ...process.env, NODE_ENV: 'development' },
+    timeout: 120000,
+    shell: true
+  }, 'Rollback npm ci');
+  runCommandStrict(spawner, 'npm', ['run', 'build'], { timeout: 120000, shell: true }, 'Rollback npm run build');
+  runCommandStrict(spawner, 'npm', ['prune', '--omit=dev', '--legacy-peer-deps'], { timeout: 60000, shell: true }, 'Rollback npm prune');
 
   // 9. Restart PM2 on restored revision
   logStep('R.9', 'Starting PM2 application on restored code...');
-  spawner('pm2', ['start', 'ecosystem.config.cjs'], { encoding: 'utf8', timeout: 15000, shell: false });
+  runCommandStrict(spawner, 'pm2', ['start', 'ecosystem.config.cjs'], { timeout: 15000 }, 'Rollback Start PM2');
 
-  // 10. Verify restored service over loopback
-  logStep('R.10', 'Verifying restored service responsiveness over loopback...');
-  const verifyCurl = spawner('curl', ['-f', '-I', 'http://127.0.0.1:3001/bfi-classroom/'], { encoding: 'utf8', timeout: 10000, shell: false });
-  logStep('R.10', `Restored service check: ${verifyCurl.status === 0 ? 'RESPONDING 200 OK' : 'PENDING'}`);
+  // 9.1 Verify PM2 machine-readable health after restart
+  logStep('R.9.1', 'Verifying PM2 machine-readable health for bfi-classroom...');
+  const pm2HealthCheck = runCommandStrict(spawner, 'pm2', ['jlist'], { timeout: 5000 }, 'Verify Restored PM2 Health');
+  let restoredAppList;
+  try {
+    restoredAppList = JSON.parse(pm2HealthCheck.stdout);
+  } catch (err) {
+    logFatal(`Failed to parse PM2 jlist during rollback health check: ${err.message}`);
+    throw new Error('PM2 jlist parse error during rollback');
+  }
+  const restoredApp = restoredAppList.find(a => a.name === 'bfi-classroom');
+  if (!restoredApp || restoredApp.pm2_env.status !== 'online') {
+    logFatal(`Restored PM2 application 'bfi-classroom' is not online (status=${restoredApp ? restoredApp.pm2_env.status : 'missing'})!`);
+    throw new Error('Restored PM2 application not online');
+  }
+  logStep('R.9.1', '✅ PM2 application confirmed online after rollback.');
+
+  // 10. Verify restored service responsiveness over loopback
+  logStep('R.10', 'Verifying restored service responsiveness over loopback (curl 200 OK)...');
+  const verifyCurl = runCommandStrict(spawner, 'curl', ['-f', '-I', 'http://127.0.0.1:3001/bfi-classroom/'], { timeout: 10000 }, 'Restored Service Loopback Health');
+  if (!verifyCurl.stdout.includes('200')) {
+    logFatal(`Restored service health check failed to return HTTP 200: ${verifyCurl.stdout}`);
+    throw new Error('Restored service did not return HTTP 200');
+  }
+  logStep('R.10', '✅ Restored service responded HTTP 200 OK over loopback.');
 
   // 11. Restore recorded pre-maintenance Nginx state
   logStep('R.11', 'Restoring pre-maintenance Nginx service state...');
   const servicesEnvFile = path.join(serverDir, 'pre_deployment_services.env');
+  let nginxWasActive = false;
   if (fs.existsSync(servicesEnvFile)) {
     const sContent = fs.readFileSync(servicesEnvFile, 'utf8');
-    if (sContent.includes('NGINX_STATE=active')) {
-      spawner('sudo', ['systemctl', 'start', 'nginx'], { encoding: 'utf8', timeout: 10000, shell: false });
-      logStep('R.11', 'Nginx restored to active.');
+    nginxWasActive = sContent.includes('NGINX_STATE=active');
+  } else if (state && state.nginxInitialState === 'active') {
+    nginxWasActive = true;
+  }
+
+  if (nginxWasActive) {
+    runCommandStrict(spawner, 'sudo', ['systemctl', 'start', 'nginx'], { timeout: 10000 }, 'Restore Nginx State');
+    const nginxVerify = runCommandStrict(spawner, 'systemctl', ['is-active', 'nginx'], { timeout: 5000 }, 'Verify Nginx Restored');
+    if ((nginxVerify.stdout || '').trim() !== 'active') {
+      logFatal(`Nginx failed to report active status upon restoration: ${nginxVerify.stdout}`);
+      throw new Error('Nginx not active after rollback restore');
     }
+    logStep('R.11', '✅ Nginx restored to active service.');
+  } else {
+    logStep('R.11', 'Nginx was inactive prior to deployment. Remaining stopped.');
   }
 
   logSection('ROLLBACK COMPLETE: RESTORED TO PRE-DEPLOYMENT STATE');
   logStep('R.12', 'Traffic remains in maintenance or operator control until explicit verification.');
-  return { rollbackComplete: true, restoredRevision: prevRev };
+  return { rollbackComplete: true, restoredRevision: prevRev, databaseRestored: true };
 }
 
 // CLI Entrypoint
 if (require.main === module) {
   const action = process.argv[2];
   if (action === 'deploy') {
-    executeDeployment().then(() => process.exit(0)).catch((err) => {
+    const targetCommitArg = process.argv.find((a, i) => process.argv[i - 1] === '--target-commit');
+    const prevRevArg = process.argv.find((a, i) => process.argv[i - 1] === '--previous-revision');
+    executeDeployment({ targetCommit: targetCommitArg, preDeploymentRevision: prevRevArg }).then(() => process.exit(0)).catch((err) => {
       console.error(`\n❌ [DEPLOYMENT HALTED] ${err.message}`);
       process.exit(1);
     });
   } else if (action === 'rollback') {
-    executeRollback().then(() => process.exit(0)).catch((err) => {
+    const allowPostReopening = process.argv.includes('--allow-post-reopening-reconciliation');
+    executeRollback({ allowPostReopeningReconciliation: allowPostReopening }).then(() => process.exit(0)).catch((err) => {
       console.error(`\n❌ [ROLLBACK HALTED] ${err.message}`);
       process.exit(1);
     });
   } else {
-    console.error("Usage: node scripts/production_lifecycle.cjs <deploy|rollback>");
+    console.error("Usage: node scripts/production_lifecycle.cjs <deploy|rollback> [--allow-post-reopening-reconciliation]");
     process.exit(1);
   }
 }
 
-module.exports = { executeDeployment, executeRollback };
+module.exports = { executeDeployment, executeRollback, runCommandStrict };
