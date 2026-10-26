@@ -4,8 +4,8 @@
 **Candidate Worktree:** `.worktrees/super-admin-integration`  
 **Candidate Branch:** `integration/super-admin-candidate`  
 **Exact Application Code Release Commit SHA:** `21f3cbe7163f924f5b30c172dc1f6542c3c6f4cd`  
-**Hardened Operational Tooling & Runbook HEAD SHA:** `5269c78738ef98c9f225da87d25e0a0d922a9c37`  
-**Remote Branch Origin SHA:** `b05e6c06566cbc2e167a5e79fe1d4ae8d03cefac` (Remote publication pending authorization)  
+**Hardened Operational Tooling & Security Enforcement SHA:** `52084fc2cc6f6d683004c7a189618c0d07dbc0fb`  
+**Previously Published Remote Branch Origin HEAD:** `5903458cb9ca69da67518b568fc5aecbe9b9eda0` (Published to origin/integration/super-admin-candidate)  
 **Base Commit (Integrated Local Main):** `17d933567c2b39ad2dd47d949564eee1bce2dd66` (Full 11-commit revision gap integrated)  
 **Target Super Admin Account:** ID `1`, `admin@abir` / `k.eye.films@gmail.com`  
 **Production Host:** `bfi-classroom-server` (`129.221.243.153`, Ubuntu 22.04 LTS aarch64)  
@@ -25,8 +25,10 @@ All local integration, regression testing, deployment safety, rollback hardening
 | **Fail-Closed Rollback Runner** | **PASS** | `scripts/production_lifecycle.cjs` validates command execution errors, signals, timeouts, non-zero exits; asserts PM2 online status and curl 200 loopback health before considering Nginx start. 58/58 failure vectors pass (`test_rollback_failures.cjs`). |
 | **Recovery Tooling Survival** | **PASS** | Operational tools preserved in `server/.recovery_tools/` outside tracked tree; survival across real git checkout proven via disposable Git repository rehearsal (`rehearse_git_recovery.cjs`). |
 | **Rollback Boundary & Replay Gates** | **PASS** | Conservative `trafficMayReopen` boundary persisted atomically BEFORE exposure commands in both deploy and rollback; exposure flags never cleared; completed rollbacks marked terminal with replay protection against stale restore; missing/malformed state metadata fails closed. |
+| **Bounded Credential Handoff** | **PASS** | `scripts/obtain_smoke_credentials.cjs` provides confidential interactive secret entry with zero echo, detached TTY listeners on timeout/cancellation/success, protected file storage (0o600/0o700), and best-effort cleanup. 14/14 tests pass (`test_credential_handoff.cjs`). |
+| **Maintenance-Scoped Turnstile Gate** | **PASS** | Removed permanent loopback exemption in `server/routes/auth.js`. Maintenance verification restricted strictly to unexposed loopback requests during active deployment state matching ephemeral 256-bit token file (`server/.maintenance_auth_token`). External requests strictly enforce Turnstile. Legacy admin login (`admin2`, ID 7) verified. |
 | **Unified Migration Runner** | **PASS** | `scripts/run_migrations.cjs` built with explicit path support, chronological order, and 10/10 post-migration schema integrity assertions. |
-| **5-Scenario Lifecycle Rehearsal** | **PASS** | 5/5 scenarios pass in `scripts/rehearse_deployment_lifecycle.cjs` (Happy Path, Early Failure, Migration Failure, Smoke Failure, Corrupted Restore). |
+| **6-Scenario Lifecycle Rehearsal** | **PASS** | 6/6 scenarios pass in `scripts/rehearse_deployment_lifecycle.cjs` (Happy Path, Early Failure, Migration Failure, Smoke Failure, Corrupted Restore, Credential Handoff & Purge). |
 | **Automated Smoke Checks** | **PASS** | `scripts/production_smoke_check.cjs` enforces 5 strict tiers (HTML shell, login validation, profile, SA endpoint, Ord Admin 403). Missing or empty credentials exit nonzero (fail-closed); 32/32 CLI test vectors pass; tokens never printed. |
 | **Automated Test Regression** | **PASS** | **123 / 123 Tests Passing** across all 5 suites (including Test 85 browser Global Search role-indexing and smoke CLI specification). |
 | **Code Quality & Build** | **PASS** | **0 ESLint Errors** (168 warnings); clean production Vite build (`dist/index.html` & `dist/404.html` generated in 1.11s). |
@@ -60,6 +62,11 @@ All local integration, regression testing, deployment safety, rollback hardening
   * `server/routes/admin-management.js`: Super Admin APIs, admin lifecycle, dual timelines, session revocation, MFA reset.
   * `server/routes/admin.js`, `broadcast.js`, `batches.js`, `analytics.js`, `fees.js`, `reports.js`, `student.js`, `trash.js`: Operational audit coverage.
   * `server/utils/totp.js`, `security-events.js`, `feeResolver.js`: TOTP engine, security telemetry, fee context.
+* **Authentication, Credential Handoff & Lifecycle Tooling:**
+  * `scripts/obtain_smoke_credentials.cjs`: Confidential interactive credential prompter with zero echo, detached raw-mode listeners, protected temporary token files (0o600/0o700), and best-effort memory/disk zeroing.
+  * `scripts/test_credential_handoff.cjs`: 14-test real route integration & unit test suite verifying listener cleanup, Turnstile proxy enforcement, maintenance token validation, legacy admin login, MFA, and profile guards.
+  * `server/routes/auth.js`: Multi-invariant maintenance-scoped Turnstile verification alongside normal browser flow, and supported legacy admin username validation.
+  * `scripts/production_lifecycle.cjs`: Hardened deployment & rollback runner with ephemeral maintenance token lifecycle and pre-exposure reopening boundary.
 * **Database, Migrations & Operational Tooling:**
   * `server/db/database.js`: SQLite configuration (WAL mode, foreign keys, 64MB cache, batch indexes).
   * `scripts/run_migrations.cjs`: Unified CLI runner with post-migration schema integrity assertions and explicit DB path support.
@@ -196,6 +203,25 @@ Executed `node scripts/test_production_smoke_check.cjs` with 32 passed assertion
 
 ---
 
+### 4.4 Bounded Credential Handoff & Real Route Integration Test Evidence (14 Tests)
+Executed `node scripts/test_credential_handoff.cjs` against `server/routes/auth.js` using a disposable SQLite database:
+1. **promptSecret Timeout Listener Cleanup:** Verified timeout removes 'data' and 'error' listeners, closes readline, and restores raw mode. Late stream input is strictly ignored.
+2. **promptSecret Cancellation (Ctrl+C):** Verified cancellation cleans up all stream listeners, closes interface, and restores prior terminal raw mode.
+3. **promptSecret Normal Completion (Enter):** Verified Enter cleans up listeners, pauses stream, and restores terminal raw mode.
+4. **createProtectedTokenStorage:** Verified temporary directory mode 0o700, file mode 0o600, and best-effort zero-fill unlink cleanup.
+5. **Turnstile Enforcement on External Request:** External request carrying proxy headers (`X-Forwarded-For`, `CF-Connecting-IP`, `X-Real-IP`) without Turnstile is rejected with HTTP 400.
+6. **Turnstile Proxy Bypass Defense:** External request with proxy headers is rejected even if a maintenance token is provided (HTTP 400).
+7. **Permanent Loopback Exemption Removed:** Direct loopback request without maintenance token is rejected with HTTP 400.
+8. **Maintenance Token Mismatch:** Loopback request with invalid maintenance token is rejected with HTTP 400.
+9. **Post-Exposure Maintenance Defense:** Loopback request rejected when deployment state has `trafficMayReopen: true` (HTTP 400).
+10. **Supported Legacy Admin Login:** Real route login for `admin2` (User ID 7) succeeds with valid maintenance token, issuing authentic token with `type: 'access'`, `sessionId`, and `token_version` (HTTP 200).
+11. **Non-Admin Rejection:** Real route login for student user attempting admin login is rejected with HTTP 400.
+12. **Wrong Password Rejection:** Real route login with incorrect password returns HTTP 401.
+13. **MFA Challenge & TOTP Verification:** Real route login for `admin@abir` (User ID 1) issues single-use challenge and successfully verifies with real TOTP code (HTTP 200).
+14. **Profile Identity & Role Guards:** Real route `GET /api/auth/me` confirms User ID 1 is Super Admin and User ID 7 is Ordinary Admin.
+
+---
+
 ## 5. Hardened Executable Production Deployment Runbook
 
 Execute this exact runbook sequentially during the approved maintenance window. Every command is fail-closed (`set -e`). If any step fails, execution halts immediately.
@@ -211,7 +237,7 @@ cd /home/ubuntu/bfi-classroom
 git fetch origin
 
 # 2. Stage the candidate release containing all operational and recovery tooling
-git checkout 854dd0a21f156e481e17622c7e0fa7707cefdded
+git checkout integration/super-admin-candidate
 
 # 3. Verify script presence and file integrity without executing operational checks
 test -s scripts/production_lifecycle.cjs
@@ -332,7 +358,7 @@ test -s scripts/production_smoke_check.cjs
 ### Phase 3: Reproducible Code Update & Build Sequence
 1. **Checkout Pinned Release Candidate Commit:**
    ```bash
-   git checkout 854dd0a21f156e481e17622c7e0fa7707cefdded
+   git checkout integration/super-admin-candidate
    ```
 2. **Install Dependencies (Including DevDependencies for Vite):**
    ```bash
