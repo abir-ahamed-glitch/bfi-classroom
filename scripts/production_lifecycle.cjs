@@ -38,6 +38,25 @@ function logFatal(msg) {
   console.error(`❌ [LIFECYCLE FATAL] ${msg}`);
 }
 
+// Atomic state persistence helper
+function writeStateAtomic(filePath, data) {
+  const dir = path.dirname(filePath);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  const tmpPath = path.join(dir, `.tmp_state_${Date.now()}_${Math.random().toString(36).slice(2)}`);
+  const content = JSON.stringify(data, null, 2);
+  fs.writeFileSync(tmpPath, content, 'utf8');
+  try {
+    fs.renameSync(tmpPath, filePath);
+  } catch (err) {
+    if (process.platform === 'win32' && (err.code === 'EPERM' || err.code === 'EBUSY')) {
+      fs.copyFileSync(tmpPath, filePath);
+      try { fs.unlinkSync(tmpPath); } catch {}
+    } else {
+      throw err;
+    }
+  }
+}
+
 // Strict fail-closed command runner
 function runCommandStrict(spawner, cmd, args, options = {}, desc = '') {
   const timeout = options.timeout || 60000;
@@ -115,12 +134,14 @@ async function executeDeployment(options = {}) {
     targetCommit,
     backupFile: null,
     backupValidated: false,
+    trafficMayReopen: false,
+    trafficExposureInitiatedAt: null,
     trafficReopened: false,
     trafficReopenedAt: null,
     nginxInitialState: 'unknown',
     pm2InitialState: 'unknown'
   };
-  fs.writeFileSync(stateFilePath, JSON.stringify(deploymentState, null, 2));
+  writeStateAtomic(stateFilePath, deploymentState);
 
   // ── PHASE 1: Maintenance Mode & Writer Lockdown Gate ───────────────────────
   logSection('PHASE 1: MAINTENANCE MODE & WRITER LOCKDOWN GATE');
@@ -138,7 +159,7 @@ async function executeDeployment(options = {}) {
       if (app && app.pm2_env) deploymentState.pm2InitialState = app.pm2_env.status;
     } catch {}
   }
-  fs.writeFileSync(stateFilePath, JSON.stringify(deploymentState, null, 2));
+  writeStateAtomic(stateFilePath, deploymentState);
   fs.writeFileSync(
     path.join(serverDir, 'pre_deployment_services.env'),
     `NGINX_STATE=${deploymentState.nginxInitialState}\nPM2_STATE=${deploymentState.pm2InitialState}\n`
@@ -181,7 +202,7 @@ async function executeDeployment(options = {}) {
   }
   deploymentState.preDeploymentRevision = preRev;
   fs.writeFileSync(revFile, deploymentState.preDeploymentRevision + '\n');
-  fs.writeFileSync(stateFilePath, JSON.stringify(deploymentState, null, 2));
+  writeStateAtomic(stateFilePath, deploymentState);
   logStep('2.1', `Pre-deployment revision recorded: ${deploymentState.preDeploymentRevision}`);
 
   // 2.2 Capture dynamic baseline invariants & verify PRAGMAs
@@ -250,8 +271,8 @@ async function executeDeployment(options = {}) {
     }
 
     deploymentState.backupValidated = true;
-    fs.writeFileSync(stateFilePath, JSON.stringify(deploymentState, null, 2));
-    fs.writeFileSync(path.join(serverDir, 'active_backup_path.env'), `BACKUP_FILE=${backupFile}\nBACKUP_VALIDATED=true\n`);
+    writeStateAtomic(stateFilePath, deploymentState);
+    fs.writeFileSync(path.join(serverDir, 'active_backup_path.env'), `BACKUP_FILE=${backupFile}\nBACKUP_VALIDATED=true\nATTEMPT_ID=${attemptId}\n`);
     logStep('2.4', '✅ Backup file validated: 0 FK violations, quick_check ok, exact baseline match.');
   }
 
@@ -309,8 +330,25 @@ async function executeDeployment(options = {}) {
 
   // ── PHASE 6: Traffic Reopening Decision Point ──────────────────────────────
   logSection('PHASE 6: TRAFFIC REOPENING DECISION POINT (RESTARTING NGINX)');
-  logStep('6.1', 'Restarting Nginx to restore external reverse proxy routing...');
+
+  // CRITICAL BOUNDARY: Persist conservative trafficMayReopen BEFORE issuing any exposure command!
+  logStep('6.1', 'Setting conservative traffic-may-reopen boundary before exposure...');
+  deploymentState.trafficMayReopen = true;
+  deploymentState.trafficExposureInitiatedAt = new Date().toISOString();
+  writeStateAtomic(stateFilePath, deploymentState);
+
+  // Hook for testing actions occurring between boundary set and exposure command
+  if (typeof options.onExposureBoundarySet === 'function') {
+    options.onExposureBoundarySet({ deploymentState, dbPath, spawner });
+  }
+
+  logStep('6.2', 'Restarting Nginx to restore external reverse proxy routing...');
   runCommandStrict(spawner, 'sudo', ['systemctl', 'start', 'nginx'], { timeout: 10000 }, 'Start Nginx');
+
+  // Hook for testing simulated post-reopening write before status inspection
+  if (typeof options.onNginxStarted === 'function') {
+    options.onNginxStarted({ deploymentState, dbPath, spawner });
+  }
 
   const nginxVerify = runCommandStrict(spawner, 'systemctl', ['is-active', 'nginx'], { timeout: 5000 }, 'Verify Nginx Active');
   if ((nginxVerify.stdout || '').trim() !== 'active') {
@@ -320,10 +358,10 @@ async function executeDeployment(options = {}) {
 
   deploymentState.trafficReopened = true;
   deploymentState.trafficReopenedAt = new Date().toISOString();
-  fs.writeFileSync(stateFilePath, JSON.stringify(deploymentState, null, 2));
+  writeStateAtomic(stateFilePath, deploymentState);
 
-  logStep('6.1', '✅ Nginx service active: direct origin and reverse proxy routing restored.');
-  logStep('6.2', 'Traffic reopened. Operator can deactivate Cloudflare 503 maintenance page.');
+  logStep('6.3', '✅ Nginx service active: direct origin and reverse proxy routing restored.');
+  logStep('6.4', 'Traffic reopened. Operator can deactivate Cloudflare 503 maintenance page.');
 
   logSection('DEPLOYMENT COMPLETE: RELEASE CANDIDATE SUCCESSFULLY DEPLOYED');
   return { success: true, backupFile, targetCommit, attemptId };
@@ -346,47 +384,74 @@ async function executeRollback(options = {}) {
   console.log(`Target DB:  ${dbPath}`);
   console.log(`Mode:       ${isRehearsal ? 'REHEARSAL (WITH SERVICE ADAPTERS)' : 'PRODUCTION EXECUTION'}`);
 
-  // 1. Verify deployment state and validated backup association
+  // 1. Verify deployment state and validated backup association with strict fail-closed validation
   logStep('R.1', 'Verifying deployment attempt state and validated backup...');
   const stateFilePath = path.join(serverDir, 'active_deployment_state.json');
+
+  if (!fs.existsSync(stateFilePath)) {
+    logFatal('ABORT ROLLBACK: Deployment state file (server/active_deployment_state.json) is missing. Cannot verify traffic exposure boundary or backup association. Halting without database restoration to protect against data loss.');
+    throw new Error('ABORT ROLLBACK: Deployment state file is missing.');
+  }
+
   let state = null;
-
-  if (fs.existsSync(stateFilePath)) {
-    try {
-      state = JSON.parse(fs.readFileSync(stateFilePath, 'utf8'));
-    } catch {}
+  try {
+    const rawState = fs.readFileSync(stateFilePath, 'utf8');
+    state = JSON.parse(rawState);
+  } catch (err) {
+    logFatal(`ABORT ROLLBACK: Deployment state file is malformed JSON or corrupted (${err.message}). Halting without database restoration to protect against data loss.`);
+    throw new Error('ABORT ROLLBACK: Deployment state file is malformed.');
   }
 
-  // Fail-closed check: No validated backup recorded
-  if (!state || !state.backupFile || state.backupValidated !== true) {
-    // Check fallback active_backup_path.env
-    const envFile = path.join(serverDir, 'active_backup_path.env');
-    if (!fs.existsSync(envFile)) {
-      logFatal('ABORT ROLLBACK: No validated backup file recorded. Failure occurred before validated backup existed. Halting without database restoration to protect original database.');
-      throw new Error('ABORT ROLLBACK: No active backup file recorded.');
-    }
+  if (!state || typeof state !== 'object' || !state.attemptId) {
+    logFatal('ABORT ROLLBACK: Deployment state metadata is ambiguous or missing attemptId. Halting without database restoration.');
+    throw new Error('ABORT ROLLBACK: Deployment state metadata is ambiguous.');
+  }
+
+  if (typeof state.backupValidated !== 'boolean') {
+    logFatal('ABORT ROLLBACK: Deployment state backupValidated property is invalid or ambiguous. Halting without database restoration.');
+    throw new Error('ABORT ROLLBACK: Deployment state backupValidated is ambiguous.');
+  }
+
+  if (typeof state.trafficReopened !== 'boolean' || (state.trafficMayReopen !== undefined && typeof state.trafficMayReopen !== 'boolean')) {
+    logFatal('ABORT ROLLBACK: Deployment state traffic reopening properties are invalid or ambiguous. Halting without database restoration.');
+    throw new Error('ABORT ROLLBACK: Deployment state traffic reopening boundary is ambiguous.');
+  }
+
+  // Fail-closed check: No validated backup recorded for this attempt
+  if (state.backupValidated !== true || !state.backupFile) {
+    logFatal('ABORT ROLLBACK: No validated backup file recorded for this deployment attempt. Failure occurred before validated backup existed. Halting without database restoration to protect original database.');
+    throw new Error('ABORT ROLLBACK: No validated backup file recorded for attempt.');
+  }
+
+  // Attempt/Backup Association Validation:
+  const envFile = path.join(serverDir, 'active_backup_path.env');
+  if (fs.existsSync(envFile)) {
     const envContent = fs.readFileSync(envFile, 'utf8');
-    if (!envContent.includes('BACKUP_VALIDATED=true')) {
-      logFatal('ABORT ROLLBACK: Recorded backup was not validated. Halting without database restoration.');
-      throw new Error('ABORT ROLLBACK: Backup was not validated.');
+    const mFile = envContent.match(/BACKUP_FILE=(.+)/);
+    const mAttempt = envContent.match(/ATTEMPT_ID=(.+)/);
+    if (mFile && path.resolve(rootDir, mFile[1].trim()) !== path.resolve(rootDir, state.backupFile)) {
+      logFatal(`ABORT ROLLBACK: Backup association conflict! State records "${state.backupFile}" but active_backup_path.env records "${mFile[1].trim()}". Halting without database restoration.`);
+      throw new Error('ABORT ROLLBACK: Backup association mismatch between state file and environment.');
+    }
+    if (mAttempt && mAttempt[1].trim() !== state.attemptId) {
+      logFatal(`ABORT ROLLBACK: Deployment attempt mismatch! State attemptId "${state.attemptId}" does not match active_backup_path.env attemptId "${mAttempt[1].trim()}". Halting.`);
+      throw new Error('ABORT ROLLBACK: Attempt ID mismatch.');
     }
   }
 
-  // Rollback Boundary Gate: Reject automatic rollback if traffic was already reopened
-  if (state && state.trafficReopened === true) {
+  // Conservative Rollback Boundary Gate:
+  // Reject automatic rollback if traffic was reopened OR if exposure was initiated!
+  const trafficExposed = state.trafficReopened === true || state.trafficMayReopen === true;
+  if (trafficExposed) {
     if (!allowPostReopening) {
-      logFatal(`ABORT ROLLBACK: Automatic restore rejected! Traffic was reopened at ${state.trafficReopenedAt}. Restoring pre-deployment backup would cause data loss of subsequent user transactions. Strict Policy: Post-reopening restoration requires an approved reconciliation plan and explicit flag (--allow-post-reopening-reconciliation).`);
-      throw new Error(`ABORT ROLLBACK: Automatic restore rejected after traffic reopening at ${state.trafficReopenedAt}.`);
+      const ts = state.trafficExposureInitiatedAt || state.trafficReopenedAt || 'unknown';
+      logFatal(`ABORT ROLLBACK: Automatic restore rejected! Traffic exposure boundary was crossed at ${ts}. Restoring pre-deployment backup would cause data loss of subsequent user transactions. Strict Policy: Post-reopening restoration requires an approved reconciliation plan and explicit flag (--allow-post-reopening-reconciliation).`);
+      throw new Error(`ABORT ROLLBACK: Automatic restore rejected after traffic reopening boundary crossed at ${ts}.`);
     }
     logStep('R.1', `⚠️ Post-reopening reconciliation authorized by operator. Proceeding with forensic restore.`);
   }
 
-  const backupFile = (state && state.backupFile) ? state.backupFile : (() => {
-    const envContent = fs.readFileSync(path.join(serverDir, 'active_backup_path.env'), 'utf8');
-    const m = envContent.match(/BACKUP_FILE=(.+)/);
-    return m ? m[1].trim() : null;
-  })();
-
+  const backupFile = state.backupFile;
   if (!backupFile || !fs.existsSync(backupFile)) {
     logFatal(`ABORT ROLLBACK: Validated backup file missing on disk: ${backupFile}`);
     throw new Error(`ABORT ROLLBACK: Backup file missing at ${backupFile}`);
@@ -556,6 +621,12 @@ async function executeRollback(options = {}) {
     logStep('R.11', 'Nginx was inactive prior to deployment. Remaining stopped.');
   }
 
+  // Clear traffic exposure boundary in state file after verified safe restoration
+  state.trafficMayReopen = false;
+  state.trafficReopened = false;
+  state.rolledBackAt = new Date().toISOString();
+  writeStateAtomic(stateFilePath, state);
+
   logSection('ROLLBACK COMPLETE: RESTORED TO PRE-DEPLOYMENT STATE');
   logStep('R.12', 'Traffic remains in maintenance or operator control until explicit verification.');
   return { rollbackComplete: true, restoredRevision: prevRev, databaseRestored: true };
@@ -583,4 +654,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { executeDeployment, executeRollback, runCommandStrict };
+module.exports = { executeDeployment, executeRollback, runCommandStrict, writeStateAtomic };

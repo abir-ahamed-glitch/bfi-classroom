@@ -379,7 +379,7 @@ async function runRehearsals() {
           isRehearsal: true
         });
       } catch (rErr) {
-        if (rErr.message.includes('ABORT ROLLBACK: No active backup file recorded')) {
+        if (rErr.message.includes('No active backup file recorded') || rErr.message.includes('No validated backup file recorded')) {
           rollbackSafelyHalted = true;
           console.log(`   [CAUGHT EXPECTED ROLLBACK ABORT] ${rErr.message}`);
         } else {
