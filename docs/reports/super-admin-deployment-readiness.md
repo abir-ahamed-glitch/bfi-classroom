@@ -4,7 +4,7 @@
 **Candidate Worktree:** `.worktrees/super-admin-integration`  
 **Candidate Branch:** `integration/super-admin-candidate`  
 **Exact Application Code Release Commit SHA:** `21f3cbe7163f924f5b30c172dc1f6542c3c6f4cd`  
-**Hardened Operational Tooling & Runbook HEAD SHA:** `c02d6d90e66c770c0c66fe7a5ea79c73792ee020`  
+**Hardened Operational Tooling & Runbook HEAD SHA:** `5269c78738ef98c9f225da87d25e0a0d922a9c37`  
 **Remote Branch Origin SHA:** `b05e6c06566cbc2e167a5e79fe1d4ae8d03cefac` (Remote publication pending authorization)  
 **Base Commit (Integrated Local Main):** `17d933567c2b39ad2dd47d949564eee1bce2dd66` (Full 11-commit revision gap integrated)  
 **Target Super Admin Account:** ID `1`, `admin@abir` / `k.eye.films@gmail.com`  
