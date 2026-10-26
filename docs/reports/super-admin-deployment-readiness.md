@@ -4,7 +4,7 @@
 **Candidate Worktree:** `.worktrees/super-admin-integration`  
 **Candidate Branch:** `integration/super-admin-candidate`  
 **Exact Application Code Release Commit SHA:** `21f3cbe7163f924f5b30c172dc1f6542c3c6f4cd`  
-**Hardened Operational Tooling & Runbook HEAD SHA:** `854dd0a21f156e481e17622c7e0fa7707cefdded`  
+**Hardened Operational Tooling & Runbook HEAD SHA:** `c02d6d90e66c770c0c66fe7a5ea79c73792ee020`  
 **Remote Branch Origin SHA:** `b05e6c06566cbc2e167a5e79fe1d4ae8d03cefac` (Remote publication pending authorization)  
 **Base Commit (Integrated Local Main):** `17d933567c2b39ad2dd47d949564eee1bce2dd66` (Full 11-commit revision gap integrated)  
 **Target Super Admin Account:** ID `1`, `admin@abir` / `k.eye.films@gmail.com`  
@@ -22,9 +22,9 @@ All local integration, regression testing, deployment safety, rollback hardening
 | **Main Branch Gap Integration** | **PASS** | 11/11 commits from `4d8feb0..17d9335` cleanly merged; Global Search, ETag caching, SWR pagination, N+1 fee context, unread reports preserved. |
 | **Reviewed Application Code** | **PASS** | Commit `21f3cbe` application files (`src/*`, `server/*`) 100% untouched; subsequent commits add operational tooling, runbooks, and test suites only. |
 | **Fail-Closed Isolation Gates** | **PASS** | `scripts/verify_isolation.cjs` validates Nginx systemd status, 0 running processes, 0 listener sockets (80/443), 0 established connections, PM2 state, and port 3001 closure. 16/16 unit test vectors pass (`test_verify_isolation.cjs`). |
-| **Fail-Closed Rollback Runner** | **PASS** | `scripts/production_lifecycle.cjs` validates command execution errors, signals, timeouts, non-zero exits; asserts PM2 online status and curl 200 loopback health before considering Nginx start. 17/17 failure vectors pass (`test_rollback_failures.cjs`). |
+| **Fail-Closed Rollback Runner** | **PASS** | `scripts/production_lifecycle.cjs` validates command execution errors, signals, timeouts, non-zero exits; asserts PM2 online status and curl 200 loopback health before considering Nginx start. 35/35 failure vectors pass (`test_rollback_failures.cjs`). |
 | **Recovery Tooling Survival** | **PASS** | Operational tools preserved in `server/.recovery_tools/` outside tracked tree; survival across real git checkout proven via disposable Git repository rehearsal (`rehearse_git_recovery.cjs`). |
-| **Rollback Boundary Gate** | **PASS** | Stale backup restore automatically rejected if traffic was reopened (`server/active_deployment_state.json`), preventing accidental overwrite of post-reopening user data. |
+| **Rollback Boundary & State Gates** | **PASS** | Conservative `trafficMayReopen` boundary persisted atomically BEFORE exposure commands; missing/malformed state metadata fails closed; stale backup restore strictly blocked if exposure occurred unless explicitly authorized with `--allow-post-reopening-reconciliation`. |
 | **Unified Migration Runner** | **PASS** | `scripts/run_migrations.cjs` built with explicit path support, chronological order, and 10/10 post-migration schema integrity assertions. |
 | **5-Scenario Lifecycle Rehearsal** | **PASS** | 5/5 scenarios pass in `scripts/rehearse_deployment_lifecycle.cjs` (Happy Path, Early Failure, Migration Failure, Smoke Failure, Corrupted Restore). |
 | **Automated Smoke Checks** | **PASS** | `scripts/production_smoke_check.cjs` enforces 5 strict tiers (HTML shell, login validation, profile, SA endpoint, Ord Admin 403). Missing or empty credentials exit nonzero (fail-closed); 32/32 CLI test vectors pass; tokens never printed. |
@@ -377,14 +377,19 @@ test -s scripts/production_smoke_check.cjs
    *Gate:* If `production_smoke_check.cjs` exits with code `1`, **DO NOT REOPEN TRAFFIC**. Trigger Rollback Runbook (Window A).
 
 ### Phase 6: Traffic Reopening Decision Point
-1. **Restore Nginx Ingress Service:**
+1. **Set Conservative Exposure Boundary (Pre-Command Atomic Persistence):**
+   * Persist `trafficMayReopen: true` and `trafficExposureInitiatedAt: <ISO timestamp>` atomically to `server/active_deployment_state.json` **before** executing any exposure command.
+   * *Safety Guarantee:* If starting Nginx or the subsequent status inspection times out, crashes, or fails, automatic stale-backup restoration is permanently locked out to prevent silent overwriting of new user writes.
+2. **Restore Nginx Ingress Service:**
    ```bash
    sudo systemctl start nginx
    sudo systemctl is-active nginx
    ```
-2. **Remove Edge 503 Maintenance Mode:**
+3. **Persist Final Reopening State:**
+   * Atomically persist `trafficReopened: true` and `trafficReopenedAt: <ISO timestamp>` to `server/active_deployment_state.json`.
+4. **Remove Edge 503 Maintenance Mode:**
    * Disable Cloudflare / reverse proxy maintenance mode.
-3. **Monitor PM2 Logs for 15 Minutes:**
+5. **Monitor PM2 Logs for 15 Minutes:**
    ```bash
    pm2 logs bfi-classroom --lines 100
    ```
@@ -394,15 +399,19 @@ test -s scripts/production_smoke_check.cjs
 ## 6. Hardened Production Rollback Runbook & Safety Limits
 
 ### 6.1 Rollback Decision Points & Data Loss Policy
-* **Window A: Maintenance Window (Pre-Traffic Reopening):**
+* **Window A: Maintenance Window (Pre-Traffic Exposure):**
   * If migrations fail, the build fails, or smoke tests fail *before* public traffic is reopened, executing the rollback procedure causes **zero data loss**, because public traffic remained blocked by maintenance mode.
-* **Window B: Live Production (Post-Traffic Reopening):**
-  * **CRITICAL POLICY:** Once public traffic is reopened, restoring a pre-deployment database backup will overwrite and permanently destroy any new user transactions created between traffic reopening and the rollback decision (including student quiz submissions, fees recorded, attendance logs, and community messages).
-  * **Mandatory Rule:** Restoring a stale backup after public traffic has reopened is **strictly forbidden without an approved application data reconciliation plan and explicit operator sign-off**.
+* **Window B: Live Production (Post-Traffic Exposure):**
+  * **CRITICAL POLICY:** Once public traffic exposure begins (`trafficMayReopen: true` or `trafficReopened: true`), restoring a pre-deployment database backup will overwrite and permanently destroy any new user transactions created between traffic reopening and the rollback decision (including student quiz submissions, enrollments, fees recorded, attendance logs, and community messages).
+  * **Fail-Closed Metadata Gates:**
+    * Rollback strictly requires a valid `server/active_deployment_state.json` file.
+    * Missing file, malformed JSON, missing `attemptId`, non-boolean boundary flags, or mismatch with `server/active_backup_path.env` immediately throws a fatal error and halts without touching database files.
+    * Legacy marker files (`active_backup_path.env`) can NEVER bypass state validation.
+  * **Mandatory Rule:** Restoring a stale backup after public traffic has been exposed is **strictly blocked by the rollback engine unless explicitly overridden with `--allow-post-reopening-reconciliation` following an approved data reconciliation plan**.
   * If a defect is identified after reopening traffic:
-    1. Immediately engage 503 maintenance mode (`pm2 stop bfi-classroom`).
+    1. Immediately engage 503 maintenance mode (`sudo systemctl stop nginx` & `pm2 stop bfi-classroom`).
     2. Take a forensic snapshot of the live database (`server/bfi_classroom.db`) and WAL file (`server/bfi_classroom.db-wal`).
-    3. Formulate a custom data reconciliation plan (e.g. selectively dumping rows with `created_at > <reopening_time>` across affected tables).
+    3. Formulate a custom data reconciliation plan (e.g. selectively dumping rows with `created_at > <trafficExposureInitiatedAt>` across affected tables).
     4. Obtain explicit written sign-off from the system operator before executing any database restore.
 
 ### 6.2 Automated Canonical Rollback Runner (Window A - Maintenance Window)
@@ -414,6 +423,9 @@ node scripts/production_lifecycle.cjs rollback
 
 # If git checkout or working tree state removed scripts/, run from preserved recovery tooling:
 node server/.recovery_tools/production_lifecycle.cjs rollback
+
+# If post-reopening forensic restoration is explicitly authorized by operator:
+node scripts/production_lifecycle.cjs rollback --allow-post-reopening-reconciliation
 ```
 
 ### 6.3 Step-by-Step Manual Rollback Runbook (Window A - Maintenance Window)
