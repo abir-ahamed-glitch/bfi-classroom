@@ -2,6 +2,9 @@ import express from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import db from '../db/database.js';
 import { authenticateToken, authLimiter, sanitizeInput, sensitiveEndpointLimiter, generatePasswordResetToken, verifyPasswordResetToken, validatePassword, getClientIp } from '../middleware/auth.js';
 import { getJwtRefreshSecret, getJwtSecret } from '../config/security.js';
@@ -9,6 +12,8 @@ import { sendPasswordResetEmail } from '../utils/email.js';
 import { verifyTotpCode, decryptSecret } from '../utils/totp.js';
 import { securityEvents } from '../utils/security-events.js';
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 const router = express.Router();
 const REFRESH_COOKIE_NAME = 'bfi_refresh_token';
 
@@ -159,28 +164,65 @@ router.post('/login', authLimiter, sanitizeInput, async (req, res) => {
 
   // Cloudflare Turnstile bot verification
   const isTestServer = process.env.NODE_ENV === 'test' || process.env.IS_TEST_SERVER === 'true';
-  const remoteIp = req.socket?.remoteAddress || '';
-  const isDirectLoopback = (remoteIp === '127.0.0.1' || remoteIp === '::1' || remoteIp === '::ffff:127.0.0.1') &&
-    !req.headers['x-forwarded-for'] && !req.headers['cf-connecting-ip'];
-  const turnstileSecret = (isTestServer || isDirectLoopback) ? null : (process.env.CLOUDFLARE_TURNSTILE_SECRET_KEY || process.env.TURNSTILE_SECRET || TURNSTILE_DEFAULT_SECRET);
-  if (turnstileSecret || (isTestServer && (turnstileToken || req.body?.['cf-turnstile-response']))) {
-    const token = turnstileToken || req.body?.['cf-turnstile-response'];
-    if (!token && !isTestServer) {
-      return res.status(400).json({ 
-        error: 'Security verification required. Please complete the Cloudflare security check.',
+  const turnstileSecret = process.env.CLOUDFLARE_TURNSTILE_SECRET_KEY || process.env.TURNSTILE_SECRET || (isTestServer ? null : TURNSTILE_DEFAULT_SECRET);
+
+  let isTurnstileVerified = false;
+
+  // 1. Supported browser flow: Verify submitted Turnstile response token
+  const token = turnstileToken || req.body?.['cf-turnstile-response'];
+  if (token) {
+    const clientIp = getClientIp(req);
+    const isBotCheckPassed = await verifyTurnstileToken(token, clientIp);
+    if (!isBotCheckPassed) {
+      return res.status(403).json({ 
+        error: 'Security verification failed. Please complete the Cloudflare security check again.',
         field: 'turnstile'
       });
     }
-    if (token) {
-      const clientIp = getClientIp(req);
-      const isBotCheckPassed = await verifyTurnstileToken(token, clientIp);
-      if (!isBotCheckPassed) {
-        return res.status(403).json({ 
-          error: 'Security verification failed. Please complete the Cloudflare security check again.',
-          field: 'turnstile'
-        });
+    isTurnstileVerified = true;
+  } else if (isTestServer) {
+    isTurnstileVerified = true;
+  } else {
+    // 2. Separately reviewed, explicitly authorized maintenance-scoped verification
+    // Permitted ONLY on direct loopback, WITHOUT proxy headers, during an active pre-exposure deployment window
+    // with an ephemeral single-use maintenance token matching disk
+    const remoteIp = req.socket?.remoteAddress || '';
+    const isLoopback = remoteIp === '127.0.0.1' || remoteIp === '::1' || remoteIp === '::ffff:127.0.0.1';
+    const hasProxyHeaders = Boolean(req.headers['x-forwarded-for'] || req.headers['cf-connecting-ip'] || req.headers['x-real-ip']);
+    const reqMaintToken = req.headers['x-bfi-maintenance-token'];
+
+    if (isLoopback && !hasProxyHeaders && typeof reqMaintToken === 'string' && reqMaintToken.length >= 32) {
+      try {
+        const maintTokenPath = process.env.MAINTENANCE_TOKEN_PATH || path.resolve(__dirname, '..', '.maintenance_auth_token');
+        const stateFilePath = process.env.DEPLOYMENT_STATE_PATH || path.resolve(__dirname, '..', 'active_deployment_state.json');
+
+        if (fs.existsSync(maintTokenPath) && fs.existsSync(stateFilePath)) {
+          const stat = fs.statSync(maintTokenPath);
+          const isFresh = (Date.now() - stat.mtimeMs) < 15 * 60 * 1000;
+          const expectedToken = fs.readFileSync(maintTokenPath, 'utf8').trim();
+          const deployState = JSON.parse(fs.readFileSync(stateFilePath, 'utf8'));
+
+          // Invariant: Pre-exposure maintenance window only (traffic must not have been exposed)
+          const isUnexposed = deployState.backupValidated === true && deployState.trafficMayReopen !== true && deployState.trafficReopened !== true;
+          if (isFresh && isUnexposed && expectedToken.length === reqMaintToken.length) {
+            const expectedBuf = Buffer.from(expectedToken);
+            const reqBuf = Buffer.from(reqMaintToken);
+            if (crypto.timingSafeEqual(expectedBuf, reqBuf)) {
+              isTurnstileVerified = true;
+            }
+          }
+        }
+      } catch {
+        isTurnstileVerified = false;
       }
     }
+  }
+
+  if (turnstileSecret && !isTurnstileVerified) {
+    return res.status(400).json({ 
+      error: 'Security verification required. Please complete the Cloudflare security check.',
+      field: 'turnstile'
+    });
   }
 
   // Universal rule: Admin usernames MUST start with 'admin@' (or match an existing admin user)

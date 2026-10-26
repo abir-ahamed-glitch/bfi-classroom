@@ -19,6 +19,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const child_process = require('child_process');
 const Database = require('better-sqlite3');
 const { verifyIsolation } = require('./verify_isolation.cjs');
@@ -320,14 +321,20 @@ async function executeDeployment(options = {}) {
   let oaToken = options.adminToken || process.env.ADMIN_TOKEN || (options.isRehearsal && !options.credentialProvider ? 'mock-rehearsal-ord-token' : '');
   let saTokenFile = options.superAdminTokenFile || process.env.SUPER_ADMIN_TOKEN_FILE || '';
   let oaTokenFile = options.adminTokenFile || process.env.ADMIN_TOKEN_FILE || '';
+  const maintTokenFile = path.join(serverDir, '.maintenance_auth_token');
 
   try {
     // 5.3.1 Bounded Credential Handoff
     if ((!saToken && !saTokenFile) || (!oaToken && !oaTokenFile)) {
-      logStep('5.3.1', 'Initiating bounded credential handoff for smoke verification...');
+      logStep('5.3.1', 'Generating ephemeral maintenance token and initiating bounded credential handoff...');
+      const maintenanceAuthToken = crypto.randomBytes(32).toString('hex');
+      fs.writeFileSync(maintTokenFile, maintenanceAuthToken, { mode: 0o600 });
+
       const authResult = await obtainSmokeCredentials({
         baseUrl: options.baseUrl || 'http://127.0.0.1:3001',
         credentialProvider: options.credentialProvider,
+        turnstileToken: options.turnstileToken,
+        maintenanceAuthToken,
         timeoutMs: options.authTimeoutMs || 60000
       });
       saTokenFile = authResult.superAdminTokenFile;
@@ -352,6 +359,13 @@ async function executeDeployment(options = {}) {
     }, 'Production Smoke Check');
     logStep('5.4', '✅ Production smoke verification passed: 18/18 assertions verified.');
   } finally {
+    if (fs.existsSync(maintTokenFile)) {
+      try {
+        const len = fs.statSync(maintTokenFile).size;
+        fs.writeFileSync(maintTokenFile, Buffer.alloc(len, 0));
+        fs.unlinkSync(maintTokenFile);
+      } catch { /* best effort */ }
+    }
     if (smokeAuthCleanup) {
       logStep('5.5', 'Securely zeroing and unlinking temporary smoke credentials...');
       smokeAuthCleanup();

@@ -8,14 +8,16 @@
  * (POST /api/auth/login and POST /api/auth/mfa-verify), identity and role verification
  * (GET /api/auth/me), and protected temporary token file storage (0o600 / 0o700).
  *
- * Security Guarantees:
+ * Security & Lifecycle Guarantees:
  * 1. Zero Secret Echo: Terminal input uses raw mode with zero echoing (no characters, no asterisks).
- * 2. Zero Secret Leaks: Passwords, MFA codes, and JWT access tokens are NEVER printed to stdout, stderr, logs, or chat.
- * 3. Legitimate Auth Only: Obtains tokens exclusively through normal backend endpoints; no synthetic signing or direct DB session manipulation.
+ * 2. Zero Secret Leaks: Passwords, MFA codes, and JWT access tokens are never printed to stdout, stderr, logs, or chat.
+ * 3. Legitimate Auth: Obtains tokens exclusively through normal backend endpoints; no synthetic signing or direct DB session manipulation.
  * 4. Identity & Role Verification: Verifies both Super Admin (ID 1, role: admin, is_super_admin: 1) and Ordinary Admin (ID 7, role: admin, is_super_admin: 0).
- * 5. Protected Temporary Files: Stores tokens in uniquely named temporary files with mode 0o600 inside a directory with mode 0o700.
- * 6. Guaranteed Secure Purge: Registers cleanup handlers on exit, SIGINT, SIGTERM, and unhandled exceptions to zero-fill and unlink all token files.
+ * 5. Protected Temporary Storage: Stores tokens in uniquely named temporary files with mode 0o600 inside a directory with mode 0o700.
+ * 6. Best-Effort Secure Purge: Registers cleanup handlers on exit, SIGINT, SIGTERM, and unhandled exceptions to zero-fill and unlink all token files.
+ *    (Note: Complete memory erasure cannot be guaranteed in garbage-collected JavaScript runtimes, nor can user-space handlers execute after uncatchable terminations such as SIGKILL or power loss).
  * 7. Fail-Closed Recovery: Any timeout, cancellation, or auth failure throws an error to halt the lifecycle and trigger pre-exposure rollback.
+ * 8. Complete Listener Cleanup: Ensures timeout, cancellation, EOF, success, and errors detach all listeners, close readline interfaces, clear timers, and restore terminal raw mode so subsequent input cannot reach expired prompts.
  */
 
 const fs = require('fs');
@@ -89,7 +91,7 @@ function sendJsonRequest(urlStr, options = {}, timeoutMs = 15000) {
   });
 }
 
-// Interactive secret prompt with zero echo (no asterisks, no printing)
+// Interactive secret prompt with zero echo and complete listener cleanup
 function promptSecret(promptText, options = {}) {
   const timeoutMs = options.timeoutMs || 60000;
   const input = options.input || process.stdin;
@@ -98,13 +100,45 @@ function promptSecret(promptText, options = {}) {
   return new Promise((resolve, reject) => {
     let timeoutTimer = null;
     let isCleanedUp = false;
+    let onData = null;
+    let onError = null;
+    let rl = null;
+    let priorRawMode = false;
+
+    if (input.isTTY && typeof input.isRaw === 'boolean') {
+      priorRawMode = input.isRaw;
+    }
 
     function cleanup() {
       if (isCleanedUp) return;
       isCleanedUp = true;
-      if (timeoutTimer) clearTimeout(timeoutTimer);
+
+      if (timeoutTimer) {
+        clearTimeout(timeoutTimer);
+        timeoutTimer = null;
+      }
+
+      if (onData && typeof input.removeListener === 'function') {
+        input.removeListener('data', onData);
+        onData = null;
+      }
+
+      if (onError && typeof input.removeListener === 'function') {
+        input.removeListener('error', onError);
+        onError = null;
+      }
+
+      if (rl) {
+        try {
+          rl.removeAllListeners();
+          rl.close();
+        } catch { /* ignore */ }
+        rl = null;
+      }
+
       if (input.isTTY && typeof input.setRawMode === 'function') {
-        try { input.setRawMode(false); } catch { /* ignore */ }
+        try { input.setRawMode(priorRawMode); } catch { /* ignore */ }
+        try { input.pause(); } catch { /* ignore */ }
       }
     }
 
@@ -129,24 +163,23 @@ function promptSecret(promptText, options = {}) {
 
       let secretBuffer = '';
 
-      const onData = (chunk) => {
+      onData = (chunk) => {
+        if (isCleanedUp) return; // Guard against late invocation
         const str = chunk.toString('utf8');
         for (let i = 0; i < str.length; i++) {
           const char = str[i];
           const code = char.charCodeAt(0);
 
-          // Ctrl+C (ETX)
+          // Ctrl+C (ETX = 3)
           if (code === 3) {
             cleanup();
-            input.removeListener('data', onData);
             output.write('\n');
             return reject(new Error('Credential entry cancelled by operator (Ctrl+C).'));
           }
 
-          // Ctrl+D (EOT)
+          // Ctrl+D (EOT = 4)
           if (code === 4) {
             cleanup();
-            input.removeListener('data', onData);
             output.write('\n');
             if (secretBuffer.length === 0) {
               return reject(new Error('Credential entry received EOF (Ctrl+D).'));
@@ -157,7 +190,6 @@ function promptSecret(promptText, options = {}) {
           // Enter (\r or \n)
           if (code === 13 || code === 10) {
             cleanup();
-            input.removeListener('data', onData);
             output.write('\n');
             return resolve(secretBuffer);
           }
@@ -175,12 +207,19 @@ function promptSecret(promptText, options = {}) {
         }
       };
 
+      onError = (err) => {
+        cleanup();
+        output.write('\n');
+        reject(new Error(`Terminal input error: ${err.message}`));
+      };
+
       input.on('data', onData);
+      input.on('error', onError);
     } else {
-      // Non-interactive / piped fallback (reads single line without echoing)
-      const rl = readline.createInterface({
+      // Non-interactive / piped fallback
+      rl = readline.createInterface({
         input,
-        output: null, // do not echo
+        output: null,
         terminal: false
       });
 
@@ -195,21 +234,40 @@ function promptSecret(promptText, options = {}) {
         output.write('\n');
         reject(new Error('Input stream closed without credential.'));
       });
+
+      onError = (err) => {
+        cleanup();
+        output.write('\n');
+        reject(new Error(`Input stream error: ${err.message}`));
+      };
+      input.on('error', onError);
     }
   });
 }
 
-// Normal application login with MFA support
-async function loginUser({ baseUrl, username, password, mfaCode, mfaRecoveryCode, prompter, timeoutMs = 15000 }) {
+// Normal application login with MFA and maintenance/Turnstile support
+async function loginUser({ baseUrl, username, password, mfaCode, mfaRecoveryCode, turnstileToken, maintenanceAuthToken, prompter, timeoutMs = 15000 }) {
   const loginUrl = `${baseUrl.replace(/\/+$/, '')}/api/auth/login`;
+
+  const headers = {};
+  if (maintenanceAuthToken) {
+    headers['x-bfi-maintenance-token'] = maintenanceAuthToken;
+  }
+
+  const reqBody = {
+    username,
+    password,
+    type: 'admin'
+  };
+
+  if (turnstileToken) {
+    reqBody.turnstileToken = turnstileToken;
+  }
 
   const loginRes = await sendJsonRequest(loginUrl, {
     method: 'POST',
-    body: {
-      username,
-      password,
-      type: 'admin'
-    }
+    headers,
+    body: reqBody
   }, timeoutMs);
 
   if (loginRes.status !== 200) {
@@ -324,13 +382,12 @@ async function verifyAdminIdentity({ baseUrl, token, expectedId, expectedRole = 
   return user;
 }
 
-// Protected temporary token file storage with secure zero-fill cleanup
+// Protected temporary token file storage with best-effort zero-fill cleanup
 function createProtectedTokenStorage({ superAdminToken, adminToken, customDir = null }) {
   const baseDir = customDir || path.join(os.tmpdir(), `bfi_auth_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`);
 
   try {
     fs.mkdirSync(baseDir, { recursive: true, mode: 0o700 });
-    // Enforce 0o700 on POSIX platforms
     try { fs.chmodSync(baseDir, 0o700); } catch { /* ignore on Windows */ }
   } catch (err) {
     throw new Error(`Failed to create protected credential directory '${baseDir}': ${err.message}`);
@@ -351,11 +408,11 @@ function createProtectedTokenStorage({ superAdminToken, adminToken, customDir = 
 
   let cleanedUp = false;
 
+  // Best-effort zero-out and unlink handler
   function cleanup() {
     if (cleanedUp) return;
     cleanedUp = true;
 
-    // Securely zero out file contents before unlinking
     try {
       if (fs.existsSync(superAdminTokenFile)) {
         const len = fs.statSync(superAdminTokenFile).size;
@@ -409,8 +466,9 @@ async function obtainSmokeCredentials(options = {}) {
   const ordinaryAdminUsername = options.ordinaryAdminUsername || 'admin2';
   const timeoutMs = options.timeoutMs || 60000;
   const credentialProvider = options.credentialProvider || null;
+  const maintenanceAuthToken = options.maintenanceAuthToken || null;
+  const turnstileToken = options.turnstileToken || null;
 
-  // Function to prompt or fetch secret
   async function getSecret({ role, username, isMfa, promptText }) {
     if (typeof credentialProvider === 'function') {
       return await credentialProvider({ role, username, isMfa });
@@ -445,6 +503,8 @@ async function obtainSmokeCredentials(options = {}) {
       password: saPassword,
       mfaCode: options.superAdminMfaCode,
       mfaRecoveryCode: options.superAdminMfaRecoveryCode,
+      turnstileToken,
+      maintenanceAuthToken,
       prompter: async ({ username, promptText }) => {
         return await getSecret({
           role: 'super_admin_mfa',
@@ -486,6 +546,8 @@ async function obtainSmokeCredentials(options = {}) {
       password: oaPassword,
       mfaCode: options.ordinaryAdminMfaCode,
       mfaRecoveryCode: options.ordinaryAdminMfaRecoveryCode,
+      turnstileToken,
+      maintenanceAuthToken,
       prompter: async ({ username, promptText }) => {
         return await getSecret({
           role: 'ordinary_admin_mfa',
