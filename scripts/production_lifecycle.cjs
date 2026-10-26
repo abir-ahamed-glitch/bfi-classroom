@@ -138,6 +138,8 @@ async function executeDeployment(options = {}) {
     trafficExposureInitiatedAt: null,
     trafficReopened: false,
     trafficReopenedAt: null,
+    rollbackCompleted: false,
+    rolledBackAt: null,
     nginxInitialState: 'unknown',
     pm2InitialState: 'unknown'
   };
@@ -412,9 +414,25 @@ async function executeRollback(options = {}) {
     throw new Error('ABORT ROLLBACK: Deployment state backupValidated is ambiguous.');
   }
 
-  if (typeof state.trafficReopened !== 'boolean' || (state.trafficMayReopen !== undefined && typeof state.trafficMayReopen !== 'boolean')) {
+  if (typeof state.trafficReopened !== 'boolean' || typeof state.trafficMayReopen !== 'boolean') {
     logFatal('ABORT ROLLBACK: Deployment state traffic reopening properties are invalid or ambiguous. Halting without database restoration.');
     throw new Error('ABORT ROLLBACK: Deployment state traffic reopening boundary is ambiguous.');
+  }
+
+  if (state.rollbackCompleted !== undefined && typeof state.rollbackCompleted !== 'boolean') {
+    logFatal('ABORT ROLLBACK: Deployment state rollbackCompleted property is invalid or ambiguous. Halting without database restoration.');
+    throw new Error('ABORT ROLLBACK: Deployment state rollbackCompleted is ambiguous.');
+  }
+
+  // Terminal Rollback Attempt & Replay Protection Gate:
+  // Reusing a completed rollback's backup for another automatic restoration must be rejected!
+  if (state.rollbackCompleted === true) {
+    if (!allowPostReopening) {
+      const rolledBackAt = state.rolledBackAt || 'unknown';
+      logFatal(`ABORT ROLLBACK: Rollback has already been completed for this deployment attempt at ${rolledBackAt}. Attempt is terminal; reusing its backup for automatic restoration is strictly rejected. Explicit reconciliation requires --allow-post-reopening-reconciliation.`);
+      throw new Error('ABORT ROLLBACK: Rollback attempt is terminal. Automatic restoration rejected.');
+    }
+    logStep('R.1', '⚠️ Explicit post-reopening reconciliation authorized by operator for terminal rollback state.');
   }
 
   // Fail-closed check: No validated backup recorded for this attempt
@@ -610,22 +628,49 @@ async function executeRollback(options = {}) {
   }
 
   if (nginxWasActive) {
+    // CRITICAL: Apply conservative pre-exposure boundary to EVERY operation that can reopen traffic!
+    logStep('R.11.1', 'Setting conservative traffic-may-reopen boundary before rollback Nginx restart...');
+    state.trafficMayReopen = true;
+    state.trafficExposureInitiatedAt = new Date().toISOString();
+    writeStateAtomic(stateFilePath, state);
+
+    // Hook for testing actions occurring between boundary set and exposure command
+    if (typeof options.onRollbackExposureBoundarySet === 'function') {
+      options.onRollbackExposureBoundarySet({ state, dbPath, spawner });
+    }
+
+    logStep('R.11.2', 'Restarting Nginx to restore external reverse proxy routing...');
     runCommandStrict(spawner, 'sudo', ['systemctl', 'start', 'nginx'], { timeout: 10000 }, 'Restore Nginx State');
+
+    if (typeof options.onRollbackNginxStarted === 'function') {
+      options.onRollbackNginxStarted({ state, dbPath, spawner });
+    }
+
     const nginxVerify = runCommandStrict(spawner, 'systemctl', ['is-active', 'nginx'], { timeout: 5000 }, 'Verify Nginx Restored');
     if ((nginxVerify.stdout || '').trim() !== 'active') {
       logFatal(`Nginx failed to report active status upon restoration: ${nginxVerify.stdout}`);
       throw new Error('Nginx not active after rollback restore');
     }
+
+    logStep('R.11.3', 'Persisting traffic-reopened state to deployment state file...');
+    state.trafficReopened = true;
+    state.trafficReopenedAt = new Date().toISOString();
+    writeStateAtomic(stateFilePath, state);
     logStep('R.11', '✅ Nginx restored to active service.');
   } else {
     logStep('R.11', 'Nginx was inactive prior to deployment. Remaining stopped.');
   }
 
-  // Clear traffic exposure boundary in state file after verified safe restoration
-  state.trafficMayReopen = false;
-  state.trafficReopened = false;
+  // Terminal state: Record rollback completion separately from traffic exposure.
+  // NEVER clear trafficMayReopen or trafficReopened flags!
+  state.rollbackCompleted = true;
   state.rolledBackAt = new Date().toISOString();
   writeStateAtomic(stateFilePath, state);
+
+  // Update active_backup_path.env for forensic retention without authorizing automatic restore
+  if (fs.existsSync(envFile)) {
+    fs.appendFileSync(envFile, `ROLLBACK_COMPLETED=true\nROLLED_BACK_AT=${state.rolledBackAt}\n`);
+  }
 
   logSection('ROLLBACK COMPLETE: RESTORED TO PRE-DEPLOYMENT STATE');
   logStep('R.12', 'Traffic remains in maintenance or operator control until explicit verification.');

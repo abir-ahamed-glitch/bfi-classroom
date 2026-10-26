@@ -98,6 +98,8 @@ function setupTestEnv() {
     trafficExposureInitiatedAt: null,
     trafficReopened: false,
     trafficReopenedAt: null,
+    rollbackCompleted: false,
+    rolledBackAt: null,
     nginxInitialState: 'active',
     pm2InitialState: 'online'
   };
@@ -782,6 +784,245 @@ async function runTests() {
     }
     assert('Vector 14d: Backup file mismatch between state and env fails closed', threw14d);
 
+    cleanTestEnv();
+  }
+
+  // Vector 15: Rollback replay protection & post-rollback write preservation
+  {
+    const env = setupTestEnv();
+    const tracker = createTrackingSpawner();
+
+    // 15.1 First rollback runs and successfully completes
+    const res1 = await executeRollback({
+      rootDir: env.rootDir,
+      databasePath: 'server/bfi_classroom.db',
+      spawner: tracker.spawner,
+      isRehearsal: true
+    });
+    assert('Vector 15.1: First rollback completes successfully', res1.rollbackComplete === true);
+
+    // 15.2 State file verification: rollbackCompleted is true, exposure flags remain true (NOT cleared)
+    const stateFile = path.join(env.serverDir, 'active_deployment_state.json');
+    const stateAfter1 = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    assert('Vector 15.2: State records rollbackCompleted=true', stateAfter1.rollbackCompleted === true);
+    assert('Vector 15.3: State preserves trafficMayReopen=true after Nginx restart (not cleared)', stateAfter1.trafficMayReopen === true);
+    assert('Vector 15.4: State preserves trafficReopened=true after Nginx restart (not cleared)', stateAfter1.trafficReopened === true);
+
+    // 15.3 Public traffic arrives post-rollback and writes to the database
+    const wDb = new Database(env.dbPath);
+    wDb.exec("INSERT INTO student_course_enrollments (id) VALUES (888);");
+    wDb.close();
+
+    const chkDb1 = new Database(env.dbPath, { readonly: true });
+    const count1 = chkDb1.prepare('SELECT count(*) as c FROM student_course_enrollments WHERE id = 888').get().c;
+    chkDb1.close();
+    assert('Vector 15.5: Post-rollback user write (id=888) is present in DB', count1 === 1);
+
+    // 15.4 A second ordinary rollback is attempted without explicit reconciliation flag
+    const tracker2 = createTrackingSpawner();
+    let secondThrew = false;
+    let secondErr = '';
+    try {
+      await executeRollback({
+        rootDir: env.rootDir,
+        databasePath: 'server/bfi_classroom.db',
+        spawner: tracker2.spawner,
+        isRehearsal: true
+      });
+    } catch (err) {
+      secondThrew = true;
+      secondErr = err.message;
+    }
+
+    assert('Vector 15.6: Second ordinary rollback is rejected before touching database files', secondThrew);
+    assert('Vector 15.7: Error indicates terminal rollback attempt', secondErr.includes('Rollback attempt is terminal'));
+    assert('Vector 15.8: Zero destructive commands executed during rejected second rollback', tracker2.executed.length === 0);
+
+    // 15.5 Post-rollback write is completely preserved
+    const chkDb2 = new Database(env.dbPath, { readonly: true });
+    const count2 = chkDb2.prepare('SELECT count(*) as c FROM student_course_enrollments WHERE id = 888').get().c;
+    chkDb2.close();
+    assert('Vector 15.9: Post-rollback user write (id=888) remains strictly INTACT after second rollback attempt', count2 === 1);
+
+    // 15.6 Explicit reconciliation path remains available with --allow-post-reopening-reconciliation
+    let authSecondPassed = false;
+    try {
+      const res2 = await executeRollback({
+        rootDir: env.rootDir,
+        databasePath: 'server/bfi_classroom.db',
+        spawner: tracker2.spawner,
+        isRehearsal: true,
+        allowPostReopeningReconciliation: true
+      });
+      authSecondPassed = res2.rollbackComplete === true;
+    } catch (err) {
+      authSecondPassed = false;
+    }
+    assert('Vector 15.10: Explicit reconciliation succeeds when --allow-post-reopening-reconciliation is provided', authSecondPassed);
+
+    cleanTestEnv();
+  }
+
+  // Vector 16: Interruption, timeout, or failure around rollback Nginx restart
+  {
+    // 16a: Interruption/crash around rollback exposure boundary
+    const env16a = setupTestEnv();
+    const tracker16a = createTrackingSpawner();
+    let rollbackThrew16a = false;
+
+    try {
+      await executeRollback({
+        rootDir: env16a.rootDir,
+        databasePath: 'server/bfi_classroom.db',
+        spawner: tracker16a.spawner,
+        isRehearsal: true,
+        onRollbackExposureBoundarySet: () => {
+          throw new Error('SIMULATED_ROLLBACK_CRASH_AT_BOUNDARY');
+        }
+      });
+    } catch (err) {
+      rollbackThrew16a = true;
+    }
+
+    assert('Vector 16a.1: Rollback halts when crash occurs at exposure boundary', rollbackThrew16a);
+
+    // Verify boundary was persisted atomically before crash
+    const stateFile16a = path.join(env16a.serverDir, 'active_deployment_state.json');
+    const state16a = JSON.parse(fs.readFileSync(stateFile16a, 'utf8'));
+    assert('Vector 16a.2: State persisted trafficMayReopen=true before rollback crash', state16a.trafficMayReopen === true);
+
+    // Subsequent ordinary rollback must be rejected!
+    let nextRollbackThrew16a = false;
+    try {
+      await executeRollback({
+        rootDir: env16a.rootDir,
+        databasePath: 'server/bfi_classroom.db',
+        spawner: tracker16a.spawner,
+        isRehearsal: true
+      });
+    } catch (err) {
+      nextRollbackThrew16a = true;
+    }
+    assert('Vector 16a.3: Subsequent ordinary rollback is rejected after crash at exposure boundary', nextRollbackThrew16a);
+    cleanTestEnv();
+
+    // 16b: Timeout during rollback Nginx start
+    const env16b = setupTestEnv();
+    const tracker16b = createTrackingSpawner('nginx_start_timeout');
+    let rollbackThrew16b = false;
+
+    try {
+      await executeRollback({
+        rootDir: env16b.rootDir,
+        databasePath: 'server/bfi_classroom.db',
+        spawner: tracker16b.spawner,
+        isRehearsal: true
+      });
+    } catch (err) {
+      rollbackThrew16b = true;
+    }
+
+    assert('Vector 16b.1: Rollback halts on Nginx start timeout', rollbackThrew16b);
+
+    const stateFile16b = path.join(env16b.serverDir, 'active_deployment_state.json');
+    const state16b = JSON.parse(fs.readFileSync(stateFile16b, 'utf8'));
+    assert('Vector 16b.2: State persisted trafficMayReopen=true before start timeout in rollback', state16b.trafficMayReopen === true);
+
+    let nextRollbackThrew16b = false;
+    try {
+      await executeRollback({
+        rootDir: env16b.rootDir,
+        databasePath: 'server/bfi_classroom.db',
+        spawner: tracker16b.spawner,
+        isRehearsal: true
+      });
+    } catch (err) {
+      nextRollbackThrew16b = true;
+    }
+    assert('Vector 16b.3: Subsequent ordinary rollback is rejected after start timeout in rollback', nextRollbackThrew16b);
+    cleanTestEnv();
+
+    // 16c: Nginx start succeeds in rollback but status verification fails, write preserved
+    const env16c = setupTestEnv();
+    const tracker16c = createTrackingSpawner('nginx_verify_after_start');
+    let rollbackThrew16c = false;
+    let writeExecuted16c = false;
+
+    try {
+      await executeRollback({
+        rootDir: env16c.rootDir,
+        databasePath: 'server/bfi_classroom.db',
+        spawner: tracker16c.spawner,
+        isRehearsal: true,
+        onRollbackNginxStarted: ({ dbPath }) => {
+          // Public traffic arrives over active Nginx and writes to DB
+          const wDb = new Database(dbPath);
+          wDb.exec("INSERT INTO student_course_enrollments (id) VALUES (777);");
+          wDb.close();
+          writeExecuted16c = true;
+        }
+      });
+    } catch (err) {
+      rollbackThrew16c = true;
+    }
+
+    assert('Vector 16c.1: Rollback halts on failed Nginx verification after start', rollbackThrew16c);
+    assert('Vector 16c.2: Post-start user write was executed', writeExecuted16c);
+
+    const stateFile16c = path.join(env16c.serverDir, 'active_deployment_state.json');
+    const state16c = JSON.parse(fs.readFileSync(stateFile16c, 'utf8'));
+    assert('Vector 16c.3: State persisted trafficMayReopen=true before rollback start', state16c.trafficMayReopen === true);
+
+    let nextRollbackThrew16c = false;
+    try {
+      await executeRollback({
+        rootDir: env16c.rootDir,
+        databasePath: 'server/bfi_classroom.db',
+        spawner: tracker16c.spawner,
+        isRehearsal: true
+      });
+    } catch (err) {
+      nextRollbackThrew16c = true;
+    }
+    assert('Vector 16c.4: Subsequent ordinary rollback is rejected', nextRollbackThrew16c);
+
+    const chkDb16c = new Database(env16c.dbPath, { readonly: true });
+    const count16c = chkDb16c.prepare('SELECT count(*) as c FROM student_course_enrollments WHERE id = 777').get().c;
+    chkDb16c.close();
+    assert('Vector 16c.5: Post-exposure user write (id=777) is strictly PRESERVED', count16c === 1);
+    cleanTestEnv();
+  }
+
+  // Vector 17: Additional fail-closed metadata checks
+  {
+    // 17a: Non-boolean trafficMayReopen
+    const env = setupTestEnv();
+    const tracker = createTrackingSpawner();
+    const stateFile = path.join(env.serverDir, 'active_deployment_state.json');
+    const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    state.trafficMayReopen = 'true_string';
+    fs.writeFileSync(stateFile, JSON.stringify(state));
+
+    let threw17a = false;
+    try {
+      await executeRollback({ rootDir: env.rootDir, databasePath: 'server/bfi_classroom.db', spawner: tracker.spawner, isRehearsal: true });
+    } catch (err) {
+      threw17a = err.message.includes('traffic reopening boundary is ambiguous');
+    }
+    assert('Vector 17a: Non-boolean trafficMayReopen fails closed', threw17a);
+
+    // 17b: Non-boolean rollbackCompleted
+    state.trafficMayReopen = false;
+    state.rollbackCompleted = 'finished';
+    fs.writeFileSync(stateFile, JSON.stringify(state));
+
+    let threw17b = false;
+    try {
+      await executeRollback({ rootDir: env.rootDir, databasePath: 'server/bfi_classroom.db', spawner: tracker.spawner, isRehearsal: true });
+    } catch (err) {
+      threw17b = err.message.includes('rollbackCompleted is ambiguous');
+    }
+    assert('Vector 17b: Non-boolean rollbackCompleted fails closed', threw17b);
     cleanTestEnv();
   }
 

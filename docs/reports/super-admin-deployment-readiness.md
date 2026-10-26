@@ -22,9 +22,9 @@ All local integration, regression testing, deployment safety, rollback hardening
 | **Main Branch Gap Integration** | **PASS** | 11/11 commits from `4d8feb0..17d9335` cleanly merged; Global Search, ETag caching, SWR pagination, N+1 fee context, unread reports preserved. |
 | **Reviewed Application Code** | **PASS** | Commit `21f3cbe` application files (`src/*`, `server/*`) 100% untouched; subsequent commits add operational tooling, runbooks, and test suites only. |
 | **Fail-Closed Isolation Gates** | **PASS** | `scripts/verify_isolation.cjs` validates Nginx systemd status, 0 running processes, 0 listener sockets (80/443), 0 established connections, PM2 state, and port 3001 closure. 16/16 unit test vectors pass (`test_verify_isolation.cjs`). |
-| **Fail-Closed Rollback Runner** | **PASS** | `scripts/production_lifecycle.cjs` validates command execution errors, signals, timeouts, non-zero exits; asserts PM2 online status and curl 200 loopback health before considering Nginx start. 35/35 failure vectors pass (`test_rollback_failures.cjs`). |
+| **Fail-Closed Rollback Runner** | **PASS** | `scripts/production_lifecycle.cjs` validates command execution errors, signals, timeouts, non-zero exits; asserts PM2 online status and curl 200 loopback health before considering Nginx start. 58/58 failure vectors pass (`test_rollback_failures.cjs`). |
 | **Recovery Tooling Survival** | **PASS** | Operational tools preserved in `server/.recovery_tools/` outside tracked tree; survival across real git checkout proven via disposable Git repository rehearsal (`rehearse_git_recovery.cjs`). |
-| **Rollback Boundary & State Gates** | **PASS** | Conservative `trafficMayReopen` boundary persisted atomically BEFORE exposure commands; missing/malformed state metadata fails closed; stale backup restore strictly blocked if exposure occurred unless explicitly authorized with `--allow-post-reopening-reconciliation`. |
+| **Rollback Boundary & Replay Gates** | **PASS** | Conservative `trafficMayReopen` boundary persisted atomically BEFORE exposure commands in both deploy and rollback; exposure flags never cleared; completed rollbacks marked terminal with replay protection against stale restore; missing/malformed state metadata fails closed. |
 | **Unified Migration Runner** | **PASS** | `scripts/run_migrations.cjs` built with explicit path support, chronological order, and 10/10 post-migration schema integrity assertions. |
 | **5-Scenario Lifecycle Rehearsal** | **PASS** | 5/5 scenarios pass in `scripts/rehearse_deployment_lifecycle.cjs` (Happy Path, Early Failure, Migration Failure, Smoke Failure, Corrupted Restore). |
 | **Automated Smoke Checks** | **PASS** | `scripts/production_smoke_check.cjs` enforces 5 strict tiers (HTML shell, login validation, profile, SA endpoint, Ord Admin 403). Missing or empty credentials exit nonzero (fail-closed); 32/32 CLI test vectors pass; tokens never printed. |
@@ -401,13 +401,18 @@ test -s scripts/production_smoke_check.cjs
 ### 6.1 Rollback Decision Points & Data Loss Policy
 * **Window A: Maintenance Window (Pre-Traffic Exposure):**
   * If migrations fail, the build fails, or smoke tests fail *before* public traffic is reopened, executing the rollback procedure causes **zero data loss**, because public traffic remained blocked by maintenance mode.
-* **Window B: Live Production (Post-Traffic Exposure):**
+* **Window B: Live Production (Post-Traffic Exposure & Post-Rollback Replay Protection):**
   * **CRITICAL POLICY:** Once public traffic exposure begins (`trafficMayReopen: true` or `trafficReopened: true`), restoring a pre-deployment database backup will overwrite and permanently destroy any new user transactions created between traffic reopening and the rollback decision (including student quiz submissions, enrollments, fees recorded, attendance logs, and community messages).
+  * **Terminal Rollback & Replay Protection:**
+    * When rollback completes and restores Nginx, exposure flags (`trafficMayReopen`, `trafficReopened`) are **never cleared**.
+    * The rollback attempt is recorded as terminal (`rollbackCompleted: true`, `rolledBackAt: <ISO timestamp>`).
+    * Reusing a completed rollback's backup for a second automatic restoration is **strictly rejected in Phase R.1 before touching database files**, protecting any writes made after rollback reopened traffic.
+    * Retained forensic markers (`active_backup_path.env`) record rollback completion timestamps for forensic audit without granting authorization for automatic restoration.
   * **Fail-Closed Metadata Gates:**
     * Rollback strictly requires a valid `server/active_deployment_state.json` file.
-    * Missing file, malformed JSON, missing `attemptId`, non-boolean boundary flags, or mismatch with `server/active_backup_path.env` immediately throws a fatal error and halts without touching database files.
+    * Missing file, malformed JSON, missing `attemptId`, non-boolean boundary or rollback flags, or mismatch with `server/active_backup_path.env` immediately throws a fatal error and halts without touching database files.
     * Legacy marker files (`active_backup_path.env`) can NEVER bypass state validation.
-  * **Mandatory Rule:** Restoring a stale backup after public traffic has been exposed is **strictly blocked by the rollback engine unless explicitly overridden with `--allow-post-reopening-reconciliation` following an approved data reconciliation plan**.
+  * **Mandatory Rule:** Restoring a stale backup after public traffic has been exposed or after a prior rollback has completed is **strictly blocked by the rollback engine unless explicitly overridden with `--allow-post-reopening-reconciliation` following an approved data reconciliation plan**.
   * If a defect is identified after reopening traffic:
     1. Immediately engage 503 maintenance mode (`sudo systemctl stop nginx` & `pm2 stop bfi-classroom`).
     2. Take a forensic snapshot of the live database (`server/bfi_classroom.db`) and WAL file (`server/bfi_classroom.db-wal`).

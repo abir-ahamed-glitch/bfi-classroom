@@ -362,15 +362,18 @@ async function runRealGitRehearsal() {
   }
   console.log('✅ DATABASE RESTORATION VERIFIED: Exactly matches pre-deployment baseline with 0 FK errors.');
 
-  // Check 5: Verify Active Deployment State
+  // Check 5: Verify Active Deployment State & Terminal Rollback Flag
   const stateFile = path.join(rootDir, 'server', 'active_deployment_state.json');
   if (fs.existsSync(stateFile)) {
     const st = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
-    if (st.trafficReopened === true) {
-      throw new Error('Traffic reopening state was marked true despite rollback failure!');
+    if (st.rollbackCompleted !== true) {
+      throw new Error('Rollback completion was not recorded in state metadata!');
+    }
+    if (st.trafficReopened !== true || st.trafficMayReopen !== true) {
+      throw new Error('Traffic exposure flags were improperly cleared after Nginx restoration!');
     }
   }
-  console.log('✅ TRAFFIC STATE VERIFIED: Traffic remained closed throughout rollback.');
+  console.log('✅ TRAFFIC & ROLLBACK STATE VERIFIED: Rollback completed terminally; traffic exposure flags preserved.');
 
   console.log('\n================================================================');
   console.log('REAL GIT RECOVERY REHEARSAL PASSED (100% VERIFIED)');
