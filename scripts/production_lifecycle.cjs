@@ -430,7 +430,7 @@ async function executeDeployment(options = {}) {
         turnstileToken: options.turnstileToken,
         superAdminMaintenanceToken: saMaintenanceToken,
         ordinaryAdminMaintenanceToken: oaMaintenanceToken,
-        timeoutMs: options.authTimeoutMs || 60000
+        timeoutMs: options.authTimeoutMs || 600000 // 10 minutes default for accessible human interaction
       });
       saTokenFile = authResult.superAdminTokenFile;
       oaTokenFile = authResult.adminTokenFile;

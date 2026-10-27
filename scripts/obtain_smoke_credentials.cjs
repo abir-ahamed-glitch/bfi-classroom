@@ -93,7 +93,7 @@ function sendJsonRequest(urlStr, options = {}, timeoutMs = 15000) {
 
 // Interactive secret prompt with zero echo and complete listener cleanup
 function promptSecret(promptText, options = {}) {
-  const timeoutMs = options.timeoutMs || 60000;
+  const timeoutMs = options.timeoutMs || 600000; // 10 minutes default for accessible human interaction
   const input = options.input || process.stdin;
   const output = options.output || process.stderr;
 
@@ -464,7 +464,7 @@ async function obtainSmokeCredentials(options = {}) {
   const baseUrl = options.baseUrl || 'http://127.0.0.1:3001';
   const superAdminUsername = options.superAdminUsername || 'admin@abir';
   const ordinaryAdminUsername = options.ordinaryAdminUsername || 'admin2';
-  const timeoutMs = options.timeoutMs || 60000;
+  const timeoutMs = options.timeoutMs || 600000; // 10 minutes default for accessible human interaction
   const credentialProvider = options.credentialProvider || null;
   const maintenanceAuthToken = options.maintenanceAuthToken || null;
   const superAdminMaintenanceToken = options.superAdminMaintenanceToken || maintenanceAuthToken;

@@ -668,3 +668,18 @@ Independent queries executed on `bfi-classroom-server` confirm zero modification
 * **Traffic Exposure**: Zero exposure (`trafficMayReopen: false`, `trafficReopened: false`).
 * **Service Recovery**: PM2 PID 53059 online, Nginx active, `https://classroom.bfibd.org/bfi-classroom/` returns HTTP 200 OK.
 
+### 7.5 Human Pacing & Runtime Dependency Enhancements (Attempt `deploy_1793115821130`)
+* **Attempt Chronology**:
+  - Phase 1 (Lockdown & Isolation): Passed cleanly with corrected `ss` arguments.
+  - Phase 2 (Dynamic Baseline & SQLite Backup): Passed (`bfi_classroom_preflight_20261027154348.db` validated).
+  - Phase 3 (Git Checkout & Production Build): Passed cleanly on target release.
+  - Phase 4 (Migrations): Passed (10/10 schema assertions verified).
+  - Phase 5 (Internal Backend Startup): Passed on loopback `127.0.0.1:3001`.
+  - Phase 5.3 (Credential Handoff): Security timer of 60 seconds timed out fail-closed before human secret entry was completed.
+* **Pre-Exposure Recovery**:
+  - Executed canonical rollback: restored validated backup `bfi_classroom_preflight_20261027154348.db`, verified invariants (users=1786, batches=81, enrollments=913, fees=27, `is_super_admin: false`), restored checkout to `0c71163495e58a51f1709272ec55d99a31251ec3`, and restored PM2 + Nginx. Public endpoint verified 200 OK.
+* **Hardening Improvements Applied**:
+  1. **Accessible Human Input Timeout**: Increased credential handoff timeout from 60 seconds to **10 minutes (600,000 ms)** in `scripts/obtain_smoke_credentials.cjs` and `scripts/production_lifecycle.cjs` to comfortably support human operators, password managers, and multi-factor authentication devices.
+  2. **Runtime Dependency Placement**: Moved `docx` from `devDependencies` to `dependencies` in `package.json` to prevent runtime export degradation during production `npm prune --omit=dev`.
+
+
