@@ -123,7 +123,7 @@ function setupDisposableEnvironment() {
   db.close();
 
   // Create pre-deployment revision record
-  fs.writeFileSync(path.join(REHEARSAL_DIR, 'server', 'pre_deployment_revision.txt'), '17d933567c2b39ad2dd47d949564eee1bce2dd66\n');
+  fs.writeFileSync(path.join(REHEARSAL_DIR, 'server', 'pre_deployment_revision.txt'), '0c71163495e58a51f1709272ec55d99a31251ec3\n');
 
   return { rootDir: REHEARSAL_DIR, dbPath };
 }
@@ -244,7 +244,7 @@ function createServiceAdapter(options = {}) {
 
     if (cmd === 'git') {
       if (args[0] === 'rev-parse' && args[1] === 'HEAD') {
-        return { status: 0, stdout: '17d933567c2b39ad2dd47d949564eee1bce2dd66\n', stderr: '', error: null };
+        return { status: 0, stdout: '0c71163495e58a51f1709272ec55d99a31251ec3\n', stderr: '', error: null };
       }
       if (args[0] === 'checkout') {
         return { status: 0, stdout: `Switched to branch '${args[1]}'\n`, stderr: '', error: null };

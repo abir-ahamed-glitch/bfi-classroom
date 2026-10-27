@@ -5,7 +5,7 @@
  * Rehearses operational-script survival and fail-closed rollback in a REAL disposable Git repository.
  *
  * Proves:
- * 1. Commit A (baseline, representing 17d9335) has NO production_lifecycle.cjs or verify_isolation.cjs.
+ * 1. Commit A (baseline, representing production baseline 0c71163) has NO production_lifecycle.cjs or verify_isolation.cjs.
  * 2. Commit B (candidate release) contains the operational scripts.
  * 3. Deployment preserves recovery tooling in `server/.recovery_tools/` before any git mutations.
  * 4. A mid-deployment failure at Phase 5 triggers real `git checkout <Commit A>` during rollback.
