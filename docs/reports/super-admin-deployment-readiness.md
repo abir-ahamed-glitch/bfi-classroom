@@ -3,10 +3,12 @@
 **Prepared Date:** October 26, 2026  
 **Candidate Worktree:** `.worktrees/super-admin-integration`  
 **Candidate Branch:** `integration/super-admin-candidate`  
-**Exact Application Code Release Commit SHA:** `21f3cbe7163f924f5b30c172dc1f6542c3c6f4cd`  
-**Hardened Operational Tooling & Security Enforcement SHA:** `74310881f60dcfb70b3e111875e31e202591ae2f`  
+**Exact Application Code Release Commit SHA:** `21f3cbe7163f924f5b30c172dc1f6542c3c6f4cd` (with production branding from `0c71163495e58a51f1709272ec55d99a31251ec3`)  
+**Hardened Operational Tooling & Security Enforcement SHA:** `841106d38d3ed7ed9ddfe67790616feaf4a0e7c7`  
+**Branding Integration Merge Commit SHA:** `7dbd7a43a1a14fe9fe4a3a4f3e84d3cb40a88c37`  
 **Previously Published Remote Branch Origin HEAD:** `5903458cb9ca69da67518b568fc5aecbe9b9eda0` (Published to origin/integration/super-admin-candidate)  
-**Base Commit (Integrated Local Main):** `17d933567c2b39ad2dd47d949564eee1bce2dd66` (Full 11-commit revision gap integrated)  
+**Base Commit (Integrated origin/main):** `0c71163495e58a51f1709272ec55d99a31251ec3` (Full 12-commit revision gap integrated)  
+**Expected Live Production Host Revision:** `0c71163495e58a51f1709272ec55d99a31251ec3` (Verified online via SSH, PM2 PID 34952)  
 **Target Super Admin Account:** ID `1`, `admin@abir` / `k.eye.films@gmail.com`  
 **Production Host:** `bfi-classroom-server` (`129.221.243.153`, Ubuntu 22.04 LTS aarch64)  
 **Root Database SHA-256 (Pristine):** `BF37A89C3F0DA1038E2E9A8FA18916D9A2986541A062C9AB40EE51E4987F5F1E`  
@@ -19,8 +21,8 @@ All local integration, regression testing, deployment safety, rollback hardening
 
 | Category | Status | Details |
 | :--- | :---: | :--- |
-| **Main Branch Gap Integration** | **PASS** | 11/11 commits from `4d8feb0..17d9335` cleanly merged; Global Search, ETag caching, SWR pagination, N+1 fee context, unread reports preserved. |
-| **Reviewed Application Code** | **PASS** | Commit `21f3cbe` application files (`src/*`, `server/*`) 100% untouched; subsequent commits add operational tooling, runbooks, and test suites only. |
+| **Main Branch Gap Integration** | **PASS** | 12/12 commits from `4d8feb0..0c71163` cleanly merged; Global Search, ETag caching, SWR pagination, N+1 fee context, unread reports, and production branding squircle favicons preserved. |
+| **Reviewed Application & Branding Code** | **PASS** | Commit `21f3cbe` application files (`src/*`, `server/*`) preserved with verified Super Admin RBAC; 4 production branding assets (`index.html`, `public/apple-touch-icon.png`, `public/favicon.png`, `public/favicon.svg`) integrated byte-for-byte from `0c71163`. |
 | **Fail-Closed Isolation Gates** | **PASS** | `scripts/verify_isolation.cjs` validates Nginx systemd status, 0 running processes, 0 listener sockets (80/443), 0 established connections, PM2 state, and port 3001 closure. 16/16 unit test vectors pass (`test_verify_isolation.cjs`). |
 | **Fail-Closed Rollback Runner** | **PASS** | `scripts/production_lifecycle.cjs` validates command execution errors, signals, timeouts, non-zero exits; asserts PM2 online status and curl 200 loopback health before considering Nginx start. 58/58 failure vectors pass (`test_rollback_failures.cjs`). |
 | **Recovery Tooling Survival** | **PASS** | Operational tools preserved in `server/.recovery_tools/` outside tracked tree; survival across real git checkout proven via disposable Git repository rehearsal (`rehearse_git_recovery.cjs`). |
@@ -31,7 +33,7 @@ All local integration, regression testing, deployment safety, rollback hardening
 | **6-Scenario Lifecycle Rehearsal** | **PASS** | 6/6 scenarios pass in `scripts/rehearse_deployment_lifecycle.cjs` (Happy Path, Early Failure, Migration Failure, Smoke Failure, Corrupted Restore, Credential Handoff & Purge). |
 | **Automated Smoke Checks** | **PASS** | `scripts/production_smoke_check.cjs` enforces 5 strict tiers (HTML shell, login validation, profile, SA endpoint, Ord Admin 403). Missing or empty credentials exit nonzero (fail-closed); 32/32 CLI test vectors pass; tokens never printed. |
 | **Automated Test Regression** | **PASS** | **263 / 263 Automated Tests Passing** (123/123 Playwright specs, 28/28 credential handoff & auth route tests, 58/58 rollback vectors, 32/32 smoke CLI vectors, 16/16 isolation vectors, 6/6 rehearsal scenarios). |
-| **Code Quality & Build** | **PASS** | **0 ESLint Errors** (168 warnings); clean production Vite build (`dist/index.html` & `dist/404.html` generated in 1.11s). |
+| **Code Quality & Build** | **PASS** | **0 ESLint Errors** (168 warnings); clean production Vite build in 1.21s (`dist/index.html` & `dist/404.html` reference `/bfi-classroom/favicon.png` & apple-touch-icon; branding assets bundled in `dist/`). |
 | **Pristine Root Database** | **PASS** | Root database SHA-256 verified unchanged (`BF37A89C...5F1E`). |
 | **Live Host Read-Only Inspection** | **VERIFIED** | Ubuntu 22.04 aarch64, Node v22.23.4, PM2 v7.1.0, 91GB disk available, Nginx proxy active, `lsof`/`fuser` available. |
 | **Edge Maintenance Mode Bypass** | **UNVERIFIED** | Edge Cloudflare/proxy 503 maintenance bypass rule must be verified by the system operator before maintenance window. |
@@ -40,7 +42,7 @@ All local integration, regression testing, deployment safety, rollback hardening
 
 ## 2. Integrated Code Gap & File Inventory
 
-### 2.1 The 11 Integrated Commits from Local `main` (`4d8feb0..17d933567c2b39ad2dd47d949564eee1bce2dd66`)
+### 2.1 The 12 Integrated Commits from origin/main (`4d8feb0..0c71163495e58a51f1709272ec55d99a31251ec3`)
 1. `17ed3b7` fix(dashboard): resolve incomplete film thumbnail on mobile view and enforce hover rules
 2. `7a7911c` feat(settings): add real-time search filter for all setting sections
 3. `f0bc58e` feat(navigation): add top-left professional global search covering all sidebar menus and options
@@ -52,6 +54,9 @@ All local integration, regression testing, deployment safety, rollback hardening
 9. `b255943` perf(batches): eliminate N+1 queries with bulk fee resolver, add DB indexes, and enable SWR caching
 10. `13d719f` feat(batches): implement HTTP 304 ETag conditional caching and server-side pagination with load more
 11. `17d9335` fix(analytics): dynamic unread reports count and ESLint compliance
+12. `0c71163` feat(branding): update favicon with modern blue squircle background matching brand spec (Option A)
+
+> All 4 branding files (`index.html`, `public/apple-touch-icon.png`, `public/favicon.png`, `public/favicon.svg`) match `origin/main` byte-for-byte.
 
 ### 2.2 Complete Release Candidate File Inventory (Code Release Commit `21f3cbe`)
 * **Core Application Entry & Security:**
@@ -112,12 +117,12 @@ All local integration, regression testing, deployment safety, rollback hardening
 * **Host Address:** `129.221.243.153` (SSH target: `ubuntu@129.221.243.153`)
 * **OS & Architecture:** Ubuntu 22.04.5 LTS (`aarch64` / ARM64)
 * **Runtimes:** Node.js `v22.23.4`, npm `10.9.9`, Git `2.34.1`
-* **Process Manager:** PM2 `v7.1.0` running application `bfi-classroom` (ID: 0, PID: 19613) on port 3001
+* **Process Manager:** PM2 `v7.1.0` running application `bfi-classroom` (ID: 0, PID: 34952) on port 3001
 * **Available Disk Space:** `91 GB` available on `/` (30% utilization), sufficient for multiple database backups
 * **Reverse Proxy:** Nginx active on port 80 forwarding `/bfi-classroom/` to local port 3001
 * **Process Inspection Tools:** `/usr/bin/lsof` and `/usr/bin/fuser` confirmed installed with normal execution permissions
 * **Database Location & Size:** `/home/ubuntu/bfi-classroom/server/bfi_classroom.db` (1.57 GB)
-* **Current Production Revision:** Commit `17d933567c2b39ad2dd47d949564eee1bce2dd66` on branch `main`
+* **Current Production Revision:** Commit `0c71163495e58a51f1709272ec55d99a31251ec3` on branch `main` (verified live; dynamically captured at pre-flight)
 
 ### 3.2 Unverified Host Prerequisites (Marked as UNVERIFIED)
 * **[UNVERIFIED] Edge Maintenance Mode Rule:** Operator must verify Cloudflare or reverse proxy maintenance page routing rules can return HTTP 503 while allowing the operator's IP to access the site.
