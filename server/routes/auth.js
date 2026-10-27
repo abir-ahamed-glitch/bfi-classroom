@@ -152,6 +152,260 @@ async function verifyTurnstileToken(token, ip) {
 }
 
 // Login route
+// In-memory registry of consumed token hashes to guarantee atomic single-use semantics
+const consumedMaintenanceTokenHashes = new Set();
+
+/**
+ * Resets in-memory consumed maintenance tokens (primarily for unit/integration testing).
+ */
+export function resetMaintenanceCapabilityMemory() {
+  consumedMaintenanceTokenHashes.clear();
+}
+
+/**
+ * Validates active deployment state and capability token under strict fail-closed rules.
+ *
+ * Requirements:
+ * 1. Active deployment state must exist and be valid JSON.
+ * 2. attemptId must be valid string (length >= 8).
+ * 3. backupValidated must be strictly true.
+ * 4. backupFile must be valid string and exist on disk.
+ * 5. active_backup_path.env (if present) must match attemptId and backupFile without ROLLBACK_COMPLETED.
+ * 6. trafficMayReopen must be strictly false (non-boolean, true, or missing rejected).
+ * 7. trafficReopened must be strictly false (non-boolean, true, or missing rejected).
+ * 8. rollbackCompleted must be strictly false (true or non-boolean rejected if present).
+ * 9. rolledBackAt / completed / terminal must not be present.
+ * 10. Capability token must match disk, be bound to attemptId, not be expired, and be consumed atomically.
+ */
+export function verifyAndConsumeMaintenanceCapability({ maintTokenPath, stateFilePath, reqMaintToken, username }) {
+  if (!maintTokenPath || !stateFilePath || typeof reqMaintToken !== 'string' || reqMaintToken.length < 32) {
+    return false;
+  }
+
+  // 1. Fast in-memory replay rejection (atomic within process)
+  const tokenHash = crypto.createHash('sha256').update(reqMaintToken).digest('hex');
+  if (consumedMaintenanceTokenHashes.has(tokenHash)) {
+    return false;
+  }
+
+  // 2. State file inspection (Strict fail-closed)
+  if (!fs.existsSync(stateFilePath)) {
+    return false;
+  }
+
+  let deployState;
+  try {
+    deployState = JSON.parse(fs.readFileSync(stateFilePath, 'utf8'));
+  } catch {
+    return false;
+  }
+
+  if (!deployState || typeof deployState !== 'object') {
+    return false;
+  }
+
+  // 2.1 Attempt ID verification (Must be explicit string >= 8 chars)
+  if (typeof deployState.attemptId !== 'string' || deployState.attemptId.trim().length < 8) {
+    return false;
+  }
+  const attemptId = deployState.attemptId.trim();
+
+  // 2.2 Backup association verification
+  if (deployState.backupValidated !== true) {
+    return false;
+  }
+  if (typeof deployState.backupFile !== 'string' || deployState.backupFile.trim().length === 0) {
+    return false;
+  }
+  if (!fs.existsSync(deployState.backupFile.trim())) {
+    return false;
+  }
+
+  // 2.3 Verify against active_backup_path.env if present
+  const serverDir = path.dirname(stateFilePath);
+  const activeBackupEnvPath = path.join(serverDir, 'active_backup_path.env');
+  if (fs.existsSync(activeBackupEnvPath)) {
+    try {
+      const envContent = fs.readFileSync(activeBackupEnvPath, 'utf8');
+      const mAttempt = envContent.match(/ATTEMPT_ID=([^\r\n]+)/);
+      const mFile = envContent.match(/BACKUP_FILE=([^\r\n]+)/);
+      const mValidated = envContent.match(/BACKUP_VALIDATED=([^\r\n]+)/);
+      const mRollback = envContent.match(/ROLLBACK_COMPLETED=([^\r\n]+)/);
+
+      if (mAttempt && mAttempt[1].trim() !== attemptId) return false;
+      if (mFile && path.resolve(serverDir, mFile[1].trim()) !== path.resolve(serverDir, deployState.backupFile.trim())) return false;
+      if (mValidated && mValidated[1].trim() !== 'true') return false;
+      if (mRollback && mRollback[1].trim() === 'true') return false;
+    } catch {
+      return false;
+    }
+  }
+
+  // 2.4 Explicit boolean exposure flags (Must be strictly false!)
+  if (deployState.trafficMayReopen !== false) {
+    return false;
+  }
+  if (deployState.trafficReopened !== false) {
+    return false;
+  }
+
+  // 2.5 Nonterminal deployment phase
+  if (deployState.rollbackCompleted === true) {
+    return false;
+  }
+  if (deployState.rollbackCompleted !== undefined && typeof deployState.rollbackCompleted !== 'boolean') {
+    return false;
+  }
+  if (deployState.rolledBackAt || deployState.completed === true || deployState.terminal === true) {
+    return false;
+  }
+
+  // 3. Capability file inspection
+  if (!fs.existsSync(maintTokenPath)) {
+    return false;
+  }
+
+  const stat = fs.statSync(maintTokenPath);
+  const isFreshMtime = (Date.now() - stat.mtimeMs) < 15 * 60 * 1000;
+  if (!isFreshMtime) {
+    return false;
+  }
+
+  let rawContent;
+  try {
+    rawContent = fs.readFileSync(maintTokenPath, 'utf8').trim();
+  } catch {
+    return false;
+  }
+
+  if (!rawContent) return false;
+
+  let capRecord;
+  try {
+    capRecord = JSON.parse(rawContent);
+  } catch {
+    // If not JSON, check for colon-delimited format: attemptId:token
+    const colonIdx = rawContent.indexOf(':');
+    if (colonIdx > 0) {
+      const parsedAttempt = rawContent.slice(0, colonIdx).trim();
+      const parsedToken = rawContent.slice(colonIdx + 1).trim();
+      if (parsedAttempt.length >= 8 && parsedToken.length >= 32) {
+        capRecord = {
+          attemptId: parsedAttempt,
+          token: parsedToken
+        };
+      } else {
+        return false;
+      }
+    } else {
+      // Raw string without attemptId binding -> missing metadata! Reject.
+      return false;
+    }
+  }
+
+  if (!capRecord || typeof capRecord !== 'object') {
+    return false;
+  }
+
+  // 3.1 Attempt binding verification (Must match deployState.attemptId)
+  if (typeof capRecord.attemptId !== 'string' || capRecord.attemptId.trim() !== attemptId) {
+    return false;
+  }
+
+  // 3.2 Expiration verification
+  if (capRecord.expiresAt) {
+    const expTime = new Date(capRecord.expiresAt).getTime();
+    if (isNaN(expTime) || expTime <= Date.now()) {
+      return false;
+    }
+  }
+  if (capRecord.createdAt) {
+    const createTime = new Date(capRecord.createdAt).getTime();
+    if (isNaN(createTime) || (Date.now() - createTime) > 15 * 60 * 1000) {
+      return false;
+    }
+  }
+
+  // 4. Token match & atomic consumption
+  const reqBuf = Buffer.from(reqMaintToken);
+
+  // Case A: Array of tokens (separate capabilities for multiple accounts)
+  if (Array.isArray(capRecord.tokens)) {
+    const matchIndex = capRecord.tokens.findIndex(entry => {
+      if (!entry || typeof entry.token !== 'string' || entry.consumed === true) return false;
+      if (entry.token.length !== reqMaintToken.length) return false;
+      if (entry.username && username && entry.username.toLowerCase() !== username.toLowerCase()) return false;
+      return crypto.timingSafeEqual(Buffer.from(entry.token), reqBuf);
+    });
+
+    if (matchIndex === -1) {
+      return false;
+    }
+
+    // Atomic consumption: Add to in-memory set immediately
+    consumedMaintenanceTokenHashes.add(tokenHash);
+
+    // Mark consumed in record
+    capRecord.tokens[matchIndex].consumed = true;
+    capRecord.tokens[matchIndex].consumedAt = new Date().toISOString();
+
+    const remainingUnconsumed = capRecord.tokens.filter(t => !t.consumed);
+    if (remainingUnconsumed.length === 0) {
+      // All tokens consumed -> unlink file
+      try {
+        const len = fs.statSync(maintTokenPath).size;
+        fs.writeFileSync(maintTokenPath, Buffer.alloc(len, 0));
+        fs.unlinkSync(maintTokenPath);
+      } catch {
+        // Best-effort cleanup
+      }
+    } else {
+      // Write updated state atomically
+      const tmpPath = `${maintTokenPath}.tmp_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+      fs.writeFileSync(tmpPath, JSON.stringify(capRecord, null, 2), { mode: 0o600 });
+      try {
+        fs.renameSync(tmpPath, maintTokenPath);
+      } catch {
+        fs.copyFileSync(tmpPath, maintTokenPath);
+        try { fs.unlinkSync(tmpPath); } catch { /* ignore tmp unlink failure */ }
+      }
+    }
+
+    return true;
+  }
+
+  // Case B: Single token record
+  if (typeof capRecord.token === 'string') {
+    if (capRecord.consumed === true) {
+      return false;
+    }
+    if (capRecord.username && username && capRecord.username.toLowerCase() !== username.toLowerCase()) {
+      return false;
+    }
+    if (capRecord.token.length !== reqMaintToken.length) {
+      return false;
+    }
+    if (!crypto.timingSafeEqual(Buffer.from(capRecord.token), reqBuf)) {
+      return false;
+    }
+
+    // Atomic consumption: Add to in-memory set and unlink file
+    consumedMaintenanceTokenHashes.add(tokenHash);
+
+    try {
+      const len = fs.statSync(maintTokenPath).size;
+      fs.writeFileSync(maintTokenPath, Buffer.alloc(len, 0));
+      fs.unlinkSync(maintTokenPath);
+    } catch {
+      // Best-effort cleanup
+    }
+
+    return true;
+  }
+
+  return false;
+}
+
 router.post('/login', authLimiter, sanitizeInput, async (req, res) => {
   const { username, password, type = 'student', turnstileToken } = req.body;
 
@@ -183,12 +437,17 @@ router.post('/login', authLimiter, sanitizeInput, async (req, res) => {
   } else if (isTestServer) {
     isTurnstileVerified = true;
   } else {
-    // 2. Separately reviewed, explicitly authorized maintenance-scoped verification
+        // 2. Separately reviewed, explicitly authorized maintenance-scoped verification
     // Permitted ONLY on direct loopback, WITHOUT proxy headers, during an active pre-exposure deployment window
-    // with an ephemeral single-use maintenance token matching disk
+    // with an unconsumed, unexpired capability bound to this exact deployment attempt
     const remoteIp = req.socket?.remoteAddress || '';
     const isLoopback = remoteIp === '127.0.0.1' || remoteIp === '::1' || remoteIp === '::ffff:127.0.0.1';
-    const hasProxyHeaders = Boolean(req.headers['x-forwarded-for'] || req.headers['cf-connecting-ip'] || req.headers['x-real-ip']);
+    const hasProxyHeaders = Boolean(
+      req.headers['x-forwarded-for'] ||
+      req.headers['cf-connecting-ip'] ||
+      req.headers['x-real-ip'] ||
+      req.headers['forwarded']
+    );
     const reqMaintToken = req.headers['x-bfi-maintenance-token'];
 
     if (isLoopback && !hasProxyHeaders && typeof reqMaintToken === 'string' && reqMaintToken.length >= 32) {
@@ -196,22 +455,12 @@ router.post('/login', authLimiter, sanitizeInput, async (req, res) => {
         const maintTokenPath = process.env.MAINTENANCE_TOKEN_PATH || path.resolve(__dirname, '..', '.maintenance_auth_token');
         const stateFilePath = process.env.DEPLOYMENT_STATE_PATH || path.resolve(__dirname, '..', 'active_deployment_state.json');
 
-        if (fs.existsSync(maintTokenPath) && fs.existsSync(stateFilePath)) {
-          const stat = fs.statSync(maintTokenPath);
-          const isFresh = (Date.now() - stat.mtimeMs) < 15 * 60 * 1000;
-          const expectedToken = fs.readFileSync(maintTokenPath, 'utf8').trim();
-          const deployState = JSON.parse(fs.readFileSync(stateFilePath, 'utf8'));
-
-          // Invariant: Pre-exposure maintenance window only (traffic must not have been exposed)
-          const isUnexposed = deployState.backupValidated === true && deployState.trafficMayReopen !== true && deployState.trafficReopened !== true;
-          if (isFresh && isUnexposed && expectedToken.length === reqMaintToken.length) {
-            const expectedBuf = Buffer.from(expectedToken);
-            const reqBuf = Buffer.from(reqMaintToken);
-            if (crypto.timingSafeEqual(expectedBuf, reqBuf)) {
-              isTurnstileVerified = true;
-            }
-          }
-        }
+        isTurnstileVerified = verifyAndConsumeMaintenanceCapability({
+          maintTokenPath,
+          stateFilePath,
+          reqMaintToken,
+          username
+        });
       } catch {
         isTurnstileVerified = false;
       }

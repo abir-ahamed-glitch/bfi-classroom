@@ -467,6 +467,8 @@ async function obtainSmokeCredentials(options = {}) {
   const timeoutMs = options.timeoutMs || 60000;
   const credentialProvider = options.credentialProvider || null;
   const maintenanceAuthToken = options.maintenanceAuthToken || null;
+  const superAdminMaintenanceToken = options.superAdminMaintenanceToken || maintenanceAuthToken;
+  const ordinaryAdminMaintenanceToken = options.ordinaryAdminMaintenanceToken || maintenanceAuthToken;
   const turnstileToken = options.turnstileToken || null;
 
   async function getSecret({ role, username, isMfa, promptText }) {
@@ -504,7 +506,7 @@ async function obtainSmokeCredentials(options = {}) {
       mfaCode: options.superAdminMfaCode,
       mfaRecoveryCode: options.superAdminMfaRecoveryCode,
       turnstileToken,
-      maintenanceAuthToken,
+      maintenanceAuthToken: superAdminMaintenanceToken,
       prompter: async ({ username, promptText }) => {
         return await getSecret({
           role: 'super_admin_mfa',
@@ -547,7 +549,7 @@ async function obtainSmokeCredentials(options = {}) {
       mfaCode: options.ordinaryAdminMfaCode,
       mfaRecoveryCode: options.ordinaryAdminMfaRecoveryCode,
       turnstileToken,
-      maintenanceAuthToken,
+      maintenanceAuthToken: ordinaryAdminMaintenanceToken,
       prompter: async ({ username, promptText }) => {
         return await getSecret({
           role: 'ordinary_admin_mfa',

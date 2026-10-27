@@ -326,15 +326,40 @@ async function executeDeployment(options = {}) {
   try {
     // 5.3.1 Bounded Credential Handoff
     if ((!saToken && !saTokenFile) || (!oaToken && !oaTokenFile)) {
-      logStep('5.3.1', 'Generating ephemeral maintenance token and initiating bounded credential handoff...');
-      const maintenanceAuthToken = crypto.randomBytes(32).toString('hex');
-      fs.writeFileSync(maintTokenFile, maintenanceAuthToken, { mode: 0o600 });
+      logStep('5.3.1', 'Generating ephemeral maintenance capabilities and initiating bounded credential handoff...');
+      const saMaintenanceToken = crypto.randomBytes(32).toString('hex');
+      const oaMaintenanceToken = crypto.randomBytes(32).toString('hex');
+      const now = Date.now();
+      const expiresAt = new Date(now + 15 * 60 * 1000).toISOString();
+
+      const capabilityPayload = {
+        attemptId,
+        createdAt: new Date(now).toISOString(),
+        expiresAt,
+        tokens: [
+          {
+            token: saMaintenanceToken,
+            username: options.superAdminUsername || 'admin@abir',
+            role: 'super_admin',
+            consumed: false
+          },
+          {
+            token: oaMaintenanceToken,
+            username: options.ordinaryAdminUsername || 'admin2',
+            role: 'ordinary_admin',
+            consumed: false
+          }
+        ]
+      };
+
+      writeStateAtomic(maintTokenFile, capabilityPayload);
 
       const authResult = await obtainSmokeCredentials({
         baseUrl: options.baseUrl || 'http://127.0.0.1:3001',
         credentialProvider: options.credentialProvider,
         turnstileToken: options.turnstileToken,
-        maintenanceAuthToken,
+        superAdminMaintenanceToken: saMaintenanceToken,
+        ordinaryAdminMaintenanceToken: oaMaintenanceToken,
         timeoutMs: options.authTimeoutMs || 60000
       });
       saTokenFile = authResult.superAdminTokenFile;
@@ -377,7 +402,14 @@ async function executeDeployment(options = {}) {
   logSection('PHASE 6: TRAFFIC REOPENING DECISION POINT (RESTARTING NGINX)');
 
   // CRITICAL BOUNDARY: Persist conservative trafficMayReopen BEFORE issuing any exposure command!
-  logStep('6.1', 'Setting conservative traffic-may-reopen boundary before exposure...');
+  logStep('6.1', 'Setting conservative traffic-may-reopen boundary before exposure and revoking maintenance capabilities...');
+  if (fs.existsSync(maintTokenFile)) {
+    try {
+      const len = fs.statSync(maintTokenFile).size;
+      fs.writeFileSync(maintTokenFile, Buffer.alloc(len, 0));
+      fs.unlinkSync(maintTokenFile);
+    } catch { /* best effort */ }
+  }
   deploymentState.trafficMayReopen = true;
   deploymentState.trafficExposureInitiatedAt = new Date().toISOString();
   writeStateAtomic(stateFilePath, deploymentState);
@@ -428,6 +460,16 @@ async function executeRollback(options = {}) {
   logSection('BFI CLASSROOM HARDENED PRODUCTION ROLLBACK');
   console.log(`Target DB:  ${dbPath}`);
   console.log(`Mode:       ${isRehearsal ? 'REHEARSAL (WITH SERVICE ADAPTERS)' : 'PRODUCTION EXECUTION'}`);
+
+  // Revoke any active maintenance capabilities immediately
+  const maintTokenFile = path.join(serverDir, '.maintenance_auth_token');
+  if (fs.existsSync(maintTokenFile)) {
+    try {
+      const len = fs.statSync(maintTokenFile).size;
+      fs.writeFileSync(maintTokenFile, Buffer.alloc(len, 0));
+      fs.unlinkSync(maintTokenFile);
+    } catch { /* best effort */ }
+  }
 
   // 1. Verify deployment state and validated backup association with strict fail-closed validation
   logStep('R.1', 'Verifying deployment attempt state and validated backup...');
@@ -672,7 +714,14 @@ async function executeRollback(options = {}) {
 
   if (nginxWasActive) {
     // CRITICAL: Apply conservative pre-exposure boundary to EVERY operation that can reopen traffic!
-    logStep('R.11.1', 'Setting conservative traffic-may-reopen boundary before rollback Nginx restart...');
+    logStep('R.11.1', 'Setting conservative traffic-may-reopen boundary before rollback Nginx restart and revoking maintenance capabilities...');
+    if (fs.existsSync(maintTokenFile)) {
+      try {
+        const len = fs.statSync(maintTokenFile).size;
+        fs.writeFileSync(maintTokenFile, Buffer.alloc(len, 0));
+        fs.unlinkSync(maintTokenFile);
+      } catch { /* best effort */ }
+    }
     state.trafficMayReopen = true;
     state.trafficExposureInitiatedAt = new Date().toISOString();
     writeStateAtomic(stateFilePath, state);
