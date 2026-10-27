@@ -618,3 +618,53 @@ sudo systemctl is-active nginx
 echo "✅ Rollback completed successfully. Pre-maintenance state restored."
 
 ```
+
+---
+
+## 7. Operational Incident Analysis & Isolation Gate Correction (October 27, 2026)
+
+### 7.1 Incident Chronology (Attempt `deploy_1793112475156`)
+* **Execution Timestamp**: October 27, 2026, 08:47 PM Asia/Dhaka.
+* **Target Candidate**: `515379363dc32018f963ed0c1215a2f71513d427`.
+* **Execution Boundary**:
+  - Phase 0: All 6 operational scripts verified in `server/.recovery_tools/`.
+  - Phase 1: Pre-maintenance service states recorded (`NGINX=active`, `PM2=online`).
+  - Step 1.2 & 1.3: Nginx stopped cleanly, PM2 stopped cleanly.
+  - Step 1.4: Fail-closed isolation inspection executed. Sub-checks 1–3 passed. Sub-check 4 (`ss` connection drain check) exited with code 1:
+    ```text
+    ✖ [ISOLATION GATE FATAL] ss connection check exited with non-zero status (1): Error: "state" does not look like a port.
+    Cannot parse dst/src address.
+    . Failing closed.
+    ```
+* **Strict Fail-Closed Halt**:
+  Execution halted immediately at Phase 1.4. The deployment **stopped completely before** database backup (Phase 2), Git checkout (Phase 3.1), build (Phase 3.3), migrations (Phase 4), internal restart (Phase 5), credential handoff (Phase 5.3), and traffic reopening (Phase 6).
+
+### 7.2 Root Cause Analysis
+* **Mechanism**: In `scripts/verify_isolation.cjs`, the invocation `spawner('ss', ['-H', '-tan', '( sport = :80 or sport = :443 ) state established'], { shell: false })` passed `'( sport = :80 or sport = :443 ) state established'` as a single positional argument. Under Linux `iproute2-5.15.0`, `state established` cannot be placed inside the address filter string; `ss` expects `state <filter>` as a separate argument.
+* **Testing Gap**: Prior unit tests in `scripts/test_verify_isolation.cjs` used mock spawners that matched `cmd === 'ss'` and returned stubbed `{ status: 0 }` objects, masking the CLI syntax rejection of real Linux `ss`.
+
+### 7.3 Implemented Fix & Regressions
+* **Argument Array**: In `scripts/verify_isolation.cjs`:
+  ```javascript
+  const ssConnCheck = spawner('ss', ['-H', '-tan', 'state', 'established', '( sport = :80 or sport = :443 )'], { encoding: 'utf8', timeout: 5000, shell: false });
+  ```
+* **Test 17 Regression Assertion**: Added Test 17 in `scripts/test_verify_isolation.cjs` asserting exact argument array equality and `shell: false`. (Suite: 17/17 passed).
+* **Live Linux Loopback Fixture Suite**: Added `scripts/test_ss_loopback_fixtures.cjs` testing:
+  1. Empty results on unallocated ports (returns status 0, 0 lines).
+  2. Detection of real established IPv4 loopback connection (127.0.0.1:ephemeral).
+  3. Detection of real established IPv6 loopback connection ([::1]:ephemeral).
+  4. Post-disconnect connection drain verification.
+  (Executed directly on target host `bfi-classroom-server`: 6/6 passed 100%).
+
+### 7.4 Independent Forensic Host Verification (Zero Change Proof)
+Independent queries executed on `bfi-classroom-server` confirm zero modifications to data or code:
+* **Database State**:
+  - `PRAGMA quick_check`: `ok`
+  - `PRAGMA foreign_key_check`: 0 violations
+  - Table Invariants: `users=1786`, `batches=81`, `student_course_enrollments=913`, `batch_course_fees=27` (exact baseline match)
+  - Schema Invariants: `is_super_admin` column in `users` table is `false` (confirming Migration 001 never ran)
+  - File SHA256: `3846fb942691dd67b9b8c8673ce02612f60bb3ed1dda9ef7981abd8fca75d8bf`
+* **Application Baseline**: HEAD remains `0c71163495e58a51f1709272ec55d99a31251ec3` (clean, un-switched).
+* **Traffic Exposure**: Zero exposure (`trafficMayReopen: false`, `trafficReopened: false`).
+* **Service Recovery**: PM2 PID 53059 online, Nginx active, `https://classroom.bfibd.org/bfi-classroom/` returns HTTP 200 OK.
+

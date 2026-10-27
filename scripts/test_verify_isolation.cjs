@@ -408,7 +408,7 @@ console.log('================================================================\n'
 // 15. ss ports 80/443 established connections active
 {
   const mockSpawner = (cmd, args) => {
-    if (cmd === 'ss' && args.includes('( sport = :80 or sport = :443 ) state established')) {
+    if (cmd === 'ss' && args.includes('state') && args.includes('established') && args.includes('( sport = :80 or sport = :443 )')) {
       return { status: 0, stdout: 'tcp ESTAB 0 0 10.0.0.82:443 1.2.3.4:54321', stderr: '' };
     }
     return getStandardMock(cmd, args);
@@ -442,6 +442,30 @@ console.log('================================================================\n'
     'Test 16: Happy path returns true when all inspections pass',
     res === true,
     'Expected true return'
+  );
+}
+
+// 17. Regression: Exact argument array and shell:false for ss connection drain check
+{
+  let capturedSsInvocations = [];
+  const recordingSpawner = (cmd, args, options) => {
+    if (cmd === 'ss') {
+      capturedSsInvocations.push({ args, options });
+    }
+    return getStandardMock(cmd, args);
+  };
+
+  verifyIsolation({ spawner: recordingSpawner });
+
+  const connDrainInvocation = capturedSsInvocations.find(inv => inv.args.includes('state'));
+  const expectedArgs = ['-H', '-tan', 'state', 'established', '( sport = :80 or sport = :443 )'];
+  const argsMatch = connDrainInvocation && JSON.stringify(connDrainInvocation.args) === JSON.stringify(expectedArgs);
+  const shellFalse = connDrainInvocation && connDrainInvocation.options && connDrainInvocation.options.shell === false;
+
+  assert(
+    'Test 17: Regression assertion - ss connection check receives exact argument array and shell:false',
+    argsMatch && shellFalse,
+    `connDrainInvocation=${JSON.stringify(connDrainInvocation)}`
   );
 }
 

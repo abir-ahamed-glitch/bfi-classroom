@@ -112,7 +112,7 @@ function verifyIsolation(options = {}) {
 
   // 4. Inspect established proxy connections on ports 80 and 443
   logInfo('4. Inspecting connection drain status on ports 80 and 443...');
-  const ssConnCheck = spawner('ss', ['-H', '-tan', '( sport = :80 or sport = :443 ) state established'], { encoding: 'utf8', timeout: 5000, shell: false });
+  const ssConnCheck = spawner('ss', ['-H', '-tan', 'state', 'established', '( sport = :80 or sport = :443 )'], { encoding: 'utf8', timeout: 5000, shell: false });
   if (ssConnCheck.error) {
     logFatal(`ss connection check failed: ${ssConnCheck.error.message || ssConnCheck.error.code}. Failing closed.`);
     throw new Error(`ss connection check error: ${ssConnCheck.error.message || ssConnCheck.error.code}`);
