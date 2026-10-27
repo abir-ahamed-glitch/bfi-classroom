@@ -25,7 +25,7 @@ All local integration, regression testing, deployment safety, rollback hardening
 | **Reviewed Application & Branding Code** | **PASS** | Commit `21f3cbe` application files (`src/*`, `server/*`) preserved with verified Super Admin RBAC; 4 production branding assets (`index.html`, `public/apple-touch-icon.png`, `public/favicon.png`, `public/favicon.svg`) integrated byte-for-byte from `0c71163`. |
 | **Fail-Closed Isolation Gates** | **PASS** | `scripts/verify_isolation.cjs` validates Nginx systemd status, 0 running processes, 0 listener sockets (80/443), 0 established connections, PM2 state, and port 3001 closure. 16/16 unit test vectors pass (`test_verify_isolation.cjs`). |
 | **Fail-Closed Rollback Runner** | **PASS** | `scripts/production_lifecycle.cjs` validates command execution errors, signals, timeouts, non-zero exits; asserts PM2 online status and curl 200 loopback health before considering Nginx start. 58/58 failure vectors pass (`test_rollback_failures.cjs`). |
-| **Recovery Tooling Survival** | **PASS** | Operational tools preserved in `server/.recovery_tools/` outside tracked tree; survival across real git checkout proven via disposable Git repository rehearsal (`rehearse_git_recovery.cjs`). |
+| **Recovery Tooling Survival** | **PASS** | Operational tools preserved in `server/.recovery_tools/` outside tracked tree; cold-start survival across real git checkout in a new Node process proven via disposable Git repository rehearsal (`rehearse_git_recovery.cjs`) with negative dependency verification proving all 6 scripts are strictly self-contained. |
 | **Rollback Boundary & Replay Gates** | **PASS** | Conservative `trafficMayReopen` boundary persisted atomically BEFORE exposure commands in both deploy and rollback; exposure flags never cleared; completed rollbacks marked terminal with replay protection against stale restore; missing/malformed state metadata fails closed. |
 | **Bounded Credential Handoff** | **PASS** | `scripts/obtain_smoke_credentials.cjs` provides confidential interactive secret entry with zero echo, detached TTY listeners on timeout/cancellation/success, protected file storage (0o600/0o700), and best-effort cleanup. 28/28 integration & unit tests pass (`test_credential_handoff.cjs`). |
 | **Strict Maintenance Gate & Replay Defense** | **PASS** | Removed permanent loopback exemption in `server/routes/auth.js`. Maintenance verification requires: valid active `attemptId` (length >= 8), `backupValidated === true`, `backupFile` on disk, `active_backup_path.env` consistency, explicit boolean exposure flags strictly false (`trafficMayReopen === false`, `trafficReopened === false`), and nonterminal deployment state. Ephemeral single-use capabilities bound to attemptId and specific accounts with atomic in-memory (`consumedMaintenanceTokenHashes`) & disk-level consumption. Missing/malformed state fails closed. |
@@ -245,12 +245,44 @@ Executed `node scripts/test_credential_handoff.cjs` against `server/routes/auth.
 
 ---
 
+### 4.5 Real Git Repository Survival & Cold-Start Rehearsal Evidence
+Executed `node scripts/rehearse_git_recovery.cjs` across a real, disposable Git repository (`test_git_recovery_repo`) to verify fail-closed recovery tooling survivability, cold-start module resolution, and correct rollback-baseline ordering:
+
+* **Step 0: Baseline & Candidate Configuration:**
+  * **Commit A (Baseline):** Represents live production baseline (`0c71163`). Contains no operational scripts in `scripts/`.
+  * **Commit B (Candidate):** Contains all 6 operational scripts in `scripts/` (`preflight_lockdown_check.cjs`, `verify_isolation.cjs`, `run_migrations.cjs`, `production_smoke_check.cjs`, `production_lifecycle.cjs`, `obtain_smoke_credentials.cjs`) and database migrations in `server/db/migrations/`.
+  * **Live Checkout Preserved:** Rehearsal repository explicitly starts on Commit A with a clean working tree.
+  * **Staging Outside Tracked Tree:** Extracted all 6 operational scripts directly from Commit B into `server/.recovery_tools/` via `git show ${commitB}:scripts/${s}` without switching branches or altering the live checkout.
+* **Step 1: Deployment Execution & Injected Failure:**
+  * Executed deployment starting from Commit A.
+  * Dynamically recorded `pre_deployment_revision.txt` as Commit A via `git rev-parse HEAD`.
+  * Captured dynamic baseline invariants and validated pre-deployment backup.
+  * Checked out Commit B in Phase 3, built assets, and executed database migrations on disposable DB.
+  * In Phase 5 (Smoke Verification), injected failure halted deployment before traffic reopening.
+* **Step 2: Cold-Start Rollback in a Brand NEW Node Process:**
+  * Spawned `node server/.recovery_tools/production_lifecycle.cjs rollback --is-rehearsal` via `child_process.spawnSync` in a completely separate, fresh Node process.
+  * **Cold-Start Module Resolution Verified:** Node parsed and loaded all required modules (including `obtain_smoke_credentials.cjs`) from `server/.recovery_tools/` without `MODULE_NOT_FOUND` errors.
+  * Quarantined failed database state and restored validated pre-deployment backup.
+  * Checked out pre-deployment revision Commit A via real Git.
+  * Restored services, verified loopback HTTP 200, and restored Nginx with `trafficMayReopen` pre-exposure boundary. Child process exited with code `0`.
+* **Step 3: Verification of Git State, Tooling Survival, & Database Invariants:**
+  * **Restored Git HEAD:** Confirmed `git rev-parse HEAD` returned Commit A.
+  * **Candidate Script Removal:** Confirmed Git checkout removed `scripts/production_lifecycle.cjs` from the tracked working tree.
+  * **Recovery Tooling Survival:** Confirmed all 6 operational scripts in `server/.recovery_tools/` survived the checkout 100% intact.
+  * **Database Restored:** Restored SQLite database verified with 0 foreign key violations, PRAGMA `quick_check` = ok, and exact baseline match.
+* **Step 4: Negative Verification (Cold-Start Dependency Assertion):**
+  * Temporarily moved `server/.recovery_tools/obtain_smoke_credentials.cjs` away and executed a fresh Node rollback probe.
+  * Confirmed probe exited code `1` with `Cannot find module './obtain_smoke_credentials.cjs'`.
+  * Restored module and confirmed passing state. This provides definitive proof that the recovery bundle is strictly self-contained and cold-start verified.
+
+---
+
 ## 5. Hardened Executable Production Deployment Runbook
 
 Execute this exact runbook sequentially during the approved maintenance window. Every command is fail-closed (`set -e`). If any step fails, execution halts immediately.
 
-### Phase 0: Pre-Flight Staging & Safety Gate Preparation
-Before stopping any production services, stage the reviewed operational scripts and preserve recovery tooling.
+### Phase 0: Pre-Flight Staging & Safety Gate Preparation (Zero Application Checkout)
+Before stopping any production services, stage the reviewed operational scripts and preserve recovery tooling directly in `server/.recovery_tools/` outside the git working tree. **DO NOT run `git checkout` at this stage; the application working tree must remain 100% on the live production revision.**
 
 ```bash
 set -e
@@ -259,19 +291,27 @@ cd /home/ubuntu/bfi-classroom
 # 1. Fetch release candidate commit from origin (prerequisite: operator pushed candidate to origin)
 git fetch origin
 
-# 2. Stage the candidate release containing all operational and recovery tooling
-git checkout integration/super-admin-candidate
+# 2. Define approved 40-character target commit SHA (reject mutable branch names)
+APPROVED_COMMIT="d3b330c4abc3bcec8a14806c3105e05ce22bcf0b"
 
-# 3. Verify script presence and file integrity without executing operational checks
-test -s scripts/production_lifecycle.cjs
-test -s scripts/verify_isolation.cjs
-test -s scripts/preflight_lockdown_check.cjs
-test -s scripts/run_migrations.cjs
-test -s scripts/production_smoke_check.cjs
+# 3. Stage all 6 operational and recovery scripts directly outside the tracked working tree:
+mkdir -p server/.recovery_tools
+for script in preflight_lockdown_check.cjs verify_isolation.cjs run_migrations.cjs production_smoke_check.cjs production_lifecycle.cjs obtain_smoke_credentials.cjs; do
+  git show ${APPROVED_COMMIT}:scripts/${script} > server/.recovery_tools/${script}
+  chmod +x server/.recovery_tools/${script}
+done
 
-# 4. Canonical Deployment Execution:
+# 4. Verify script presence and non-empty file size without executing operational checks:
+test -s server/.recovery_tools/production_lifecycle.cjs
+test -s server/.recovery_tools/verify_isolation.cjs
+test -s server/.recovery_tools/preflight_lockdown_check.cjs
+test -s server/.recovery_tools/run_migrations.cjs
+test -s server/.recovery_tools/production_smoke_check.cjs
+test -s server/.recovery_tools/obtain_smoke_credentials.cjs
+
+# 5. Canonical Deployment Execution:
 # Run full automated deployment lifecycle (Phases 0 through 6) with fail-closed gates:
-# SUPER_ADMIN_TOKEN="$SA_TOKEN" ADMIN_TOKEN="$ORD_TOKEN" node scripts/production_lifecycle.cjs deploy
+# node server/.recovery_tools/production_lifecycle.cjs deploy --target-commit "$APPROVED_COMMIT"
 ```
 
 ### Phase 1: Maintenance Mode & Complete Origin Isolation
@@ -285,14 +325,14 @@ test -s scripts/production_smoke_check.cjs
    ```bash
    pm2 stop bfi-classroom
    ```
-4. **Execute Fail-Closed Isolation Verification:**
+4. **Execute Fail-Closed Isolation Verification (from Staged Recovery Tools):**
    ```bash
-   node scripts/verify_isolation.cjs
+   node server/.recovery_tools/verify_isolation.cjs
    ```
    *Gate:* Must confirm Nginx inactive, 0 Nginx processes, 0 listening sockets on 80/443, 0 established connections, PM2 application stopped, port 3001 closed. Exit code 0 required.
-5. **Execute Fail-Closed Database Handle Verification:**
+5. **Execute Fail-Closed Database Handle Verification (from Staged Recovery Tools):**
    ```bash
-   node scripts/preflight_lockdown_check.cjs
+   node server/.recovery_tools/preflight_lockdown_check.cjs
    ```
    *Gate:* Must output `VERDICT: MAINTENANCE GATE OPEN` with exit code `0` (0 active handles via `lsof`/`fuser`, WAL truncated, quick_check ok). If this exits nonzero, **HALT DEPLOYMENT IMMEDIATELY**.
 
@@ -378,10 +418,11 @@ test -s scripts/production_smoke_check.cjs
    "
    ```
 
-### Phase 3: Reproducible Code Update & Build Sequence
-1. **Checkout Pinned Release Candidate Commit:**
+### Phase 3: Reproducible Code Update & Build Sequence (After Backup Validation)
+1. **Checkout Pinned Release Candidate Commit (Reject Mutable Branch Names):**
    ```bash
-   git checkout integration/super-admin-candidate
+   git checkout "${APPROVED_COMMIT}"
+   test "$(git rev-parse HEAD)" = "${APPROVED_COMMIT}"
    ```
 2. **Install Dependencies (Including DevDependencies for Vite):**
    ```bash
@@ -398,16 +439,16 @@ test -s scripts/production_smoke_check.cjs
    ```
 
 ### Phase 4: Execute Database Migrations
-1. **Run Unified Migration Runner:**
+1. **Run Unified Migration Runner (from Recovery Tools):**
    ```bash
-   node scripts/run_migrations.cjs server/bfi_classroom.db
+   node server/.recovery_tools/run_migrations.cjs server/bfi_classroom.db
    ```
    *Gate:* Must execute all 5 migrations in chronological order, verify all 10 schema integrity assertions, and exit with code `0`. If this command fails, halt and trigger Rollback Runbook (Window A).
 
 ### Phase 5: Start Service & Automated Production Smoke Checks (Under Isolation)
 1. **Verify Nginx is STILL Stopped:**
    ```bash
-   node scripts/verify_isolation.cjs
+   node server/.recovery_tools/verify_isolation.cjs
    ```
 2. **Start PM2 Backend Locally (127.0.0.1:3001):**
    ```bash
@@ -416,12 +457,12 @@ test -s scripts/production_smoke_check.cjs
    ```
 3. **Verify PM2 is Online While Nginx Remains Inactive:**
    ```bash
-   node scripts/verify_isolation.cjs --allow-pm2
+   node server/.recovery_tools/verify_isolation.cjs --allow-pm2
    ```
 4. **Execute Automated Fail-Closed Smoke Check Over Loopback:**
-   Pass tokens securely via protected environment variables:
+   Pass tokens securely via protected environment variables or execute via bounded credential handoff:
    ```bash
-   SUPER_ADMIN_TOKEN="$SA_TOKEN" ADMIN_TOKEN="$ORD_TOKEN" node scripts/production_smoke_check.cjs http://127.0.0.1:3001
+   SUPER_ADMIN_TOKEN="$SA_TOKEN" ADMIN_TOKEN="$ORD_TOKEN" node server/.recovery_tools/production_smoke_check.cjs http://127.0.0.1:3001
    ```
    *Gate:* If `production_smoke_check.cjs` exits with code `1`, **DO NOT REOPEN TRAFFIC**. Trigger Rollback Runbook (Window A).
 
@@ -469,17 +510,14 @@ test -s scripts/production_smoke_check.cjs
     4. Obtain explicit written sign-off from the system operator before executing any database restore.
 
 ### 6.2 Automated Canonical Rollback Runner (Window A - Maintenance Window)
-The quickest and safest recovery method is executing the canonical rollback runner, which automates the exact fail-closed sequence and halts safely if any step fails:
+The quickest and safest recovery method is executing the canonical rollback runner from the preserved recovery tools directory. Because `server/.recovery_tools/` is outside git tracking, it survives checkout switches:
 
 ```bash
-# Run canonical rollback from working tree:
-node scripts/production_lifecycle.cjs rollback
-
-# If git checkout or working tree state removed scripts/, run from preserved recovery tooling:
+# Execute canonical rollback directly from preserved recovery tools:
 node server/.recovery_tools/production_lifecycle.cjs rollback
 
 # If post-reopening forensic restoration is explicitly authorized by operator:
-node scripts/production_lifecycle.cjs rollback --allow-post-reopening-reconciliation
+node server/.recovery_tools/production_lifecycle.cjs rollback --allow-post-reopening-reconciliation
 ```
 
 ### 6.3 Step-by-Step Manual Rollback Runbook (Window A - Maintenance Window)

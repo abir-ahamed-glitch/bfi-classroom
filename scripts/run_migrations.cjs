@@ -17,11 +17,22 @@ const Database = require('better-sqlite3');
 const path = require('path');
 const fs = require('fs');
 
-const { runSuperAdminMigration } = require('../server/db/migrations/20261023_super_admin.cjs');
-const { runAdminPermissionsMigration } = require('../server/db/migrations/20261023_admin_permissions.cjs');
-const { runPrivilegedSafeguardsMigration } = require('../server/db/migrations/20261024_privileged_safeguards.cjs');
-const { runMfaSingleUseChallengesMigration } = require('../server/db/migrations/20261024_mfa_single_use_challenges.cjs');
-const { runAdminAccountabilityMigration } = require('../server/db/migrations/20261025_admin_accountability.cjs');
+function findMigrationsDir() {
+  const candidateFromScripts = path.resolve(__dirname, '..', 'server', 'db', 'migrations');
+  if (fs.existsSync(candidateFromScripts)) return candidateFromScripts;
+  const candidateFromRecoveryTools = path.resolve(__dirname, '..', 'db', 'migrations');
+  if (fs.existsSync(candidateFromRecoveryTools)) return candidateFromRecoveryTools;
+  const candidateFromCwd = path.resolve(process.cwd(), 'server', 'db', 'migrations');
+  if (fs.existsSync(candidateFromCwd)) return candidateFromCwd;
+  throw new Error(`Migrations directory not found relative to ${__dirname} or ${process.cwd()}`);
+}
+
+const migrationsDir = findMigrationsDir();
+const { runSuperAdminMigration } = require(path.join(migrationsDir, '20261023_super_admin.cjs'));
+const { runAdminPermissionsMigration } = require(path.join(migrationsDir, '20261023_admin_permissions.cjs'));
+const { runPrivilegedSafeguardsMigration } = require(path.join(migrationsDir, '20261024_privileged_safeguards.cjs'));
+const { runMfaSingleUseChallengesMigration } = require(path.join(migrationsDir, '20261024_mfa_single_use_challenges.cjs'));
+const { runAdminAccountabilityMigration } = require(path.join(migrationsDir, '20261025_admin_accountability.cjs'));
 
 const MIGRATIONS = [
   { name: '20261023_super_admin', runner: runSuperAdminMigration },
@@ -38,6 +49,9 @@ function resolveDatabasePath() {
   }
   if (process.env.DATABASE_PATH) {
     return path.resolve(process.cwd(), process.env.DATABASE_PATH);
+  }
+  if (path.basename(__dirname) === '.recovery_tools') {
+    return path.resolve(__dirname, '..', 'bfi_classroom.db');
   }
   return path.resolve(__dirname, '..', 'server', 'bfi_classroom.db');
 }

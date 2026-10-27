@@ -53,7 +53,7 @@ function setupTestEnv() {
   fs.writeFileSync(path.join(TEST_DIR, 'dist', '404.html'), '<html></html>');
 
   // Copy operational scripts
-  for (const s of ['preflight_lockdown_check.cjs', 'verify_isolation.cjs', 'run_migrations.cjs', 'production_smoke_check.cjs', 'production_lifecycle.cjs']) {
+  for (const s of ['preflight_lockdown_check.cjs', 'verify_isolation.cjs', 'run_migrations.cjs', 'production_smoke_check.cjs', 'production_lifecycle.cjs', 'obtain_smoke_credentials.cjs']) {
     fs.copyFileSync(path.resolve(__dirname, s), path.join(TEST_DIR, 'scripts', s));
   }
 

@@ -40,6 +40,35 @@ function logFatal(msg) {
   console.error(`❌ [LIFECYCLE FATAL] ${msg}`);
 }
 
+// Helper to resolve project root directory whether executing from scripts/ or server/.recovery_tools/
+function resolveDefaultRootDir() {
+  const dir = __dirname;
+  const parent = path.dirname(dir);
+  if (path.basename(dir) === '.recovery_tools' && path.basename(parent) === 'server') {
+    return path.dirname(parent);
+  }
+  if (path.basename(dir) === 'scripts') {
+    return parent;
+  }
+  return process.cwd();
+}
+
+// Helper to resolve spawner supporting mock injection across child processes
+function getResolvedSpawner(options = {}) {
+  if (options && options.spawner) return options.spawner;
+  if (process.env.LIFECYCLE_SPAWNER_MODULE) {
+    try {
+      const spawnerMod = require(path.resolve(process.env.LIFECYCLE_SPAWNER_MODULE));
+      if (typeof spawnerMod.spawner === 'function') return spawnerMod.spawner;
+      if (typeof spawnerMod === 'function') return spawnerMod;
+    } catch (err) {
+      logFatal(`Failed to load spawner from LIFECYCLE_SPAWNER_MODULE: ${err.message}`);
+      throw err;
+    }
+  }
+  return child_process.spawnSync;
+}
+
 // Atomic state persistence helper
 function writeStateAtomic(filePath, data) {
   const dir = path.dirname(filePath);
@@ -85,18 +114,33 @@ function runCommandStrict(spawner, cmd, args, options = {}, desc = '') {
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function executeDeployment(options = {}) {
-  const spawner = options.spawner || child_process.spawnSync;
-  const rootDir = options.rootDir || process.cwd();
+  const spawner = getResolvedSpawner(options);
+  const rootDir = options.rootDir || resolveDefaultRootDir();
   const dbRelPath = options.databasePath || 'server/bfi_classroom.db';
   const dbPath = path.resolve(rootDir, dbRelPath);
-  const targetCommit = options.targetCommit || process.env.TARGET_COMMIT || 'integration/super-admin-candidate';
-  const isRehearsal = Boolean(options.isRehearsal);
+  const isRehearsal = Boolean(options.isRehearsal || process.argv.includes('--is-rehearsal'));
+  const targetCommit = (options.targetCommit || process.env.TARGET_COMMIT || (isRehearsal ? 'd3b330c4abc3bcec8a14806c3105e05ce22bcf0b' : '')).trim();
   const serverDir = path.resolve(rootDir, 'server');
 
   logSection('BFI CLASSROOM CANONICAL PRODUCTION DEPLOYMENT');
   console.log(`Target DB:      ${dbPath}`);
-  console.log(`Target Commit:  ${targetCommit}`);
+  console.log(`Target Commit:  ${targetCommit || 'NONE (FAIL-CLOSED)'}`);
   console.log(`Mode:           ${isRehearsal ? 'REHEARSAL (WITH SERVICE ADAPTERS)' : 'PRODUCTION EXECUTION'}`);
+
+  if (!targetCommit) {
+    logFatal('Target commit must be provided via options.targetCommit, --target-commit, or TARGET_COMMIT environment variable.');
+    throw new Error('Missing target commit');
+  }
+
+  // Reject mutable branch names; enforce 40-character SHA in production mode
+  if (!/^[0-9a-f]{40}$/i.test(targetCommit)) {
+    if (!isRehearsal) {
+      logFatal(`Target commit "${targetCommit}" is not a valid 40-character git commit SHA. Mutable branch names are strictly rejected in production.`);
+      throw new Error(`Target commit must be a 40-character SHA: got "${targetCommit}"`);
+    } else {
+      logStep('0.0', `⚠️ Rehearsal mode: accepting non-40-character target commit "${targetCommit}"`);
+    }
+  }
 
   if (!fs.existsSync(serverDir)) fs.mkdirSync(serverDir, { recursive: true });
 
@@ -112,18 +156,24 @@ async function executeDeployment(options = {}) {
     'scripts/verify_isolation.cjs',
     'scripts/run_migrations.cjs',
     'scripts/production_smoke_check.cjs',
-    'scripts/production_lifecycle.cjs'
+    'scripts/production_lifecycle.cjs',
+    'scripts/obtain_smoke_credentials.cjs'
   ];
 
   for (const scriptRel of requiredScripts) {
-    const sPath = path.resolve(rootDir, scriptRel);
-    if (!fs.existsSync(sPath)) {
-      logFatal(`Required operational script missing: ${scriptRel}`);
+    const sName = path.basename(scriptRel);
+    const destPath = path.join(recoveryToolsDir, sName);
+    const srcPath = path.resolve(rootDir, scriptRel);
+
+    if (fs.existsSync(destPath) && fs.statSync(destPath).size > 0) {
+      logStep('0.1', `Preserved tool verified in ${recoveryToolsDir}: ${sName}`);
+    } else if (fs.existsSync(srcPath)) {
+      fs.copyFileSync(srcPath, destPath);
+      logStep('0.1', `Preserved ${sName} in ${recoveryToolsDir}`);
+    } else {
+      logFatal(`Required operational script missing from both recovery tools and repository: ${scriptRel}`);
       throw new Error(`Required script missing: ${scriptRel}`);
     }
-    const destPath = path.join(recoveryToolsDir, path.basename(scriptRel));
-    fs.copyFileSync(sPath, destPath);
-    logStep('0.1', `Preserved ${path.basename(scriptRel)} in ${recoveryToolsDir}`);
   }
 
   // Initialize deployment state
@@ -201,9 +251,20 @@ async function executeDeployment(options = {}) {
     }
   }
   if (!preRev) {
-    const revCheck = runCommandStrict(spawner, 'git', ['rev-parse', 'HEAD'], { timeout: 5000 }, 'Record Git Revision');
+    const revCheck = runCommandStrict(spawner, 'git', ['rev-parse', 'HEAD'], { timeout: 5000, cwd: rootDir }, 'Record Git Revision');
     preRev = revCheck.stdout.trim();
   }
+
+  // Fail closed if preRev is invalid or if application checkout was already switched to targetCommit prematurely
+  if (!/^[0-9a-f]{40}$/i.test(preRev) && !isRehearsal) {
+    logFatal(`Pre-deployment revision "${preRev}" is not a valid 40-character commit SHA.`);
+    throw new Error(`Invalid pre-deployment revision: "${preRev}"`);
+  }
+  if (!isRehearsal && /^[0-9a-f]{40}$/i.test(targetCommit) && preRev.toLowerCase() === targetCommit.toLowerCase()) {
+    logFatal(`Pre-deployment revision (${preRev}) is identical to target commit (${targetCommit}). Application checkout has already been prematurely switched before baseline recording and backup validation!`);
+    throw new Error(`Pre-deployment revision matches target commit: ${targetCommit}`);
+  }
+
   deploymentState.preDeploymentRevision = preRev;
   fs.writeFileSync(revFile, deploymentState.preDeploymentRevision + '\n');
   writeStateAtomic(stateFilePath, deploymentState);
@@ -283,26 +344,35 @@ async function executeDeployment(options = {}) {
   // ── PHASE 3: Reproducible Code Update & Build Sequence ─────────────────────
   logSection('PHASE 3: REPRODUCIBLE CODE UPDATE & BUILD SEQUENCE');
   logStep('3.1', `Checking out pinned release revision: ${targetCommit}...`);
-  runCommandStrict(spawner, 'git', ['checkout', targetCommit], { timeout: 30000 }, 'Git Checkout Target Commit');
+  runCommandStrict(spawner, 'git', ['checkout', targetCommit], { timeout: 30000, cwd: rootDir }, 'Git Checkout Target Commit');
+
+  const checkedOutRev = runCommandStrict(spawner, 'git', ['rev-parse', 'HEAD'], { timeout: 5000, cwd: rootDir }, 'Verify Target Checkout');
+  if (!isRehearsal && /^[0-9a-f]{40}$/i.test(targetCommit) && checkedOutRev.stdout.trim().toLowerCase() !== targetCommit.toLowerCase()) {
+    logFatal(`Git checkout failed to reach target commit ${targetCommit} (current HEAD: ${checkedOutRev.stdout.trim()})`);
+    throw new Error('Git checkout mismatch');
+  }
 
   logStep('3.2', 'Installing dependencies including devDependencies (NODE_ENV=development npm ci --legacy-peer-deps)...');
   runCommandStrict(spawner, 'npm', ['ci', '--legacy-peer-deps'], {
     env: { ...process.env, NODE_ENV: 'development' },
     timeout: 120000,
-    shell: true
+    shell: true,
+    cwd: rootDir
   }, 'npm ci');
 
   logStep('3.3', 'Building frontend production assets (npm run build)...');
-  runCommandStrict(spawner, 'npm', ['run', 'build'], { timeout: 120000, shell: true }, 'npm run build');
+  runCommandStrict(spawner, 'npm', ['run', 'build'], { timeout: 120000, shell: true, cwd: rootDir }, 'npm run build');
 
   logStep('3.4', 'Pruning devDependencies for production runtime isolation (npm prune --omit=dev --legacy-peer-deps)...');
-  runCommandStrict(spawner, 'npm', ['prune', '--omit=dev', '--legacy-peer-deps'], { timeout: 60000, shell: true }, 'npm prune');
+  runCommandStrict(spawner, 'npm', ['prune', '--omit=dev', '--legacy-peer-deps'], { timeout: 60000, shell: true, cwd: rootDir }, 'npm prune');
 
   // ── PHASE 4: Execute Database Migrations ───────────────────────────────────
   logSection('PHASE 4: DATABASE MIGRATION EXECUTION & ASSERTION VERIFICATION');
   logStep('4.1', `Executing unified migration runner on ${dbPath}...`);
-  const migRunnerPath = path.resolve(rootDir, 'scripts/run_migrations.cjs');
-  runCommandStrict(spawner, process.execPath, [migRunnerPath, dbPath], { timeout: 60000 }, 'Migration Runner');
+  const migRunnerPath = fs.existsSync(path.join(recoveryToolsDir, 'run_migrations.cjs'))
+    ? path.join(recoveryToolsDir, 'run_migrations.cjs')
+    : path.resolve(rootDir, 'scripts/run_migrations.cjs');
+  runCommandStrict(spawner, process.execPath, [migRunnerPath, dbPath], { timeout: 60000, cwd: rootDir }, 'Migration Runner');
   logStep('4.1', '✅ Migrations applied sequentially and verified (10/10 schema assertions passed).');
 
   // ── PHASE 5: Application Restart & Loopback Smoke Verification ─────────────
@@ -369,7 +439,9 @@ async function executeDeployment(options = {}) {
     }
 
     logStep('5.4', 'Executing 18-assertion production smoke check over loopback...');
-    const smokeRunnerPath = path.resolve(rootDir, 'scripts/production_smoke_check.cjs');
+    const smokeRunnerPath = fs.existsSync(path.join(recoveryToolsDir, 'production_smoke_check.cjs'))
+      ? path.join(recoveryToolsDir, 'production_smoke_check.cjs')
+      : path.resolve(rootDir, 'scripts/production_smoke_check.cjs');
     const smokeEnv = {
       ...process.env
     };
@@ -380,7 +452,8 @@ async function executeDeployment(options = {}) {
 
     runCommandStrict(spawner, process.execPath, [smokeRunnerPath, options.baseUrl || 'http://127.0.0.1:3001'], {
       env: smokeEnv,
-      timeout: 30000
+      timeout: 30000,
+      cwd: rootDir
     }, 'Production Smoke Check');
     logStep('5.4', '✅ Production smoke verification passed: 18/18 assertions verified.');
   } finally {
@@ -449,12 +522,12 @@ async function executeDeployment(options = {}) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function executeRollback(options = {}) {
-  const spawner = options.spawner || child_process.spawnSync;
-  const rootDir = options.rootDir || process.cwd();
+  const spawner = getResolvedSpawner(options);
+  const rootDir = options.rootDir || resolveDefaultRootDir();
   const dbRelPath = options.databasePath || 'server/bfi_classroom.db';
   const dbPath = path.resolve(rootDir, dbRelPath);
   const serverDir = path.resolve(rootDir, 'server');
-  const isRehearsal = Boolean(options.isRehearsal);
+  const isRehearsal = Boolean(options.isRehearsal || process.argv.includes('--is-rehearsal'));
   const allowPostReopening = Boolean(options.allowPostReopeningReconciliation);
 
   logSection('BFI CLASSROOM HARDENED PRODUCTION ROLLBACK');
@@ -660,16 +733,23 @@ async function executeRollback(options = {}) {
   }
   const prevRev = fs.readFileSync(revFile, 'utf8').trim();
   logStep('R.8', `Checking out original revision: ${prevRev}`);
-  runCommandStrict(spawner, 'git', ['checkout', prevRev], { timeout: 30000 }, 'Rollback Git Checkout');
+  runCommandStrict(spawner, 'git', ['checkout', prevRev], { timeout: 30000, cwd: rootDir }, 'Rollback Git Checkout');
+
+  const checkoutVerify = runCommandStrict(spawner, 'git', ['rev-parse', 'HEAD'], { timeout: 5000, cwd: rootDir }, 'Verify Restored Checkout');
+  if (!isRehearsal && /^[0-9a-f]{40}$/i.test(prevRev) && checkoutVerify.stdout.trim().toLowerCase() !== prevRev.toLowerCase()) {
+    logFatal(`Rollback failed to restore Git HEAD to ${prevRev} (current HEAD: ${checkoutVerify.stdout.trim()})`);
+    throw new Error('Rollback Git checkout failed to match pre-deployment revision');
+  }
 
   logStep('R.8', 'Rebuilding original revision assets...');
   runCommandStrict(spawner, 'npm', ['ci', '--legacy-peer-deps'], {
     env: { ...process.env, NODE_ENV: 'development' },
     timeout: 120000,
-    shell: true
+    shell: true,
+    cwd: rootDir
   }, 'Rollback npm ci');
-  runCommandStrict(spawner, 'npm', ['run', 'build'], { timeout: 120000, shell: true }, 'Rollback npm run build');
-  runCommandStrict(spawner, 'npm', ['prune', '--omit=dev', '--legacy-peer-deps'], { timeout: 60000, shell: true }, 'Rollback npm prune');
+  runCommandStrict(spawner, 'npm', ['run', 'build'], { timeout: 120000, shell: true, cwd: rootDir }, 'Rollback npm run build');
+  runCommandStrict(spawner, 'npm', ['prune', '--omit=dev', '--legacy-peer-deps'], { timeout: 60000, shell: true, cwd: rootDir }, 'Rollback npm prune');
 
   // 9. Restart PM2 on restored revision
   logStep('R.9', 'Starting PM2 application on restored code...');
@@ -772,21 +852,36 @@ async function executeRollback(options = {}) {
 // CLI Entrypoint
 if (require.main === module) {
   const action = process.argv[2];
+  const isRehearsal = process.argv.includes('--is-rehearsal');
+  const targetCommitArg = process.argv.find((a, i) => process.argv[i - 1] === '--target-commit');
+  const prevRevArg = process.argv.find((a, i) => process.argv[i - 1] === '--previous-revision');
+  const rootDirArg = process.argv.find((a, i) => process.argv[i - 1] === '--root-dir');
+  const dbPathArg = process.argv.find((a, i) => process.argv[i - 1] === '--database-path');
+  const allowPostReopening = process.argv.includes('--allow-post-reopening-reconciliation');
+
   if (action === 'deploy') {
-    const targetCommitArg = process.argv.find((a, i) => process.argv[i - 1] === '--target-commit');
-    const prevRevArg = process.argv.find((a, i) => process.argv[i - 1] === '--previous-revision');
-    executeDeployment({ targetCommit: targetCommitArg, preDeploymentRevision: prevRevArg }).then(() => process.exit(0)).catch((err) => {
+    executeDeployment({
+      targetCommit: targetCommitArg,
+      preDeploymentRevision: prevRevArg,
+      rootDir: rootDirArg,
+      databasePath: dbPathArg,
+      isRehearsal
+    }).then(() => process.exit(0)).catch((err) => {
       console.error(`\n❌ [DEPLOYMENT HALTED] ${err.message}`);
       process.exit(1);
     });
   } else if (action === 'rollback') {
-    const allowPostReopening = process.argv.includes('--allow-post-reopening-reconciliation');
-    executeRollback({ allowPostReopeningReconciliation: allowPostReopening }).then(() => process.exit(0)).catch((err) => {
+    executeRollback({
+      allowPostReopeningReconciliation: allowPostReopening,
+      rootDir: rootDirArg,
+      databasePath: dbPathArg,
+      isRehearsal
+    }).then(() => process.exit(0)).catch((err) => {
       console.error(`\n❌ [ROLLBACK HALTED] ${err.message}`);
       process.exit(1);
     });
   } else {
-    console.error("Usage: node scripts/production_lifecycle.cjs <deploy|rollback> [--allow-post-reopening-reconciliation]");
+    console.error("Usage: node scripts/production_lifecycle.cjs <deploy|rollback> [--target-commit <SHA>] [--allow-post-reopening-reconciliation] [--is-rehearsal]");
     process.exit(1);
   }
 }

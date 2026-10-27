@@ -36,7 +36,7 @@ function setupDisposableEnvironment() {
 
   // Copy operational scripts to disposable env
   const rootScripts = path.resolve(__dirname, '..', 'scripts');
-  for (const s of ['preflight_lockdown_check.cjs', 'verify_isolation.cjs', 'run_migrations.cjs', 'production_smoke_check.cjs', 'production_lifecycle.cjs']) {
+  for (const s of ['preflight_lockdown_check.cjs', 'verify_isolation.cjs', 'run_migrations.cjs', 'production_smoke_check.cjs', 'production_lifecycle.cjs', 'obtain_smoke_credentials.cjs']) {
     fs.copyFileSync(path.join(rootScripts, s), path.join(REHEARSAL_DIR, 'scripts', s));
   }
 

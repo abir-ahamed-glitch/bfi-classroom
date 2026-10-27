@@ -125,7 +125,15 @@ console.log('BFI Classroom Baseline Server');
   fs.mkdirSync(scriptsDir, { recursive: true });
 
   const rootScriptsDir = path.resolve(__dirname);
-  for (const s of ['preflight_lockdown_check.cjs', 'verify_isolation.cjs', 'run_migrations.cjs', 'production_smoke_check.cjs', 'production_lifecycle.cjs']) {
+  const operationalScripts = [
+    'preflight_lockdown_check.cjs',
+    'verify_isolation.cjs',
+    'run_migrations.cjs',
+    'production_smoke_check.cjs',
+    'production_lifecycle.cjs',
+    'obtain_smoke_credentials.cjs'
+  ];
+  for (const s of operationalScripts) {
     fs.copyFileSync(path.join(rootScriptsDir, s), path.join(scriptsDir, s));
   }
 
@@ -138,6 +146,18 @@ console.log('BFI Classroom Baseline Server');
   runGit(['add', '.']);
   runGit(['commit', '-m', 'feat: candidate commit B with super admin and operational tooling']);
   const commitB = runGit(['rev-parse', 'HEAD']);
+
+  // 4. Return to baseline Commit A (simulating live production checkout before deployment)
+  runGit(['checkout', commitA]);
+
+  // 5. Simulate Phase 0 staging outside working tree:
+  // Extract all 6 operational scripts directly from commitB into server/.recovery_tools/
+  const recoveryToolsDir = path.join(serverDir, '.recovery_tools');
+  fs.mkdirSync(recoveryToolsDir, { recursive: true });
+  for (const s of operationalScripts) {
+    const content = runGit(['show', `${commitB}:scripts/${s}`]);
+    fs.writeFileSync(path.join(recoveryToolsDir, s), content, 'utf8');
+  }
 
   return { rootDir: TEST_REPO_DIR, dbPath, commitA, commitB };
 }
@@ -160,10 +180,34 @@ async function runRealGitRehearsal() {
   console.log(`Baseline Commit A:  ${commitA}`);
   console.log(`Candidate Commit B: ${commitB}`);
 
-  // Confirm scripts exist in working tree at Commit B
-  if (!fs.existsSync(path.join(rootDir, 'scripts', 'production_lifecycle.cjs'))) {
-    throw new Error('Candidate commit B must contain production_lifecycle.cjs');
+  // Confirm working tree starts on baseline Commit A (simulating live production checkout)
+  const initialHead = runGit(['rev-parse', 'HEAD']);
+  if (initialHead !== commitA) {
+    throw new Error(`Expected repository to be on baseline Commit A (${commitA}), got ${initialHead}`);
   }
+  const initialScriptsDirExists = fs.existsSync(path.join(rootDir, 'scripts', 'production_lifecycle.cjs'));
+  if (initialScriptsDirExists) {
+    throw new Error('Baseline Commit A must NOT contain scripts/production_lifecycle.cjs');
+  }
+  console.log('✅ Baseline working tree confirmed: on Commit A with zero candidate scripts in tracked tree.');
+
+  // Confirm operational tooling was staged in server/.recovery_tools/ outside tracked git tree
+  const recoveryToolsDir = path.join(rootDir, 'server', '.recovery_tools');
+  const requiredTools = [
+    'preflight_lockdown_check.cjs',
+    'verify_isolation.cjs',
+    'run_migrations.cjs',
+    'production_smoke_check.cjs',
+    'production_lifecycle.cjs',
+    'obtain_smoke_credentials.cjs'
+  ];
+  for (const tool of requiredTools) {
+    const tPath = path.join(recoveryToolsDir, tool);
+    if (!fs.existsSync(tPath) || fs.statSync(tPath).size === 0) {
+      throw new Error(`Operational tool missing or empty in staging: server/.recovery_tools/${tool}`);
+    }
+  }
+  console.log('✅ Staging confirmed: all 6 operational scripts staged in server/.recovery_tools/');
 
   // Adapter for systemctl, pm2, ss, lsof, curl while delegating git to real child_process!
   let nginxActive = true;
@@ -271,8 +315,106 @@ async function runRealGitRehearsal() {
     return { status: 0, stdout: '', stderr: '', error: null };
   };
 
-  // Phase 0: Explicitly record pre_deployment_revision as commitA
-  fs.writeFileSync(path.join(rootDir, 'server', 'pre_deployment_revision.txt'), `${commitA}\n`);
+  // Create persistent rehearsal spawner module in server/ for cold-start child processes
+  const spawnerModulePath = path.join(rootDir, 'server', 'rehearsal_spawner.cjs');
+  fs.writeFileSync(spawnerModulePath, `
+const child_process = require('child_process');
+const fs = require('fs');
+const path = require('path');
+
+let nginxActive = false;
+let pm2Status = 'stopped';
+const repoRootDir = path.resolve(__dirname, '..');
+
+function rehearsalSpawner(cmd, args = [], opts = {}) {
+  const cmdStr = (cmd + ' ' + (args ? args.join(' ') : '')).trim();
+
+  if (cmd === 'git') {
+    console.log('   [CHILD REAL GIT] -> git ' + args.join(' ') + ' (in ' + repoRootDir + ')');
+    return child_process.spawnSync('git', args, { cwd: repoRootDir, encoding: 'utf8' });
+  }
+
+  if (cmd === 'npm') {
+    if (args[0] === 'run' && args[1] === 'build') {
+      const distDir = path.join(repoRootDir, 'dist');
+      if (!fs.existsSync(distDir)) fs.mkdirSync(distDir, { recursive: true });
+      fs.writeFileSync(path.join(distDir, 'index.html'), '<!DOCTYPE html><html><body>Dist Index</body></html>');
+      fs.writeFileSync(path.join(distDir, '404.html'), '<!DOCTYPE html><html><body>Dist 404</body></html>');
+      return { status: 0, stdout: 'npm run build ok\\n', stderr: '', error: null };
+    }
+    return { status: 0, stdout: 'npm ok\\n', stderr: '', error: null };
+  }
+
+  if (cmd === 'sudo' && args[0] === 'systemctl') {
+    if (args[1] === 'stop' && args[2] === 'nginx') {
+      nginxActive = false;
+      return { status: 0, stdout: '', stderr: '', error: null };
+    }
+    if (args[1] === 'start' && args[2] === 'nginx') {
+      nginxActive = true;
+      return { status: 0, stdout: '', stderr: '', error: null };
+    }
+  }
+
+  if (cmd === 'systemctl') {
+    if (args[0] === 'is-active' && args[1] === 'nginx') {
+      return { status: nginxActive ? 0 : 3, stdout: nginxActive ? 'active\\n' : 'inactive\\n', stderr: '', error: null };
+    }
+  }
+
+  if (cmd === 'pgrep') {
+    if (args.includes('nginx')) {
+      return { status: nginxActive ? 0 : 1, stdout: nginxActive ? '830\\n832\\n' : '', stderr: '', error: null };
+    }
+  }
+
+  if (cmd === 'ss') {
+    if (args.includes('( sport = :80 or sport = :443 )')) {
+      return { status: 0, stdout: nginxActive ? 'tcp LISTEN 0 511 0.0.0.0:80 *:*\\n' : '', stderr: '', error: null };
+    }
+    if (args.includes('state established')) {
+      return { status: 0, stdout: '', stderr: '', error: null };
+    }
+    if (args.includes('( sport = :3001 )')) {
+      return { status: 0, stdout: pm2Status === 'online' ? 'tcp LISTEN 0 511 *:3001 *:*\\n' : '', stderr: '', error: null };
+    }
+  }
+
+  if (cmd === 'pm2') {
+    if (args[0] === 'stop') {
+      pm2Status = 'stopped';
+      return { status: 0, stdout: '[PM2] stopped\\n', stderr: '', error: null };
+    }
+    if (args[0] === 'start') {
+      pm2Status = 'online';
+      return { status: 0, stdout: '[PM2] started\\n', stderr: '', error: null };
+    }
+    if (args[0] === 'jlist') {
+      const list = [{ name: 'bfi-classroom', pid: 19613, pm2_env: { status: pm2Status } }];
+      return { status: 0, stdout: JSON.stringify(list), stderr: '', error: null };
+    }
+  }
+
+  if (cmd === 'lsof') {
+    if (args[0] === '-v') {
+      return { status: 0, stdout: 'lsof 4.93\\n', stderr: '', error: null };
+    }
+    return { status: 1, stdout: '', stderr: '', error: null };
+  }
+
+  if (cmd === 'curl') {
+    return { status: 0, stdout: 'HTTP/1.1 200 OK\\n', stderr: '', error: null };
+  }
+
+  if (cmd === process.execPath || cmd === 'node') {
+    return child_process.spawnSync(cmd, args, opts);
+  }
+
+  return { status: 0, stdout: '', stderr: '', error: null };
+}
+
+module.exports = { spawner: rehearsalSpawner };
+`);
 
   console.log('\n--- Step 1: Execute Deployment (Failing at Smoke Check Phase 5) ---');
   let deployFailedAsExpected = false;
@@ -281,7 +423,6 @@ async function runRealGitRehearsal() {
       rootDir,
       databasePath: 'server/bfi_classroom.db',
       targetCommit: commitB,
-      preDeploymentRevision: commitA,
       spawner: hybridSpawner,
       isRehearsal: true
     });
@@ -294,20 +435,41 @@ async function runRealGitRehearsal() {
     throw new Error('Deployment should have failed during smoke check phase.');
   }
 
-  console.log('\n--- Step 2: Execute Canonical Rollback ---');
-  // At this point, deployment halted at Phase 5. Traffic was never opened.
-  // We execute rollback, which checks out pre_deployment_revision (Commit A) via real Git!
-  const rollbackResult = await executeRollback({
-    rootDir,
-    databasePath: 'server/bfi_classroom.db',
-    spawner: hybridSpawner,
-    isRehearsal: true
+  // Verify that during Phase 3, checkout reached Commit B
+  const headAtFailure = runGit(['rev-parse', 'HEAD']);
+  if (headAtFailure !== commitB) {
+    throw new Error(`Expected working tree to be at candidate Commit B (${commitB}) upon failure, got ${headAtFailure}`);
+  }
+  console.log(`✅ Working tree confirmed on candidate Commit B (${commitB}) at failure point.`);
+
+  console.log('\n--- Step 2: Execute Canonical Rollback in a FRESH Node Process ---');
+  // Launch the preserved rollback runner in a brand NEW Node process to prove cold-start module resolution
+  const recoveryLifecycleScript = path.join(recoveryToolsDir, 'production_lifecycle.cjs');
+
+  const rollbackProcess = child_process.spawnSync(process.execPath, [
+    recoveryLifecycleScript,
+    'rollback',
+    '--is-rehearsal',
+    '--root-dir', rootDir,
+    '--database-path', 'server/bfi_classroom.db'
+  ], {
+    cwd: rootDir,
+    env: {
+      ...process.env,
+      LIFECYCLE_SPAWNER_MODULE: spawnerModulePath
+    },
+    encoding: 'utf8'
   });
 
-  if (!rollbackResult.rollbackComplete) {
-    throw new Error('executeRollback did not report rollbackComplete: true');
+  console.log(`[Cold-Start Rollback Output]:\n${rollbackProcess.stdout}`);
+  if (rollbackProcess.stderr) {
+    console.error(`[Cold-Start Rollback Stderr]:\n${rollbackProcess.stderr}`);
   }
-  console.log('✅ Canonical rollback completed.');
+
+  if (rollbackProcess.status !== 0) {
+    throw new Error(`Rollback in fresh Node process failed with code ${rollbackProcess.status}: ${rollbackProcess.stderr || rollbackProcess.stdout}`);
+  }
+  console.log('✅ Canonical rollback in fresh Node process completed successfully (code 0).');
 
   console.log('\n--- Step 3: Verify Real Git State & Recovery Tooling Survival ---');
 
@@ -326,23 +488,24 @@ async function runRealGitRehearsal() {
   if (fileInScriptsExists) {
     throw new Error('Expected Git to remove production_lifecycle.cjs from tracked scripts/ directory on checkout of Commit A!');
   }
-  console.log('✅ CONFIRMED: Real Git checkout removed production_lifecycle.cjs from scripts/ because Commit A never contained it.');
+  console.log('✅ CONFIRMED: Real Git checkout removed candidate scripts from scripts/ because Commit A never contained them.');
 
-  // Check 3: Did recovery tooling in server/.recovery_tools SURVIVE?
-  const recoveryToolsDir = path.join(rootDir, 'server', '.recovery_tools');
-  const recoveryLifecycle = path.join(recoveryToolsDir, 'production_lifecycle.cjs');
-  const recoveryVerify = path.join(recoveryToolsDir, 'verify_isolation.cjs');
-  const recoveryPreflight = path.join(recoveryToolsDir, 'preflight_lockdown_check.cjs');
-  const recoveryMigrations = path.join(recoveryToolsDir, 'run_migrations.cjs');
-  const recoverySmoke = path.join(recoveryToolsDir, 'production_smoke_check.cjs');
-
-  if (!fs.existsSync(recoveryLifecycle)) throw new Error('CRITICAL: server/.recovery_tools/production_lifecycle.cjs was lost!');
-  if (!fs.existsSync(recoveryVerify)) throw new Error('CRITICAL: server/.recovery_tools/verify_isolation.cjs was lost!');
-  if (!fs.existsSync(recoveryPreflight)) throw new Error('CRITICAL: server/.recovery_tools/preflight_lockdown_check.cjs was lost!');
-  if (!fs.existsSync(recoveryMigrations)) throw new Error('CRITICAL: server/.recovery_tools/run_migrations.cjs was lost!');
-  if (!fs.existsSync(recoverySmoke)) throw new Error('CRITICAL: server/.recovery_tools/production_smoke_check.cjs was lost!');
-
-  console.log('✅ RECOVERY TOOLING SURVIVAL VERIFIED: All 5 operational scripts in server/.recovery_tools/ survived real git checkout!');
+  // Check 3: Did ALL 6 recovery tools in server/.recovery_tools SURVIVE?
+  const expectedSurvivingTools = [
+    'production_lifecycle.cjs',
+    'verify_isolation.cjs',
+    'preflight_lockdown_check.cjs',
+    'run_migrations.cjs',
+    'production_smoke_check.cjs',
+    'obtain_smoke_credentials.cjs'
+  ];
+  for (const tool of expectedSurvivingTools) {
+    const p = path.join(recoveryToolsDir, tool);
+    if (!fs.existsSync(p) || fs.statSync(p).size === 0) {
+      throw new Error(`CRITICAL: server/.recovery_tools/${tool} was lost or empty!`);
+    }
+  }
+  console.log('✅ RECOVERY TOOLING SURVIVAL VERIFIED: All 6 operational scripts in server/.recovery_tools/ survived real git checkout!');
 
   // Check 4: Verify Database Invariants Restored
   const restoredDb = new Database(dbPath, { readonly: true });
@@ -374,6 +537,31 @@ async function runRealGitRehearsal() {
     }
   }
   console.log('✅ TRAFFIC & ROLLBACK STATE VERIFIED: Rollback completed terminally; traffic exposure flags preserved.');
+
+  // Check 6: Negative Verification - Cold-start fails if obtain_smoke_credentials.cjs is missing
+  console.log('\n--- Step 4: Negative Verification (Cold-Start Dependency Assertion) ---');
+  const smokeCredsPath = path.join(recoveryToolsDir, 'obtain_smoke_credentials.cjs');
+  const smokeCredsBak = path.join(recoveryToolsDir, 'obtain_smoke_credentials.cjs.bak');
+  fs.renameSync(smokeCredsPath, smokeCredsBak);
+
+  const failedProbe = child_process.spawnSync(process.execPath, [
+    recoveryLifecycleScript,
+    'rollback',
+    '--is-rehearsal',
+    '--root-dir', rootDir,
+    '--database-path', 'server/bfi_classroom.db'
+  ], {
+    cwd: rootDir,
+    env: { ...process.env, LIFECYCLE_SPAWNER_MODULE: spawnerModulePath },
+    encoding: 'utf8'
+  });
+
+  fs.renameSync(smokeCredsBak, smokeCredsPath); // restore immediately
+
+  if (failedProbe.status === 0 || !((failedProbe.stderr || '') + (failedProbe.stdout || '')).includes('obtain_smoke_credentials.cjs')) {
+    throw new Error(`Expected cold-start probe to fail with missing obtain_smoke_credentials.cjs, got code: ${failedProbe.status}`);
+  }
+  console.log('✅ NEGATIVE VERIFICATION CONFIRMED: Missing obtain_smoke_credentials.cjs causes cold-start failure (code 1, Cannot find module). Self-contained bundle is mandatory.');
 
   console.log('\n================================================================');
   console.log('REAL GIT RECOVERY REHEARSAL PASSED (100% VERIFIED)');
