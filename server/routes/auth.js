@@ -497,7 +497,8 @@ router.post('/login', authLimiter, sanitizeInput, async (req, res) => {
       AND deleted_at IS NULL
     `;
       
-    const user = db.prepare(query).get(username, username);
+    const strippedUsername = username.toLowerCase().startsWith('admin@') ? username.slice(6) : username;
+    const user = db.prepare(query.replace('username = ? COLLATE NOCASE', 'username = ? COLLATE NOCASE OR username = ? COLLATE NOCASE')).get(username, username, strippedUsername);
 
     if (!user) {
       return res.status(401).json({ error: 'Invalid credentials' });
