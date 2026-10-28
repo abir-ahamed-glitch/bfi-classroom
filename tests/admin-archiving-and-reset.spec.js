@@ -1097,3 +1097,149 @@ test.describe('Task 6: Super Admin-Initiated Reset Endpoints & URL Fragment Arch
   });
 });
 
+test.describe('Task 7: Multi-Cycle Accountability Timeline & Audited Export with Formula Injection Defense', () => {
+  test('verifies csv sanitization, multi-cycle archive timeline, and audited export endpoint', async () => {
+    // 1. Verify sanitizeCsvField unit tests
+    const authMiddleware = await import('../server/middleware/auth.js');
+    assert.strictEqual(typeof authMiddleware.sanitizeCsvField, 'function', 'sanitizeCsvField must be exported from auth.js');
+    const { sanitizeCsvField } = authMiddleware;
+
+    assert.strictEqual(sanitizeCsvField('=cmd'), "'=cmd");
+    assert.strictEqual(sanitizeCsvField('  +SUM'), "'  +SUM");
+    assert.strictEqual(sanitizeCsvField('\t@danger'), "'\t@danger");
+    assert.strictEqual(sanitizeCsvField('" -1+2"'), '\'" -1+2"');
+    assert.strictEqual(sanitizeCsvField('Normal administrative note'), 'Normal administrative note');
+
+    // 2. Database tests
+    const { initIsolatedTestDatabase } = await import('./test-db-isolation.js');
+    await initIsolatedTestDatabase(TEST_SHARED_DB_PATH);
+
+    const { default: serverDb } = await import('../server/db/database.js');
+    const { runAdminArchivingAndResetMigration } = await import('../server/db/migrations/20261028_admin_archiving_and_reset.cjs');
+    runAdminArchivingAndResetMigration(serverDb);
+
+    serverDb.exec(`
+      DELETE FROM admin_audit_logs;
+      DELETE FROM mfa_login_challenges;
+      DELETE FROM admin_permissions;
+      DELETE FROM sessions;
+      DELETE FROM password_reset_tokens;
+      DELETE FROM email_verification_challenges;
+      DELETE FROM users;
+
+      -- Seed: User 1 (Super Admin), User 2 (Admin with multiple archive cycles)
+      INSERT INTO users (id, username, email, password_hash, role, first_name, last_name, is_super_admin, is_active, token_version, account_version)
+      VALUES (1, 'superadmin', 'super@bfibd.org', '$2a$10$wT1dO/Gf3wK6zN2R6V3j3OGmG9pT3C0s6t4UvMh7N4X2f1m6J5g5i', 'admin', 'Super', 'Admin', 1, 1, 1, 1),
+             (2, 'admin_two', 'admin2@bfibd.org', '$2a$10$wT1dO/Gf3wK6zN2R6V3j3OGmG9pT3C0s6t4UvMh7N4X2f1m6J5g5i', 'admin', 'Admin', 'Two', 0, 1, 1, 5);
+    `);
+
+    // Sudo verified session for Super Admin
+    serverDb.prepare("INSERT INTO sessions (id, user_id, token_hash, expires_at, sudo_verified_at) VALUES (1, 1, 'h1', datetime('now', '+1 hour'), datetime('now'))").run();
+
+    // Seed multiple archive and restore events in audit log
+    serverDb.exec(`
+      INSERT INTO admin_audit_logs (id, actor_id, target_user_id, action, module, resource, outcome, details, created_at)
+      VALUES 
+        (101, 1, 2, 'archive_administrator', 'admin_management', 'admin:2', 'success', json_object('reason', 'First leave sabbatical'), '2025-01-10 10:00:00'),
+        (102, 1, 2, 'restore_administrator', 'admin_management', 'admin:2', 'success', json_object('reason', 'Returned from first sabbatical'), '2025-06-15 11:30:00'),
+        (103, 1, 2, 'archive_administrator', 'admin_management', 'admin:2', 'success', json_object('reason', 'Second departure for study'), '2026-01-05 09:15:00'),
+        (104, 1, 2, 'restore_administrator', 'admin_management', 'admin:2', 'success', json_object('reason', 'Rehired as course coordinator'), '2026-07-20 14:00:00'),
+        (105, 2, NULL, 'update_course', 'course_maker', 'course:1', 'success', '=cmd|calc!A1', '2026-08-01 12:00:00');
+    `);
+
+    const { default: adminMgmtRoutes } = await import('../server/routes/admin-management.js');
+
+    function mockReqRes(options = {}) {
+      let statusCode = 200;
+      let jsonPayload = null;
+      let textPayload = null;
+      let nextCalled = false;
+      const headers = {};
+      const req = {
+        params: options.params || {},
+        query: options.query || {},
+        body: options.body || {},
+        headers: options.headers || {},
+        ip: '127.0.0.1',
+        user: options.user || {
+          id: 1,
+          username: 'superadmin',
+          role: 'admin',
+          is_super_admin: 1,
+          isSuperAdmin: true,
+          sessionId: 1,
+          permissions: ['*']
+        }
+      };
+      const res = {
+        status(code) {
+          statusCode = code;
+          return this;
+        },
+        json(payload) {
+          jsonPayload = payload;
+          return this;
+        },
+        send(payload) {
+          textPayload = payload;
+          return this;
+        },
+        setHeader(name, val) {
+          headers[name.toLowerCase()] = val;
+          return this;
+        }
+      };
+      const next = () => { nextCalled = true; };
+      return { req, res, next, getResult: () => ({ statusCode, jsonPayload, textPayload, nextCalled, headers }) };
+    }
+
+    function getAdminHandler(method, pathStr) {
+      const layer = adminMgmtRoutes.stack.find(l => l.route?.path === pathStr && l.route?.methods?.[method.toLowerCase()]);
+      if (!layer) throw new Error(`Route not found: ${method} ${pathStr} on adminMgmtRoutes`);
+      return layer.route.stack[layer.route.stack.length - 1].handle;
+    }
+
+    const profileHandler = getAdminHandler('GET', '/administrators/:id/accountability-profile');
+    const exportHandler = getAdminHandler('GET', '/administrators/:id/export-history');
+
+    // 3. Verify accountability profile includes multi-cycle timeline
+    const ctxProfile = mockReqRes({ params: { id: '2' } });
+    await profileHandler(ctxProfile.req, ctxProfile.res);
+    assert.strictEqual(ctxProfile.getResult().statusCode, 200);
+
+    const profileData = ctxProfile.getResult().jsonPayload;
+    assert.ok(Array.isArray(profileData.archiveRestoreLifecycle), 'archiveRestoreLifecycle must be an array');
+    assert.strictEqual(profileData.archiveRestoreLifecycle.length, 4, 'Must return all 4 archive/restore cycle events');
+    assert.strictEqual(profileData.archiveRestoreLifecycle[0].reason, 'First leave sabbatical');
+    assert.strictEqual(profileData.archiveRestoreLifecycle[1].reason, 'Returned from first sabbatical');
+    assert.strictEqual(profileData.archiveRestoreLifecycle[2].reason, 'Second departure for study');
+    assert.strictEqual(profileData.archiveRestoreLifecycle[3].reason, 'Rehired as course coordinator');
+
+    // 4. Verify CSV Export with formula injection neutralization and auditing
+    const ctxExportCsv = mockReqRes({ params: { id: '2' }, query: { format: 'csv' } });
+    await exportHandler(ctxExportCsv.req, ctxExportCsv.res);
+    assert.strictEqual(ctxExportCsv.getResult().statusCode, 200);
+
+    const exportCsvRes = ctxExportCsv.getResult();
+    assert.ok(exportCsvRes.headers['content-type']?.includes('text/csv'));
+    assert.ok(exportCsvRes.headers['content-disposition']?.includes('attachment; filename='));
+    assert.ok(exportCsvRes.textPayload.includes('Event ID,Timestamp (Dhaka),Actor ID'));
+    // Verify malicious formula in details was neutralized with prepended quote
+    assert.ok(exportCsvRes.textPayload.includes("'=cmd|calc!A1"), 'CSV injection formula was neutralized with single quote');
+
+    // 5. Verify JSON Export
+    const ctxExportJson = mockReqRes({ params: { id: '2' }, query: { format: 'json' } });
+    await exportHandler(ctxExportJson.req, ctxExportJson.res);
+    assert.strictEqual(ctxExportJson.getResult().statusCode, 200);
+
+    const exportJsonRes = ctxExportJson.getResult();
+    assert.strictEqual(exportJsonRes.jsonPayload.targetUserId, 2);
+    assert.ok(exportJsonRes.jsonPayload.records.length >= 5);
+
+    // 6. Verify audit log entry for the export was recorded
+    const exportAudit = serverDb.prepare("SELECT * FROM admin_audit_logs WHERE target_user_id = 2 AND action = 'admin.export_accountability_history' ORDER BY id DESC LIMIT 1").get();
+    assert.ok(exportAudit, 'Export audit log was recorded');
+    assert.strictEqual(exportAudit.outcome, 'success');
+  });
+});
+

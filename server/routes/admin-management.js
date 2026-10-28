@@ -11,7 +11,8 @@ import {
   sanitizeInput, 
   validateEmail, 
   validatePassword,
-  sudoAuthLimiter
+  sudoAuthLimiter,
+  sanitizeCsvField
 } from '../middleware/auth.js';
 import { PERMISSION_MODULES, ALL_PERMISSIONS, PERMISSION_DEPENDENCY_MAP } from '../config/permissions.js';
 import { 
@@ -810,6 +811,9 @@ router.get('/administrators/:id/accountability-profile', authenticateToken, requ
         u.id, u.username, u.email, u.first_name, u.last_name, u.profile_picture,
         u.role, u.is_active, u.is_super_admin, u.permissions_version, u.last_login,
         u.created_at, u.updated_at, u.created_by_admin_id,
+        u.archived_at, u.archived_by_admin_id, u.archive_reason,
+        u.restored_at, u.restored_by_admin_id, u.restore_reason,
+        u.email_verified_at, u.verified_email, u.account_version,
         ap.whatsapp_number as phone_number, ap.full_name, ap.bio,
         c.username as creator_username, c.email as creator_email,
         c.first_name as creator_first_name, c.last_name as creator_last_name
@@ -864,6 +868,31 @@ router.get('/administrators/:id/accountability-profile', authenticateToken, requ
     }));
 
     // Timeline 1: Actions performed BY this admin
+    // Archive and restore lifecycle timeline (Every past cycle)
+    const archiveRestoreLifecycle = db.prepare(`
+      SELECT l.id, l.actor_id, l.action, l.details, l.before_state, l.after_state, l.created_at,
+             u.username as actor_username, u.first_name as actor_first_name, u.last_name as actor_last_name
+      FROM admin_audit_logs l
+      LEFT JOIN users u ON u.id = l.actor_id
+      WHERE l.target_user_id = ? AND l.action IN ('archive_administrator', 'restore_administrator')
+      ORDER BY l.id ASC
+    `).all(adminId).map(row => {
+      const parsedDetails = typeof row.details === 'string' ? safeJsonParse(row.details) : row.details;
+      const actorName = `${row.actor_first_name || ''} ${row.actor_last_name || ''}`.trim() || row.actor_username || (row.actor_id ? `Admin #${row.actor_id}` : 'System');
+      return {
+        id: row.id,
+        action: row.action,
+        cycleType: row.action === 'archive_administrator' ? 'archive' : 'restore',
+        actorId: row.actor_id,
+        actorName,
+        reason: parsedDetails?.reason || null,
+        dhakaTime: formatDhakaTimestamp(row.created_at),
+        createdAt: row.created_at,
+        beforeState: typeof row.before_state === 'string' ? safeJsonParse(row.before_state) : row.before_state,
+        afterState: typeof row.after_state === 'string' ? safeJsonParse(row.after_state) : row.after_state
+      };
+    });
+
     const actionsPerformed = db.prepare(`
       SELECT 
         l.id, l.action, l.module, l.resource, l.outcome, l.details, l.ip_address,
@@ -958,6 +987,7 @@ router.get('/administrators/:id/accountability-profile', authenticateToken, requ
       },
       effectivePermissions,
       permissionHistory,
+      archiveRestoreLifecycle,
       actionsPerformedTimeline: actionsPerformed,
       changesReceivedTimeline: changesReceived,
       security: {
@@ -1985,6 +2015,142 @@ router.post('/administrators/:id/reset-password/direct-link', authenticateToken,
     }
     console.error('Error generating direct reset link:', err);
     res.status(500).json({ error: 'Failed to generate direct reset link' });
+  }
+});
+
+// GET /api/admin/administrators/:id/export-history - Audited export of administrator accountability history
+router.get('/administrators/:id/export-history', authenticateToken, requireSuperAdmin, requireRecentAuth, sanitizeInput, (req, res) => {
+  try {
+    const adminId = Number(req.params.id);
+    if (!Number.isInteger(adminId) || adminId <= 0) {
+      return res.status(400).json({ error: 'Invalid administrator ID' });
+    }
+
+    const admin = db.prepare('SELECT id, username, email FROM users WHERE id = ? AND deleted_at IS NULL').get(adminId);
+    if (!admin) {
+      return res.status(404).json({ error: 'Administrator not found' });
+    }
+
+    const format = (req.query.format || 'csv').toLowerCase();
+    const moduleFilter = String(req.query.module || '').trim().toLowerCase();
+    const outcomeFilter = String(req.query.outcome || '').trim().toLowerCase();
+    const startDate = String(req.query.startDate || '').trim();
+    const endDate = String(req.query.endDate || '').trim();
+
+    let querySql = `
+      SELECT l.id, l.actor_id, l.target_user_id, l.action, l.module, l.resource, l.outcome, l.details, l.ip_address, l.created_at,
+             a.username as actor_username, t.username as target_username
+      FROM admin_audit_logs l
+      LEFT JOIN users a ON a.id = l.actor_id
+      LEFT JOIN users t ON t.id = l.target_user_id
+      WHERE (l.target_user_id = ? OR l.actor_id = ?)
+    `;
+    const params = [adminId, adminId];
+
+    if (moduleFilter) {
+      querySql += ' AND lower(l.module) = ?';
+      params.push(moduleFilter);
+    }
+    if (outcomeFilter) {
+      querySql += ' AND lower(l.outcome) = ?';
+      params.push(outcomeFilter);
+    }
+    if (startDate) {
+      querySql += ' AND l.created_at >= ?';
+      params.push(startDate);
+    }
+    if (endDate) {
+      querySql += ' AND l.created_at <= ?';
+      params.push(endDate);
+    }
+
+    querySql += ' ORDER BY l.id DESC LIMIT 5000';
+
+    const rows = db.prepare(querySql).all(...params);
+
+    const sanitizedRecords = rows.map(r => {
+      let parsedDetails = typeof r.details === 'string' ? safeJsonParse(r.details) : r.details;
+      if (parsedDetails && typeof parsedDetails === 'object') {
+        parsedDetails = redactSensitiveData(parsedDetails);
+      }
+      return {
+        id: r.id,
+        dhakaTime: formatDhakaTimestamp(r.created_at),
+        createdAt: r.created_at,
+        actorId: r.actor_id,
+        actorUsername: r.actor_username || (r.actor_id ? `Admin #${r.actor_id}` : 'System'),
+        targetUserId: r.target_user_id,
+        targetUsername: r.target_username || (r.target_user_id ? `User #${r.target_user_id}` : ''),
+        action: r.action,
+        module: r.module || '',
+        outcome: r.outcome,
+        ipAddress: r.ip_address || '',
+        details: typeof parsedDetails === 'object' ? JSON.stringify(parsedDetails) : String(parsedDetails || '')
+      };
+    });
+
+    // Record audit log of the export
+    recordAuditLog({
+      actorId: req.user.id,
+      targetUserId: adminId,
+      action: 'admin.export_accountability_history',
+      module: 'admin_management',
+      resource: `admin:${adminId}`,
+      outcome: 'success',
+      correlationId: req.correlationId,
+      details: {
+        format,
+        row_count: sanitizedRecords.length,
+        filters: { module: moduleFilter || null, outcome: outcomeFilter || null, startDate: startDate || null, endDate: endDate || null }
+      },
+      ipAddress: req.ip || '',
+      throwOnError: false
+    });
+
+    if (format === 'json') {
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+      return res.json({
+        targetUserId: adminId,
+        count: sanitizedRecords.length,
+        exportedAt: new Date().toISOString(),
+        records: sanitizedRecords
+      });
+    }
+
+    // CSV format
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="admin-${adminId}-accountability-history-${Date.now()}.csv"`);
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+
+    const headers = ['Event ID', 'Timestamp (Dhaka)', 'Actor ID', 'Actor Username', 'Target ID', 'Target Username', 'Action', 'Module', 'Outcome', 'IP Address', 'Details'];
+    const csvLines = [headers.join(',')];
+
+    for (const r of sanitizedRecords) {
+      const line = [
+        r.id,
+        r.dhakaTime,
+        r.actorId || '',
+        r.actorUsername,
+        r.targetUserId || '',
+        r.targetUsername,
+        r.action,
+        r.module,
+        r.outcome,
+        r.ipAddress,
+        r.details
+      ].map(val => {
+        const sanitized = sanitizeCsvField(val);
+        const escaped = sanitized.replace(/"/g, '""');
+        return `"${escaped}"`;
+      }).join(',');
+      csvLines.push(line);
+    }
+
+    res.send(csvLines.join('\r\n'));
+  } catch (err) {
+    console.error('Error exporting accountability history:', err);
+    res.status(500).json({ error: 'Failed to export administrator accountability history' });
   }
 });
 

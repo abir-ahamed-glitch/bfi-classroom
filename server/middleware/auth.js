@@ -490,3 +490,18 @@ export function requireRecentAuth(req, res, next) {
     requireSudo: true
   });
 }
+
+/**
+ * Sanitize a field for CSV export to prevent formula/DDE injection in Excel/Calc/Sheets.
+ * Neutralizes fields starting with =, +, -, @, \t, or \r (including optional preceding quotes or whitespace)
+ * by prepending a single quote.
+ */
+export function sanitizeCsvField(value) {
+  if (value === null || value === undefined) return '';
+  const str = String(value);
+  const trimmedLeading = str.replace(/^["'\s]+/, '');
+  if (/^[=+\-@\t\r]/.test(trimmedLeading) || /^[=+\-@\t\r]/.test(str)) {
+    return `'${str}`;
+  }
+  return str;
+}
