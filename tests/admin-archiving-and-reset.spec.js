@@ -260,3 +260,40 @@ test.describe('Task 1: Database Migration & Schema Upgrade', () => {
     verifyDb.close();
   });
 });
+
+
+test.describe('Task 2: Secure Email Utility Hardening & Multi-Flow Template Support', () => {
+  test('email helper exports safe builders and returns null without configured credentials', async () => {
+    const emailModule = await import('../server/utils/email.js');
+
+    // 1. Verify builders exist
+    assert.strictEqual(typeof emailModule.buildPasswordResetMailOptions, 'function');
+    assert.strictEqual(typeof emailModule.buildPasswordChangeNotificationMailOptions, 'function');
+    assert.strictEqual(typeof emailModule.buildEmailVerificationMailOptions, 'function');
+
+    // 2. Flow 1 & 2: User and Admin self-recovery (15m, user requested)
+    const userMail = emailModule.buildPasswordResetMailOptions('user@bfibd.org', 'https://classroom.bfibd.org/reset#token=abc', { isSuperAdminInitiated: false });
+    assert.strictEqual(userMail.subject, 'Password Reset Request - BFI Classroom');
+    assert.ok(userMail.html.includes('15 minutes'));
+    assert.ok(userMail.html.includes('You requested to reset your password'));
+
+    // 3. Flow 3: Super Admin-initiated reset (30m, administrative reset)
+    const adminMail = emailModule.buildPasswordResetMailOptions('admin@bfibd.org', 'https://classroom.bfibd.org/admin/reset#token=xyz', { isSuperAdminInitiated: true });
+    assert.strictEqual(adminMail.subject, 'Administrative Password Reset - BFI Classroom');
+    assert.ok(adminMail.html.includes('30 minutes'));
+    assert.ok(adminMail.html.includes('initiated by Super Admin'));
+
+    // 4. Security completion notification (no secrets)
+    const alertMail = emailModule.buildPasswordChangeNotificationMailOptions('admin@bfibd.org', { dhakaTime: '28 Oct 2026, 04:30 PM', ipAddress: '192.168.1.1' });
+    assert.strictEqual(alertMail.subject, 'Security Alert: Your BFI Classroom Password Has Been Changed');
+    assert.ok(alertMail.html.includes('28 Oct 2026, 04:30 PM'));
+    assert.ok(alertMail.html.includes('192.168.1.1'));
+    assert.strictEqual(alertMail.html.includes('password'), true);
+    assert.strictEqual(alertMail.html.includes('hash'), false);
+
+    // 5. Email verification challenge
+    const verifyMail = emailModule.buildEmailVerificationMailOptions('admin@bfibd.org', 'https://classroom.bfibd.org/verify-email?token=ver123');
+    assert.strictEqual(verifyMail.subject, 'Verify Your Email Address - BFI Classroom');
+    assert.ok(verifyMail.html.includes('https://classroom.bfibd.org/verify-email?token=ver123'));
+  });
+});
