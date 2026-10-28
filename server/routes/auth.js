@@ -10,7 +10,7 @@ import db from '../db/database.js';
 import { authenticateToken, authLimiter, sanitizeInput, sensitiveEndpointLimiter, generatePasswordResetToken, verifyPasswordResetToken, validatePassword, getClientIp } from '../middleware/auth.js';
 import { getJwtRefreshSecret, getJwtSecret } from '../config/security.js';
 import { sendPasswordResetEmail, sendEmailVerificationChallenge, sendPasswordChangeNotificationEmail } from '../utils/email.js';
-import { verifyTotpCode, decryptSecret } from '../utils/totp.js';
+import { verifyTotpCode, decryptSecret, generateTotpSecret, generateTotpUri, encryptSecret, generateRecoveryCodes } from '../utils/totp.js';
 import { securityEvents } from '../utils/security-events.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -698,7 +698,10 @@ router.post('/mfa-verify', authLimiter, sanitizeInput, (req, res) => {
       verificationStep = verification.step;
     } else if (recoveryCode) {
       const cleanRecovery = String(recoveryCode).trim().toUpperCase();
-      const rows = db.prepare('SELECT id, code_hash FROM admin_mfa_recovery_codes WHERE user_id = ? AND used = 0').all(user.id);
+      let rows = db.prepare('SELECT id, code_hash FROM user_mfa_recovery_codes WHERE user_id = ? AND used = 0').all(user.id);
+      if (rows.length === 0) {
+        rows = db.prepare('SELECT id, code_hash FROM admin_mfa_recovery_codes WHERE user_id = ? AND used = 0').all(user.id);
+      }
       for (const row of rows) {
         if (bcrypt.compareSync(cleanRecovery, row.code_hash)) {
           matchedRecoveryId = row.id;
@@ -739,6 +742,11 @@ router.post('/mfa-verify', authLimiter, sanitizeInput, (req, res) => {
         }
       } else if (matchedRecoveryId !== null) {
         const recovRes = db.prepare(`
+          UPDATE user_mfa_recovery_codes 
+          SET used = 1, used_at = datetime('now') 
+          WHERE id = ? AND user_id = ? AND used = 0
+        `).run(matchedRecoveryId, user.id);
+        db.prepare(`
           UPDATE admin_mfa_recovery_codes 
           SET used = 1, used_at = datetime('now') 
           WHERE id = ? AND user_id = ? AND used = 0
@@ -1593,6 +1601,269 @@ router.post('/admin/reset-password/complete', sanitizeInput, async (req, res) =>
   } catch (error) {
     console.error('Admin reset password complete error:', error);
     res.status(500).json({ error: 'Internal server error.' });
+  }
+});
+
+
+// ==========================================
+// UNIVERSAL 2FA ENDPOINTS FOR ALL USERS
+// ==========================================
+
+// GET /api/auth/mfa/status - Get MFA status and remaining recovery codes count
+router.get('/mfa/status', authenticateToken, (req, res) => {
+  try {
+    const user = db.prepare('SELECT two_factor_enabled, last_totp_timestamp FROM users WHERE id = ?').get(req.user.id);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const recCount = db.prepare('SELECT COUNT(*) as c FROM user_mfa_recovery_codes WHERE user_id = ? AND used = 0').get(req.user.id)?.c || 0;
+
+    res.json({
+      enabled: Boolean(user.two_factor_enabled),
+      recoveryCodesRemaining: recCount,
+      lastTotpTimestamp: user.last_totp_timestamp || null
+    });
+  } catch (err) {
+    console.error('Error fetching MFA status:', err);
+    res.status(500).json({ error: 'Failed to fetch MFA status' });
+  }
+});
+
+// POST /api/auth/mfa/setup - Initiate MFA enrollment with password verification
+router.post('/mfa/setup', authenticateToken, sanitizeInput, (req, res) => {
+  try {
+    const { password } = req.body;
+    if (!password) {
+      return res.status(400).json({ error: 'Current password is required to set up two-factor authentication.', code: 'PASSWORD_REQUIRED' });
+    }
+
+    const user = db.prepare('SELECT id, username, email, password_hash, two_factor_enabled FROM users WHERE id = ?').get(req.user.id);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    if (!bcrypt.compareSync(password, user.password_hash)) {
+      return res.status(401).json({ error: 'Incorrect password. Verification failed.', code: 'INVALID_PASSWORD' });
+    }
+
+    const secret = generateTotpSecret();
+    const encryptedSecret = encryptSecret(secret);
+    const otpauthUri = generateTotpUri({ secret, username: user.username || user.email, issuer: 'BFI Classroom' });
+
+    // Store in pending_two_factor_secret
+    db.prepare(`UPDATE users SET pending_two_factor_secret = ? WHERE id = ?`).run(encryptedSecret, user.id);
+
+    res.json({
+      secret,
+      otpauthUri
+    });
+  } catch (err) {
+    console.error('Error initiating MFA setup:', err);
+    res.status(500).json({ error: 'Failed to initiate MFA setup' });
+  }
+});
+
+// POST /api/auth/mfa/verify-setup - Confirm enrollment with TOTP code, activate MFA, and issue recovery codes
+router.post('/mfa/verify-setup', authenticateToken, sanitizeInput, (req, res) => {
+  try {
+    const { code } = req.body;
+    if (!code) {
+      return res.status(400).json({ error: 'Verification code is required.', code: 'CODE_REQUIRED' });
+    }
+
+    const user = db.prepare('SELECT id, pending_two_factor_secret, account_version, token_version FROM users WHERE id = ?').get(req.user.id);
+    if (!user || !user.pending_two_factor_secret) {
+      return res.status(400).json({ error: 'No pending two-factor setup found. Please initiate setup first.', code: 'NO_PENDING_SETUP' });
+    }
+
+    const plainSecret = decryptSecret(user.pending_two_factor_secret);
+    const verifyResult = verifyTotpCode(plainSecret, code);
+    if (!verifyResult.valid) {
+      return res.status(400).json({ error: 'Invalid verification code. Please check your authenticator app and try again.', code: 'INVALID_CODE' });
+    }
+
+    const recoveryCodes = generateRecoveryCodes(8);
+
+    const activateTx = db.transaction(() => {
+      // 1. Activate MFA
+      db.prepare(`
+        UPDATE users 
+        SET two_factor_enabled = 1,
+            two_factor_secret = pending_two_factor_secret,
+            pending_two_factor_secret = NULL,
+            last_totp_timestamp = ?,
+            account_version = account_version + 1,
+            token_version = token_version + 1,
+            updated_at = datetime('now')
+        WHERE id = ?
+      `).run(verifyResult.step, user.id);
+
+      // 2. Clear existing recovery codes
+      db.prepare('DELETE FROM user_mfa_recovery_codes WHERE user_id = ?').run(user.id);
+      db.prepare('DELETE FROM admin_mfa_recovery_codes WHERE user_id = ?').run(user.id);
+
+      // 3. Store fresh recovery codes
+      const insertRec = db.prepare(`
+        INSERT INTO user_mfa_recovery_codes (user_id, code_hash, used, created_at)
+        VALUES (?, ?, 0, datetime('now'))
+      `);
+      const insertAdminRec = db.prepare(`
+        INSERT INTO admin_mfa_recovery_codes (user_id, code_hash, used, created_at)
+        VALUES (?, ?, 0, datetime('now'))
+      `);
+
+      for (const rawCode of recoveryCodes) {
+        const hash = bcrypt.hashSync(rawCode.trim().toUpperCase(), 10);
+        insertRec.run(user.id, hash);
+        insertAdminRec.run(user.id, hash);
+      }
+
+      // Record audit log
+      recordAuditLog({
+        actorId: user.id,
+        targetUserId: user.id,
+        action: 'user_mfa_enabled',
+        module: 'auth',
+        resource: `user:${user.id}`,
+        outcome: 'success',
+        details: { recovery_codes_issued: recoveryCodes.length },
+        throwOnError: false
+      });
+    });
+
+    activateTx();
+
+    res.json({
+      message: 'Two-factor authentication successfully enabled.',
+      recoveryCodes
+    });
+  } catch (err) {
+    console.error('Error verifying MFA setup:', err);
+    res.status(500).json({ error: 'Failed to verify MFA setup' });
+  }
+});
+
+// POST /api/auth/mfa/replace - Generate new secret / re-enroll (Step-up required)
+router.post('/mfa/replace', authenticateToken, sanitizeInput, (req, res) => {
+  try {
+    const { code, recoveryCode } = req.body;
+    const user = db.prepare('SELECT id, username, email, two_factor_enabled, two_factor_secret, last_totp_timestamp FROM users WHERE id = ?').get(req.user.id);
+    if (!user || user.two_factor_enabled !== 1 || !user.two_factor_secret) {
+      return res.status(400).json({ error: 'Two-factor authentication is not currently enabled.', code: 'MFA_NOT_ENABLED' });
+    }
+
+    // Step-up verification: check TOTP or recovery code
+    let verified = false;
+    if (code) {
+      const plainSecret = decryptSecret(user.two_factor_secret);
+      const verifyRes = verifyTotpCode(plainSecret, code, { lastTimestamp: user.last_totp_timestamp || 0 });
+      if (verifyRes.valid) verified = true;
+    } else if (recoveryCode) {
+      const cleanRec = String(recoveryCode).trim().toUpperCase();
+      const rows = db.prepare('SELECT id, code_hash FROM user_mfa_recovery_codes WHERE user_id = ? AND used = 0').all(user.id);
+      for (const row of rows) {
+        if (bcrypt.compareSync(cleanRec, row.code_hash)) {
+          db.prepare("UPDATE user_mfa_recovery_codes SET used = 1, used_at = datetime('now') WHERE id = ?").run(row.id);
+          db.prepare("UPDATE admin_mfa_recovery_codes SET used = 1, used_at = datetime('now') WHERE id = ?").run(row.id);
+          verified = true;
+          break;
+        }
+      }
+    }
+
+    if (!verified) {
+      return res.status(401).json({ error: 'Valid authenticator code or unused recovery code required to replace configuration.', code: 'INVALID_FACTOR' });
+    }
+
+    const secret = generateTotpSecret();
+    const encryptedSecret = encryptSecret(secret);
+    const otpauthUri = generateTotpUri({ secret, username: user.username || user.email, issuer: 'BFI Classroom' });
+
+    db.prepare(`UPDATE users SET pending_two_factor_secret = ? WHERE id = ?`).run(encryptedSecret, user.id);
+
+    res.json({
+      secret,
+      otpauthUri
+    });
+  } catch (err) {
+    console.error('Error replacing MFA secret:', err);
+    res.status(500).json({ error: 'Failed to initiate MFA replacement' });
+  }
+});
+
+// POST /api/auth/mfa/disable - Disable MFA (Step-up required; Super Admins blocked)
+router.post('/mfa/disable', authenticateToken, sanitizeInput, (req, res) => {
+  try {
+    const { code, recoveryCode } = req.body;
+    const user = db.prepare('SELECT id, username, role, is_super_admin, two_factor_enabled, two_factor_secret, last_totp_timestamp FROM users WHERE id = ?').get(req.user.id);
+    if (!user || user.two_factor_enabled !== 1) {
+      return res.status(400).json({ error: 'Two-factor authentication is not enabled.', code: 'MFA_NOT_ENABLED' });
+    }
+
+    // MANDATORY SUPER ADMIN MFA DEFENSE: Super Admins cannot disable MFA!
+    if (user.role === 'admin' && (user.is_super_admin === 1 || user.is_super_admin === true)) {
+      return res.status(403).json({
+        error: 'Super Administrators cannot disable two-factor authentication. Universal 2FA is mandatory for privileged accounts.',
+        code: 'SUPER_ADMIN_MFA_MANDATORY'
+      });
+    }
+
+    // Step-up verification
+    let verified = false;
+    if (code) {
+      const plainSecret = decryptSecret(user.two_factor_secret);
+      const verifyRes = verifyTotpCode(plainSecret, code, { lastTimestamp: user.last_totp_timestamp || 0 });
+      if (verifyRes.valid) verified = true;
+    } else if (recoveryCode) {
+      const cleanRec = String(recoveryCode).trim().toUpperCase();
+      const rows = db.prepare('SELECT id, code_hash FROM user_mfa_recovery_codes WHERE user_id = ? AND used = 0').all(user.id);
+      for (const row of rows) {
+        if (bcrypt.compareSync(cleanRec, row.code_hash)) {
+          verified = true;
+          break;
+        }
+      }
+    }
+
+    if (!verified) {
+      return res.status(401).json({ error: 'Valid authenticator code or unused recovery code required to disable two-factor authentication.', code: 'INVALID_FACTOR' });
+    }
+
+    const disableTx = db.transaction(() => {
+      db.prepare(`
+        UPDATE users 
+        SET two_factor_enabled = 0,
+            two_factor_secret = NULL,
+            pending_two_factor_secret = NULL,
+            account_version = account_version + 1,
+            token_version = token_version + 1,
+            updated_at = datetime('now')
+        WHERE id = ?
+      `).run(user.id);
+
+      db.prepare('DELETE FROM user_mfa_recovery_codes WHERE user_id = ?').run(user.id);
+      db.prepare('DELETE FROM admin_mfa_recovery_codes WHERE user_id = ?').run(user.id);
+
+      recordAuditLog({
+        actorId: user.id,
+        targetUserId: user.id,
+        action: 'user_mfa_disabled',
+        module: 'auth',
+        resource: `user:${user.id}`,
+        outcome: 'success',
+        throwOnError: false
+      });
+    });
+
+    disableTx();
+
+    res.json({
+      message: 'Two-factor authentication has been disabled.'
+    });
+  } catch (err) {
+    console.error('Error disabling MFA:', err);
+    res.status(500).json({ error: 'Failed to disable MFA' });
   }
 });
 

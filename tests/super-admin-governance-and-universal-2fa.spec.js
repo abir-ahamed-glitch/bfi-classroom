@@ -820,3 +820,178 @@ test.describe('Task 3 & 4: Multiple Super Admin Governance, Peer Defenses & Midd
     assert.strictEqual(ctxWithMfa.getResult().nextCalled, true);
   });
 });
+
+test.describe('Task 5: Universal 2FA Endpoints for All Users (Students, Instructors, Admins)', () => {
+  let db;
+  let authRoutes;
+  const studentId = 10;
+  const studentPassword = 'SecureStudentPass123!';
+
+  function mockReqRes(options = {}) {
+    let statusCode = 200;
+    let jsonPayload = null;
+    let nextCalled = false;
+    const req = {
+      ip: '127.0.0.1',
+      params: options.params || {},
+      body: options.body || {},
+      query: options.query || {},
+      headers: options.headers || {},
+      correlationId: 'test-corr-id',
+      user: options.user || {
+        id: studentId,
+        username: 'student_alice',
+        role: 'student',
+        is_super_admin: 0,
+        isSuperAdmin: false
+      }
+    };
+    const res = {
+      status(code) {
+        statusCode = code;
+        return this;
+      },
+      json(payload) {
+        jsonPayload = payload;
+        return this;
+      }
+    };
+    const next = () => { nextCalled = true; };
+    return { req, res, next, getResult: () => ({ statusCode, jsonPayload, nextCalled }) };
+  }
+
+  function getHandler(router, method, pathStr) {
+    const layer = router.stack.find(l => l.route?.path === pathStr && l.route?.methods?.[method.toLowerCase()]);
+    if (!layer) throw new Error(`Route not found: ${method} ${pathStr}`);
+    return layer.route.stack[layer.route.stack.length - 1].handle;
+  }
+
+  test.beforeEach(async () => {
+    db = (await import('../server/db/database.js')).default;
+    db.pragma('foreign_keys = ON');
+
+    const bcrypt = (await import('bcryptjs')).default;
+    const studentPassHash = bcrypt.hashSync(studentPassword, 10);
+
+    // Clean tables and seed test student
+    db.exec(`
+      DELETE FROM action_bound_challenges;
+      DELETE FROM user_mfa_recovery_codes;
+      DELETE FROM sessions;
+      DELETE FROM users WHERE id IN (10, 11);
+    `);
+
+    // Student account (un-enrolled initially)
+    db.prepare(`
+      INSERT INTO users (id, username, email, password_hash, first_name, last_name, role, is_super_admin, is_active, two_factor_enabled)
+      VALUES (10, 'student_alice', 'alice@student.bfi', ?, 'Alice', 'Student', 'student', 0, 1, 0)
+    `).run(studentPassHash);
+
+    // Super Admin account (MFA enabled)
+    db.prepare(`
+      INSERT OR REPLACE INTO users (id, username, email, password_hash, first_name, last_name, role, is_super_admin, is_active, two_factor_enabled, two_factor_secret)
+      VALUES (11, 'super_admin_sam', 'sam@bfi.local', ?, 'Sam', 'Super', 'admin', 1, 1, 1, 'mock_secret')
+    `).run(studentPassHash);
+
+    authRoutes = (await import('../server/routes/auth.js')).default;
+  });
+
+  test('student 2FA lifecycle: status -> setup -> verify-setup -> recovery codes -> replace -> disable', async () => {
+    const { generateTotpCode } = await import('../server/utils/totp.js');
+
+    const statusHandler = getHandler(authRoutes, 'GET', '/mfa/status');
+    const setupHandler = getHandler(authRoutes, 'POST', '/mfa/setup');
+    const verifySetupHandler = getHandler(authRoutes, 'POST', '/mfa/verify-setup');
+    const replaceHandler = getHandler(authRoutes, 'POST', '/mfa/replace');
+    const disableHandler = getHandler(authRoutes, 'POST', '/mfa/disable');
+
+    // 1. Initial status: disabled
+    const ctxStatusInit = mockReqRes();
+    await statusHandler(ctxStatusInit.req, ctxStatusInit.res);
+    assert.strictEqual(ctxStatusInit.getResult().statusCode, 200);
+    assert.strictEqual(ctxStatusInit.getResult().jsonPayload.enabled, false);
+
+    // 2. Setup with incorrect password rejected
+    const ctxSetupBad = mockReqRes({ body: { password: 'WrongPassword!' } });
+    await setupHandler(ctxSetupBad.req, ctxSetupBad.res);
+    assert.strictEqual(ctxSetupBad.getResult().statusCode, 401);
+    assert.strictEqual(ctxSetupBad.getResult().jsonPayload.code, 'INVALID_PASSWORD');
+
+    // 3. Setup with correct password generates secret & otpauthUri
+    const ctxSetupOk = mockReqRes({ body: { password: studentPassword } });
+    await setupHandler(ctxSetupOk.req, ctxSetupOk.res);
+    assert.strictEqual(ctxSetupOk.getResult().statusCode, 200);
+    const { secret, otpauthUri } = ctxSetupOk.getResult().jsonPayload;
+    assert.ok(secret, 'Secret must be returned');
+    assert.ok(otpauthUri.startsWith('otpauth://totp/'), 'Valid otpauth URI returned');
+
+    // 4. Verify setup with invalid code rejected
+    const ctxVerifyBad = mockReqRes({ body: { code: '000000' } });
+    await verifySetupHandler(ctxVerifyBad.req, ctxVerifyBad.res);
+    assert.strictEqual(ctxVerifyBad.getResult().statusCode, 400);
+    assert.strictEqual(ctxVerifyBad.getResult().jsonPayload.code, 'INVALID_CODE');
+
+    // 5. Verify setup with valid TOTP code: activates MFA & returns 8 recovery codes
+    const validCode = generateTotpCode(secret);
+    const ctxVerifyOk = mockReqRes({ body: { code: validCode } });
+    await verifySetupHandler(ctxVerifyOk.req, ctxVerifyOk.res);
+    assert.strictEqual(ctxVerifyOk.getResult().statusCode, 200);
+    const { recoveryCodes } = ctxVerifyOk.getResult().jsonPayload;
+    assert.strictEqual(recoveryCodes.length, 8, 'Must return exactly 8 recovery codes');
+
+    // Verify DB state: two_factor_enabled = 1, pending secret cleared
+    const studentUser = db.prepare('SELECT two_factor_enabled, pending_two_factor_secret FROM users WHERE id = ?').get(studentId);
+    assert.strictEqual(studentUser.two_factor_enabled, 1, 'MFA must be enabled');
+    assert.strictEqual(studentUser.pending_two_factor_secret, null, 'Pending secret must be cleared');
+
+    // Verify recovery codes in user_mfa_recovery_codes
+    const recCount = db.prepare('SELECT COUNT(*) as c FROM user_mfa_recovery_codes WHERE user_id = ? AND used = 0').get(studentId);
+    assert.strictEqual(recCount.c, 8, '8 recovery codes stored in user_mfa_recovery_codes');
+
+    // 6. Check updated status
+    const ctxStatusEnabled = mockReqRes();
+    await statusHandler(ctxStatusEnabled.req, ctxStatusEnabled.res);
+    assert.strictEqual(ctxStatusEnabled.getResult().statusCode, 200);
+    assert.strictEqual(ctxStatusEnabled.getResult().jsonPayload.enabled, true);
+    assert.strictEqual(ctxStatusEnabled.getResult().jsonPayload.recoveryCodesRemaining, 8);
+
+    // 7. Replace configuration using a single-use recovery code
+    const recoveryToUse = recoveryCodes[0];
+    const ctxReplace = mockReqRes({ body: { recoveryCode: recoveryToUse } });
+    await replaceHandler(ctxReplace.req, ctxReplace.res);
+    assert.strictEqual(ctxReplace.getResult().statusCode, 200);
+    const newSecret = ctxReplace.getResult().jsonPayload.secret;
+    assert.ok(newSecret);
+
+    // Verify used recovery code was marked used
+    const remainingRec = db.prepare('SELECT COUNT(*) as c FROM user_mfa_recovery_codes WHERE user_id = ? AND used = 0').get(studentId);
+    assert.strictEqual(remainingRec.c, 7, 'Used recovery code is consumed');
+
+    // 8. Disable MFA for student using valid TOTP code (clear last timestamp to simulate subsequent step)
+    db.prepare('UPDATE users SET last_totp_timestamp = 0 WHERE id = ?').run(studentId);
+    const disableCode = generateTotpCode(secret);
+    const ctxDisable = mockReqRes({ body: { code: disableCode } });
+    await disableHandler(ctxDisable.req, ctxDisable.res);
+    assert.strictEqual(ctxDisable.getResult().statusCode, 200);
+
+    const studentDisabled = db.prepare('SELECT two_factor_enabled FROM users WHERE id = ?').get(studentId);
+    assert.strictEqual(studentDisabled.two_factor_enabled, 0, '2FA must be disabled');
+  });
+
+  test('mandatory Super Admin 2FA defense: Super Admins cannot disable MFA', async () => {
+    const { generateTotpCode } = await import('../server/utils/totp.js');
+    const disableHandler = getHandler(authRoutes, 'POST', '/mfa/disable');
+
+    const ctxSuperDisable = mockReqRes({
+      user: { id: 11, role: 'admin', is_super_admin: 1 },
+      body: { code: '123456' }
+    });
+
+    await disableHandler(ctxSuperDisable.req, ctxSuperDisable.res);
+    assert.strictEqual(ctxSuperDisable.getResult().statusCode, 403);
+    assert.strictEqual(ctxSuperDisable.getResult().jsonPayload.code, 'SUPER_ADMIN_MFA_MANDATORY');
+
+    const superUser = db.prepare('SELECT two_factor_enabled FROM users WHERE id = 11').get();
+    assert.strictEqual(superUser.two_factor_enabled, 1, 'Super Admin MFA remains strictly enabled');
+  });
+});
