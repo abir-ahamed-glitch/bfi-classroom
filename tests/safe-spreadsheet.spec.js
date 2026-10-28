@@ -121,37 +121,115 @@ test('safeSpreadsheet: prevents silent truncation and strictly enforces row boun
 test('safeSpreadsheet: pre-allocation cell limit rejects dense matrices before sheet_to_json allocates', () => {
   /**
    * Precise behavior tested:
-   * Cell limit must be checked on worksheet object keys BEFORE invoking sheet_to_json,
+   * Cell limit must be checked on worksheet object keys and ranges BEFORE invoking sheet_to_json,
    * preventing unbounded memory allocation from dense or maliciously crafted matrices.
    */
-  const wsDense = {
+  // 1. Matrix where declared range exceeds maxCells (spans 100,000 potential cells)
+  const wsDenseRange = {
     '!ref': 'A1:CV1000' // Declares 100 cols x 1,000 rows
   };
-
-  // Populate 1,000 cells directly on ws
   for (let r = 1; r <= 100; r++) {
     for (let c = 0; c < 15; c++) {
       const colLetter = String.fromCharCode(65 + c);
-      wsDense[`${colLetter}${r}`] = { t: 's', v: `cell_${r}_${c}` };
+      wsDenseRange[`${colLetter}${r}`] = { t: 's', v: `cell_${r}_${c}` };
     }
   }
 
-  // Passing maxCells: 500 must reject before sheet_to_json conversion
-  const wb = XLSX.utils.book_new();
-  wb.SheetNames.push('Dense');
-  wb.Sheets['Dense'] = wsDense;
-  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  const wbRange = XLSX.utils.book_new();
+  wbRange.SheetNames.push('DenseRange');
+  wbRange.Sheets['DenseRange'] = wsDenseRange;
+  const bufRange = XLSX.write(wbRange, { type: 'buffer', bookType: 'xlsx' });
 
   assert.throws(() => {
-    safeReadSpreadsheet(buf, { maxCells: 500 });
-  }, /exceeds maximum allowable cell limit \(\d+ cells > 500 max\)\. Import rejected before data allocation\./);
+    safeReadSpreadsheet(bufRange, { maxCells: 500 });
+  }, /Spreadsheet range \(A1:CV1000\) spans 100,000 potential cells .* exceeding the maximum allowable cell limit of 500 cells\. Import rejected before data allocation\./);
+
+  // 2. Matrix where populated cell count and range exceed maxCells
+  const wsPopulated = { '!ref': 'A1:J51' };
+  for (let r = 1; r <= 51; r++) {
+    for (let c = 0; c < 10; c++) {
+      const colLetter = String.fromCharCode(65 + c);
+      wsPopulated[`${colLetter}${r}`] = { t: 's', v: `val_${r}_${c}` }; // 510 populated cells
+    }
+  }
+  const wbPop = XLSX.utils.book_new();
+  wbPop.SheetNames.push('Populated');
+  wbPop.Sheets['Populated'] = wsPopulated;
+  const bufPop = XLSX.write(wbPop, { type: 'buffer', bookType: 'xlsx' });
+
+  assert.throws(() => {
+    safeReadSpreadsheet(bufPop, { maxCells: 500 });
+  }, /Spreadsheet range \(A1:J51\) spans 510 potential cells \(51 rows × 10 columns\), exceeding the maximum allowable cell limit of 500 cells\. Import rejected before data allocation\./);
 });
 
-test('safeSpreadsheet: checks ZIP archive expansion headers to prevent decompression bombs', () => {
+test('safeSpreadsheet: bounds sparse range dimensions and potential output allocation before sheet_to_json runs', () => {
   /**
-   * Precise behavior tested:
-   * checkZipArchiveLimits parses the Central Directory headers in binary buffers to enforce
-   * uncompressed size limits before SheetJS decompressor or XML parser is invoked.
+   * Precise behavior tested (Reviewer reproduction):
+   * Counting existing worksheet keys alone does not bound sheet_to_json output:
+   * A sparse worksheet spanning A1:CV5001 with only A1 and CV5001 populated contains only 2 keys,
+   * but sheet_to_json expands every empty cell in the rectangular bounding box, allocating 500,100 cells.
+   * safeReadSpreadsheet must calculate potential output allocation from the range and reject excessive
+   * dimensions before sheet_to_json runs.
+   */
+  // 1. Sparse sheet spanning A1:CV5001 (5,001 rows x 100 cols = 500,100 potential cells) with only 2 populated cells
+  const wsSparse = {
+    '!ref': 'A1:CV5001',
+    'A1': { t: 's', v: 'start' },
+    'CV5001': { t: 's', v: 'end' }
+  };
+  const wbSparse = XLSX.utils.book_new();
+  wbSparse.SheetNames.push('Sparse');
+  wbSparse.Sheets['Sparse'] = wsSparse;
+  const bufSparse = XLSX.write(wbSparse, { type: 'buffer', bookType: 'xlsx' });
+
+  // With maxCells: 2 (Reviewer's exact test), must reject before 500,100 cells are allocated
+  assert.throws(() => {
+    safeReadSpreadsheet(bufSparse, { maxCells: 2, maxRows: 6000 });
+  }, /Spreadsheet range \(A1:CV5001\) spans 500,100 potential cells \(5,001 rows × 100 columns\), exceeding the maximum allowable cell limit of 2 cells\. Import rejected before data allocation\./);
+
+  // With default maxCells (50,000), 500,100 potential cells must also be rejected before allocation
+  assert.throws(() => {
+    safeReadSpreadsheet(bufSparse, { maxCells: 50000, maxRows: 6000 });
+  }, /Spreadsheet range \(A1:CV5001\) spans 500,100 potential cells/);
+
+  // 2. Smaller sparse sheet spanning A1:B10 (10 rows x 2 cols = 20 potential cells) with maxCells: 5
+  const wsSparseSmall = {
+    '!ref': 'A1:B10',
+    'A1': { t: 's', v: 'top' },
+    'B10': { t: 's', v: 'bottom' }
+  };
+  const wbSmall = XLSX.utils.book_new();
+  wbSmall.SheetNames.push('SmallSparse');
+  wbSmall.Sheets['SmallSparse'] = wsSparseSmall;
+  const bufSmall = XLSX.write(wbSmall, { type: 'buffer', bookType: 'xlsx' });
+
+  assert.throws(() => {
+    safeReadSpreadsheet(bufSmall, { maxCells: 5 });
+  }, /Spreadsheet range \(A1:B10\) spans 20 potential cells \(10 rows × 2 columns\), exceeding the maximum allowable cell limit of 5 cells\. Import rejected before data allocation\./);
+
+  // 3. Excessive column range: A1:ZZ10 (702 columns > 100 maxCols)
+  const wsExcessCols = {
+    '!ref': 'A1:ZZ10',
+    'A1': { t: 's', v: 'col_a' },
+    'ZZ10': { t: 's', v: 'col_zz' }
+  };
+  const wbExcessCols = XLSX.utils.book_new();
+  wbExcessCols.SheetNames.push('ExcessCols');
+  wbExcessCols.Sheets['ExcessCols'] = wsExcessCols;
+  const bufExcessCols = XLSX.write(wbExcessCols, { type: 'buffer', bookType: 'xlsx' });
+
+  assert.throws(() => {
+    safeReadSpreadsheet(bufExcessCols, { maxCols: 100 });
+  }, /Spreadsheet exceeds allowable column limit \(702 columns > 100 max\)\./);
+});
+
+test('safeSpreadsheet: inspects ZIP archive declared uncompressed headers to reject declared oversized entries', () => {
+  /**
+   * Precise behavior tested & scope disclosure:
+   * checkZipArchiveLimits parses the Central Directory and local file headers in binary buffers to enforce
+   * uncompressed size limits based on declared entry sizes before SheetJS decompressor or XML parser is invoked.
+   * Note: This check relies on declared header sizes; malformed or spoofed archives are constrained
+   * downstream by pre-allocation cell/range checks and Web Worker execution timeouts.
    */
   const validWb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(validWb, XLSX.utils.aoa_to_sheet([['A', 'B']]), 'Sheet1');
@@ -226,10 +304,13 @@ test('safeSpreadsheet: upstream vendor patch audit (CVE-2023-30533 in xlsx 0.20.
   assert.equal(result.length, 2);
 });
 
-test('safeSpreadsheet: safeReadSpreadsheetAsync completes within bounded timeout in background worker', async () => {
+test('safeSpreadsheet: safeReadSpreadsheetAsync executes headless Node fallback and isolated Node subprocess', async () => {
   /**
-   * Tests safeReadSpreadsheetAsync execution. In Node test environment, safely resolves Promise.
-   * Also verifies isolated Node runner completes dense 100-row test fixture in <200ms.
+   * Tests safeReadSpreadsheetAsync in headless Node environment.
+   * In Node.js, safeReadSpreadsheetAsync safely executes via Promise without browser Worker APIs.
+   * Also verifies isolated Node runner subprocess completes dense 100-row test fixture in <200ms.
+   * (Note: Real browser Web Worker execution is tested independently in tests/spreadsheet-browser-worker.spec.js
+   * and scripts/test_browser_worker.cjs via Playwright Chromium).
    */
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['Col1', 'Col2'], ['Val1', 'Val2']]), 'AsyncTest');

@@ -290,19 +290,19 @@ async function verifyTokensAgainstLiveServer(saToken, oaToken, baseUrl = 'http:/
   }
 
   // If we reach here, at least one request failed with a network error or server error (HTTP 5xx).
-  // Distinguish CONFIRMED service downtime (ECONNREFUSED) from AMBIGUOUS failures.
+  // Distinguish CONFIRMED service downtime (unambiguous ECONNREFUSED on both) from AMBIGUOUS failures.
   const isSaRefused = Boolean(saErr && saErr.code === 'ECONNREFUSED');
   const isOaRefused = Boolean(oaErr && oaErr.code === 'ECONNREFUSED');
 
-  // Confirmed offline: port is strictly closed on both attempts (or first attempt if second unattempted)
-  if (isSaRefused && (isOaRefused || !oaRes)) {
+  // Confirmed offline: requires UNAMBIGUOUS evidence on BOTH requests. Port must be strictly closed on both checks.
+  if (isSaRefused && isOaRefused) {
     return {
       status: 'confirmed_offline',
       reason: 'Confirmed server offline: connection refused on port'
     };
   }
 
-  // Any other error (timeout, ECONNRESET, EHOSTUNREACH, HTTP 5xx, or mismatch where one succeeded and other errored)
+  // Any other error (timeout, ECONNRESET, EHOSTUNREACH, HTTP 5xx, or mixed error where one refused and the other timed out/errored)
   // is an AMBIGUOUS connection failure. We must NOT treat ambiguity as permission for unattended deployment!
   const ambiguousErr = saErr || oaErr;
   const ambiguousDetail = ambiguousErr ? (ambiguousErr.message || ambiguousErr.code) : `SA status ${saRes ? saRes.status : 'err'}, OA status ${oaRes ? oaRes.status : 'err'}`;

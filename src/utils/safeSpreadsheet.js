@@ -32,8 +32,18 @@ export const MAX_UNCOMPRESSED_BYTES = 50 * 1024 * 1024; // 50MB uncompressed arc
 export const DEFAULT_TIMEOUT_MS = 10000;                // 10s parsing timeout
 
 /**
- * Scans ZIP archive headers (for .xlsx files) to check uncompressed entry and total sizes
- * BEFORE invoking the full parser or decompressing XML.
+ * Scans ZIP archive headers (for .xlsx files) to inspect declared uncompressed entry
+ * and total sizes BEFORE invoking the full parser or decompressing XML.
+ * 
+ * Technical Scope & Accuracy Disclosure:
+ * - This function inspects the *declared* uncompressed size fields recorded in the ZIP
+ *   Central Directory and local file headers by the archive creator.
+ * - This provides an efficient pre-check against standard archive inflation bombs whose headers
+ *   declare excessive uncompressed sizes.
+ * - However, header checks alone DO NOT establish absolute decompression bounds if an attacker
+ *   crafts a malformed ZIP with spoofed or mismatched header records.
+ * - Absolute runtime memory and execution protection is therefore enforced downstream via
+ *   pre-allocation range and cell limits (maxCells, maxRows, maxCols) and Web Worker thread termination.
  * 
  * @param {Uint8Array} data - Binary file buffer
  * @param {Object} [options] - Options
@@ -224,35 +234,65 @@ export function safeReadSpreadsheet(data, options = {}) {
   validateWorksheetStructure(ws);
 
   // 6. Check declared worksheet dimensions before conversion (inspect both !fullref and !ref)
-  const refToCheck = ws['!fullref'] || ws['!ref'];
-  if (refToCheck) {
-    try {
-      const range = XLSX.utils.decode_range(refToCheck);
-      const totalRows = (range.e.r - range.s.r) + 1;
-      const colCount = (range.e.c - range.s.c) + 1;
+  const refsToCheck = [ws['!fullref'], ws['!ref']].filter(Boolean);
+  if (refsToCheck.length === 0) {
+    let maxR = -1;
+    let maxC = -1;
+    let cellKeyCount = 0;
+    for (const key of Object.keys(ws)) {
+      if (key.charCodeAt(0) !== 33) {
+        cellKeyCount++;
+        try {
+          const cell = XLSX.utils.decode_cell(key);
+          if (cell.r > maxR) maxR = cell.r;
+          if (cell.c > maxC) maxC = cell.c;
+        } catch {
+          /* ignore non-cell keys */
+        }
+      }
+    }
+    if (cellKeyCount > 0 && maxR >= 0 && maxC >= 0) {
+      refsToCheck.push(XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: maxR, c: maxC } }));
+    }
+  }
 
-      if (totalRows > maxRows) {
-        throw new Error(`Spreadsheet exceeds maximum supported limit of ${maxRows.toLocaleString()} rows (contains ${totalRows.toLocaleString()} rows). Import rejected to prevent partial or incomplete data import.`);
+  for (const ref of refsToCheck) {
+    try {
+      const range = XLSX.utils.decode_range(ref);
+      const totalRows = (range.e.r - range.s.r) + 1;
+      const maxEndRow = range.e.r + 1;
+      const totalCols = (range.e.c - range.s.c) + 1;
+      const maxEndCol = range.e.c + 1;
+
+      if (totalRows > maxRows || maxEndRow > maxRows) {
+        const offendingRows = Math.max(totalRows, maxEndRow);
+        throw new Error(`Spreadsheet exceeds maximum supported limit of ${maxRows.toLocaleString()} rows (contains ${offendingRows.toLocaleString()} rows). Import rejected to prevent partial or incomplete data import.`);
       }
 
-      if (colCount > maxCols) {
-        throw new Error(`Spreadsheet exceeds allowable column limit (${colCount} columns > ${maxCols} max).`);
+      if (totalCols > maxCols || maxEndCol > maxCols) {
+        const offendingCols = Math.max(totalCols, maxEndCol);
+        throw new Error(`Spreadsheet exceeds allowable column limit (${offendingCols} columns > ${maxCols} max).`);
+      }
+
+      const potentialCells = totalRows * totalCols;
+      if (potentialCells > maxCells) {
+        throw new Error(`Spreadsheet range (${ref}) spans ${potentialCells.toLocaleString()} potential cells (${totalRows.toLocaleString()} rows × ${totalCols.toLocaleString()} columns), exceeding the maximum allowable cell limit of ${maxCells.toLocaleString()} cells. Import rejected before data allocation.`);
       }
     } catch (err) {
-      if (err.message && (err.message.includes('supported limit') || err.message.includes('column limit'))) {
+      if (err.message && (err.message.includes('supported limit') || err.message.includes('column limit') || err.message.includes('allowable cell limit'))) {
         throw err;
       }
     }
   }
 
-  // 7. PRE-ALLOCATION CELL CHECK:
+  // 7. PRE-ALLOCATION POPULATED CELL CHECK:
   // Count cell properties on ws BEFORE calling sheet_to_json to prevent memory exhaustion from dense matrices
-  let cellCount = 0;
+  let populatedCells = 0;
   for (const key of Object.keys(ws)) {
     if (key.charCodeAt(0) !== 33) { // 33 is '!'
-      cellCount++;
-      if (cellCount > maxCells) {
-        throw new Error(`Spreadsheet exceeds maximum allowable cell limit (${cellCount} cells > ${maxCells.toLocaleString()} max). Import rejected before data allocation.`);
+      populatedCells++;
+      if (populatedCells > maxCells) {
+        throw new Error(`Spreadsheet exceeds maximum allowable cell limit (${populatedCells} populated cells > ${maxCells.toLocaleString()} max). Import rejected before data allocation.`);
       }
     }
   }
@@ -298,7 +338,10 @@ export function safeReadSpreadsheet(data, options = {}) {
 
 /**
  * Asynchronously parses spreadsheet data using an isolated terminable Web Worker in browser environments,
- * enforcing a strict execution timeout. In non-browser environments, safely falls back to synchronous execution.
+ * enforcing a strict execution timeout.
+ * 
+ * Security Guard: In browser environments, this function NEVER falls back to synchronous main-thread parsing.
+ * If Web Workers are unavailable or initialization fails, the operation fails safely with an explicit error.
  * 
  * @param {Uint8Array|ArrayBuffer|Buffer} data - Binary file data
  * @param {Object} [options] - Parsing options
@@ -308,69 +351,69 @@ export function safeReadSpreadsheet(data, options = {}) {
 export function safeReadSpreadsheetAsync(data, options = {}) {
   const timeoutMs = options.timeoutMs || DEFAULT_TIMEOUT_MS;
 
-  // In non-browser environments (e.g. Node test runners), execute cleanly via Promise
-  if (typeof window === 'undefined' || typeof Worker === 'undefined') {
-    return Promise.resolve().then(() => safeReadSpreadsheet(data, options));
+  // Browser Execution: Strictly enforce Web Worker isolation; NEVER execute untrusted parsing on the main UI thread!
+  if (typeof window !== 'undefined') {
+    if (typeof Worker === 'undefined') {
+      return Promise.reject(new Error('Browser environment does not support Web Workers. Spreadsheet processing halted to prevent main-thread resource exhaustion.'));
+    }
+
+    return new Promise((resolve, reject) => {
+      let worker;
+      let timer;
+
+      try {
+        worker = new Worker(new URL('./spreadsheet.worker.js', import.meta.url), { type: 'module' });
+      } catch (initErr) {
+        return reject(new Error(`Failed to initialize spreadsheet background worker: ${initErr.message || 'Worker construction error'}. Processing halted to prevent main-thread execution.`));
+      }
+
+      timer = setTimeout(() => {
+        try {
+          worker.terminate();
+        } catch {
+          /* ignore termination error */
+        }
+        reject(new Error(`Spreadsheet processing timed out after ${Math.round(timeoutMs / 1000)} seconds. The file may be corrupt, excessively complex, or contain unbounded data.`));
+      }, timeoutMs);
+
+      worker.onmessage = (event) => {
+        clearTimeout(timer);
+        try {
+          worker.terminate();
+        } catch {
+          /* ignore termination error */
+        }
+        if (event.data && event.data.success) {
+          resolve(event.data.result);
+        } else {
+          reject(new Error(event.data ? event.data.error : 'Unknown worker parsing error'));
+        }
+      };
+
+      worker.onerror = (err) => {
+        clearTimeout(timer);
+        try {
+          worker.terminate();
+        } catch {
+          /* ignore termination error */
+        }
+        reject(new Error(`Spreadsheet worker execution error: ${err.message || 'Worker failure'}`));
+      };
+
+      try {
+        worker.postMessage({ data, options });
+      } catch (postErr) {
+        clearTimeout(timer);
+        try {
+          worker.terminate();
+        } catch {
+          /* ignore termination error */
+        }
+        reject(new Error(`Failed to transmit spreadsheet data to worker: ${postErr.message}`));
+      }
+    });
   }
 
-  return new Promise((resolve, reject) => {
-    let worker;
-    let timer;
-
-    try {
-      worker = new Worker(new URL('./spreadsheet.worker.js', import.meta.url), { type: 'module' });
-    } catch {
-      // Fallback to synchronous execution if Worker creation is disallowed
-      try {
-        return resolve(safeReadSpreadsheet(data, options));
-      } catch (syncErr) {
-        return reject(syncErr);
-      }
-    }
-
-    timer = setTimeout(() => {
-      try {
-        worker.terminate();
-      } catch {
-        /* ignore termination error */
-      }
-      reject(new Error(`Spreadsheet processing timed out after ${Math.round(timeoutMs / 1000)} seconds. The file may be corrupt, excessively complex, or contain unbounded data.`));
-    }, timeoutMs);
-
-    worker.onmessage = (event) => {
-      clearTimeout(timer);
-      try {
-        worker.terminate();
-      } catch {
-        /* ignore termination error */
-      }
-      if (event.data && event.data.success) {
-        resolve(event.data.result);
-      } else {
-        reject(new Error(event.data ? event.data.error : 'Unknown worker parsing error'));
-      }
-    };
-
-    worker.onerror = (err) => {
-      clearTimeout(timer);
-      try {
-        worker.terminate();
-      } catch {
-        /* ignore termination error */
-      }
-      reject(new Error(`Spreadsheet worker execution error: ${err.message || 'Worker failure'}`));
-    };
-
-    try {
-      worker.postMessage({ data, options });
-    } catch (postErr) {
-      clearTimeout(timer);
-      try {
-        worker.terminate();
-      } catch {
-        /* ignore termination error */
-      }
-      reject(postErr);
-    }
-  });
+  // Node.js Execution Path: Strictly separate headless fallback for CLI/Node test runners
+  return Promise.resolve().then(() => safeReadSpreadsheet(data, options));
 }

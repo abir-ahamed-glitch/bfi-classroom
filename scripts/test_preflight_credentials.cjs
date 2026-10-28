@@ -225,7 +225,7 @@ async function testVerifyTokensAgainstLiveServer() {
     }
   }
 
-  // 2.4 Confirmed offline: port is closed (ECONNREFUSED)
+  // 2.4 Confirmed offline: port is strictly closed on both attempts (unambiguous ECONNREFUSED)
   {
     // Find an unused port
     const probeServer = http.createServer();
@@ -236,6 +236,221 @@ async function testVerifyTokensAgainstLiveServer() {
     const check = await verifyTokensAgainstLiveServer(saToken, oaToken, `http://127.0.0.1:${unusedPort}`, 200);
     assert.strictEqual(check.status, 'confirmed_offline');
     assert.match(check.reason, /connection refused/);
+  }
+
+  // 2.5 Mixed Failures (Both Orders): Must return ambiguous_failure, NEVER confirmed_offline!
+  // Case A: SA request connection refused, but OA request times out
+  {
+    // Mock sendBearerGet or simulate via server:
+    // To simulate SA refusal and OA timeout cleanly, server starts after SA fails, or simulated via loopback servers
+    // We can test verifyTokensAgainstLiveServer against two distinct simulated endpoints or a dynamic mock server
+    let saAttempted = false;
+    let oaAttempted = false;
+
+    // Create an endpoint that times out on OA token, while SA fails on closed port
+    // We can bind a server that closes for SA or test with a dynamic request router:
+    const probeServer = http.createServer();
+    await new Promise(r => probeServer.listen(0, '127.0.0.1', r));
+    const closedPort = probeServer.address().port;
+    await new Promise(r => probeServer.close(r));
+
+    // Dynamic server on open port
+    const openServer = http.createServer((req, res) => {
+      // Hang on OA
+    });
+    await new Promise(r => openServer.listen(0, '127.0.0.1', r));
+    const openPort = openServer.address().port;
+
+    // Test helper simulation: we can test with custom baseUrl or mock request
+    // Let's test using a local proxy that simulates mixed socket behaviors:
+    openServer.close();
+  }
+
+  // Mixed Network Behaviors Tested via Controlled HTTP Server on Single Port:
+  // 2.5.1 Order 1: SA connection resets (ECONNRESET), OA returns 500 -> ambiguous_failure
+  {
+    let count = 0;
+    const server = http.createServer((req, res) => {
+      count++;
+      if (count === 1) {
+        req.socket.destroy(); // ECONNRESET
+      } else {
+        res.writeHead(500, { 'Content-Type': 'text/plain' });
+        res.end('Server Error');
+      }
+    });
+    await new Promise(r => server.listen(0, '127.0.0.1', r));
+    const port = server.address().port;
+
+    try {
+      const check = await verifyTokensAgainstLiveServer(saToken, oaToken, `http://127.0.0.1:${port}`, 200);
+      assert.strictEqual(check.status, 'ambiguous_failure');
+      assert.strictEqual(check.isAmbiguous, true);
+    } finally {
+      server.close();
+    }
+  }
+
+  // 2.5.2 Order 2: SA returns 500, OA connection resets (ECONNRESET) -> ambiguous_failure
+  {
+    let count = 0;
+    const server = http.createServer((req, res) => {
+      count++;
+      if (count === 1) {
+        res.writeHead(500, { 'Content-Type': 'text/plain' });
+        res.end('Server Error');
+      } else {
+        req.socket.destroy(); // ECONNRESET
+      }
+    });
+    await new Promise(r => server.listen(0, '127.0.0.1', r));
+    const port = server.address().port;
+
+    try {
+      const check = await verifyTokensAgainstLiveServer(saToken, oaToken, `http://127.0.0.1:${port}`, 200);
+      assert.strictEqual(check.status, 'ambiguous_failure');
+      assert.strictEqual(check.isAmbiguous, true);
+    } finally {
+      server.close();
+    }
+  }
+
+  // 2.5.3 Order 1: SA returns HTTP 401 (auth failure), OA connection resets -> auth_failure (preserved!)
+  {
+    let count = 0;
+    const server = http.createServer((req, res) => {
+      count++;
+      if (count === 1) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Revoked' }));
+      } else {
+        req.socket.destroy();
+      }
+    });
+    await new Promise(r => server.listen(0, '127.0.0.1', r));
+    const port = server.address().port;
+
+    try {
+      const check = await verifyTokensAgainstLiveServer(saToken, oaToken, `http://127.0.0.1:${port}`, 200);
+      assert.strictEqual(check.status, 'auth_failure');
+      assert.strictEqual(check.explicitAuthFailure, true);
+      assert.match(check.reason, /Super Admin token rejected by server/);
+    } finally {
+      server.close();
+    }
+  }
+
+  // 2.5.4 Order 2: SA connection resets, OA returns HTTP 401 (auth failure) -> auth_failure (preserved!)
+  {
+    let count = 0;
+    const server = http.createServer((req, res) => {
+      count++;
+      if (count === 1) {
+        req.socket.destroy();
+      } else {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Revoked' }));
+      }
+    });
+    await new Promise(r => server.listen(0, '127.0.0.1', r));
+    const port = server.address().port;
+
+    try {
+      const check = await verifyTokensAgainstLiveServer(saToken, oaToken, `http://127.0.0.1:${port}`, 200);
+      assert.strictEqual(check.status, 'auth_failure');
+      assert.strictEqual(check.explicitAuthFailure, true);
+      assert.match(check.reason, /Ordinary Admin token rejected by server/);
+    } finally {
+      server.close();
+    }
+  }
+
+  // 2.5.5 Reviewer Exact Vector: SA returns ECONNREFUSED, OA returns ETIMEDOUT (simulated)
+  // Must return ambiguous_failure, NEVER confirmed_offline!
+  {
+    // We simulate this by testing verifyTokensAgainstLiveServer with an injected mock or controlled socket
+    // Alternatively, verify directly with two mock requests:
+    // Let's test the helper logic with simulated transport:
+    const originalHttpRequest = http.request;
+    try {
+      let callCount = 0;
+      http.request = function(options, callback) {
+        callCount++;
+        const req = new http.ClientRequest({ ...options, createConnection: () => {} });
+        process.nextTick(() => {
+          if (callCount === 1) {
+            const err = new Error('connect ECONNREFUSED 127.0.0.1:3001');
+            err.code = 'ECONNREFUSED';
+            req.emit('error', err);
+          } else {
+            const err = new Error('ETIMEDOUT');
+            err.code = 'ETIMEDOUT';
+            req.emit('error', err);
+          }
+        });
+        return req;
+      };
+
+      const check = await verifyTokensAgainstLiveServer(saToken, oaToken, 'http://127.0.0.1:3001', 200);
+      assert.strictEqual(check.status, 'ambiguous_failure', 'Mixed ECONNREFUSED + ETIMEDOUT must return ambiguous_failure, not confirmed_offline');
+      assert.strictEqual(check.isAmbiguous, true);
+    } finally {
+      http.request = originalHttpRequest;
+    }
+  }
+
+  // 2.5.6 Reverse Order: SA returns ETIMEDOUT, OA returns ECONNREFUSED (simulated)
+  // Must return ambiguous_failure, NEVER confirmed_offline!
+  {
+    const originalHttpRequest = http.request;
+    try {
+      let callCount = 0;
+      http.request = function(options, callback) {
+        callCount++;
+        const req = new http.ClientRequest({ ...options, createConnection: () => {} });
+        process.nextTick(() => {
+          if (callCount === 1) {
+            const err = new Error('ETIMEDOUT');
+            err.code = 'ETIMEDOUT';
+            req.emit('error', err);
+          } else {
+            const err = new Error('connect ECONNREFUSED 127.0.0.1:3001');
+            err.code = 'ECONNREFUSED';
+            req.emit('error', err);
+          }
+        });
+        return req;
+      };
+
+      const check = await verifyTokensAgainstLiveServer(saToken, oaToken, 'http://127.0.0.1:3001', 200);
+      assert.strictEqual(check.status, 'ambiguous_failure', 'Mixed ETIMEDOUT + ECONNREFUSED must return ambiguous_failure, not confirmed_offline');
+      assert.strictEqual(check.isAmbiguous, true);
+    } finally {
+      http.request = originalHttpRequest;
+    }
+  }
+
+  // 2.5.7 Unambiguous Refusal: BOTH SA and OA return ECONNREFUSED (simulated)
+  // Must return confirmed_offline!
+  {
+    const originalHttpRequest = http.request;
+    try {
+      http.request = function(options, callback) {
+        const req = new http.ClientRequest({ ...options, createConnection: () => {} });
+        process.nextTick(() => {
+          const err = new Error('connect ECONNREFUSED 127.0.0.1:3001');
+          err.code = 'ECONNREFUSED';
+          req.emit('error', err);
+        });
+        return req;
+      };
+
+      const check = await verifyTokensAgainstLiveServer(saToken, oaToken, 'http://127.0.0.1:3001', 200);
+      assert.strictEqual(check.status, 'confirmed_offline', 'Both requests refused must return confirmed_offline');
+      assert.match(check.reason, /connection refused/);
+    } finally {
+      http.request = originalHttpRequest;
+    }
   }
 
   // 2.5 Ambiguous connection failure: server hangs / times out
@@ -407,6 +622,56 @@ async function testDeploymentPreflightSafety() {
       assert.strictEqual(threw, true, 'Deployment should have aborted');
       const stopCmds = executedCommands.filter(c => c.cmdStr.includes('stop') || c.cmdStr.includes('delete'));
       assert.strictEqual(stopCmds.length, 0, `Expected 0 service-stop commands, but got ${stopCmds.length}: ${JSON.stringify(stopCmds)}`);
+    }
+
+    // 3.2.1 Preflight Failure: Mixed network failure (SA ECONNREFUSED, OA ETIMEDOUT)
+    // Asserts: Throws ambiguous failure error AND executes ZERO service-stop commands
+    {
+      const saToken = makeToken({ id: 1, role: 'admin', is_super_admin: 1, exp: nowSec + 1200 });
+      const oaToken = makeToken({ id: 2, role: 'admin', is_super_admin: 0, exp: nowSec + 1200 });
+
+      const originalHttpRequest = http.request;
+      let callCount = 0;
+      http.request = function(options, callback) {
+        callCount++;
+        const req = new http.ClientRequest({ ...options, createConnection: () => {} });
+        process.nextTick(() => {
+          if (callCount === 1) {
+            const err = new Error('connect ECONNREFUSED 127.0.0.1:3001');
+            err.code = 'ECONNREFUSED';
+            req.emit('error', err);
+          } else {
+            const err = new Error('ETIMEDOUT');
+            err.code = 'ETIMEDOUT';
+            req.emit('error', err);
+          }
+        });
+        return req;
+      };
+
+      const { spawner, executedCommands } = createTrackingSpawner();
+
+      let threw = false;
+      try {
+        await executeDeployment({
+          spawner,
+          rootDir: tempDir,
+          targetCommit: dummyCommit,
+          superAdminToken: saToken,
+          adminToken: oaToken,
+          baseUrl: 'http://127.0.0.1:3001',
+          tokenPreflightTimeoutMs: 200
+        });
+      } catch (err) {
+        threw = true;
+        assert.match(err.message, /Pre-disruption credential check ambiguous/);
+      } finally {
+        http.request = originalHttpRequest;
+      }
+
+      assert.strictEqual(threw, true, 'Deployment should have aborted on mixed failure');
+      const stopCmds = executedCommands.filter(c => c.cmdStr.includes('stop') || c.cmdStr.includes('delete'));
+      assert.strictEqual(stopCmds.length, 0, `Expected 0 service-stop commands on mixed failure, but got: ${JSON.stringify(stopCmds)}`);
     }
 
     // 3.3 Preflight Failure: Token without finite numeric exp
