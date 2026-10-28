@@ -84,7 +84,7 @@ function setupTestEnv() {
   };
   fs.writeFileSync(path.join(serverDir, 'pre_deployment_baseline.json'), JSON.stringify(baseline));
   fs.writeFileSync(path.join(serverDir, 'pre_deployment_revision.txt'), 'base_commit_sha_1234\n');
-  fs.writeFileSync(path.join(serverDir, 'pre_deployment_services.env'), 'NGINX_STATE=active\nPM2_STATE=online\n');
+  fs.writeFileSync(path.join(serverDir, 'pre_deployment_services.env'), 'ATTEMPT_ID=test_attempt_1\nNGINX_STATE=active\nPM2_STATE=online\n');
   fs.writeFileSync(path.join(serverDir, 'active_backup_path.env'), `BACKUP_FILE=${backupFile}\nBACKUP_VALIDATED=true\nATTEMPT_ID=test_attempt_1\n`);
 
   const state = {
@@ -1061,6 +1061,154 @@ async function runTests() {
     }
     assert('Vector 17b: Non-boolean rollbackCompleted fails closed', threw17b);
     cleanTestEnv();
+  }
+
+  // Vector 18: Pre-disruption credential rejection & zero service-stop invariance
+  {
+    // Helper to build a signed or unsigned base64url JWT
+    const makeJwt = (payload) => {
+      const h = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
+      const p = Buffer.from(JSON.stringify(payload)).toString('base64url');
+      return `${h}.${p}.mock_signature`;
+    };
+
+    // 18a: Unsupported SMOKE_SUPER_ADMIN_PASSWORD causes immediate abort with zero service stops
+    {
+      const env = setupTestEnv();
+      const tracker = createTrackingSpawner();
+      let threw18a = false;
+      const oldPass = process.env.SMOKE_SUPER_ADMIN_PASSWORD;
+      process.env.SMOKE_SUPER_ADMIN_PASSWORD = 'unsupported_test_pass';
+
+      try {
+        await executeDeployment({
+          rootDir: env.rootDir,
+          databasePath: 'server/bfi_classroom.db',
+          spawner: tracker.spawner,
+          targetCommit: '0123456789abcdef0123456789abcdef01234567',
+          isRehearsal: false
+        });
+      } catch (err) {
+        threw18a = err.message.includes('SMOKE_SUPER_ADMIN_PASSWORD');
+      } finally {
+        if (oldPass !== undefined) process.env.SMOKE_SUPER_ADMIN_PASSWORD = oldPass;
+        else delete process.env.SMOKE_SUPER_ADMIN_PASSWORD;
+      }
+
+      assert('Vector 18a.1: Unsupported SMOKE_SUPER_ADMIN_PASSWORD throws immediately in Phase 0', threw18a);
+      const stopCmds = tracker.executed.filter(c => c.includes('stop'));
+      assert('Vector 18a.2: Zero service-stop commands executed when SMOKE_SUPER_ADMIN_PASSWORD was provided', stopCmds.length === 0);
+      cleanTestEnv();
+    }
+
+    // 18b: Partial token configuration (only SUPER_ADMIN_TOKEN) halts with zero service stops
+    {
+      const env = setupTestEnv();
+      const tracker = createTrackingSpawner();
+      let threw18b = false;
+      const validToken = makeJwt({ id: 1, role: 'admin', exp: Math.floor(Date.now() / 1000) + 3600 });
+
+      try {
+        await executeDeployment({
+          rootDir: env.rootDir,
+          databasePath: 'server/bfi_classroom.db',
+          spawner: tracker.spawner,
+          targetCommit: '0123456789abcdef0123456789abcdef01234567',
+          superAdminToken: validToken,
+          // adminToken omitted!
+          isRehearsal: false
+        });
+      } catch (err) {
+        threw18b = err.message.includes('Incomplete');
+      }
+
+      assert('Vector 18b.1: Partial token pair throws immediately in Phase 0', threw18b);
+      const stopCmds = tracker.executed.filter(c => c.includes('stop'));
+      assert('Vector 18b.2: Zero service-stop commands executed on partial token pair', stopCmds.length === 0);
+      cleanTestEnv();
+    }
+
+    // 18c: Expired token configuration halts with zero service stops
+    {
+      const env = setupTestEnv();
+      const tracker = createTrackingSpawner();
+      let threw18c = false;
+      const expiredToken = makeJwt({ id: 1, role: 'admin', exp: Math.floor(Date.now() / 1000) - 3600 });
+      const validToken = makeJwt({ id: 7, role: 'admin', exp: Math.floor(Date.now() / 1000) + 3600 });
+
+      try {
+        await executeDeployment({
+          rootDir: env.rootDir,
+          databasePath: 'server/bfi_classroom.db',
+          spawner: tracker.spawner,
+          targetCommit: '0123456789abcdef0123456789abcdef01234567',
+          superAdminToken: expiredToken,
+          adminToken: validToken,
+          isRehearsal: false
+        });
+      } catch (err) {
+        threw18c = err.message.includes('expired');
+      }
+
+      assert('Vector 18c.1: Expired token throws immediately in Phase 0', threw18c);
+      const stopCmds = tracker.executed.filter(c => c.includes('stop'));
+      assert('Vector 18c.2: Zero service-stop commands executed on expired token', stopCmds.length === 0);
+      cleanTestEnv();
+    }
+  }
+
+  // Vector 19: Early failure recovery & attempt-bound service state verification
+  {
+    // 19a: Early failure recovery persists trafficMayReopen before starting Nginx
+    {
+      const env = setupTestEnv();
+      const tracker = createTrackingSpawner();
+      const stateFile = path.join(env.serverDir, 'active_deployment_state.json');
+      const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+      state.backupValidated = false; // Early failure before backup!
+      state.backupFile = null;
+      fs.writeFileSync(stateFile, JSON.stringify(state));
+
+      const res = await executeRollback({
+        rootDir: env.rootDir,
+        databasePath: 'server/bfi_classroom.db',
+        spawner: tracker.spawner,
+        isRehearsal: true
+      });
+
+      assert('Vector 19a.1: Early-failure rollback returns complete without database restore', res.rollbackComplete === true && res.databaseRestored === false);
+
+      const finalState = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+      assert('Vector 19a.2: Early-failure rollback persists trafficMayReopen=true', finalState.trafficMayReopen === true);
+      assert('Vector 19a.3: Early-failure rollback records trafficExposureInitiatedAt', typeof finalState.trafficExposureInitiatedAt === 'string');
+      assert('Vector 19a.4: Early-failure rollback records trafficReopened=true after Nginx starts', finalState.trafficReopened === true);
+      cleanTestEnv();
+    }
+
+    // 19b: Service state file attempt mismatch halts rollback and prevents service start
+    {
+      const env = setupTestEnv();
+      const tracker = createTrackingSpawner();
+      const servicesFile = path.join(env.serverDir, 'pre_deployment_services.env');
+      fs.writeFileSync(servicesFile, 'ATTEMPT_ID=different_attempt_999\nNGINX_STATE=active\nPM2_STATE=online\n');
+
+      let threw19b = false;
+      try {
+        await executeRollback({
+          rootDir: env.rootDir,
+          databasePath: 'server/bfi_classroom.db',
+          spawner: tracker.spawner,
+          isRehearsal: true
+        });
+      } catch (err) {
+        threw19b = err.message.includes('Attempt ID mismatch in pre_deployment_services.env');
+      }
+
+      assert('Vector 19b.1: Rollback halts on attempt mismatch in pre_deployment_services.env', threw19b);
+      const nginxStarts = tracker.executed.filter(c => c.includes('start') && c.includes('nginx'));
+      assert('Vector 19b.2: Nginx start is strictly prevented when service attempt mismatches', nginxStarts.length === 0);
+      cleanTestEnv();
+    }
   }
 
   console.log('\n================================================================');

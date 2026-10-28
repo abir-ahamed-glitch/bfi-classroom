@@ -4,7 +4,7 @@
 **Candidate Worktree:** `.worktrees/super-admin-integration`  
 **Candidate Branch:** `integration/super-admin-candidate`  
 **Base Commit (Integrated origin/main):** `0c71163495e58a51f1709272ec55d99a31251ec3`  
-**Reviewed Base Commit:** `b72119f04d98696f877040870105d13fbd3f1d82`  
+**Reviewed Base Commit:** `c6322facc753d35fc28c16a8d9a279814e11d221`  
 **Target Super Admin Accounts:** User ID `1` (`admin@abir` / `k.eye.films@gmail.com`) as immutable founding owner, plus secondary Super Admins promoted through audited step-up verification.  
 **Production Host:** `bfi-classroom-server` (`129.221.243.153`, Ubuntu 22.04 LTS aarch64)  
 **Root Database SHA-256 (Pristine):** `BF37A89C3F0DA1038E2E9A8FA18916D9A2986541A062C9AB40EE51E4987F5F1E`  
@@ -13,16 +13,16 @@
 
 ## 1. Executive Deployment Verdict: DEPLOYMENT REMAINS STRICTLY NO-GO (LOCAL FIXES COMPLETE, PENDING OPERATOR ACTIONS & REHEARSED RUNBOOK)
 
-All local code implementation, security remediation findings (SEC-01 through SEC-13), proxy streaming lifecycle controls, connection pinning verification, regression testing, deployment lifecycle restoration, and automated production smoke verification requirements have been completely resolved and empirically verified locally in an isolated test environment.
+All local code implementation, security remediation findings (SEC-01 through SEC-13), proxy streaming lifecycle controls, connection pinning verification, spreadsheet parser mitigations, regression testing, deployment lifecycle restoration, and automated production smoke verification requirements have been completely resolved and empirically verified locally in an isolated test environment.
 
 Deployment to live production remains **STRICTLY PROHIBITED (NO-GO)** until the system operator completes the external environmental prerequisites and executes the rehearsed runbook:
 
 | Item | Status | Action Required / Technical Detail |
 | :--- | :---: | :--- |
-| **SEC-01: Live Credential Rotation** | **OPEN** | **Operator action required:** Untracking `.env` and rotating encryption keys in test harnesses does not revoke previously committed secrets in repository history. Operator must regenerate and rotate SMTP application passwords, Turnstile keys, JWT secrets, and production database encryption keys on live infrastructure prior to opening public traffic. |
+| **SEC-01: Live Credential Rotation** | **OPEN** | **Operator action required:** Untracking `.env` and rotating encryption keys in test harnesses does not revoke previously committed secrets in repository history. Operator must regenerate and rotate SMTP application passwords, Turnstile keys, `JWT_SECRET`, `JWT_REFRESH_SECRET`, and `MFA_ENCRYPTION_KEY` on live infrastructure prior to opening public traffic. (Note: No whole-database encryption `DB_ENCRYPTION_KEY` exists; column-level encryption applies to TOTP secrets). |
 | **SEC-11: GitHub Environment Review Gates** | **UNVERIFIED LOCALLY** | **Operator action required:** `.github/workflows/deploy.yml` specifies `environment: production` and pinned commit checkout. Local runners cannot inspect GitHub repository settings; repository owner must verify that the `production` environment requires mandatory human approval and limits deployment to protected branches. |
-| **SEC-10: Production Dependency Triage** | **PARTIALLY MITIGATED / OPEN RESIDUAL RISKS** | All 48 affected packages cataloged using exact locked versions (`dompurify@3.4.1`, `nodemailer@8.0.7`, `react-router@7.13.2`, `undici@7.24.5`, `ws@8.18.3`, `sharp@0.33.5`, `xlsx@0.18.5`, etc.). PDF.js font matrix evaluation mitigated via `<Viewer transformGetDocumentParams={(params) => ({ ...params, isEvalSupported: false })}>` in `PdfViewer.jsx`. Spreadsheet parser attack vector confirmed non-reachable at runtime (outbound write only). Residual risks remain in C++ heap decoders (`sharp`), DOMPurify mXSS (`dompurify`), and transport-level WebSocket frame DoS (`ws`). |
-| **Deployment Automation** | **UNVERIFIED** | Automated unattended CI execution is unverified until complete prerequisite and credential path is rehearsed on a production-like staging host. The operator-driven interactive runbook remains the authoritative standard. |
+| **SEC-10: Production Dependency Triage** | **PARTIALLY MITIGATED / OPEN RESIDUAL RISKS** | All 48 affected packages cataloged using exact locked versions (`xlsx@0.18.5`, `dompurify@3.4.1`, `nodemailer@8.0.7`, `react-router@7.13.2`, `undici@7.24.5`, `ws@8.18.3`, `sharp@0.33.5`, etc.). Browser-side spreadsheet parsing reachable in Admin UI (`BulkRegisteredStudentImport`, `BulkStudentImport`, `UploadResultsModal`); mitigated via hardened `src/utils/safeSpreadsheet.js` wrapper (10MB limit, stripped formula/HTML/styles/VBA, active prototype pollution guard/cleanse). PDF.js font matrix evaluation mitigated via `<Viewer transformGetDocumentParams={(params) => ({ ...params, isEvalSupported: false })}>` in `PdfViewer.jsx`. Residual risks remain OPEN in C++ heap decoders (`sharp`), DOMPurify mXSS (`dompurify`), unpatched `xlsx@0.18.5` in `node_modules` (no public npm update available), and transport-level WebSocket frame DoS (`ws`). |
+| **Deployment Automation** | **UNVERIFIED** | Automated unattended CI execution is unverified until complete prerequisite and credential path is rehearsed on a production-like staging host. The operator-driven interactive runbook (`docs/runbooks/super-admin-deployment-and-rollback-runbook.md`) remains the authoritative standard. |
 | **SEC-02: SSRF, Connection Pinning & Proxy Timeouts** | **VERIFIED & CLOSED** | In `server/server.js` and `server/utils/ssrf-filter.js`, active deadlines are maintained throughout the entire streaming lifecycle: **6,000ms** for link-preview, **8,000ms** for proxy-image. Undici dispatchers are cleanly destroyed in `finally` blocks, client disconnects (`res.on('close')`) trigger immediate upstream stream cancellation, and bounded stream readers enforce limits (100KB preview, 5MB image). Real network connection pinning and DNS rebinding defense verified by live HTTP test probes. |
 | **SEC-03: File Upload Validation & Media CSP** | **VERIFIED & CLOSED** | Certificate and course material uploads enforce strict extension, MIME type, and binary magic-byte verification with immediate disk cleanup on failure. Serving endpoints set strict `Content-Security-Policy: default-src 'none'`, `X-Content-Type-Options: nosniff`, and download headers. |
 | **SEC-04: Student Profile & Multi-Batch Isolation** | **VERIFIED & CLOSED** | Student profiles, certificates, fee ledgers, and registry endpoints enforce strict multi-batch isolation and user ID matching. Course definitions remain completely immutable once published. |
@@ -33,8 +33,8 @@ Deployment to live production remains **STRICTLY PROHIBITED (NO-GO)** until the 
 | **SEC-09: Token Query Parameter Elimination** | **VERIFIED & CLOSED** | Report and fee-tracker export endpoints reject authorization tokens passed in URL query strings, requiring standard `Authorization: Bearer` headers. |
 | **SEC-12: Bootstrap Safety** | **VERIFIED & CLOSED** | Database bootstrap scripts prohibit seeding hardcoded admin credentials when running in production (`NODE_ENV === 'production'`). |
 | **SEC-13: Universal MFA & Governance Hardening** | **VERIFIED & CLOSED** | Enrolment endpoints reject initial setup on already-enrolled accounts. Factor replacement requires active factor verification. Action challenges are cryptographically bound to session, actor, target, action, and expiry. Last Super Admin protection and founding owner immunity are strictly enforced. |
-| **Canonical Deployment Lifecycle** | **VERIFIED LOCALLY** | Naive workflow (`git pull`, raw `cp`, `pm2 reload`) replaced with canonical lifecycle in `scripts/production_lifecycle.cjs`. Uses WAL-mode SQLite `.backup` API, tool provenance extraction from target commit, SHA-256 hash verification, cold-start bundle probe, attempt-aware rollback, and 18-assertion production smoke checks under origin isolation. |
-| **Automated Test Regressions** | **PASS** | **175 / 175 Automated Tests Passing** across 6 Playwright suites and 4 Node operational test suites. 6/6 Rehearsal scenarios passed. 61/61 Rollback vectors passed. 0 ESLint errors. Clean Vite production build. |
+| **Canonical Deployment Lifecycle & Rollback Safeguards** | **VERIFIED LOCALLY** | Replaced naive workflow with canonical lifecycle in `scripts/production_lifecycle.cjs`. Uses WAL-mode SQLite `.backup` API, tool provenance extraction from target commit, SHA-256 hash verification, cold-start bundle probe, pre-flight credential capability gate (unsupported `SMOKE_SUPER_ADMIN_PASSWORD` removed; valid tokens or TTY required before any disruption), attempt-bound service state tracking (`pre_deployment_services.env`), conservative pre-exposure boundary recording in early failure recovery, and 18-assertion production smoke checks under origin isolation. Tracked in canonical runbook `docs/runbooks/super-admin-deployment-and-rollback-runbook.md`. |
+| **Automated Test Regressions** | **PASS** | **180 / 180 Automated Tests Passing** across 6 Playwright suites and 5 Node operational test suites. 6/6 Rehearsal scenarios passed. 73/73 Rollback vectors passed. 0 ESLint errors. Clean Vite production build. |
 
 ---
 
@@ -60,7 +60,7 @@ The canonical lifecycle (`scripts/production_lifecycle.cjs`) replaces the naive 
 
 ```mermaid
 flowchart TD
-    P0["Phase 0: Tooling Provenance & Pre-flight<br/>Extract 6 tools from target commit; verify SHA-256;<br/>Cold-start probe; pre-flight credential check"] --> P1["Phase 1: Maintenance & Lockdown<br/>Stop Nginx & PM2; verify 0 writers"]
+    P0["Phase 0: Tooling Provenance & Pre-flight<br/>Validate smoke credentials before disruption;<br/>Extract 6 tools from target commit; verify SHA-256;<br/>Cold-start bundle probe"] --> P1["Phase 1: Maintenance & Lockdown<br/>Record pre_deployment_services.env (bound to ATTEMPT_ID);<br/>Stop Nginx & PM2; verify 0 writers"]
     P1 --> P2["Phase 2: Validated SQLite .backup<br/>Run src.backup(); PRAGMA quick_check"]
     P2 --> P3["Phase 3: Pinned Checkout & Build<br/>git checkout &lt;SHA&gt;; npm run build"]
     P3 --> P4["Phase 4: Atomic Migrations<br/>run_migrations.cjs with 10 assertions"]
@@ -68,44 +68,30 @@ flowchart TD
     P5 --> P6["Phase 6: Traffic Reopening<br/>Set trafficMayReopen; restart Nginx"]
     
     P0 -.->|Abort Before Disruption| H["Halt Safely<br/>Zero services stopped"]
-    P1 -.->|Early Failure| R0["Attempt-Aware Safe Recovery<br/>Restart Nginx/PM2; leave DB untouched"]
+    P1 -.->|Early Failure| R0["Attempt-Aware Safe Recovery<br/>Set trafficMayReopen; restart Nginx/PM2; leave DB untouched"]
     P2 -.->|On Failure| R["Rollback Runbook<br/>Quarantine DB, restore backup, checkout base commit"]
     P3 -.->|On Failure| R
     P4 -.->|On Failure| R
     P5 -.->|On Failure| R
 ```
 
-#### Phase 0 Tool Provenance & Hash Verification Implementation
-To prevent executing outdated or unverified scripts from a dirty working directory, Phase 0 extracts all six operational recovery tools directly from the target commit object without switching the live checkout:
-```javascript
-// scripts/production_lifecycle.cjs - Phase 0
-for (const scriptRel of requiredScripts) {
-  const destPath = path.join(recoveryToolsDir, path.basename(scriptRel));
-  // Extract directly from target commit SHA via git object store
-  const showRes = spawner('git', ['show', `${targetCommit}:${scriptRel}`]);
-  fs.writeFileSync(destPath, showRes.stdout, 'utf8');
-  fs.chmodSync(destPath, 0o755);
+#### Phase 0 Pre-Disruption Credential Validation & Tool Provenance
+To guarantee zero accidental disruption, Phase 0 step 0.1 validates smoke credential capability **before** executing any tool extraction or stopping any services:
+- Unsupported acceptance paths (`SMOKE_SUPER_ADMIN_PASSWORD`) are strictly rejected.
+- When tokens are provided in the environment or token files (`SUPER_ADMIN_TOKEN` / `ADMIN_TOKEN`), both tokens must be present, well-formed JWTs, and unexpired. Missing, partial, or expired tokens immediately halt with zero service stops.
+- In unattended non-interactive execution (CI/SSH without TTY), absence of valid tokens immediately halts Phase 0.
+- All six operational recovery tools are extracted directly from the target commit object without switching the live checkout and verified via SHA-256 checksums and cold-start loading:
+  - `scripts/preflight_lockdown_check.cjs`
+  - `scripts/verify_isolation.cjs`
+  - `scripts/run_migrations.cjs`
+  - `scripts/production_smoke_check.cjs`
+  - `scripts/production_lifecycle.cjs`
+  - `scripts/obtain_smoke_credentials.cjs`
 
-  // SHA-256 verification against written disk bytes
-  const hash = crypto.createHash('sha256').update(showRes.stdout).digest('hex');
-  const diskHash = crypto.createHash('sha256').update(fs.readFileSync(destPath)).digest('hex');
-  if (hash !== diskHash) throw new Error(`Hash mismatch for ${scriptRel}`);
-}
-
-// Cold-start loading probe in separate Node process
-const probeResult = spawner(process.execPath, ['-e', probeCode, recoveryToolsDir]);
-if (!probeResult.stdout.includes('BUNDLE_VERIFIED_OK')) {
-  throw new Error('Recovery tool bundle failed cold-start loading verification');
-}
-
-// Pre-flight credential handoff check
-if (!hasEnvTokens && !hasInteractiveTty && !isRehearsal) {
-  throw new Error('Missing smoke credentials in non-interactive environment; halting before service disruption');
-}
-```
-
-#### Attempt-Aware Early Failure Handling
-If failure occurs before Phase 2 creates and validates a new backup (`state.backupValidated !== true || !state.backupFile`), the live database was **never modified**. Restoring an older backup from an unrelated previous attempt would cause catastrophic data loss of all intervening production transactions. Attempt-aware rollback safely restores service states (Nginx/PM2) while leaving the database untouched (`databaseRestored = false`), verified by table count invariants.
+#### Attempt-Aware Early Failure Handling & Service State Binding
+- `server/pre_deployment_services.env` records service states bound explicitly to `ATTEMPT_ID=${attemptId}` alongside `active_deployment_state.json` and `active_backup_path.env`.
+- If failure occurs before Phase 2 creates and validates a new backup (`state.backupValidated !== true || !state.backupFile`), the live database was **never modified**. Restoring an older backup from an unrelated previous attempt would cause data loss.
+- Early-failure rollback skips database restore, persists `trafficMayReopen = true` and `trafficExposureInitiatedAt` atomically **before** restarting Nginx, and restores recorded service states bound to the current attempt ID.
 
 #### SQLite Online Backup API Implementation
 In Phase 2, the backup is executed using the native SQLite Online Backup API via `better-sqlite3`:
@@ -137,7 +123,7 @@ Forced major upgrades (`npm audit fix --force`) are strictly prohibited because 
 | Component / Package Family | Actual Locked Version | Affected Packages & Advisory | Dependency Chain / Origin | Runtime & Build Usage | Reachability & Attack Surface | Implemented Mitigation & Analysis | Residual Risk Assessment |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **PDF Viewing & Documents** | `pdfjs-dist@3.11.174`, `@react-pdf-viewer/core@3.12.0` | `pdfjs-dist` (High, GHSA-4g9c-wxh4-2f23), `@react-pdf-viewer/core` (High), and 18 `@react-pdf-viewer/*` plugins (High) | Direct in `package.json` | Client-side PDF viewing in course curriculum, batch materials, and student certificates. | Arbitrary JS execution via font matrix `eval()` (GHSA-4g9c-wxh4-2f23). Reachable only if an admin or student renders a malicious PDF. | Document-options workaround applied: `<Viewer transformGetDocumentParams={(params) => ({ ...params, isEvalSupported: false })}>` explicitly configured in `src/components/PdfViewer.jsx` and PDF import components, disabling JavaScript evaluation in the PDF worker. | **PARTIALLY MITIGATED.** Disabling eval eliminates the code execution vector. Package upgrades blocked by `@react-pdf-viewer` compatibility with PDF.js v4+. |
-| **Spreadsheets & Data Export** | `xlsx@0.18.5`, `exceljs@4.4.0` | `xlsx` (High, GHSA-4r6h-8v6p-xvw6, GHSA-5pgg-2g8v-p4x9), `exceljs` (Moderate) | Direct in `package.json` | Outbound Excel report generation for admin fee tracking. | Prototype pollution and ReDoS via crafted `.xlsx` files during parsing. | **CONFIRMED NON-REACHABLE AT RUNTIME:** Codebase inspection confirms the application **never** invokes `XLSX.read()` or `XLSX.readFile()`. It strictly calls `XLSX.utils.book_new()`, `aoa_to_sheet()`, and `XLSX.write()` in `server/routes/fee-tracker.js` for outbound report exports. | **PARTIALLY MITIGATED.** Parser vector is absent from runtime call graph, but unpatched 0.18.5 code remains in `node_modules`. |
+| **Spreadsheets & Data Export** | `xlsx@0.18.5`, `exceljs@4.4.0` | `xlsx` (High, GHSA-4r6h-8v6p-xvw6 / CVE-2023-30533, GHSA-5pgg-2g8v-p4x9 / CVE-2024-22363), `exceljs` (Moderate) | Direct in `package.json` | **Browser-Side Client Parsing:** Invoked in admin UI: `BulkRegisteredStudentImport.jsx:196`, `BulkStudentImport.jsx:214`, and `UploadResultsModal.jsx:82`.<br/>**Server-Side Outbound Export:** Strictly calls `book_new()`, `aoa_to_sheet()`, and `write()` in `server/routes/fee-tracker.js`. | **CONFIRMED REACHABLE AT RUNTIME (Client-Side):** Administrators upload spreadsheets supplied by students or applicants. Malicious files supplied to administrators must be treated as untrusted input. Attack vectors: Prototype pollution (`GHSA-4r6h-8v6p-xvw6`) via crafted sheets and ReDoS (`GHSA-5pgg-2g8v-p4x9`) via malicious number format strings in SheetJS <0.20.2. Note: Upstream SheetJS moved distribution off public npm to `cdn.sheetjs.com`, resulting in `"fixAvailable": false` on npm. | **IMPLEMENTED MITIGATION:** Centralized hardened parser wrapper `src/utils/safeSpreadsheet.js` deployed across all three import components. Controls: (1) Enforces 10MB input size cap; (2) Disables risky features: `cellFormula: false`, `cellHTML: false`, `cellStyles: false`, `bookVBA: false`, `bookDeps: false`, `WTF: false`; (3) Active `Object.prototype` pollution detection & cleanup; (4) Output sanitization coercing cells to safe primitive strings. Extension checks and administrator authentication do not prevent parser exploits. | **PARTIALLY MITIGATED / OPEN RESIDUAL RISK.** Parser wrapper mitigates formula injection, style ReDoS, and prototype pollution, but unpatched `xlsx@0.18.5` code remains in `node_modules`. Residual risk remains **OPEN** until upstream releases a patched package on the public npm registry. |
 | **Image Processing** | `sharp@0.33.5` | `sharp` (High, GHSA-8g9q-873m-5gjh, GHSA-546f-8736-5qj6, GHSA-79v4-65xg-pq96) | Direct in `package.json` | Profile photo and course certificate thumbnail generation. | Heap buffer overflow in underlying `libvips` C++ libraries when decoding malformed image containers. | Strict extension, MIME type, and binary magic-byte verification in `server/routes/certification.js` and `server/routes/student.js`. Rejected files unlinked immediately. | **PARTIALLY MITIGATED / OPEN RESIDUAL RISK.** Magic-byte inspection guarantees valid image container format, but does **not** eliminate C++ heap corruption vulnerabilities in unpatched libvips image decoders. |
 | **Client SPA Routing** | `react-router@7.13.2`, `react-router-dom@7.13.2` | `react-router` (High, GHSA-2w8g-55hg-vj5h), `react-router-dom` (High) | Direct in `package.json` | Single-page application frontend navigation. | XSS via URL parameter decoding in maliciously crafted links. | All routes use explicit relative paths and typed parameters. Client inputs are sanitized; parameters are bound to integer IDs. | **PARTIALLY MITIGATED.** Application does not decode external untrusted HTML in route parameters. |
 | **Sanitization & DOM Security** | `dompurify@3.4.1` | `dompurify` (High, 13 advisories including GHSA-g6w5-jxj2-277p) | Direct in `package.json` | Server-side rich text cleaning and client-side comment display. | Nested DOM clobbering, namespace confusion, and mutation XSS (mXSS). | Server middleware (`sanitizeInput`) uses JSDOM sandbox with strict tag whitelisting, stripping `<script>`, `<iframe>`, and event handlers. | **PARTIALLY MITIGATED / OPEN RESIDUAL RISK.** Server-side JSDOM tag stripping reduces basic attacks, but does **not** neutralize all DOMPurify 3.4.1 bypasses if frontend components render sanitized strings via `dangerouslySetInnerHTML`. |
@@ -153,7 +139,7 @@ Forced major upgrades (`npm audit fix --force`) are strictly prohibited because 
 
 Every test suite was executed against dedicated, isolated SQLite test environments on the `integration/super-admin-candidate` branch. All assertions passed with exit code `0`.
 
-### 4.1 Master Test Execution Summary (175 Passed, 0 Failed)
+### 4.1 Master Test Execution Summary (180 Passed, 0 Failed)
 
 | Test Suite / Harness | Command Invocation | Test Count | Duration | Exit Code | Empirical Verdict |
 | :--- | :--- | :---: | :---: | :---: | :---: |
@@ -162,12 +148,14 @@ Every test suite was executed against dedicated, isolated SQLite test environmen
 | **Course Definitions API Suite** | `npx playwright test tests/course-definitions-api.spec.js` | 12 / 12 | 6.8s | 0 | **PASS (100%)** |
 | **Course Maker E2E Lifecycle Suite** | `npx playwright test tests/course-maker-e2e.spec.js` | 10 / 10 | 4.5s | 0 | **PASS (100%)** |
 | **File Uploads & Media CSP Suite** | `npx playwright test tests/file-uploads.spec.js` | 7 / 7 | 4.2s | 0 | **PASS (100%)** |
+| **Safe Spreadsheet Parser Unit Spec** | `node --test tests/safe-spreadsheet.spec.js` | 5 / 5 | 0.6s | 0 | **PASS (100%)** |
 | **Security Remediation SEC-01 to SEC-12** | `node tests/security-remediation-sec01-to-sec12.spec.js` | 34 / 34 | 10.7s | 0 | **PASS (100%)** |
 | **Security Remediation SEC-13 (Universal MFA)** | `node tests/security-remediation-sec13.spec.js` | 7 / 7 | 1.3s | 0 | **PASS (100%)** |
 | **Governance & Universal 2FA Spec** | `node tests/super-admin-governance-and-universal-2fa.spec.js` | 17 / 17 | 10.3s | 0 | **PASS (100%)** |
 | **Admin Archiving & Password Reset Spec** | `node tests/admin-archiving-and-reset.spec.js` | 8 / 8 | 16.1s | 0 | **PASS (100%)** |
 | **Canonical Rehearsal Harness (6 Scenarios)** | `node scripts/rehearse_deployment_lifecycle.cjs` | 6 / 6 | 3.5s | 0 | **PASS (100%)** |
-| **Rollback Fail-Closed Harness (61 Vectors)** | `node scripts/test_rollback_failures.cjs` | 61 / 61 | 5.2s | 0 | **PASS (100%)** |
+| **Rollback Fail-Closed Harness (73 Vectors)** | `node scripts/test_rollback_failures.cjs` | 73 / 73 | 6.1s | 0 | **PASS (100%)** |
+| **MFA Secret Key Rotation Rehearsal** | `node scripts/rehearse_mfa_rotation.cjs` | 5 / 5 steps | 1.2s | 0 | **PASS (100%)** |
 | **Code Quality & Static Analysis (ESLint)** | `npx eslint . --quiet` | 0 errors | 14.8s | 0 | **PASS (0 Errors)** |
 | **Frontend Production Asset Build (Vite)** | `npm run build` | 15.6s | 15.6s | 0 | **PASS (Clean Build)** |
 
@@ -177,7 +165,7 @@ Every test suite was executed against dedicated, isolated SQLite test environmen
 
 | Vulnerability ID | Description & Risk | Implemented Technical Fix | Verification Evidence | Current Status |
 | :--- | :--- | :--- | :--- | :---: |
-| **SEC-01** | Committed credentials in repository history; unrotated production secrets. | Untracked `.env`; created `.env.example`; implemented `scripts/rotate_mfa_secrets.cjs` for key rotation with key-fallback decryption in `totp.js`. | Unit tests in `sec01-to-sec12.spec.js` pass. Live credentials remain unrotated. | **OPEN (Operator Action Required)** |
+| **SEC-01** | Committed credentials in repository history; unrotated production secrets. | Untracked `.env`; created `.env.example`; implemented `scripts/rotate_mfa_secrets.cjs` for key rotation with key-fallback decryption in `totp.js`. Created `scripts/rehearse_mfa_rotation.cjs` for safe rehearsal on disposable data. | Unit tests in `sec01-to-sec12.spec.js` and `rehearse_mfa_rotation.cjs` pass. Live credentials remain unrotated. | **OPEN (Operator Action Required)** |
 | **SEC-02** | SSRF in link preview and image proxying; loopback/IPv6 bypasses; lingering proxy timeouts. | Extracted `server/utils/ssrf-filter.js` with `isPrivateIP`, `validateSafePublicUrl`, and `createPinnedAgent`. In `server/server.js`, abort timers remain active through body streaming (**6,000ms** preview, **8,000ms** proxy-image); `res.on('close')` aborts readers; dispatchers destroyed in `finally`. Real network tests prove socket connects to pinned IP while preserving Host header and preventing DNS rebinding. | 34/34 tests in `sec01-to-sec12.spec.js` pass (loopback, 100KB preview, 5MB image limit, client disconnect, connection pinning). | **VERIFIED & CLOSED** |
 | **SEC-03** | Arbitrary file upload and missing CSP on served static uploads. | In `server/routes/certification.js` and `course.js`, custom `fileFilter` validates extension, MIME type, and magic bytes. Serving endpoints enforce `default-src 'none'`, `nosniff`, and download headers. | `tests/file-uploads.spec.js` (7/7 passed); rejected files unlinked immediately. | **VERIFIED & CLOSED** |
 | **SEC-04** | Cross-tenant data leakage in student profiles and fee trackers across colliding course titles. | In `server/routes/student.js`, `fees.js`, and `batches.js`, all operations query by explicit `batch_id` foreign key rather than shared `course_name` strings. | `tests/same-title-batch-collision.spec.js` (24/24 passed). | **VERIFIED & CLOSED** |
@@ -186,8 +174,8 @@ Every test suite was executed against dedicated, isolated SQLite test environmen
 | **SEC-07** | Non-transactional audit logging leading to state inconsistency on audit failure. | Wrapped password reset completion and admin lifecycle state updates in SQLite transactions coupled with `recordAuditLog`. Simulated audit write failure triggers atomic rollback. | Test in `sec01-to-sec12.spec.js` verified with simulated write error. | **VERIFIED & CLOSED** |
 | **SEC-08** | Client-controlled WebSocket caller/sender spoofing in audio/video signalling. | In `server/server.js`, socket event listener forces `data.callerId = socket.user.id` and `data.senderId = socket.user.id`. | Verified in `sec01-to-sec12.spec.js`. | **VERIFIED & CLOSED** |
 | **SEC-09** | Sensitive authorization tokens accepted in URL query parameters during export. | In `server/routes/fees.js`, removed `req.query.token` authentication fallback. Exports strictly require `Authorization: Bearer` header. | Verified in `sec01-to-sec12.spec.js`. | **VERIFIED & CLOSED** |
-| **SEC-10** | Unaddressed vulnerabilities in production dependency tree. | Conducted production audit cataloging 48 affected packages. Applied `<Viewer transformGetDocumentParams={(params) => ({ ...params, isEvalSupported: false })}>` in `PdfViewer.jsx`. Triaged all 10 component families with actual locked versions. Stated confirmed non-reachability vs assumptions. | Audit JSON generated; 48 packages triaged in section 3. | **PARTIALLY MITIGATED / OPEN RESIDUAL RISKS** |
-| **SEC-11** | Unhardened deployment pipeline (`git pull`, raw `cp`, no rollback gates). | Restored canonical deployment lifecycle in `.github/workflows/deploy.yml` calling `scripts/production_lifecycle.cjs`. Replaced raw `cp` with SQLite `.backup` API. Added tool provenance extraction from target commit, SHA-256 verification, and cold-start bundle probe. | Verified in `sec01-to-sec12.spec.js`, `rehearse_deployment_lifecycle.cjs`, and `test_rollback_failures.cjs`. | **UNVERIFIED LOCALLY (Operator must verify GitHub environment gates)** |
+| **SEC-10** | Unaddressed vulnerabilities in production dependency tree. | Cataloged 48 affected packages. Implemented `safeSpreadsheet.js` wrapper with safe parsing options and prototype pollution guard across 3 admin components. Applied `<Viewer transformGetDocumentParams={(params) => ({ ...params, isEvalSupported: false })}>` in `PdfViewer.jsx`. Triaged all component families with actual locked versions. Stated confirmed non-reachability vs assumptions. | Audit JSON generated; 48 packages triaged in section 3. Unit test `tests/safe-spreadsheet.spec.js` passes. | **PARTIALLY MITIGATED / OPEN RESIDUAL RISKS** |
+| **SEC-11** | Unhardened deployment pipeline (`git pull`, raw `cp`, no rollback gates). | Restored canonical deployment lifecycle in `.github/workflows/deploy.yml` calling `scripts/production_lifecycle.cjs`. Replaced raw `cp` with SQLite `.backup` API. Added tool provenance extraction from target commit, SHA-256 verification, and cold-start bundle probe. Created canonical runbook `docs/runbooks/super-admin-deployment-and-rollback-runbook.md`. | Verified in `sec01-to-sec12.spec.js`, `rehearse_deployment_lifecycle.cjs`, and `test_rollback_failures.cjs`. | **UNVERIFIED LOCALLY (Operator must verify GitHub environment gates)** |
 | **SEC-12** | Insecure default password seeding during database initialization. | In `server/db/database.js`, seeding default admin accounts with static passwords is blocked in production mode. | Verified in `sec01-to-sec12.spec.js`. | **VERIFIED & CLOSED** |
 | **SEC-13** | Universal MFA authenticator replacement bypass and unverified factor overwrite. | In `server/routes/auth.js`: (1) `/mfa/setup` rejects already-enrolled accounts without active factor; (2) `/mfa/verify-setup` validates active factor authorization and pending setup session binding; (3) `/mfa/disable` requires account password and factor; (4) Action challenges enforce session binding; (5) Last Super Admin and founding owner protections strictly enforced. | All 7 tests in `tests/security-remediation-sec13.spec.js` and 17 tests in `tests/super-admin-governance-and-universal-2fa.spec.js` pass. | **VERIFIED & CLOSED** |
 
@@ -199,7 +187,8 @@ Prior to initiating the maintenance window on `bfi-classroom-server`, the human 
 
 1. [ ] **Live Secret Rotation (SEC-01):**
    - Generate fresh 64-character hex strings for `JWT_SECRET` and `JWT_REFRESH_SECRET`.
-   - Generate a fresh 32-byte hex key for `DB_ENCRYPTION_KEY` and set `DB_ENCRYPTION_KEY_PREVIOUS` to the current key.
+   - Generate a fresh 32-byte key for `MFA_ENCRYPTION_KEY` and set `PREVIOUS_MFA_ENCRYPTION_KEY` to the current key during the rotation window. (Note: Do not configure `DB_ENCRYPTION_KEY` as no database-level encryption is implemented).
+   - Rehearse the rotation procedure on disposable data via `node scripts/rehearse_mfa_rotation.cjs`.
    - Configure a dedicated transactional SMTP sending account with an application-specific password.
    - Update production Cloudflare Turnstile secret and site keys.
 2. [ ] **GitHub Repository Settings (SEC-11):**

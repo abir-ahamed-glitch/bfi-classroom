@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Upload, X, Check, AlertTriangle, FileText, Loader2 } from 'lucide-react';
 import { useDropzone } from 'react-dropzone';
 import * as XLSX from 'xlsx';
+import { safeReadSpreadsheet } from '../../utils/safeSpreadsheet';
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf';
 import './BatchFormModal.css';
 
@@ -79,10 +80,7 @@ export default function UploadResultsModal({ isOpen, onClose, batchId, onUploadS
           }
         } else {
           const bstr = new Uint8Array(evt.target.result);
-          const wb = XLSX.read(bstr, { type: 'array' });
-          const wsname = wb.SheetNames[0];
-          const ws = wb.Sheets[wsname];
-          data2D = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: "" });
+          data2D = safeReadSpreadsheet(bstr);
         }
       } catch (parseErr) {
         console.error("Parse error:", parseErr);

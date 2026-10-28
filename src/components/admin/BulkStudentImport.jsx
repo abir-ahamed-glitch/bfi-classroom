@@ -5,6 +5,7 @@ import mammoth from 'mammoth';
 import * as pdfjsLib from 'pdfjs-dist';
 import { UploadCloud, CheckCircle2, FileSpreadsheet, X, AlertCircle, History, Download, Clapperboard, Film, FileText, MoreVertical } from 'lucide-react';
 import { getOrdinalSuffix } from '../../utils/formatUtils';
+import { safeReadSpreadsheet } from '../../utils/safeSpreadsheet';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.mjs`;
 
@@ -211,10 +212,7 @@ export default function BulkStudentImport({ onImportComplete }) {
         } else {
           // Default to XLSX / CSV
           const bstr = new Uint8Array(evt.target.result);
-          const wb = XLSX.read(bstr, { type: 'array' });
-          const wsname = wb.SheetNames[0];
-          const ws = wb.Sheets[wsname];
-          data2D = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: "" });
+          data2D = safeReadSpreadsheet(bstr);
         }
       } catch (parseErr) {
         console.error("Parse error:", parseErr);

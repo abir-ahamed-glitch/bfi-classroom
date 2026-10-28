@@ -88,6 +88,48 @@ function writeStateAtomic(filePath, data) {
   }
 }
 
+function parseJwtPayload(token) {
+  if (typeof token !== 'string') return null;
+  const parts = token.trim().split('.');
+  if (parts.length !== 3) return null;
+  try {
+    const payloadStr = Buffer.from(parts[1], 'base64url').toString('utf8');
+    return JSON.parse(payloadStr);
+  } catch {
+    return null;
+  }
+}
+
+function validateTokenPair(saToken, oaToken, label, allowMock = false) {
+  if (!saToken || !oaToken) {
+    return { valid: false, reason: `Incomplete token pair provided via ${label} (both Super Admin and Ordinary Admin tokens are required).` };
+  }
+
+  if (allowMock && typeof saToken === 'string' && typeof oaToken === 'string' && saToken.startsWith('mock-') && oaToken.startsWith('mock-')) {
+    return { valid: true, mock: true };
+  }
+
+  const saPayload = parseJwtPayload(saToken);
+  const oaPayload = parseJwtPayload(oaToken);
+
+  if (!saPayload) {
+    return { valid: false, reason: `Super Admin token provided via ${label} is malformed or not a valid JWT format.` };
+  }
+  if (!oaPayload) {
+    return { valid: false, reason: `Ordinary Admin token provided via ${label} is malformed or not a valid JWT format.` };
+  }
+
+  const nowSec = Math.floor(Date.now() / 1000);
+  if (typeof saPayload.exp === 'number' && saPayload.exp <= nowSec) {
+    return { valid: false, reason: `Super Admin token provided via ${label} has expired (exp: ${saPayload.exp}, now: ${nowSec}).` };
+  }
+  if (typeof oaPayload.exp === 'number' && oaPayload.exp <= nowSec) {
+    return { valid: false, reason: `Ordinary Admin token provided via ${label} has expired (exp: ${oaPayload.exp}, now: ${nowSec}).` };
+  }
+
+  return { valid: true, saPayload, oaPayload };
+}
+
 // Strict fail-closed command runner
 function runCommandStrict(spawner, cmd, args, options = {}, desc = '') {
   const timeout = options.timeout || 60000;
@@ -147,6 +189,77 @@ async function executeDeployment(options = {}) {
   // ── PHASE 0: Staging & Tooling Preservation ───────────────────────────────
   logSection('PHASE 0: PRE-FLIGHT STAGING & RECOVERY TOOLING PRESERVATION');
 
+  // 0.1 Pre-flight credential handoff capability verification
+  // Verify supported credential channels: token files, environment tokens, options, or interactive TTY.
+  // Reject unsupported paths (e.g. SMOKE_SUPER_ADMIN_PASSWORD).
+  if (process.env.SMOKE_SUPER_ADMIN_PASSWORD) {
+    logFatal('ABORT DEPLOYMENT: SMOKE_SUPER_ADMIN_PASSWORD is not supported. Use SUPER_ADMIN_TOKEN / ADMIN_TOKEN (or token files) for unattended automation, or an interactive TTY for zero-echo login. Halting before stopping any production services.');
+    throw new Error('Unsupported credential parameter: SMOKE_SUPER_ADMIN_PASSWORD');
+  }
+
+  let credHandoffMode = null;
+
+  // Check token files
+  const saFile = options.superAdminTokenFile || process.env.SUPER_ADMIN_TOKEN_FILE;
+  const oaFile = options.adminTokenFile || process.env.ADMIN_TOKEN_FILE;
+  if (saFile || oaFile) {
+    if (!saFile || !oaFile) {
+      logFatal('ABORT DEPLOYMENT: Partial token file configuration. Both SUPER_ADMIN_TOKEN_FILE and ADMIN_TOKEN_FILE are required. Halting before stopping services.');
+      throw new Error('Incomplete smoke token file configuration');
+    }
+    if (!fs.existsSync(saFile) || !fs.existsSync(oaFile)) {
+      logFatal('ABORT DEPLOYMENT: Configured token file(s) do not exist on disk. Halting before stopping services.');
+      throw new Error('Configured smoke token file missing on disk');
+    }
+    const fileSaToken = fs.readFileSync(saFile, 'utf8').trim();
+    const fileOaToken = fs.readFileSync(oaFile, 'utf8').trim();
+    const fileValidation = validateTokenPair(fileSaToken, fileOaToken, 'token files', isRehearsal);
+    if (!fileValidation.valid) {
+      logFatal(`ABORT DEPLOYMENT: ${fileValidation.reason} Halting before stopping services.`);
+      throw new Error(`Smoke token file validation failed: ${fileValidation.reason}`);
+    }
+    credHandoffMode = 'Token Files';
+  }
+
+  // Check environment tokens or options tokens
+  const envSaToken = options.superAdminToken || process.env.SUPER_ADMIN_TOKEN;
+  const envOaToken = options.adminToken || process.env.ADMIN_TOKEN;
+  if (!credHandoffMode && (envSaToken || envOaToken)) {
+    if (!envSaToken || !envOaToken) {
+      logFatal('ABORT DEPLOYMENT: Partial smoke token pair provided. Both SUPER_ADMIN_TOKEN and ADMIN_TOKEN are required. Halting before stopping services.');
+      throw new Error('Incomplete smoke token environment pair');
+    }
+    const envValidation = validateTokenPair(envSaToken, envOaToken, 'environment / options', isRehearsal);
+    if (!envValidation.valid) {
+      logFatal(`ABORT DEPLOYMENT: ${envValidation.reason} Halting before stopping services.`);
+      throw new Error(`Smoke token validation failed: ${envValidation.reason}`);
+    }
+    credHandoffMode = 'Environment Tokens';
+  }
+
+  // Check programmatic credential provider
+  if (!credHandoffMode && typeof options.credentialProvider === 'function') {
+    credHandoffMode = 'Programmatic Credential Provider';
+  }
+
+  // Check interactive TTY
+  const hasInteractiveTty = Boolean(process.stdin && process.stdin.isTTY);
+  if (!credHandoffMode && hasInteractiveTty) {
+    credHandoffMode = 'Interactive TTY';
+  }
+
+  // Check rehearsal mode
+  if (!credHandoffMode && isRehearsal) {
+    credHandoffMode = 'Rehearsal Mode (Mock Credentials)';
+  }
+
+  if (!credHandoffMode) {
+    logFatal('ABORT DEPLOYMENT: Non-interactive execution detected without valid pre-supplied smoke credentials (SUPER_ADMIN_TOKEN / ADMIN_TOKEN or token files). Unattended execution cannot complete interactive credential handoff. Halting before stopping any production services.');
+    throw new Error('Missing or invalid smoke credentials in non-interactive environment');
+  }
+
+  logStep('0.1', `Credential handoff capability verified (${credHandoffMode})`);
+
   // Preserve recovery tooling in server/.recovery_tools outside git-managed tree
   const recoveryToolsDir = path.join(serverDir, '.recovery_tools');
   if (!fs.existsSync(recoveryToolsDir)) fs.mkdirSync(recoveryToolsDir, { recursive: true });
@@ -197,10 +310,10 @@ async function executeDeployment(options = {}) {
       logFatal(`Hash verification mismatch for extracted tool: ${sName}`);
       throw new Error(`Hash mismatch for ${sName}`);
     }
-    logStep('0.1', `Extracted & verified ${sName} (SHA-256: ${hash.slice(0, 16)}...) from ${targetCommit.slice(0, 8)}`);
+    logStep('0.2', `Extracted & verified ${sName} (SHA-256: ${hash.slice(0, 16)}...) from ${targetCommit.slice(0, 8)}`);
   }
 
-  // 0.2 Cold-start bundle loading verification in a fresh Node process
+  // 0.3 Cold-start bundle loading verification in a fresh Node process
   const probeCode = `
     const path = require('path');
     const dir = process.argv[1];
@@ -215,20 +328,7 @@ async function executeDeployment(options = {}) {
     logFatal(`Cold-start load verification failed for recovery tools in ${recoveryToolsDir}: ${probeResult.stderr || probeResult.error}`);
     throw new Error('Recovery tool bundle failed cold-start loading verification');
   }
-  logStep('0.2', `Cold-start bundle loading verified for all 6 recovery tools in ${recoveryToolsDir}`);
-
-  // 0.3 Pre-flight credential handoff capability verification
-  const hasEnvTokens = Boolean(
-    (process.env.SUPER_ADMIN_TOKEN && process.env.ADMIN_TOKEN) ||
-    process.env.SMOKE_SUPER_ADMIN_PASSWORD
-  );
-  const hasInteractiveTty = Boolean(process.stdin && process.stdin.isTTY);
-
-  if (!hasEnvTokens && !hasInteractiveTty && !isRehearsal) {
-    logFatal('ABORT DEPLOYMENT: Non-interactive execution detected without pre-supplied smoke credentials (SUPER_ADMIN_TOKEN / ADMIN_TOKEN). Unattended execution cannot complete interactive credential handoff. Halting before stopping any production services.');
-    throw new Error('Missing smoke credentials in non-interactive environment');
-  }
-  logStep('0.3', `Credential handoff capability verified (${hasEnvTokens ? 'Environment Tokens' : (isRehearsal ? 'Rehearsal Mode' : 'Interactive TTY')})`);
+  logStep('0.3', `Cold-start bundle loading verified for all 6 recovery tools in ${recoveryToolsDir}`);
 
   // Initialize deployment state and attempt-bound backup environment
   const attemptId = `deploy_${Date.now()}`;
@@ -273,7 +373,7 @@ async function executeDeployment(options = {}) {
   writeStateAtomic(stateFilePath, deploymentState);
   fs.writeFileSync(
     path.join(serverDir, 'pre_deployment_services.env'),
-    `NGINX_STATE=${deploymentState.nginxInitialState}\nPM2_STATE=${deploymentState.pm2InitialState}\n`
+    `ATTEMPT_ID=${attemptId}\nNGINX_STATE=${deploymentState.nginxInitialState}\nPM2_STATE=${deploymentState.pm2InitialState}\n`
   );
   logStep('1.1', `Service states recorded: NGINX=${deploymentState.nginxInitialState}, PM2=${deploymentState.pm2InitialState}`);
 
@@ -663,6 +763,11 @@ async function executeRollback(options = {}) {
     let shouldStartPm2 = false;
     if (fs.existsSync(servicesFile)) {
       const sContent = fs.readFileSync(servicesFile, 'utf8');
+      const mAttempt = sContent.match(/ATTEMPT_ID=(.+)/);
+      if (mAttempt && mAttempt[1].trim() !== state.attemptId) {
+        logFatal(`ABORT ROLLBACK: Service state file attempt mismatch! State attemptId "${state.attemptId}" does not match pre_deployment_services.env attemptId "${mAttempt[1].trim()}". Halting.`);
+        throw new Error('ABORT ROLLBACK: Attempt ID mismatch in pre_deployment_services.env.');
+      }
       if (sContent.includes('NGINX_STATE=active')) shouldStartNginx = true;
       if (sContent.includes('PM2_STATE=online')) shouldStartPm2 = true;
     }
@@ -672,8 +777,20 @@ async function executeRollback(options = {}) {
       runCommandStrict(spawner, 'pm2', ['start', 'ecosystem.config.cjs'], { timeout: 15000 }, 'Restart PM2');
     }
     if (shouldStartNginx) {
-      logStep('R.1.2', 'Restarting Nginx service...');
+      logStep('R.1.2', 'Setting conservative traffic-may-reopen boundary before restoring Nginx service...');
+      state.trafficMayReopen = true;
+      state.trafficExposureInitiatedAt = new Date().toISOString();
+      writeStateAtomic(stateFilePath, state);
+
+      logStep('R.1.3', 'Restarting Nginx service...');
       runCommandStrict(spawner, 'sudo', ['systemctl', 'start', 'nginx'], { timeout: 10000 }, 'Restore Nginx State');
+
+      const nginxActiveCheck = runCommandStrict(spawner, 'systemctl', ['is-active', 'nginx'], { timeout: 5000 }, 'Verify Nginx Active');
+      if (!nginxActiveCheck.stdout || !nginxActiveCheck.stdout.includes('active')) {
+        throw new Error('Nginx failed to report active status after early-failure service restoration');
+      }
+      state.trafficReopened = true;
+      state.trafficReopenedAt = new Date().toISOString();
     }
 
     state.rollbackCompleted = true;
@@ -873,6 +990,11 @@ async function executeRollback(options = {}) {
   let nginxWasActive = false;
   if (fs.existsSync(servicesEnvFile)) {
     const sContent = fs.readFileSync(servicesEnvFile, 'utf8');
+    const mAttempt = sContent.match(/ATTEMPT_ID=(.+)/);
+    if (mAttempt && mAttempt[1].trim() !== state.attemptId) {
+      logFatal(`ABORT ROLLBACK: Service state file attempt mismatch! State attemptId "${state.attemptId}" does not match pre_deployment_services.env attemptId "${mAttempt[1].trim()}". Halting.`);
+      throw new Error('ABORT ROLLBACK: Attempt ID mismatch in pre_deployment_services.env.');
+    }
     nginxWasActive = sContent.includes('NGINX_STATE=active');
   } else if (state && state.nginxInitialState === 'active') {
     nginxWasActive = true;
