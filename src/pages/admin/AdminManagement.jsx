@@ -5,7 +5,7 @@ import {
   Settings, Clock, AlertCircle, CheckCircle2, ChevronDown, ChevronUp, 
   Search, RefreshCw, Key, Lock, Eye, EyeOff, Sliders, FileText, CheckSquare, Square,
   Smartphone, Monitor, Trash2, ArrowRight, Copy, CheckCheck, AlertTriangle,
-  BarChart3, Calendar, Filter, Activity
+  BarChart3, Calendar, Filter, Activity, Archive, RotateCcw, Download
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useModal } from '../../components/BFIModal';
@@ -26,6 +26,36 @@ export default function AdminManagement() {
   const [errorMsg, setErrorMsg] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
+  const [adminSubView, setAdminSubView] = useState('current'); // 'current' | 'archived'
+  const [archivedAdmins, setArchivedAdmins] = useState([]);
+  const [archivedSearchQuery, setArchivedSearchQuery] = useState('');
+
+  // Archive Modal State
+  const [archiveTarget, setArchiveTarget] = useState(null);
+  const [archiveReason, setArchiveReason] = useState('');
+  const [archiveSudoPassword, setArchiveSudoPassword] = useState('');
+  const [archiveError, setArchiveError] = useState('');
+  const [isArchiving, setIsArchiving] = useState(false);
+
+  // Restore Modal State
+  const [restoreTarget, setRestoreTarget] = useState(null);
+  const [restoreReason, setRestoreReason] = useState('');
+  const [restoreSudoPassword, setRestoreSudoPassword] = useState('');
+  const [restoreError, setRestoreError] = useState('');
+  const [isRestoring, setIsRestoring] = useState(false);
+
+  // Reset Password Modal State
+  const [resetTarget, setResetTarget] = useState(null);
+  const [resetMethod, setResetMethod] = useState('email'); // 'email' | 'direct'
+  const [resetReason, setResetReason] = useState('');
+  const [resetSudoPassword, setResetSudoPassword] = useState('');
+  const [resetError, setResetError] = useState('');
+  const [isResetting, setIsResetting] = useState(false);
+
+  // Direct Out-of-Band Link Modal State
+  const [directLinkResult, setDirectLinkResult] = useState(null);
+  const [directLinkTimer, setDirectLinkTimer] = useState(1800);
+  const [copiedDirectLink, setCopiedDirectLink] = useState(false);
 
   // Sudo Mode (Sensitive-Action Verification) State
   const [showSudoModal, setShowSudoModal] = useState(false);
@@ -176,6 +206,239 @@ export default function AdminManagement() {
       setIsSubmitting(false);
     }
   };
+
+
+  // Countdown timer for out-of-band direct reset link modal
+  useEffect(() => {
+    if (!directLinkResult) return;
+    setDirectLinkTimer(1800);
+    const interval = setInterval(() => {
+      setDirectLinkTimer((prev) => {
+        if (prev <= 1) {
+          clearInterval(interval);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [directLinkResult]);
+
+  // Handle Archive Submission
+  const handleConfirmArchive = async (e) => {
+    e.preventDefault();
+    if (!archiveTarget || !archiveReason.trim()) return;
+    setIsArchiving(true);
+    setArchiveError('');
+    try {
+      const token = localStorage.getItem('token');
+      const headers = {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      };
+
+      if (archiveSudoPassword) {
+        const vRes = await fetch('/api/admin/auth/verify-password', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ password: archiveSudoPassword })
+        });
+        const vData = await vRes.json();
+        if (!vRes.ok) throw new Error(vData.error || 'Sudo password verification failed');
+        headers['X-Sudo-Token'] = vData.sudoToken;
+        setSudoToken(vData.sudoToken);
+        sessionStorage.setItem('sudo_token', vData.sudoToken);
+      } else if (sudoToken) {
+        headers['X-Sudo-Token'] = sudoToken;
+      }
+
+      const res = await fetch(`/api/admin/administrators/${archiveTarget.id}/archive`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          expected_account_version: archiveTarget.account_version || 1,
+          reason: archiveReason.trim()
+        })
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to archive administrator');
+      }
+
+      setSuccessMsg(`Administrator ${archiveTarget.username} has been archived successfully.`);
+      setArchiveTarget(null);
+      setArchiveReason('');
+      setArchiveSudoPassword('');
+      fetchData();
+      fetchAccountabilitySummary();
+    } catch (err) {
+      setArchiveError(err.message);
+    } finally {
+      setIsArchiving(false);
+    }
+  };
+
+  // Handle Restore Submission
+  const handleConfirmRestore = async (e) => {
+    e.preventDefault();
+    if (!restoreTarget || !restoreReason.trim()) return;
+    setIsRestoring(true);
+    setRestoreError('');
+    try {
+      const token = localStorage.getItem('token');
+      const headers = {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      };
+
+      if (restoreSudoPassword) {
+        const vRes = await fetch('/api/admin/auth/verify-password', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ password: restoreSudoPassword })
+        });
+        const vData = await vRes.json();
+        if (!vRes.ok) throw new Error(vData.error || 'Sudo password verification failed');
+        headers['X-Sudo-Token'] = vData.sudoToken;
+        setSudoToken(vData.sudoToken);
+        sessionStorage.setItem('sudo_token', vData.sudoToken);
+      } else if (sudoToken) {
+        headers['X-Sudo-Token'] = sudoToken;
+      }
+
+      const res = await fetch(`/api/admin/administrators/${restoreTarget.id}/restore`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          expected_account_version: restoreTarget.account_version || 1,
+          reason: restoreReason.trim()
+        })
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to restore administrator');
+      }
+
+      setSuccessMsg(`Administrator ${restoreTarget.username} has been restored as Inactive. Please review permissions and activate when ready.`);
+      setRestoreTarget(null);
+      setRestoreReason('');
+      setRestoreSudoPassword('');
+      fetchData();
+      fetchAccountabilitySummary();
+    } catch (err) {
+      setRestoreError(err.message);
+    } finally {
+      setIsRestoring(false);
+    }
+  };
+
+  // Handle Reset Password Initiation
+  const handleConfirmReset = async (e) => {
+    e.preventDefault();
+    if (!resetTarget) return;
+    setIsResetting(true);
+    setResetError('');
+    try {
+      const token = localStorage.getItem('token');
+      const headers = {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      };
+
+      if (resetSudoPassword) {
+        const vRes = await fetch('/api/admin/auth/verify-password', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ password: resetSudoPassword })
+        });
+        const vData = await vRes.json();
+        if (!vRes.ok) throw new Error(vData.error || 'Sudo password verification failed');
+        headers['X-Sudo-Token'] = vData.sudoToken;
+        setSudoToken(vData.sudoToken);
+        sessionStorage.setItem('sudo_token', vData.sudoToken);
+      } else if (sudoToken) {
+        headers['X-Sudo-Token'] = sudoToken;
+      }
+
+      const endpoint = resetMethod === 'email'
+        ? `/api/admin/administrators/${resetTarget.id}/reset-password/email`
+        : `/api/admin/administrators/${resetTarget.id}/reset-password/direct-link`;
+
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          expected_account_version: resetTarget.account_version || 1,
+          reason: resetReason.trim() || 'Super Admin-initiated password reset'
+        })
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to initiate password reset');
+      }
+
+      if (resetMethod === 'email') {
+        setSuccessMsg(`Password reset link dispatched to ${resetTarget.email}.`);
+        setResetTarget(null);
+        setResetReason('');
+        setResetSudoPassword('');
+        fetchData();
+      } else {
+        setDirectLinkResult(data);
+        setCopiedDirectLink(false);
+        setResetTarget(null);
+        setResetReason('');
+        setResetSudoPassword('');
+        fetchData();
+      }
+    } catch (err) {
+      setResetError(err.message);
+    } finally {
+      setIsResetting(false);
+    }
+  };
+
+  // Handle Export History
+  const handleExportHistory = async (adminId, format = 'csv') => {
+    try {
+      const token = localStorage.getItem('token');
+      const headers = { 'Authorization': `Bearer ${token}` };
+      if (sudoToken) headers['X-Sudo-Token'] = sudoToken;
+
+      const res = await fetch(`/api/admin/administrators/${adminId}/export-history?format=${format}`, {
+        headers
+      });
+
+      if (res.status === 428) {
+        executeWithSudo(() => handleExportHistory(adminId, format));
+        return;
+      }
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || 'Failed to export history');
+      }
+
+      if (format === 'csv') {
+        const blob = await res.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `admin-${adminId}-accountability-history-${Date.now()}.csv`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        window.URL.revokeObjectURL(url);
+        setSuccessMsg('Accountability history exported successfully.');
+      }
+    } catch (err) {
+      setErrorMsg(err.message);
+    }
+  };
+
 
   // Fetch initial data
   const fetchData = async () => {
@@ -530,7 +793,7 @@ export default function AdminManagement() {
           const res = await fetch(`/api/admin/administrators/${admin.id}/status`, {
             method: 'PATCH',
             headers: getAuthHeaders(),
-            body: JSON.stringify({ is_active: admin.is_active ? 0 : 1 })
+            body: JSON.stringify({ is_active: admin.is_active ? 0 : 1, expected_account_version: admin.account_version || 1 })
           });
 
           if (res.status === 428) return res;
@@ -958,7 +1221,7 @@ export default function AdminManagement() {
           className={`admin-tab-btn ${activeTab === 'administrators' ? 'active' : ''}`}
           onClick={() => setActiveTab('administrators')}
         >
-          <Users size={16} /> Administrators ({administrators.length})
+          <Users size={16} /> Administrators ({administrators.length + archivedAdmins.length})
         </button>
         <button 
           type="button" 
@@ -2413,6 +2676,428 @@ export default function AdminManagement() {
                 disabled={isSubmitting}
               >
                 <Check size={16} /> Review & Save Changes
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* 1. Archive Administrator Modal */}
+      {archiveTarget && typeof document !== 'undefined' && createPortal(
+        <div className="admin-modal-backdrop" onClick={(e) => e.target === e.currentTarget && setArchiveTarget(null)}>
+          <div className="admin-modal-dialog admin-modal" style={{ maxWidth: '520px', width: '90vw' }}>
+            <div className="admin-modal-header" style={{ borderBottomColor: 'rgba(239, 68, 68, 0.3)' }}>
+              <h2><Archive size={20} color="#f87171" /> Archive Administrator</h2>
+              <button type="button" className="admin-modal-close-btn" onClick={() => setArchiveTarget(null)}>
+                <X size={20} />
+              </button>
+            </div>
+
+            <form onSubmit={handleConfirmArchive}>
+              <div className="admin-modal-body">
+                <div style={{
+                  background: 'rgba(239, 68, 68, 0.08)',
+                  border: '1px solid rgba(239, 68, 68, 0.25)',
+                  borderRadius: '8px',
+                  padding: '1rem',
+                  marginBottom: '1.25rem',
+                  fontSize: '0.85rem',
+                  color: '#fca5a5'
+                }}>
+                  <strong>Warning:</strong> Archiving <strong>{archiveTarget.username}</strong> will immediately revoke all active sessions, invalidate tokens, and terminate login access. Their accountability history and business records will remain permanently intact.
+                </div>
+
+                {archiveError && (
+                  <div style={{ background: 'rgba(239, 68, 68, 0.15)', color: '#fca5a5', padding: '0.75rem', borderRadius: '6px', marginBottom: '1rem', fontSize: '0.85rem' }}>
+                    {archiveError}
+                  </div>
+                )}
+
+                <div className="form-group" style={{ marginBottom: '1rem' }}>
+                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: '0.4rem' }}>
+                    Archive Reason (Required, min 5 characters)
+                  </label>
+                  <textarea
+                    rows={3}
+                    className="admin-input"
+                    style={{ width: '100%', padding: '0.6rem', borderRadius: '6px' }}
+                    value={archiveReason}
+                    onChange={(e) => setArchiveReason(e.target.value)}
+                    placeholder="e.g., Staff departure, resignation, role reorganization..."
+                    required
+                    minLength={5}
+                    data-testid="archive-reason-input"
+                  />
+                </div>
+
+                <div className="form-group" style={{ marginBottom: '1rem' }}>
+                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: '0.4rem' }}>
+                    Super Admin Password (Verification Required)
+                  </label>
+                  <input
+                    type="password"
+                    className="admin-input"
+                    style={{ width: '100%', padding: '0.6rem', borderRadius: '6px' }}
+                    value={archiveSudoPassword}
+                    onChange={(e) => setArchiveSudoPassword(e.target.value)}
+                    placeholder="Enter your password to authorize..."
+                    required
+                    data-testid="archive-sudo-password-input"
+                  />
+                </div>
+              </div>
+
+              <div className="admin-modal-footer" style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem' }}>
+                <button type="button" className="btn-secondary" onClick={() => setArchiveTarget(null)}>
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="btn-danger"
+                  style={{ background: '#e11d48', color: '#fff', border: 'none', padding: '0.5rem 1.25rem', borderRadius: '6px', fontWeight: 600 }}
+                  disabled={isArchiving || archiveReason.trim().length < 5 || !archiveSudoPassword}
+                  data-testid="confirm-archive-btn"
+                >
+                  {isArchiving ? 'Archiving...' : 'Archive Administrator'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* 2. Restore Administrator Modal */}
+      {restoreTarget && typeof document !== 'undefined' && createPortal(
+        <div className="admin-modal-backdrop" onClick={(e) => e.target === e.currentTarget && setRestoreTarget(null)}>
+          <div className="admin-modal-dialog admin-modal" style={{ maxWidth: '520px', width: '90vw' }}>
+            <div className="admin-modal-header" style={{ borderBottomColor: 'rgba(56, 189, 248, 0.3)' }}>
+              <h2><RotateCcw size={20} color="#38bdf8" /> Restore Administrator</h2>
+              <button type="button" className="admin-modal-close-btn" onClick={() => setRestoreTarget(null)}>
+                <X size={20} />
+              </button>
+            </div>
+
+            <form onSubmit={handleConfirmRestore}>
+              <div className="admin-modal-body">
+                <div style={{
+                  background: 'rgba(56, 189, 248, 0.08)',
+                  border: '1px solid rgba(56, 189, 248, 0.25)',
+                  borderRadius: '8px',
+                  padding: '1rem',
+                  marginBottom: '1.25rem',
+                  fontSize: '0.85rem',
+                  color: '#93c5fd'
+                }}>
+                  <strong>Restoration Rule:</strong> Restoring <strong>{restoreTarget.username}</strong> returns their account to the Current Administrators list strictly as <strong>INACTIVE</strong>. You must review their permissions and explicitly activate the account via the status toggle before access resumes.
+                </div>
+
+                {restoreError && (
+                  <div style={{ background: 'rgba(239, 68, 68, 0.15)', color: '#fca5a5', padding: '0.75rem', borderRadius: '6px', marginBottom: '1rem', fontSize: '0.85rem' }}>
+                    {restoreError}
+                  </div>
+                )}
+
+                <div className="form-group" style={{ marginBottom: '1rem' }}>
+                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: '0.4rem' }}>
+                    Restore Reason (Required, min 5 characters)
+                  </label>
+                  <textarea
+                    rows={3}
+                    className="admin-input"
+                    style={{ width: '100%', padding: '0.6rem', borderRadius: '6px' }}
+                    value={restoreReason}
+                    onChange={(e) => setRestoreReason(e.target.value)}
+                    placeholder="e.g., Rehired staff member, returning from sabbatical..."
+                    required
+                    minLength={5}
+                    data-testid="restore-reason-input"
+                  />
+                </div>
+
+                <div className="form-group" style={{ marginBottom: '1rem' }}>
+                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: '0.4rem' }}>
+                    Super Admin Password (Verification Required)
+                  </label>
+                  <input
+                    type="password"
+                    className="admin-input"
+                    style={{ width: '100%', padding: '0.6rem', borderRadius: '6px' }}
+                    value={restoreSudoPassword}
+                    onChange={(e) => setRestoreSudoPassword(e.target.value)}
+                    placeholder="Enter your password to authorize..."
+                    required
+                    data-testid="restore-sudo-password-input"
+                  />
+                </div>
+              </div>
+
+              <div className="admin-modal-footer" style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem' }}>
+                <button type="button" className="btn-secondary" onClick={() => setRestoreTarget(null)}>
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="btn-primary"
+                  style={{ padding: '0.5rem 1.25rem', borderRadius: '6px', fontWeight: 600 }}
+                  disabled={isRestoring || restoreReason.trim().length < 5 || !restoreSudoPassword}
+                  data-testid="confirm-restore-btn"
+                >
+                  {isRestoring ? 'Restoring...' : 'Restore as Inactive'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* 3. Password Reset Initiation Modal */}
+      {resetTarget && typeof document !== 'undefined' && createPortal(
+        <div className="admin-modal-backdrop" onClick={(e) => e.target === e.currentTarget && setResetTarget(null)}>
+          <div className="admin-modal-dialog admin-modal" style={{ maxWidth: '540px', width: '90vw' }}>
+            <div className="admin-modal-header" style={{ borderBottomColor: 'rgba(245, 158, 11, 0.3)' }}>
+              <h2><Key size={20} color="#fbbf24" /> Reset Administrator Password</h2>
+              <button type="button" className="admin-modal-close-btn" onClick={() => setResetTarget(null)}>
+                <X size={20} />
+              </button>
+            </div>
+
+            <form onSubmit={handleConfirmReset}>
+              <div className="admin-modal-body">
+                {/* Target User Details & Verification Status */}
+                <div style={{
+                  background: 'rgba(255, 255, 255, 0.03)',
+                  border: '1px solid var(--glass-border, rgba(255, 255, 255, 0.08))',
+                  borderRadius: '8px',
+                  padding: '1rem',
+                  marginBottom: '1.25rem'
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div>
+                      <div style={{ fontWeight: 600, fontSize: '0.95rem' }}>{resetTarget.first_name} {resetTarget.last_name}</div>
+                      <div style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', fontFamily: 'monospace' }}>{resetTarget.username} &bull; {resetTarget.email}</div>
+                    </div>
+                    {resetTarget.email_verified_at ? (
+                      <span className="badge-verified-email" data-testid="verified-email-badge">
+                        <Check size={12} /> Email Verified
+                      </span>
+                    ) : (
+                      <span className="badge-unverified-email" data-testid="unverified-email-badge">
+                        <AlertTriangle size={12} /> Email Unverified
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {resetError && (
+                  <div style={{ background: 'rgba(239, 68, 68, 0.15)', color: '#fca5a5', padding: '0.75rem', borderRadius: '6px', marginBottom: '1rem', fontSize: '0.85rem' }}>
+                    {resetError}
+                  </div>
+                )}
+
+                {/* Delivery Mode Selection */}
+                <div style={{ marginBottom: '1.25rem' }}>
+                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: '0.5rem' }}>
+                    Recovery Delivery Mode
+                  </label>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                    <label style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.6rem',
+                      padding: '0.6rem 0.8rem',
+                      borderRadius: '6px',
+                      border: '1px solid var(--glass-border, rgba(255, 255, 255, 0.1))',
+                      background: resetMethod === 'email' ? 'rgba(56, 189, 248, 0.08)' : 'transparent',
+                      cursor: resetTarget.email_verified_at ? 'pointer' : 'not-allowed',
+                      opacity: resetTarget.email_verified_at ? 1 : 0.5
+                    }}>
+                      <input
+                        type="radio"
+                        name="resetMethod"
+                        value="email"
+                        checked={resetMethod === 'email'}
+                        onChange={() => setResetMethod('email')}
+                        disabled={!resetTarget.email_verified_at}
+                        data-testid="radio-reset-email"
+                      />
+                      <div>
+                        <div style={{ fontWeight: 600, fontSize: '0.85rem' }}>Dispatch Link via Verified Email</div>
+                        <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                          Sends single-use link to verified address {resetTarget.email} (valid 30 minutes)
+                        </div>
+                      </div>
+                    </label>
+
+                    <label style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.6rem',
+                      padding: '0.6rem 0.8rem',
+                      borderRadius: '6px',
+                      border: '1px solid var(--glass-border, rgba(255, 255, 255, 0.1))',
+                      background: resetMethod === 'direct' ? 'rgba(56, 189, 248, 0.08)' : 'transparent',
+                      cursor: 'pointer'
+                    }}>
+                      <input
+                        type="radio"
+                        name="resetMethod"
+                        value="direct"
+                        checked={resetMethod === 'direct'}
+                        onChange={() => setResetMethod('direct')}
+                        data-testid="radio-reset-direct"
+                      />
+                      <div>
+                        <div style={{ fontWeight: 600, fontSize: '0.85rem' }}>Generate Secure Out-of-Band Link</div>
+                        <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                          Generates copyable URL fragment link for manual delivery over phone/chat (valid 30 minutes)
+                        </div>
+                      </div>
+                    </label>
+                  </div>
+                </div>
+
+                <div className="form-group" style={{ marginBottom: '1rem' }}>
+                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: '0.4rem' }}>
+                    Reason for Reset (Audited)
+                  </label>
+                  <input
+                    type="text"
+                    className="admin-input"
+                    style={{ width: '100%', padding: '0.6rem', borderRadius: '6px' }}
+                    value={resetReason}
+                    onChange={(e) => setResetReason(e.target.value)}
+                    placeholder="e.g., Routine security rotation, admin locked out..."
+                    data-testid="reset-reason-input"
+                  />
+                </div>
+
+                <div className="form-group" style={{ marginBottom: '1rem' }}>
+                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: '0.4rem' }}>
+                    Super Admin Password (Verification Required)
+                  </label>
+                  <input
+                    type="password"
+                    className="admin-input"
+                    style={{ width: '100%', padding: '0.6rem', borderRadius: '6px' }}
+                    value={resetSudoPassword}
+                    onChange={(e) => setResetSudoPassword(e.target.value)}
+                    placeholder="Enter your password to authorize..."
+                    required
+                    data-testid="reset-sudo-password-input"
+                  />
+                </div>
+              </div>
+
+              <div className="admin-modal-footer" style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem' }}>
+                <button type="button" className="btn-secondary" onClick={() => setResetTarget(null)}>
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="btn-primary"
+                  style={{ padding: '0.5rem 1.25rem', borderRadius: '6px', fontWeight: 600 }}
+                  disabled={isResetting || !resetSudoPassword}
+                  data-testid="confirm-reset-btn"
+                >
+                  {isResetting ? 'Processing...' : resetMethod === 'email' ? 'Dispatch Reset Email' : 'Generate Direct Link'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* 4. Out-of-Band Direct Link Modal */}
+      {directLinkResult && typeof document !== 'undefined' && createPortal(
+        <div className="admin-modal-backdrop" onClick={(e) => e.target === e.currentTarget && setDirectLinkResult(null)}>
+          <div className="admin-modal-dialog admin-modal" style={{ maxWidth: '580px', width: '90vw' }}>
+            <div className="admin-modal-header" style={{ borderBottomColor: 'rgba(56, 189, 248, 0.3)' }}>
+              <h2><Key size={20} color="#38bdf8" /> Direct Recovery Link Generated</h2>
+              <button type="button" className="admin-modal-close-btn" onClick={() => setDirectLinkResult(null)} data-testid="close-direct-link-btn">
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="admin-modal-body">
+              <div style={{
+                background: 'rgba(16, 185, 129, 0.08)',
+                border: '1px solid rgba(16, 185, 129, 0.25)',
+                borderRadius: '8px',
+                padding: '0.85rem',
+                marginBottom: '1rem',
+                fontSize: '0.85rem',
+                color: '#6ee7b7'
+              }}>
+                <CheckCircle2 size={16} style={{ display: 'inline', marginRight: '6px', verticalAlign: 'text-bottom' }} />
+                Active sessions for this account have been terminated. The account will remain in reset-pending status until this link is consumed.
+              </div>
+
+              <div style={{ marginBottom: '1rem' }}>
+                <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: '0.4rem' }}>
+                  One-Time Reset Link (URL Fragment Transport)
+                </label>
+                <div style={{ display: 'flex', gap: '0.5rem' }}>
+                  <input
+                    type="text"
+                    readOnly
+                    className="admin-input"
+                    style={{ flex: 1, fontFamily: 'monospace', fontSize: '0.8rem', padding: '0.6rem', borderRadius: '6px' }}
+                    value={directLinkResult.direct_url}
+                    data-testid="direct-link-input"
+                  />
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    style={{ padding: '0.5rem 1rem', display: 'flex', alignItems: 'center', gap: '4px', fontWeight: 600 }}
+                    onClick={() => {
+                      navigator.clipboard.writeText(directLinkResult.direct_url);
+                      setCopiedDirectLink(true);
+                      setTimeout(() => setCopiedDirectLink(false), 3000);
+                    }}
+                    data-testid="copy-direct-link-btn"
+                  >
+                    {copiedDirectLink ? <CheckCheck size={16} color="#34d399" /> : <Copy size={16} />}
+                    {copiedDirectLink ? 'Copied!' : 'Copy'}
+                  </button>
+                </div>
+              </div>
+
+              {/* 30-Minute Live Countdown Timer */}
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                padding: '0.75rem',
+                borderRadius: '6px',
+                background: 'rgba(245, 158, 11, 0.1)',
+                border: '1px solid rgba(245, 158, 11, 0.25)',
+                color: '#fbbf24',
+                fontSize: '0.85rem',
+                fontWeight: 600,
+                marginBottom: '1rem'
+              }} data-testid="direct-link-timer">
+                <Clock size={16} />
+                <span>Link Expires In: {Math.floor(directLinkTimer / 60)}m {String(directLinkTimer % 60).padStart(2, '0')}s</span>
+              </div>
+
+              <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                <strong>Security Notice:</strong> Deliver this link exclusively over a verified out-of-band channel. Because the token is encoded in the URL fragment, it is never transmitted to intermediate proxy or server logs.
+              </div>
+            </div>
+
+            <div className="admin-modal-footer" style={{ display: 'flex', justifyContent: 'flex-end' }}>
+              <button
+                type="button"
+                className="btn-primary"
+                onClick={() => setDirectLinkResult(null)}
+                data-testid="done-direct-link-btn"
+                style={{ padding: '0.5rem 1.5rem', borderRadius: '6px', fontWeight: 600 }}
+              >
+                Done
               </button>
             </div>
           </div>
