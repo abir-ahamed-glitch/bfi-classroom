@@ -101,10 +101,8 @@ function runAdminArchivingAndResetMigration(db) {
       db.prepare(`CREATE INDEX IF NOT EXISTS idx_email_verification_lookup ON email_verification_challenges(user_id, token_hash, consumed)`).run();
 
       // 3. Upgrade password_reset_tokens table
-      const resetCols = db.prepare(`PRAGMA table_info(password_reset_tokens)`).all().map(c => c.name);
-      if (!resetCols.includes('purpose') || !resetCols.includes('token_version')) {
-        db.prepare(`ALTER TABLE password_reset_tokens RENAME TO _password_reset_tokens_old`).run();
-
+      const resetTableExists = db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'password_reset_tokens'`).get();
+      if (!resetTableExists) {
         db.prepare(`
           CREATE TABLE password_reset_tokens (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -119,11 +117,33 @@ function runAdminArchivingAndResetMigration(db) {
             UNIQUE(user_id, purpose)
           )
         `).run();
-
-        db.prepare(`DROP TABLE _password_reset_tokens_old`).run();
-
         db.prepare(`CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_lookup ON password_reset_tokens(user_id, token_hash, purpose)`).run();
         db.prepare(`CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_expires ON password_reset_tokens(expires_at)`).run();
+      } else {
+        const resetCols = db.prepare(`PRAGMA table_info(password_reset_tokens)`).all().map(c => c.name);
+        if (!resetCols.includes('purpose') || !resetCols.includes('token_version')) {
+          db.prepare(`ALTER TABLE password_reset_tokens RENAME TO _password_reset_tokens_old`).run();
+
+          db.prepare(`
+            CREATE TABLE password_reset_tokens (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              user_id INTEGER NOT NULL,
+              token_hash TEXT NOT NULL,
+              purpose TEXT NOT NULL DEFAULT 'user_recovery' CHECK(purpose IN ('user_recovery', 'admin_self_recovery', 'admin_password_reset')),
+              token_version INTEGER NOT NULL DEFAULT 1,
+              expires_at TEXT NOT NULL,
+              created_at TEXT DEFAULT (datetime('now')),
+              created_by_admin_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+              FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+              UNIQUE(user_id, purpose)
+            )
+          `).run();
+
+          db.prepare(`DROP TABLE _password_reset_tokens_old`).run();
+
+          db.prepare(`CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_lookup ON password_reset_tokens(user_id, token_hash, purpose)`).run();
+          db.prepare(`CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_expires ON password_reset_tokens(expires_at)`).run();
+        }
       }
 
       // 4. Mark migration applied in app_migrations

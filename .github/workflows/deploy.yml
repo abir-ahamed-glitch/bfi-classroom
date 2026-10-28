@@ -22,7 +22,7 @@ jobs:
           key: ${{ secrets.ORACLE_SSH_KEY }}
           script: |
             set -e
-            echo "🚀 Starting automated deployment on Oracle Cloud..."
+            echo "🚀 Starting canonical automated deployment on Oracle Cloud..."
             cd /home/ubuntu/bfi-classroom
 
             # Preserve production .env if backup exists
@@ -30,28 +30,27 @@ jobs:
               cp /home/ubuntu/.env.bfi .env.backup
             fi
 
-            # Clean any untracked diffs on tracked files
+            # Clean any untracked diffs on tracked configuration files
             git checkout -- ecosystem.config.cjs || true
 
-            # Pull latest changes from main
-            git pull origin main
+            # Fetch target commit so it is available locally on remote host
+            git fetch origin main
 
-            # Restore production .env
+            # Execute canonical deployment lifecycle with pinned commit SHA and fail-closed rollback trap
+            # (Phases 0-6: recovery tooling preservation, pre-flight lockdown, isolation verification,
+            # online SQLite .backup API with PRAGMA integrity & invariant checks, pinned commit checkout,
+            # deterministic build & dependency pruning, atomic migrations, loopback smoke checks,
+            # exposure-state tracking, and controlled traffic reopening)
+            trap 'echo "❌ Deployment step halted; executing fail-closed rollback..."; if [ -f server/.recovery_tools/production_lifecycle.cjs ]; then node server/.recovery_tools/production_lifecycle.cjs rollback; elif [ -f scripts/production_lifecycle.cjs ]; then node scripts/production_lifecycle.cjs rollback; fi' ERR
+
+            node scripts/production_lifecycle.cjs deploy --target-commit ${{ github.sha }}
+
+            trap - ERR
+
+            # Restore production .env if needed
             if [ -f .env.backup ]; then
               cp .env.backup .env
               rm -f .env.backup
             fi
 
-            # Install dependencies deterministically
-            npm install --legacy-peer-deps
-
-            # Verify database schema and run migrations before reload
-            node scripts/run_migrations.cjs
-
-            # Build frontend
-            npm run build
-
-            # Zero-downtime PM2 reload
-            pm2 reload bfi-classroom || pm2 start ecosystem.config.cjs
-
-            echo "✅ Deployment completed successfully!"
+            echo "✅ Canonical deployment completed successfully!"
