@@ -322,16 +322,31 @@ const FeeTracker = () => {
     }
   };
 
-  const handleExport = () => {
+  const handleExport = async () => {
     const queryParams = new URLSearchParams();
     if (statusFilter) queryParams.append('status', statusFilter);
     if (courseFilter) queryParams.append('course', courseFilter);
     if (batchFilter) queryParams.append('batch', batchFilter);
     if (searchQuery) queryParams.append('search', searchQuery);
 
-    const token = localStorage.getItem('token');
-    // Using window.open for file download
-    window.open(`/api/admin/fee-tracker/export?${queryParams.toString()}&token=${token}`, '_blank');
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch(`/api/admin/fee-tracker/export?${queryParams.toString()}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (!response.ok) throw new Error('Failed to export fee records');
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `fee_records_${Date.now()}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('Export error:', err);
+    }
   };
 
   const { summary } = data;

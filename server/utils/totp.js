@@ -63,19 +63,30 @@ export function generateTotpUri({ secret, username, issuer = 'BFI Classroom' }) 
 }
 
 /**
- * Derives a 32-byte AES key from the server JWT secret.
+ * Derives a 32-byte AES key from a secret string.
+ * Uses dedicated MFA_ENCRYPTION_KEY if provided, falling back to JWT_SECRET.
  */
-function getEncryptionKey() {
-  return crypto.createHash('sha256').update(getJwtSecret()).digest();
+function getEncryptionKey(overrideKey) {
+  const secretSource = overrideKey || process.env.MFA_ENCRYPTION_KEY || getJwtSecret();
+  return crypto.createHash('sha256').update(secretSource).digest();
+}
+
+/**
+ * Returns previous encryption key if configured during key rotation.
+ */
+function getPreviousEncryptionKey() {
+  const prevSource = process.env.PREVIOUS_MFA_ENCRYPTION_KEY || process.env.PREVIOUS_JWT_SECRET;
+  if (!prevSource) return null;
+  return crypto.createHash('sha256').update(prevSource).digest();
 }
 
 /**
  * Encrypts a plaintext secret using AES-256-GCM.
  */
-export function encryptSecret(plainSecret) {
+export function encryptSecret(plainSecret, keyOverride) {
   if (!plainSecret) return null;
   const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv('aes-256-gcm', getEncryptionKey(), iv);
+  const cipher = crypto.createCipheriv('aes-256-gcm', getEncryptionKey(keyOverride), iv);
   let encrypted = cipher.update(plainSecret, 'utf8', 'hex');
   encrypted += cipher.final('hex');
   const authTag = cipher.getAuthTag().toString('hex');
@@ -84,8 +95,10 @@ export function encryptSecret(plainSecret) {
 
 /**
  * Decrypts an AES-256-GCM encrypted secret.
+ * Supports seamless key transition: if decryption with the primary key fails,
+ * attempts fallback with the configured previous key.
  */
-export function decryptSecret(encryptedSecret) {
+export function decryptSecret(encryptedSecret, keyOverride) {
   if (!encryptedSecret) return null;
   const parts = encryptedSecret.split(':');
   if (parts.length !== 3) {
@@ -93,11 +106,38 @@ export function decryptSecret(encryptedSecret) {
     return encryptedSecret;
   }
   const [ivHex, authTagHex, dataHex] = parts;
-  const decipher = crypto.createDecipheriv('aes-256-gcm', getEncryptionKey(), Buffer.from(ivHex, 'hex'));
-  decipher.setAuthTag(Buffer.from(authTagHex, 'hex'));
-  let decrypted = decipher.update(dataHex, 'hex', 'utf8');
-  decrypted += decipher.final('utf8');
-  return decrypted;
+
+  // 1. Attempt decryption with primary key
+  try {
+    const decipher = crypto.createDecipheriv('aes-256-gcm', getEncryptionKey(keyOverride), Buffer.from(ivHex, 'hex'));
+    decipher.setAuthTag(Buffer.from(authTagHex, 'hex'));
+    let decrypted = decipher.update(dataHex, 'hex', 'utf8');
+    decrypted += decipher.final('utf8');
+    return decrypted;
+  } catch (primaryErr) {
+    // 2. If primary fails and no override was specified, attempt fallback with previous key
+    if (!keyOverride) {
+      const prevKey = getPreviousEncryptionKey();
+      if (prevKey) {
+        try {
+          const decipherFallback = crypto.createDecipheriv('aes-256-gcm', prevKey, Buffer.from(ivHex, 'hex'));
+          decipherFallback.setAuthTag(Buffer.from(authTagHex, 'hex'));
+          let decryptedFallback = decipherFallback.update(dataHex, 'hex', 'utf8');
+          decryptedFallback += decipherFallback.final('utf8');
+          return decryptedFallback;
+        } catch {}
+      }
+    }
+    throw new Error('Failed to decrypt authenticator secret: authentication tag mismatch or invalid encryption key');
+  }
+}
+
+/**
+ * Re-encrypts an encrypted secret from old key to new key.
+ */
+export function reencryptSecret(encryptedSecret, oldKeySource, newKeySource) {
+  const plain = decryptSecret(encryptedSecret, oldKeySource);
+  return encryptSecret(plain, newKeySource);
 }
 
 /**

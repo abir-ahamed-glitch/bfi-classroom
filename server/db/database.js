@@ -823,16 +823,22 @@ export function initializeDatabase() {
     console.error('Failed to migrate custom_subjects table:', error);
   }
 
-  // Seed default admin if not exists
+  // Seed default admin if not exists (only in development or if explicitly configured)
   const adminExists = db.prepare('SELECT id FROM users WHERE role = ?').get('admin');
   if (!adminExists) {
-    const hash = bcrypt.hashSync('Admin@BFI2024', 12);
+    const isProduction = process.env.NODE_ENV === 'production';
+    const initialPass = process.env.INITIAL_ADMIN_PASSWORD || (isProduction ? crypto.randomBytes(18).toString('base64url') : 'DevAdmin@BFI2024#Local');
+    const hash = bcrypt.hashSync(initialPass, 12);
     db.prepare(`
       INSERT INTO users (username, email, password_hash, role, first_name, last_name)
       VALUES (?, ?, ?, ?, ?, ?)
     `).run('admin', 'admin@bfibd.org', hash, 'admin', 'BFI', 'Admin');
 
-    console.log('✅ Database seeded with default admin');
+    if (isProduction) {
+      console.log('⚠️ [Security] Created initial bootstrap administrator. Secure password was randomly generated.');
+    } else {
+      console.log('✅ Database seeded with default admin');
+    }
   }
 
   // Seed default core subjects if missing

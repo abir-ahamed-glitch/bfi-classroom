@@ -13,6 +13,7 @@ import { initializeDatabase } from './db/database.js';
 import db from './db/database.js';
 
 import jwt from 'jsonwebtoken';
+import { validateSafePublicUrl, isPrivateIP } from './utils/ssrf-filter.js';
 
 // Setup env
 dotenv.config();
@@ -356,9 +357,9 @@ const apiLimiter = rateLimit({
   standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
   legacyHeaders: false, // Disable the `X-RateLimit-*` headers
   keyGenerator: (req) => {
-    const authHeader = req.headers.authorization?.replace(/^Bearer\s+/i, '').trim();
-    if (authHeader) {
-      return `auth:${authHeader.slice(-32)}`;
+    // SEC-05: Bind key strictly to verified authenticated user ID or remote IP
+    if (req.user?.id) {
+      return `user:${req.user.id}`;
     }
     return ipKeyGenerator(req.ip);
   },
@@ -420,8 +421,10 @@ const serveStaticOptions = {
 };
 
 app.use(['/bfi-classroom/media', '/media'], (req, res, next) => {
-  res.removeHeader('X-Frame-Options');
-  res.removeHeader('Content-Security-Policy');
+  // SEC-03: Retain strict CSP sandbox and nosniff protection for user-uploaded static files
+  res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; sandbox");
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
   
   let urlPath = req.url || '/';
   if (urlPath.split('?')[0].endsWith('/view')) {
@@ -619,31 +622,45 @@ io.on('connection', (socket) => {
   
   // WebRTC Signaling Events
   socket.on('call-request', (data) => {
-    io.to(`user:${data.receiverId}`).emit('call-request', data);
+    if (!data || !data.receiverId) return;
+    const sanitized = { ...data, callerId: socket.user.id, callerData: { ...(data.callerData || {}), id: socket.user.id } };
+    io.to(`user:${data.receiverId}`).emit('call-request', sanitized);
   });
 
   socket.on('call-answered', (data) => {
-    io.to(`user:${data.callerId}`).emit('call-answered', data);
+    if (!data || !data.callerId) return;
+    const sanitized = { ...data, answererId: socket.user.id };
+    io.to(`user:${data.callerId}`).emit('call-answered', sanitized);
   });
 
   socket.on('call-rejected', (data) => {
-    io.to(`user:${data.callerId}`).emit('call-rejected', data);
+    if (!data || !data.callerId) return;
+    const sanitized = { ...data, rejecterId: socket.user.id };
+    io.to(`user:${data.callerId}`).emit('call-rejected', sanitized);
   });
 
   socket.on('webrtc-offer', (data) => {
-    io.to(`user:${data.receiverId}`).emit('webrtc-offer', data);
+    if (!data || !data.receiverId) return;
+    const sanitized = { ...data, callerId: socket.user.id };
+    io.to(`user:${data.receiverId}`).emit('webrtc-offer', sanitized);
   });
 
   socket.on('webrtc-answer', (data) => {
-    io.to(`user:${data.callerId}`).emit('webrtc-answer', data);
+    if (!data || !data.callerId) return;
+    const sanitized = { ...data, answererId: socket.user.id };
+    io.to(`user:${data.callerId}`).emit('webrtc-answer', sanitized);
   });
 
   socket.on('ice-candidate', (data) => {
-    io.to(`user:${data.targetId}`).emit('ice-candidate', data);
+    if (!data || !data.targetId) return;
+    const sanitized = { ...data, fromId: socket.user.id };
+    io.to(`user:${data.targetId}`).emit('ice-candidate', sanitized);
   });
 
   socket.on('call-ended', (data) => {
-    io.to(`user:${data.targetId}`).emit('call-ended', data);
+    if (!data || !data.targetId) return;
+    const sanitized = { ...data, fromId: socket.user.id };
+    io.to(`user:${data.targetId}`).emit('call-ended', sanitized);
   });
 
   // ── Group Call Signaling ──────────────────────────────────────────

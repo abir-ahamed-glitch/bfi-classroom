@@ -369,14 +369,7 @@ router.post('/fee-tracker/send-reminder', authenticateToken, requireRole('admin'
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /api/admin/fee-tracker/export
 // ─────────────────────────────────────────────────────────────────────────────
-const checkQueryToken = (req, res, next) => {
-  if (req.query && req.query.token) {
-    req.headers['authorization'] = `Bearer ${req.query.token}`;
-  }
-  next();
-};
-
-router.get('/fee-tracker/export', checkQueryToken, authenticateToken, requireRole('admin'), requirePermission('finance:view'), (req, res) => {
+router.get('/fee-tracker/export', authenticateToken, requireRole('admin'), requirePermission('finance:view'), (req, res) => {
   try {
     const filters = {
       status: req.query.status || '',

@@ -363,13 +363,20 @@ export const authLimiter = rateLimit({
   max: 25,
   skipSuccessfulRequests: true,
   skip: () => process.env.NODE_ENV === 'test' || process.env.IS_TEST_SERVER === 'true',
-  keyGenerator: (req) => {
-    const identifier = String(req.body?.username || '').trim().toLowerCase() || 'anonymous';
-    return `${ipKeyGenerator(req.ip)}:${identifier}`;
-  },
+  keyGenerator: (req) => ipKeyGenerator(req.ip),
   message: { error: 'Too many login attempts. Please try again after 10 minutes.' },
   standardHeaders: true,
   legacyHeaders: false,
+});
+
+export const mfaVerifyLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000, // 10 minutes
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: () => process.env.NODE_ENV === 'test' || process.env.IS_TEST_SERVER === 'true',
+  keyGenerator: (req) => ipKeyGenerator(req.ip),
+  message: { error: 'Too many verification attempts. Please wait 10 minutes.' }
 });
 
 export const apiLimiter = rateLimit({
@@ -420,10 +427,29 @@ export function validateEmail(email) {
   return re.test(email);
 }
 
+const COMMON_WEAK_PASSWORDS = new Set([
+  'password123!', 'password1234!', 'admin@bfi2024', 'admin123456!',
+  'welcome123!', 'changeme123!', 'bficlassroom123!', '12345678aa!'
+]);
+
 export function validatePassword(password) {
-  // Min 8 chars, 1 uppercase, 1 lowercase, 1 number, 1 special char
-  const re = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$/;
-  return re.test(password);
+  if (!password || typeof password !== 'string') return false;
+  // Bounded length between 8 and 72 characters (Bcrypt safe boundary)
+  if (password.length < 8 || password.length > 72) return false;
+  
+  // Must contain lowercase, uppercase, and at least one digit or special character/symbol/space
+  const hasLower = /[a-z]/.test(password);
+  const hasUpper = /[A-Z]/.test(password);
+  const hasDigitOrSymbol = /[\d\W_]/.test(password);
+
+  if (!hasLower || !hasUpper || !hasDigitOrSymbol) return false;
+
+  // Reject common known weak passwords
+  if (COMMON_WEAK_PASSWORDS.has(password.trim().toLowerCase())) {
+    return false;
+  }
+
+  return true;
 }
 
 // Password reset token generator

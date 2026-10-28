@@ -7,7 +7,8 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import db from '../db/database.js';
-import { authenticateToken, authLimiter, sanitizeInput, sensitiveEndpointLimiter, generatePasswordResetToken, verifyPasswordResetToken, validatePassword, getClientIp } from '../middleware/auth.js';
+import { authenticateToken, authLimiter,
+  mfaVerifyLimiter, sanitizeInput, sensitiveEndpointLimiter, generatePasswordResetToken, verifyPasswordResetToken, validatePassword, getClientIp } from '../middleware/auth.js';
 import { getJwtRefreshSecret, getJwtSecret } from '../config/security.js';
 import { sendPasswordResetEmail, sendEmailVerificationChallenge, sendPasswordChangeNotificationEmail } from '../utils/email.js';
 import { verifyTotpCode, decryptSecret, generateTotpSecret, generateTotpUri, encryptSecret, generateRecoveryCodes } from '../utils/totp.js';
@@ -581,7 +582,7 @@ router.post('/login', authLimiter, sanitizeInput, async (req, res) => {
 });
 
 // MFA Verification route
-router.post('/mfa-verify', authLimiter, sanitizeInput, (req, res) => {
+router.post('/mfa-verify', mfaVerifyLimiter, sanitizeInput, (req, res) => {
   try {
     const { mfaToken, code, recoveryCode } = req.body;
     if (!mfaToken) {
@@ -1185,20 +1186,23 @@ router.put('/key-pair', authenticateToken, (req, res) => {
   }
 });
 
-// Forgot Password - Request Reset Link
 // Forgot Password - Request Reset Link (Student Recovery)
 router.post('/forgot-password', authLimiter, sanitizeInput, async (req, res) => {
   const { email } = req.body;
 
-  if (!email) {
+  if (!email || typeof email !== 'string') {
     return res.status(400).json({ error: 'Email is required.' });
   }
 
-  try {
-    const user = db.prepare('SELECT * FROM users WHERE email = ? COLLATE NOCASE AND is_active = 1 AND deleted_at IS NULL').get(email);
+  const genericResponse = {
+    message: 'If an active account associated with that email exists and is eligible for recovery, a password reset link has been dispatched to your inbox.'
+  };
 
-    if (!user) {
-      return res.status(404).json({ error: 'We could not find an active account associated with that email address. Please check for typos or contact administration.' });
+  try {
+    const user = db.prepare('SELECT * FROM users WHERE email = ? COLLATE NOCASE AND is_active = 1 AND deleted_at IS NULL').get(email.trim());
+
+    if (!user || user.archived_at !== null || user.password_reset_pending === 1) {
+      return res.json(genericResponse);
     }
 
     if (user.role === 'admin') {
@@ -1208,12 +1212,10 @@ router.post('/forgot-password', authLimiter, sanitizeInput, async (req, res) => 
       });
     }
 
-    // Generate a secure reset token (valid for 15 minutes)
     const resetToken = generatePasswordResetToken();
     const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
     const tokenVersion = user.token_version || 1;
 
-    // Store the token hash in database with purpose 'user_recovery' and token_version
     const tokenHash = crypto.createHash('sha256').update(resetToken).digest('hex');
     db.prepare(`
       INSERT INTO password_reset_tokens (user_id, token_hash, purpose, token_version, expires_at)
@@ -1225,20 +1227,20 @@ router.post('/forgot-password', authLimiter, sanitizeInput, async (req, res) => 
         created_at = datetime('now')
     `).run(user.id, tokenHash, tokenVersion, expiresAt);
 
-    // The frontend URL
-    const baseUrl = process.env.CLIENT_URL || req.headers.origin || 'http://localhost:5174';
-    const resetLink = `${baseUrl}/reset-password/${user.id}/${resetToken}`;
-
-    const emailSent = await sendPasswordResetEmail(user.email, resetLink, { isSuperAdminInitiated: false });
-
-    if (emailSent || process.env.NODE_ENV === 'test') {
-      res.json({ message: 'If an account with that email exists, a password reset link has been sent.' });
-    } else {
-      res.status(500).json({ error: 'Failed to send reset email. Please try again later or contact support.' });
+    let baseUrl;
+    try {
+      baseUrl = getValidatedAppUrl();
+    } catch {
+      return res.json(genericResponse);
     }
+
+    const resetLink = `${baseUrl}/reset-password/${user.id}/${resetToken}`;
+    await sendPasswordResetEmail(user.email, resetLink, { isSuperAdminInitiated: false });
+
+    return res.json(genericResponse);
   } catch (error) {
     console.error('Forgot password error:', error);
-    res.status(500).json({ error: 'Internal server error.' });
+    return res.json(genericResponse);
   }
 });
 
@@ -1357,7 +1359,7 @@ router.post('/admin-forgot-password', authLimiter, sanitizeInput, async (req, re
     `).run(user.id, tokenHash, tokenVersion, expiresAt);
 
     // The frontend URL
-    const baseUrl = process.env.CLIENT_URL || req.headers.origin || 'http://localhost:5174';
+    let baseUrl; try { baseUrl = getValidatedAppUrl(); } catch { baseUrl = 'http://localhost:5174'; }
     const resetLink = `${baseUrl}/admin/reset-password/${user.id}/${resetToken}`;
 
     const emailSent = await sendPasswordResetEmail(user.email, resetLink, { isSuperAdminInitiated: false });
@@ -1574,19 +1576,17 @@ router.post('/admin/reset-password/complete', sanitizeInput, async (req, res) =>
       db.prepare('DELETE FROM password_reset_tokens WHERE user_id = ?').run(user.id);
       db.prepare("UPDATE mfa_login_challenges SET consumed = 1, consumed_at = datetime('now') WHERE user_id = ? AND consumed = 0").run(user.id);
 
-      try {
-        recordAuditLog({
-          actorId: user.id,
-          targetUserId: user.id,
-          action: 'admin.password_reset_completed',
-          module: 'admin_management',
-          resource: `admin:${user.id}`,
-          outcome: 'success',
-          details: { method: 'super_admin_reset_token' },
-          ipAddress: req.ip || '',
-          throwOnError: false
-        });
-      } catch {}
+      recordAuditLog({
+        actorId: user.id,
+        targetUserId: user.id,
+        action: 'admin.password_reset_completed',
+        module: 'admin_management',
+        resource: `admin:${user.id}`,
+        outcome: 'success',
+        details: { method: 'super_admin_reset_token' },
+        ipAddress: req.ip || '',
+        throwOnError: true
+      });
     });
 
     transaction();
@@ -1796,7 +1796,7 @@ router.post('/mfa/verify-setup', authenticateToken, sanitizeInput, (req, res) =>
         resource: `user:${user.id}`,
         outcome: 'success',
         details: { recovery_codes_issued: recoveryCodes.length },
-        throwOnError: false
+        throwOnError: true
       });
     });
 
@@ -1953,7 +1953,7 @@ router.post('/mfa/disable', authenticateToken, sanitizeInput, (req, res) => {
         module: 'auth',
         resource: `user:${user.id}`,
         outcome: 'success',
-        throwOnError: false
+        throwOnError: true
       });
     });
 

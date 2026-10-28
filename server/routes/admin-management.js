@@ -2213,7 +2213,7 @@ router.get('/administrators/:id/export-history', authenticateToken, requireSuper
         filters: { module: moduleFilter || null, outcome: outcomeFilter || null, startDate: startDate || null, endDate: endDate || null }
       },
       ipAddress: req.ip || '',
-      throwOnError: false
+      throwOnError: true
     });
 
     if (format === 'json') {

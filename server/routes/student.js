@@ -6,7 +6,7 @@ const __dirname = path.dirname(__filename);
 import express from 'express';
 import bcrypt from 'bcryptjs';
 import db from '../db/database.js';
-import { authenticateToken, sanitizeInput, validatePassword, sensitiveEndpointLimiter } from '../middleware/auth.js';
+import { authenticateToken, sanitizeInput, validatePassword, sensitiveEndpointLimiter, hasPermission, isSuperAdmin } from '../middleware/auth.js';
 import courseProgressService from '../services/courseProgressService.js';
 
 const router = express.Router();
@@ -139,11 +139,21 @@ router.get('/profile/:userId', authenticateToken, sensitiveEndpointLimiter, asyn
       privacyMap[row.field_name] = row.visibility;
     }
 
-    // Admin sees everything
-    const isAdmin = req.user.role === 'admin';
-    if (isAdmin) {
+    // Admin sees everything only if authorized with students:view or is Super Admin
+    const isSelf = req.user.id === parseInt(targetUserId, 10);
+    const canViewFull = req.user.role === 'admin' && (isSuperAdmin(req.user) || hasPermission(req.user, 'students:view'));
+    if (canViewFull || isSelf) {
       return res.json({ ...baseUser, ...profileData, enrollments, socialLinks, experiences, portfolio });
     }
+
+    // Sanitize enrollments for other users: strip fee_details, total_fee, paid_amount, exams, scores
+    const safeEnrollments = enrollments.map(enr => ({
+      id: enr.id,
+      course_name: enr.course_name,
+      course_type: enr.course_type,
+      batch_id: enr.batch_id,
+      created_at: enr.created_at
+    }));
 
     // Check if viewer is a batchmate
     let isBatchmate = false;
@@ -164,7 +174,7 @@ router.get('/profile/:userId', authenticateToken, sensitiveEndpointLimiter, asyn
     }
 
     // Filter fields based on privacy
-    const result = { ...baseUser, ...profileData, enrollments };
+    const result = { ...baseUser, ...profileData, enrollments: safeEnrollments };
     const fieldsThatCanBePrivate = [
       'gender', 'birthday', 'present_address', 'permanent_address',
       'educational_qualification', 'profession', 'email', 'mobile_number',

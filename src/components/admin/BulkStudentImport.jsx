@@ -188,7 +188,7 @@ export default function BulkStudentImport({ onImportComplete }) {
             });
           }
         } else if (fileExt === 'pdf') {
-          const loadingTask = pdfjsLib.getDocument(new Uint8Array(evt.target.result));
+          const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(evt.target.result), isEvalSupported: false });
           const pdf = await loadingTask.promise;
           for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
             const page = await pdf.getPage(pageNum);
