@@ -13,6 +13,7 @@ import { getJwtRefreshSecret, getJwtSecret } from '../config/security.js';
 import { sendPasswordResetEmail, sendEmailVerificationChallenge, sendPasswordChangeNotificationEmail } from '../utils/email.js';
 import { verifyTotpCode, decryptSecret, generateTotpSecret, generateTotpUri, encryptSecret, generateRecoveryCodes } from '../utils/totp.js';
 import { securityEvents } from '../utils/security-events.js';
+import { getValidatedAppUrl } from '../utils/app-url.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1595,7 +1596,11 @@ router.post('/admin/reset-password/complete', sanitizeInput, async (req, res) =>
     if (user.email) {
       try {
         const dhakaTime = formatDhakaTimestamp(new Date());
-        await sendPasswordChangeNotificationEmail(user.email, { dhakaTime, ipAddress: req.ip || 'Unknown' });
+        if (process.env.NODE_ENV !== 'test') {
+          sendPasswordChangeNotificationEmail(user.email, { dhakaTime, ipAddress: req.ip || 'Unknown' }).catch((emailErr) => {
+            console.error('Failed to dispatch password change alert email:', emailErr);
+          });
+        }
       } catch (emailErr) {
         console.error('Failed to dispatch password change alert email:', emailErr);
       }

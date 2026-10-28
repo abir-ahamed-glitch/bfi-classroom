@@ -1,3 +1,4 @@
+import { validateExtensionAndMime, validateMagicBytes, CERTIFICATE_ALLOWED_TYPES } from '../utils/file-validator.js';
 import express from 'express';
 import db from '../db/database.js';
 import { authenticateToken, requireRole, requireAnyPermission } from '../middleware/auth.js';
@@ -32,11 +33,11 @@ const upload = multer({
   storage,
   limits: { fileSize: 50 * 1024 * 1024 }, // 50 MB limit
   fileFilter: (req, file, cb) => {
-    const ext = path.extname(file.originalname).toLowerCase();
-    if (file.mimetype.startsWith('image/') || ['.png', '.jpg', '.jpeg', '.webp'].includes(ext)) {
-      return cb(null, true);
+    const check = validateExtensionAndMime(file.originalname, file.mimetype, CERTIFICATE_ALLOWED_TYPES);
+    if (!check.valid) {
+      return cb(new Error(check.error));
     }
-    cb(new Error(`Only images are allowed. File type ${file.mimetype} with ext ${ext} rejected.`));
+    cb(null, true);
   },
 });
 
@@ -52,9 +53,25 @@ router.post('/upload-image', authenticateToken, requireRole('admin'), requireAny
       if (!req.file) {
         return res.status(400).json({ error: 'No image uploaded' });
       }
+      
+      // SEC-03: Magic bytes inspection & automatic cleanup of rejected uploads
+      const buffer = Buffer.alloc(64);
+      const fd = fs.openSync(req.file.path, 'r');
+      const bytesRead = fs.readSync(fd, buffer, 0, 64, 0);
+      fs.closeSync(fd);
+      const ext = path.extname(req.file.originalname).toLowerCase();
+      const magic = validateMagicBytes(buffer.subarray(0, bytesRead), ext);
+      if (!magic.valid) {
+        try { fs.unlinkSync(req.file.path); } catch { /* ignore */ }
+        return res.status(400).json({ error: magic.error });
+      }
+
       const file_url = `/media/certificates/${req.file.filename}`;
       res.status(200).json({ url: file_url });
     } catch (error) {
+      if (req.file && fs.existsSync(req.file.path)) {
+        try { fs.unlinkSync(req.file.path); } catch { /* ignore */ }
+      }
       console.error('Upload error:', error);
       res.status(500).json({ error: error.message || 'Upload failed' });
     }

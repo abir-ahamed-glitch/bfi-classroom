@@ -13,7 +13,7 @@ import { initializeDatabase } from './db/database.js';
 import db from './db/database.js';
 
 import jwt from 'jsonwebtoken';
-import { validateSafePublicUrl, isPrivateIP } from './utils/ssrf-filter.js';
+import { validateSafePublicUrl, isPrivateIP, createPinnedAgent, readBoundedStream, PayloadTooLargeError } from './utils/ssrf-filter.js';
 
 // Setup env
 dotenv.config();
@@ -140,70 +140,102 @@ function isProxyDomainAllowed(hostname) {
   return PROXY_ALLOWED_SUFFIXES.some(suffix => h === suffix || h.endsWith('.' + suffix));
 }
 
-app.get(['/api/proxy-image', '/bfi-classroom/api/proxy-image'], async (req, res) => {
+
+// SEC-02 & SEC-05: Dedicated rate limiter for public proxy and link preview endpoints
+const publicProxyLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 60, // 60 requests per 15 minutes per IP
+  keyGenerator: (req) => ipKeyGenerator(req.ip),
+  message: { error: 'Too many proxy requests. Please try again later.' }
+});
+
+app.get(['/api/proxy-image', '/bfi-classroom/api/proxy-image'], publicProxyLimiter, async (req, res) => {
   const imageUrl = req.query.url;
   if (!imageUrl) return res.status(400).json({ error: 'URL is required' });
   
+  let dispatcher = null;
+  let timeout = null;
+  const controller = new AbortController();
+
+  const onClientClose = () => {
+    if (!res.writableEnded) {
+      controller.abort();
+    }
+  };
+  res.on('close', onClientClose);
+
   try {
-    const parsedUrl = new URL(imageUrl);
+    // SEC-02: Comprehensive SSRF validation & IP pinning
+    const { parsedUrl, pinnedIp } = await validateSafePublicUrl(imageUrl, { httpsOnly: true });
 
-    // Enforce HTTPS
-    if (parsedUrl.protocol !== 'https:') {
-      return res.status(403).json({ error: 'Only HTTPS URLs are allowed' });
-    }
+    // 8 second deadline maintained through body streaming
+    timeout = setTimeout(() => controller.abort(), 8000);
+    dispatcher = createPinnedAgent(pinnedIp);
 
-    // Allow proxying of any public HTTPS images to make pasted links editable,
-    // but block local or private addresses to prevent Server-Side Request Forgery (SSRF)
-    const privateIpPattern = /^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)/i;
-    if (privateIpPattern.test(parsedUrl.hostname)) {
-      return res.status(403).json({ error: 'Domain not allowed' });
-    }
-
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 8000);
-    const response = await fetch(imageUrl, {
+    const response = await fetch(parsedUrl.href, {
       signal: controller.signal,
+      dispatcher,
+      redirect: 'error',
       headers: {
         'User-Agent': 'Mozilla/5.0 (compatible; BFIClassroomBot/1.0)',
         'Accept': 'image/*,*/*;q=0.8',
       },
     });
-    clearTimeout(timeout);
 
-    if (!response.ok) throw new Error(`Upstream returned ${response.status}`);
+    if (!response.ok) {
+      await response.body?.cancel?.().catch(() => {});
+      throw new Error(`Upstream returned ${response.status}`);
+    }
     
-    const contentType = response.headers.get('content-type') || '';
-    if (!contentType.includes('image/')) {
-      return res.status(403).json({ error: 'Content must be an image' });
+    const rawContentType = response.headers.get('content-type') || '';
+    const contentType = rawContentType.split(';')[0].trim().toLowerCase();
+    const allowedImageTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+    if (!allowedImageTypes.includes(contentType)) {
+      await response.body?.cancel?.().catch(() => {});
+      return res.status(403).json({ error: 'Content must be an allowed image (jpeg, png, webp, gif)' });
     }
     
     res.setHeader('Content-Type', contentType);
     res.setHeader('Cache-Control', 'public, max-age=86400');
     res.setHeader('Access-Control-Allow-Origin', '*');
     
-    const arrayBuffer = await response.arrayBuffer();
-    res.send(Buffer.from(arrayBuffer));
+    // SEC-02: Bound streaming body to 5MB with active timeout and cleanup
+    const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+    const { chunks } = await readBoundedStream(response.body, {
+      maxBytes: MAX_IMAGE_BYTES,
+      signal: controller.signal,
+      mode: 'buffer'
+    });
+    
+    res.send(Buffer.concat(chunks));
   } catch (error) {
-    console.error('Proxy image error:', error.message);
-    res.status(500).json({ error: 'Error proxying image' });
+    if (controller.signal.aborted || error.name === 'AbortError') {
+      return res.status(408).json({ error: 'Proxy request timed out or was aborted' });
+    }
+    if (error.name === 'PayloadTooLargeError') {
+      return res.status(413).json({ error: 'Image exceeds maximum allowed size (5MB)' });
+    }
+    const isRedirectError = error.message?.includes('redirect') || error.cause?.message?.includes('redirect');
+    const isSsrf = error.message.includes('forbidden') || error.message.includes('restricted') || error.message.includes('only https');
+    const status = isRedirectError ? 400 : (isSsrf ? 403 : 400);
+    res.status(status).json({ error: error.message || 'Error proxying image' });
+  } finally {
+    if (timeout) clearTimeout(timeout);
+    res.off('close', onClientClose);
+    try { dispatcher?.destroy?.(); } catch (_destroyErr) { /* ignore cleanup error */ }
   }
 });
 
 // Link Preview endpoint — fetches OpenGraph metadata for a given URL
 const linkPreviewCache = new Map();
-app.get(['/api/link-preview', '/bfi-classroom/api/link-preview'], async (req, res) => {
+app.get(['/api/link-preview', '/bfi-classroom/api/link-preview'], publicProxyLimiter, async (req, res) => {
   const targetUrl = req.query.url;
   if (!targetUrl) return res.status(400).json({ error: 'URL is required' });
 
-  // Validate URL format
-  let parsedUrl;
-  try {
-    parsedUrl = new URL(targetUrl);
-    if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
-      return res.status(400).json({ error: 'Only HTTP/HTTPS URLs are supported' });
-    }
-  } catch {
-    return res.status(400).json({ error: 'Invalid URL' });
+  // LRU cache eviction cap at 200 entries
+  if (linkPreviewCache.size > 200) {
+    const oldestKey = linkPreviewCache.keys().next().value;
+    linkPreviewCache.delete(oldestKey);
   }
 
   // Cache check (5 minutes TTL)
@@ -216,41 +248,50 @@ app.get(['/api/link-preview', '/bfi-classroom/api/link-preview'], async (req, re
     linkPreviewCache.delete(cacheKey);
   }
 
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 6000);
+  let dispatcher = null;
+  let timeout = null;
+  const controller = new AbortController();
 
-    const response = await fetch(targetUrl, {
+  const onClientClose = () => {
+    if (!res.writableEnded) {
+      controller.abort();
+    }
+  };
+  res.on('close', onClientClose);
+
+  try {
+    // SEC-02: Comprehensive SSRF validation & IP pinning
+    const { parsedUrl, pinnedIp } = await validateSafePublicUrl(targetUrl);
+
+    // 6 second deadline maintained through body streaming
+    timeout = setTimeout(() => controller.abort(), 6000);
+    dispatcher = createPinnedAgent(pinnedIp);
+
+    const response = await fetch(parsedUrl.href, {
       signal: controller.signal,
+      dispatcher,
+      redirect: 'error',
       headers: {
         'User-Agent': 'Mozilla/5.0 (compatible; BFIClassroomBot/1.0; +https://bfi.gov.bd)',
         'Accept': 'text/html,application/xhtml+xml',
         'Accept-Language': 'en-US,en;q=0.9',
       },
     });
-    clearTimeout(timeout);
 
     const contentType = response.headers.get('content-type') || '';
     if (!contentType.includes('text/html')) {
+      await response.body?.cancel?.().catch(() => {});
       return res.json({ url: targetUrl, title: parsedUrl.hostname });
     }
 
     // Only read first 100KB to extract meta tags without loading huge pages
-    const reader = response.body.getReader();
-    let html = '';
-    let bytesRead = 0;
-    const MAX_BYTES = 100 * 1024; // 100KB
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      html += new TextDecoder().decode(value);
-      bytesRead += value.length;
-      if (bytesRead >= MAX_BYTES || html.includes('</head>')) {
-        reader.cancel();
-        break;
-      }
-    }
+    const MAX_PREVIEW_BYTES = 100 * 1024; // 100KB
+    const { text: html } = await readBoundedStream(response.body, {
+      maxBytes: MAX_PREVIEW_BYTES,
+      signal: controller.signal,
+      mode: 'text',
+      stopPattern: '</head>'
+    });
 
     // Extract OG/Twitter meta tags with a simple regex (no DOM parser needed)
     const getMeta = (property) => {
@@ -341,12 +382,23 @@ app.get(['/api/link-preview', '/bfi-classroom/api/link-preview'], async (req, re
     linkPreviewCache.set(cacheKey, { data: previewData, timestamp: Date.now() });
     res.json(previewData);
   } catch (error) {
-    if (error.name === 'AbortError') {
+    if (controller.signal.aborted || error.name === 'AbortError') {
       res.status(408).json({ error: 'Request timed out' });
     } else {
       console.error('Link preview error:', error.message);
-      res.status(500).json({ error: 'Could not fetch preview' });
+      const isSsrfOrValidation = error.message.includes('forbidden') || 
+                                 error.message.includes('restricted') || 
+                                 error.message.includes('supported') || 
+                                 error.message.includes('Only HTTPS') ||
+                                 error.message.includes('Invalid URL');
+      const isRedirectError = error.message?.includes('redirect') || error.cause?.message?.includes('redirect');
+      const status = isSsrfOrValidation || isRedirectError ? 400 : 500;
+      res.status(status).json({ error: isSsrfOrValidation || isRedirectError ? error.message : 'Could not fetch preview' });
     }
+  } finally {
+    if (timeout) clearTimeout(timeout);
+    res.off('close', onClientClose);
+    try { dispatcher?.destroy?.(); } catch (_destroyErr) { /* ignore cleanup error */ }
   }
 });
 

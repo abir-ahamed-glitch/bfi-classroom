@@ -1,3 +1,4 @@
+import { validateExtensionAndMime, validateMagicBytes, COURSE_ATTACHMENT_ALLOWED_TYPES } from '../utils/file-validator.js';
 import express from 'express';
 import multer from 'multer';
 import path from 'path';
@@ -49,8 +50,11 @@ const upload = multer({
     if (['.mp4', '.mov', '.avi', '.mkv', '.webm', '.flv', '.wmv', '.m4v', '.ogg'].includes(ext)) {
       return cb(new Error('Direct video uploads are disabled on this platform. Please select "External URL" and paste a YouTube, Vimeo, or Google Drive link instead.'));
     }
-    if (allowedTypes.includes(file.mimetype)) return cb(null, true);
-    cb(new Error('File type not allowed. Allowed formats: PDF, Word, ZIP, JPEG, PNG, WebP.'));
+    const check = validateExtensionAndMime(file.originalname, file.mimetype, COURSE_ATTACHMENT_ALLOWED_TYPES);
+    if (!check.valid) {
+      return cb(new Error(check.error));
+    }
+    cb(null, true);
   },
 });
 
@@ -233,6 +237,19 @@ router.get('/admin/all', authenticateToken, requireRole('admin'), requireAnyPerm
 // ─── POST: Upload new material ────────────────────────────────────────────────
 router.post('/upload', authenticateToken, requireRole('admin'), requireAnyPermission('courses:edit', 'batches:edit'), upload.single('file'), async (req, res) => {
   try {
+    if (req.file) {
+      // SEC-03: Magic bytes inspection & automatic cleanup of rejected uploads
+      const buffer = Buffer.alloc(64);
+      const fd = fs.openSync(req.file.path, 'r');
+      const bytesRead = fs.readSync(fd, buffer, 0, 64, 0);
+      fs.closeSync(fd);
+      const ext = path.extname(req.file.originalname).toLowerCase();
+      const magic = validateMagicBytes(buffer.subarray(0, bytesRead), ext);
+      if (!magic.valid) {
+        try { fs.unlinkSync(req.file.path); } catch { /* ignore */ }
+        return res.status(400).json({ error: magic.error });
+      }
+    }
     const { title, description, course_name, batch_number, batch_id, is_downloadable, external_url, file_type_override } = req.body;
 
     let effectiveBatchId = batch_id ? parseInt(batch_id, 10) : null;
@@ -289,6 +306,19 @@ router.post('/upload', authenticateToken, requireRole('admin'), requireAnyPermis
 // ─── PUT: Update material metadata ───────────────────────────────────────────
 router.put('/:id', authenticateToken, requireRole('admin'), requireAnyPermission('courses:edit', 'batches:edit'), upload.single('file'), async (req, res) => {
   try {
+    if (req.file) {
+      // SEC-03: Magic bytes inspection & automatic cleanup of rejected uploads
+      const buffer = Buffer.alloc(64);
+      const fd = fs.openSync(req.file.path, 'r');
+      const bytesRead = fs.readSync(fd, buffer, 0, 64, 0);
+      fs.closeSync(fd);
+      const ext = path.extname(req.file.originalname).toLowerCase();
+      const magic = validateMagicBytes(buffer.subarray(0, bytesRead), ext);
+      if (!magic.valid) {
+        try { fs.unlinkSync(req.file.path); } catch { /* ignore */ }
+        return res.status(400).json({ error: magic.error });
+      }
+    }
     const { id } = req.params;
     const existing = db.prepare('SELECT * FROM course_materials WHERE id = ?').get(id);
     if (!existing) return res.status(404).json({ error: 'Material not found' });

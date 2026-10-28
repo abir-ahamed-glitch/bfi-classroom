@@ -125,7 +125,9 @@ export function decryptSecret(encryptedSecret, keyOverride) {
           let decryptedFallback = decipherFallback.update(dataHex, 'hex', 'utf8');
           decryptedFallback += decipherFallback.final('utf8');
           return decryptedFallback;
-        } catch {}
+        } catch (_fallbackErr) {
+          // Ignore fallback decryption failure and throw unified error below
+        }
       }
     }
     throw new Error('Failed to decrypt authenticator secret: authentication tag mismatch or invalid encryption key');

@@ -1,11 +1,12 @@
 import dns from 'dns/promises';
 import net from 'net';
+import { Agent } from 'undici';
 
 /**
  * Checks whether an IPv4 address is in a reserved/private/internal range.
  */
 export function isPrivateIPv4(ip) {
-  const parts = ip.split('.').map(Number);
+  const parts = String(ip).trim().split('.').map(Number);
   if (parts.length !== 4 || parts.some(p => isNaN(p) || p < 0 || p > 255)) {
     return true; // Malformed is considered unsafe
   }
@@ -47,43 +48,98 @@ export function isPrivateIPv4(ip) {
 }
 
 /**
- * Checks whether an IPv6 address is in a reserved/private/internal range.
+ * Parses any valid IPv6 address (compressed, full, bracketed, or IPv4-mapped)
+ * into an array of 8 16-bit integer values (0 to 65535).
  */
-export function isPrivateIPv6(ip) {
-  const normalized = ip.toLowerCase();
+export function parseIPv6Hextets(rawIp) {
+  let ip = (rawIp || '').trim().toLowerCase();
+  if (ip.startsWith('[') && ip.endsWith(']')) {
+    ip = ip.slice(1, -1);
+  }
+  // Strip zone ID if present e.g. fe80::1%eth0
+  ip = ip.split('%')[0].trim();
 
-  // IPv4-mapped IPv6 address (::ffff:127.0.0.1 or ::ffff:7f00:1)
-  if (normalized.startsWith('::ffff:')) {
-    const v4Part = normalized.slice(7);
-    if (net.isIPv4(v4Part)) {
-      return isPrivateIPv4(v4Part);
+  let hextets = [];
+  if (ip.includes('::')) {
+    const parts = ip.split('::');
+    if (parts.length > 2) return null; // Only one '::' allowed
+    const left = parts[0] ? parts[0].split(':') : [];
+    const right = parts[1] ? parts[1].split(':') : [];
+
+    let v4Count = 0;
+    if (right.length > 0 && right[right.length - 1].includes('.')) {
+      v4Count = 2;
+    } else if (left.length > 0 && left[left.length - 1].includes('.')) {
+      v4Count = 2;
     }
-    // Handle hex format
-    const hexParts = v4Part.split(':');
-    if (hexParts.length === 2) {
-      const p1 = parseInt(hexParts[0], 16);
-      const p2 = parseInt(hexParts[1], 16);
-      const ipv4 = `${(p1 >> 8) & 255}.${p1 & 255}.${(p2 >> 8) & 255}.${p2 & 255}`;
-      return isPrivateIPv4(ipv4);
-    }
+
+    const missing = 8 - (left.length + right.length + (v4Count ? 1 : 0));
+    if (missing < 0) return null;
+    const middle = Array(missing).fill('0');
+    hextets = [...left, ...middle, ...right];
+  } else {
+    hextets = ip.split(':');
   }
 
+  // Handle embedded IPv4 at the end (e.g. ::ffff:127.0.0.1)
+  if (hextets.length > 0 && hextets[hextets.length - 1].includes('.')) {
+    const v4 = hextets.pop();
+    const v4Parts = v4.split('.').map(Number);
+    if (v4Parts.length !== 4 || v4Parts.some(p => isNaN(p) || p < 0 || p > 255)) return null;
+    hextets.push(((v4Parts[0] << 8) | v4Parts[1]).toString(16));
+    hextets.push(((v4Parts[2] << 8) | v4Parts[3]).toString(16));
+  }
+
+  if (hextets.length !== 8) return null;
+  const nums = hextets.map(h => parseInt(h, 16));
+  if (nums.some(n => isNaN(n) || n < 0 || n > 0xffff)) return null;
+  return nums;
+}
+
+/**
+ * Checks whether an IPv6 address is in a reserved/private/internal range.
+ * Fully accounts for compressed, full hex, and IPv4-mapped forms (including
+ * expanded representations like 0:0:0:0:0:ffff:7f00:1).
+ */
+export function isPrivateIPv6(ip) {
+  const nums = parseIPv6Hextets(ip);
+  if (!nums) return true; // Malformed is treated as unsafe
+
   // Unspecified (::)
-  if (normalized === '::' || normalized === '0:0:0:0:0:0:0:0') return true;
+  if (nums.every(n => n === 0)) return true;
+
   // Loopback (::1)
-  if (normalized === '::1' || normalized === '0:0:0:0:0:0:0:1') return true;
+  if (nums.slice(0, 7).every(n => n === 0) && nums[7] === 1) return true;
 
-  // Unique local addresses (fc00::/7 -> fc00:: through fdff::)
-  if (normalized.startsWith('fc') || normalized.startsWith('fd')) return true;
+  // IPv4-mapped IPv6 address: 0:0:0:0:0:ffff:w.x.y.z or ::ffff:w.x.y.z
+  if (nums.slice(0, 5).every(n => n === 0) && nums[5] === 0xffff) {
+    const ip4 = `${(nums[6] >> 8) & 0xff}.${nums[6] & 0xff}.${(nums[7] >> 8) & 0xff}.${nums[7] & 0xff}`;
+    return isPrivateIPv4(ip4);
+  }
 
-  // Link-local unicast (fe80::/10 -> fe80:: through febf::)
-  if (/^fe[89ab]/i.test(normalized)) return true;
+  // Deprecated IPv4-compatible IPv6 address: ::w.x.y.z
+  if (nums.slice(0, 6).every(n => n === 0) && (nums[6] !== 0 || nums[7] !== 1)) {
+    const ip4 = `${(nums[6] >> 8) & 0xff}.${nums[6] & 0xff}.${(nums[7] >> 8) & 0xff}.${nums[7] & 0xff}`;
+    return isPrivateIPv4(ip4);
+  }
 
-  // Multicast (ff00::/8)
-  if (normalized.startsWith('ff')) return true;
+  // Unique local addresses fc00::/7 (0xfc00 through 0xfdff)
+  if ((nums[0] & 0xfe00) === 0xfc00) return true;
 
-  // Documentation (2001:db8::/32)
-  if (normalized.startsWith('2001:db8:') || normalized.startsWith('2001:0db8:')) return true;
+  // Link-local unicast fe80::/10 (0xfe80 through 0xfebf)
+  if ((nums[0] & 0xffc0) === 0xfe80) return true;
+
+  // Multicast ff00::/8
+  if ((nums[0] & 0xff00) === 0xff00) return true;
+
+  // Documentation 2001:db8::/32
+  if (nums[0] === 0x2001 && nums[1] === 0x0db8) return true;
+
+  // 6to4 prefix 2002::/16
+  if (nums[0] === 0x2002) {
+    const ip4 = `${(nums[1] >> 8) & 0xff}.${nums[1] & 0xff}.${(nums[2] >> 8) & 0xff}.${nums[2] & 0xff}`;
+    if (isPrivateIPv4(ip4)) return true;
+  }
 
   return false;
 }
@@ -91,14 +147,18 @@ export function isPrivateIPv6(ip) {
 /**
  * Validates whether an IP address (v4 or v6) is private or internal.
  */
-export function isPrivateIP(ip) {
+export function isPrivateIP(rawIp) {
+  let ip = (rawIp || '').trim();
+  if (ip.startsWith('[') && ip.endsWith(']')) {
+    ip = ip.slice(1, -1);
+  }
   if (net.isIPv4(ip)) {
     return isPrivateIPv4(ip);
   }
-  if (net.isIPv6(ip)) {
+  if (net.isIPv6(ip) || ip.includes(':')) {
     return isPrivateIPv6(ip);
   }
-  return true; // Unknown format is treated as unsafe
+  return true; // Unknown or malformed format is treated as unsafe
 }
 
 /**
@@ -106,6 +166,7 @@ export function isPrivateIP(ip) {
  * 1. Requires valid http: or https: protocol (optionally https only).
  * 2. Rejects local hostnames (localhost, *.local, *.internal, etc.).
  * 3. Resolves DNS records and ensures ALL resolved IPs are non-private.
+ * 4. Returns the validated URL and a pinned IP address for connection binding.
  */
 export async function validateSafePublicUrl(targetUrl, { httpsOnly = false } = {}) {
   if (!targetUrl || typeof targetUrl !== 'string') {
@@ -129,7 +190,10 @@ export async function validateSafePublicUrl(targetUrl, { httpsOnly = false } = {
     }
   }
 
-  const hostname = parsed.hostname.toLowerCase();
+  let hostname = parsed.hostname.toLowerCase();
+  if (hostname.startsWith('[') && hostname.endsWith(']')) {
+    hostname = hostname.slice(1, -1);
+  }
 
   // Block common local hostnames immediately
   if (
@@ -144,11 +208,11 @@ export async function validateSafePublicUrl(targetUrl, { httpsOnly = false } = {
   }
 
   // If hostname is directly an IP literal
-  if (net.isIP(hostname)) {
+  if (net.isIP(hostname) || hostname.includes(':')) {
     if (isPrivateIP(hostname)) {
       throw new Error('Access to private/local IP addresses is forbidden');
     }
-    return { safe: true, parsedUrl: parsed, resolvedIps: [hostname] };
+    return { safe: true, parsedUrl: parsed, resolvedIps: [hostname], pinnedIp: hostname };
   }
 
   // Resolve hostname via DNS
@@ -170,5 +234,99 @@ export async function validateSafePublicUrl(targetUrl, { httpsOnly = false } = {
     }
   }
 
-  return { safe: true, parsedUrl: parsed, resolvedIps };
+  // Return the first validated public IP as the pinned destination
+  return { safe: true, parsedUrl: parsed, resolvedIps, pinnedIp: resolvedIps[0] };
+}
+
+/**
+ * Creates an Undici Agent that pins DNS resolution to a pre-validated IP address.
+ * Guarantees that DNS rebinding cannot redirect the connection to a private address.
+ */
+export function createPinnedAgent(pinnedIp) {
+  const family = net.isIPv6(pinnedIp) ? 6 : 4;
+  return new Agent({
+    connect: {
+      lookup: (hostname, opts, cb) => {
+        if (opts && opts.all) {
+          cb(null, [{ address: pinnedIp, family }]);
+        } else {
+          cb(null, pinnedIp, family);
+        }
+      }
+    }
+  });
+}
+
+/**
+ * Custom error indicating a streaming response exceeded configured byte boundaries.
+ */
+export class PayloadTooLargeError extends Error {
+  constructor(message = 'Payload exceeds maximum allowed size') {
+    super(message);
+    this.name = 'PayloadTooLargeError';
+    this.status = 413;
+  }
+}
+
+/**
+ * Reads a ReadableStream while strictly enforcing maximum byte limits and active cancellation.
+ * Ensures the underlying stream reader is properly cancelled on limit breach, abort signals, or errors.
+ */
+export async function readBoundedStream(bodyStream, { maxBytes = 5 * 1024 * 1024, signal, mode = 'buffer', stopPattern = null } = {}) {
+  if (!bodyStream) {
+    return mode === 'text' ? { text: '', bytesRead: 0 } : { chunks: [], bytesRead: 0 };
+  }
+
+  const reader = bodyStream.getReader();
+  const chunks = [];
+  let bytesRead = 0;
+  let text = '';
+  const decoder = mode === 'text' ? new TextDecoder() : null;
+
+  try {
+    while (true) {
+      if (signal?.aborted) {
+        const err = new Error('Stream reading aborted');
+        err.name = 'AbortError';
+        throw err;
+      }
+
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      bytesRead += value.length;
+
+      if (bytesRead > maxBytes) {
+        if (stopPattern && mode === 'text') {
+          // Soft stop for preview text
+          text += decoder.decode(value, { stream: false });
+          await reader.cancel();
+          break;
+        } else {
+          await reader.cancel();
+          throw new PayloadTooLargeError(`Payload exceeds maximum size limit of ${maxBytes} bytes`);
+        }
+      }
+
+      if (mode === 'text') {
+        text += decoder.decode(value, { stream: true });
+        if (stopPattern && text.includes(stopPattern)) {
+          await reader.cancel();
+          break;
+        }
+      } else {
+        chunks.push(value);
+      }
+    }
+
+    if (mode === 'text') {
+      return { text, bytesRead };
+    }
+    return { chunks, bytesRead };
+  } catch (err) {
+    try {
+      await reader.cancel();
+    } catch { /* best effort */ }
+    throw err;
+  }
 }

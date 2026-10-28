@@ -123,6 +123,10 @@ export default function PdfViewer({ url, name, containerStyle = {} }) {
           <Viewer
             fileUrl={resolvedUrl}
             plugins={[defaultLayoutPluginInstance]}
+            transformGetDocumentParams={(params) => ({
+              ...params,
+              isEvalSupported: false,
+            })}
           />
         </Worker>
       )}
