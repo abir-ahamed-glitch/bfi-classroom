@@ -653,13 +653,30 @@ router.post('/mfa/disable', authenticateToken, requireRole('admin'), requireRece
 // 1. GET /api/admin/administrators - List all administrator accounts
 router.get('/administrators', authenticateToken, requireSuperAdmin, (req, res) => {
   try {
+    const { status } = req.query;
+    let whereClause = "u.role = 'admin' AND u.deleted_at IS NULL";
+    if (status === 'archived') {
+      whereClause += ' AND u.archived_at IS NOT NULL';
+    } else if (status === 'all') {
+      // Return all admins
+    } else {
+      // Default: current administrators only (Active and Inactive, excluding Archived)
+      whereClause += ' AND u.archived_at IS NULL';
+    }
+
     const admins = db.prepare(`
       SELECT u.id, u.username, u.email, u.first_name, u.last_name, u.profile_picture, u.is_active,
-             u.is_super_admin, u.permissions_version, u.last_login, u.created_at, u.created_by_admin_id,
-             c.username as creator_username, c.email as creator_email
+             u.is_super_admin, u.permissions_version, u.account_version, u.token_version, u.last_login, u.created_at, u.created_by_admin_id,
+             u.archived_at, u.archived_by_admin_id, u.archive_reason,
+             u.restored_at, u.restored_by_admin_id, u.restore_reason,
+             u.password_reset_pending, u.email_verified_at, u.verified_email,
+             c.username as creator_username, c.email as creator_email,
+             ab.username as archiver_username, rb.username as restorer_username
       FROM users u
       LEFT JOIN users c ON c.id = u.created_by_admin_id
-      WHERE u.role = 'admin' AND u.deleted_at IS NULL
+      LEFT JOIN users ab ON ab.id = u.archived_by_admin_id
+      LEFT JOIN users rb ON rb.id = u.restored_by_admin_id
+      WHERE ${whereClause}
       ORDER BY u.id ASC
     `).all();
 
@@ -674,11 +691,14 @@ router.get('/administrators', authenticateToken, requireSuperAdmin, (req, res) =
         is_super_admin: isSuper ? 1 : 0,
         isSuperAdmin: isSuper,
         permissions_version: a.permissions_version || 1,
+        account_version: a.account_version || 1,
         permissions,
         creatorName,
         creator: a.created_by_admin_id ? { id: a.created_by_admin_id, username: a.creator_username, email: a.creator_email } : { id: null, username: 'Unknown/Legacy', email: null },
         created_at_dhaka: formatDhakaTimestamp(a.created_at),
-        last_login_dhaka: formatDhakaTimestamp(a.last_login)
+        last_login_dhaka: formatDhakaTimestamp(a.last_login),
+        archived_at_dhaka: a.archived_at ? formatDhakaTimestamp(a.archived_at) : null,
+        restored_at_dhaka: a.restored_at ? formatDhakaTimestamp(a.restored_at) : null
       };
     });
 
@@ -695,11 +715,12 @@ router.get('/administrators/accountability/summary', authenticateToken, requireS
   try {
     const { startDate, endDate, creatorId } = req.query;
 
-    const totalRow = db.prepare("SELECT COUNT(*) as total FROM users WHERE role = 'admin' AND deleted_at IS NULL").get();
-    const activeRow = db.prepare("SELECT COUNT(*) as active FROM users WHERE role = 'admin' AND deleted_at IS NULL AND is_active = 1").get();
-    const inactiveRow = db.prepare("SELECT COUNT(*) as inactive FROM users WHERE role = 'admin' AND deleted_at IS NULL AND is_active = 0").get();
+    const totalRow = db.prepare("SELECT COUNT(*) as total FROM users WHERE role = 'admin' AND deleted_at IS NULL AND archived_at IS NULL").get();
+    const activeRow = db.prepare("SELECT COUNT(*) as active FROM users WHERE role = 'admin' AND deleted_at IS NULL AND archived_at IS NULL AND is_active = 1").get();
+    const inactiveRow = db.prepare("SELECT COUNT(*) as inactive FROM users WHERE role = 'admin' AND deleted_at IS NULL AND archived_at IS NULL AND is_active = 0").get();
+    const archivedRow = db.prepare("SELECT COUNT(*) as archived FROM users WHERE role = 'admin' AND deleted_at IS NULL AND archived_at IS NOT NULL").get();
 
-    const rangeConditions = ["role = 'admin'", "deleted_at IS NULL"];
+    const rangeConditions = ["role = 'admin'", "deleted_at IS NULL", "archived_at IS NULL"];
     const rangeParams = [];
 
     if (startDate) {
@@ -736,7 +757,7 @@ router.get('/administrators/accountability/summary', authenticateToken, requireS
         COUNT(u.id) as count
       FROM users u
       LEFT JOIN users c ON c.id = u.created_by_admin_id
-      WHERE u.role = 'admin' AND u.deleted_at IS NULL
+      WHERE u.role = 'admin' AND u.deleted_at IS NULL AND u.archived_at IS NULL
       GROUP BY u.created_by_admin_id
       ORDER BY count DESC
     `).all();
@@ -764,6 +785,7 @@ router.get('/administrators/accountability/summary', authenticateToken, requireS
       total: totalRow?.total || 0,
       active: activeRow?.active || 0,
       inactive: inactiveRow?.inactive || 0,
+      archived: archivedRow?.archived || 0,
       rangeCount: rangeRow?.range_count || 0,
       creators: creatorBreakdown
     });
@@ -1340,11 +1362,18 @@ router.put('/administrators/:id/permissions', authenticateToken, requireSuperAdm
 router.patch('/administrators/:id/status', authenticateToken, requireSuperAdmin, requireRecentAuth, sanitizeInput, (req, res) => {
   try {
     const targetId = Number(req.params.id);
-    const { is_active } = req.body;
+    const { is_active, expected_account_version } = req.body;
 
     if (is_active !== 0 && is_active !== 1) {
       recordFailedAuditLog(req.user.id, targetId, 'update_status', 'Invalid is_active value', req.ip);
       return res.status(400).json({ error: 'is_active must be 0 or 1.' });
+    }
+
+    if (expected_account_version === undefined || expected_account_version === null || typeof expected_account_version !== 'number') {
+      return res.status(400).json({ 
+        error: 'Expected account version is required for concurrency control.', 
+        code: 'MISSING_ACCOUNT_VERSION' 
+      });
     }
 
     if (targetId === 1) {
@@ -1352,15 +1381,41 @@ router.patch('/administrators/:id/status', authenticateToken, requireSuperAdmin,
       return res.status(403).json({ error: 'Cannot deactivate the Super Administrator account.' });
     }
 
-    const targetUser = db.prepare('SELECT id, username, role, is_active FROM users WHERE id = ? AND deleted_at IS NULL').get(targetId);
+    const targetUser = db.prepare('SELECT id, username, role, is_active, archived_at, account_version FROM users WHERE id = ? AND deleted_at IS NULL').get(targetId);
     if (!targetUser || targetUser.role !== 'admin') {
       return res.status(404).json({ error: 'Administrator not found.' });
     }
 
-    // Atomic transaction: Status change, token_version invalidation, session revocation, and audit log write
+    if (targetUser.archived_at !== null) {
+      return res.status(400).json({ 
+        error: 'Cannot activate an archived administrator. The account must be restored by Super Admin first.', 
+        code: 'ACCOUNT_ARCHIVED' 
+      });
+    }
+
+    if (targetUser.account_version !== expected_account_version) {
+      recordFailedAuditLog(req.user.id, targetId, 'update_status', "Concurrency conflict: expected version " + expected_account_version + " but found " + targetUser.account_version, req.ip);
+      return res.status(409).json({ 
+        error: 'Account state has changed or request is stale. Please reload the administrator details before retrying.', 
+        code: 'CONCURRENCY_CONFLICT',
+        currentVersion: targetUser.account_version
+      });
+    }
+
+    // Atomic transaction: Status change, token_version invalidation, session revocation, account_version bump, and audit log write
     const updateStatusTx = db.transaction(() => {
-      // Bumping token_version guarantees that all previously issued access tokens are immediately rejected
-      db.prepare("UPDATE users SET is_active = ?, token_version = token_version + 1, updated_at = datetime('now') WHERE id = ?").run(is_active, targetId);
+      const updateResult = db.prepare(`
+        UPDATE users 
+        SET is_active = ?, 
+            token_version = token_version + 1, 
+            account_version = account_version + 1, 
+            updated_at = datetime('now') 
+        WHERE id = ? AND account_version = ? AND archived_at IS NULL
+      `).run(is_active, targetId, expected_account_version);
+
+      if (updateResult.changes === 0) {
+        throw new Error('CONCURRENCY_CONFLICT');
+      }
 
       // Permanently revoke all active sessions on deactivation or reactivation
       db.prepare('DELETE FROM sessions WHERE user_id = ?').run(targetId);
@@ -1375,8 +1430,8 @@ router.patch('/administrators/:id/status', authenticateToken, requireSuperAdmin,
         resource: `admin:${targetId}`,
         outcome: 'success',
         correlationId: req.correlationId,
-        beforeState: { is_active: targetUser.is_active },
-        afterState: { is_active },
+        beforeState: { is_active: targetUser.is_active, account_version: expected_account_version },
+        afterState: { is_active, account_version: expected_account_version + 1 },
         details: { previous_status: targetUser.is_active, new_status: is_active },
         ipAddress: req.ip || '',
         throwOnError: true
@@ -1390,11 +1445,219 @@ router.patch('/administrators/:id/status', authenticateToken, requireSuperAdmin,
 
     res.json({
       message: is_active === 1 ? 'Administrator activated successfully' : 'Administrator deactivated successfully',
-      is_active
+      is_active,
+      account_version: expected_account_version + 1
     });
   } catch (err) {
+    if (err.message === 'CONCURRENCY_CONFLICT') {
+      return res.status(409).json({ 
+        error: 'Account state has changed or request is stale. Please reload the administrator details before retrying.', 
+        code: 'CONCURRENCY_CONFLICT' 
+      });
+    }
     console.error('Error updating administrator status:', err);
     res.status(500).json({ error: 'Failed to update administrator status' });
+  }
+});
+
+// POST /api/admin/administrators/:id/archive - Archive administrator account (Atomic, Concurrency-Protected, Sudo Protected)
+router.post('/administrators/:id/archive', authenticateToken, requireSuperAdmin, requireRecentAuth, sanitizeInput, (req, res) => {
+  try {
+    const targetId = Number(req.params.id);
+    const { expected_account_version, reason } = req.body;
+
+    if (targetId === 1) {
+      recordFailedAuditLog(req.user.id, targetId, 'archive_administrator', 'Cannot archive Super Admin', req.ip);
+      return res.status(403).json({ error: 'Cannot archive the Super Administrator account.' });
+    }
+
+    if (expected_account_version === undefined || expected_account_version === null || typeof expected_account_version !== 'number') {
+      return res.status(400).json({ 
+        error: 'Expected account version is required for concurrency control.', 
+        code: 'MISSING_ACCOUNT_VERSION' 
+      });
+    }
+
+    if (!reason || typeof reason !== 'string' || reason.trim().length < 5) {
+      return res.status(400).json({ error: 'A valid archive reason (minimum 5 characters) is required.' });
+    }
+
+    const targetUser = db.prepare('SELECT id, username, role, is_active, archived_at, account_version FROM users WHERE id = ? AND deleted_at IS NULL').get(targetId);
+    if (!targetUser || targetUser.role !== 'admin') {
+      return res.status(404).json({ error: 'Administrator not found.' });
+    }
+
+    if (targetUser.archived_at !== null) {
+      return res.status(409).json({ 
+        error: 'Administrator is already archived.', 
+        code: 'ALREADY_ARCHIVED' 
+      });
+    }
+
+    if (targetUser.account_version !== expected_account_version) {
+      recordFailedAuditLog(req.user.id, targetId, 'archive_administrator', "Concurrency conflict: expected version " + expected_account_version + " but found " + targetUser.account_version, req.ip);
+      return res.status(409).json({ 
+        error: 'Account state has changed or request is stale. Please reload the administrator details before retrying.', 
+        code: 'CONCURRENCY_CONFLICT',
+        currentVersion: targetUser.account_version
+      });
+    }
+
+    const archiveTx = db.transaction(() => {
+      const updateResult = db.prepare(`
+        UPDATE users 
+        SET is_active = 0,
+            archived_at = datetime('now'),
+            archived_by_admin_id = ?,
+            archive_reason = ?,
+            token_version = token_version + 1,
+            account_version = account_version + 1,
+            password_reset_pending = 0,
+            updated_at = datetime('now')
+        WHERE id = ? AND account_version = ? AND archived_at IS NULL
+      `).run(req.user.id, reason.trim(), targetId, expected_account_version);
+
+      if (updateResult.changes === 0) {
+        throw new Error('CONCURRENCY_CONFLICT');
+      }
+
+      // Invalidate outstanding reset tokens, sessions, MFA challenges
+      db.prepare('DELETE FROM password_reset_tokens WHERE user_id = ?').run(targetId);
+      db.prepare('DELETE FROM sessions WHERE user_id = ?').run(targetId);
+      db.prepare("UPDATE mfa_login_challenges SET consumed = 1, consumed_at = datetime('now') WHERE user_id = ? AND consumed = 0").run(targetId);
+
+      // Record audit log atomically
+      recordAuditLog({
+        actorId: req.user.id,
+        targetUserId: targetId,
+        action: 'archive_administrator',
+        module: 'admin_management',
+        resource: `admin:${targetId}`,
+        outcome: 'success',
+        correlationId: req.correlationId,
+        beforeState: { is_active: targetUser.is_active, archived_at: null, account_version: expected_account_version },
+        afterState: { is_active: 0, archived_at: 'now', account_version: expected_account_version + 1 },
+        details: { reason: reason.trim() },
+        ipAddress: req.ip || '',
+        throwOnError: true
+      });
+    });
+
+    archiveTx();
+
+    // Terminate socket connections
+    securityEvents.emit('revoke_user', { userId: targetId });
+
+    res.json({
+      message: 'Administrator archived successfully',
+      is_active: 0,
+      account_version: expected_account_version + 1
+    });
+  } catch (err) {
+    if (err.message === 'CONCURRENCY_CONFLICT') {
+      return res.status(409).json({ 
+        error: 'Account state has changed or request is stale. Please reload the administrator details before retrying.', 
+        code: 'CONCURRENCY_CONFLICT' 
+      });
+    }
+    console.error('Error archiving administrator:', err);
+    res.status(500).json({ error: 'Failed to archive administrator' });
+  }
+});
+
+// POST /api/admin/administrators/:id/restore - Restore an archived administrator account as INACTIVE (Atomic, Concurrency-Protected, Sudo Protected)
+router.post('/administrators/:id/restore', authenticateToken, requireSuperAdmin, requireRecentAuth, sanitizeInput, (req, res) => {
+  try {
+    const targetId = Number(req.params.id);
+    const { expected_account_version, reason } = req.body;
+
+    if (targetId === 1) {
+      recordFailedAuditLog(req.user.id, targetId, 'restore_administrator', 'Cannot restore Super Admin', req.ip);
+      return res.status(403).json({ error: 'Super Administrator cannot be modified with restore.' });
+    }
+
+    if (expected_account_version === undefined || expected_account_version === null || typeof expected_account_version !== 'number') {
+      return res.status(400).json({ 
+        error: 'Expected account version is required for concurrency control.', 
+        code: 'MISSING_ACCOUNT_VERSION' 
+      });
+    }
+
+    if (!reason || typeof reason !== 'string' || reason.trim().length < 5) {
+      return res.status(400).json({ error: 'A valid restore reason (minimum 5 characters) is required.' });
+    }
+
+    const targetUser = db.prepare('SELECT id, username, role, is_active, archived_at, account_version FROM users WHERE id = ? AND deleted_at IS NULL').get(targetId);
+    if (!targetUser || targetUser.role !== 'admin') {
+      return res.status(404).json({ error: 'Administrator not found.' });
+    }
+
+    if (targetUser.archived_at === null) {
+      return res.status(409).json({ 
+        error: 'Administrator is not archived.', 
+        code: 'NOT_ARCHIVED' 
+      });
+    }
+
+    if (targetUser.account_version !== expected_account_version) {
+      recordFailedAuditLog(req.user.id, targetId, 'restore_administrator', "Concurrency conflict: expected version " + expected_account_version + " but found " + targetUser.account_version, req.ip);
+      return res.status(409).json({ 
+        error: 'Account state has changed or request is stale. Please reload the administrator details before retrying.', 
+        code: 'CONCURRENCY_CONFLICT',
+        currentVersion: targetUser.account_version
+      });
+    }
+
+    const restoreTx = db.transaction(() => {
+      const updateResult = db.prepare(`
+        UPDATE users 
+        SET archived_at = NULL,
+            restored_at = datetime('now'),
+            restored_by_admin_id = ?,
+            restore_reason = ?,
+            is_active = 0, -- CRITICAL: RESTORED AS INACTIVE
+            account_version = account_version + 1,
+            updated_at = datetime('now')
+        WHERE id = ? AND account_version = ? AND archived_at IS NOT NULL
+      `).run(req.user.id, reason.trim(), targetId, expected_account_version);
+
+      if (updateResult.changes === 0) {
+        throw new Error('CONCURRENCY_CONFLICT');
+      }
+
+      // Record audit log atomically
+      recordAuditLog({
+        actorId: req.user.id,
+        targetUserId: targetId,
+        action: 'restore_administrator',
+        module: 'admin_management',
+        resource: `admin:${targetId}`,
+        outcome: 'success',
+        correlationId: req.correlationId,
+        beforeState: { is_active: targetUser.is_active, archived_at: targetUser.archived_at, account_version: expected_account_version },
+        afterState: { is_active: 0, archived_at: null, account_version: expected_account_version + 1 },
+        details: { reason: reason.trim(), restored_status: 'inactive' },
+        ipAddress: req.ip || '',
+        throwOnError: true
+      });
+    });
+
+    restoreTx();
+
+    res.json({
+      message: 'Administrator restored successfully as inactive. Please review permissions and activate the account when ready.',
+      is_active: 0,
+      account_version: expected_account_version + 1
+    });
+  } catch (err) {
+    if (err.message === 'CONCURRENCY_CONFLICT') {
+      return res.status(409).json({ 
+        error: 'Account state has changed or request is stale. Please reload the administrator details before retrying.', 
+        code: 'CONCURRENCY_CONFLICT' 
+      });
+    }
+    console.error('Error restoring administrator:', err);
+    res.status(500).json({ error: 'Failed to restore administrator' });
   }
 });
 

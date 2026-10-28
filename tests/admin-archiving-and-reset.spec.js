@@ -12,8 +12,114 @@ const __dirname = path.dirname(__filename);
 
 const TEST_MIGRATION_DB_PATH = path.resolve(__dirname, 'test_archiving_migration.db');
 const TEST_FULL_RUNNER_DB_PATH = path.resolve(__dirname, 'test_canonical_runner.db');
+const TEST_SHARED_DB_PATH = path.resolve(__dirname, 'test_isolated_admin_suite.db');
+assertIsolatedTestDatabase(TEST_SHARED_DB_PATH);
+process.env.DATABASE_PATH = TEST_SHARED_DB_PATH;
+process.env.NODE_ENV = 'test';
+process.env.IS_TEST_SERVER = 'true';
 
 // Ensure disposable test database is clean before running
+
+function resetSharedSchema(db) {
+  db.exec(`
+    DROP TABLE IF EXISTS audit_logs;
+    DROP TABLE IF EXISTS mfa_login_challenges;
+    DROP TABLE IF EXISTS admin_permissions;
+    DROP TABLE IF EXISTS sessions;
+    DROP TABLE IF EXISTS password_reset_tokens;
+    DROP TABLE IF EXISTS email_verification_challenges;
+    DROP TABLE IF EXISTS users;
+
+    CREATE TABLE users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      username TEXT UNIQUE NOT NULL,
+      email TEXT UNIQUE NOT NULL,
+      password_hash TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'student',
+      first_name TEXT NOT NULL,
+      last_name TEXT NOT NULL,
+      profile_picture TEXT,
+      mobile_number TEXT,
+      two_factor_enabled INTEGER DEFAULT 0,
+      two_factor_secret TEXT,
+      public_key TEXT,
+      is_active INTEGER DEFAULT 1,
+      is_super_admin INTEGER NOT NULL DEFAULT 0,
+      last_login TEXT,
+      deleted_at TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now')),
+      token_version INTEGER DEFAULT 1,
+      permissions_version INTEGER DEFAULT 1,
+      created_by_admin_id INTEGER
+    );
+
+    CREATE TABLE password_reset_tokens (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER UNIQUE NOT NULL,
+      token_hash TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      created_at TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE sessions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      token_hash TEXT NOT NULL,
+      ip_address TEXT,
+      user_agent TEXT,
+      expires_at TEXT NOT NULL,
+      last_activity TEXT,
+      sudo_verified_at TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE admin_permissions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      permission TEXT NOT NULL,
+      granted_by INTEGER,
+      created_at TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE mfa_login_challenges (
+      id TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      token_version INTEGER NOT NULL,
+      expires_at TEXT NOT NULL,
+      consumed INTEGER DEFAULT 0,
+      consumed_at TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE audit_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      event_uuid TEXT UNIQUE NOT NULL,
+      actor_id INTEGER,
+      actor_username TEXT,
+      actor_role TEXT,
+      action TEXT NOT NULL,
+      module TEXT NOT NULL,
+      resource TEXT,
+      correlation_id TEXT,
+      target_user_id INTEGER,
+      before_state TEXT,
+      after_state TEXT,
+      details TEXT,
+      ip_address TEXT,
+      outcome TEXT NOT NULL,
+      dhaka_time TEXT NOT NULL,
+      timestamp TEXT NOT NULL,
+      prev_hash TEXT NOT NULL,
+      signature TEXT NOT NULL
+    );
+  `);
+}
+
 function cleanTestDb(dbPath) {
   assertIsolatedTestDatabase(dbPath);
   for (const ext of ['', '-wal', '-shm']) {
@@ -305,93 +411,22 @@ test.describe('Task 2: Secure Email Utility Hardening & Multi-Flow Template Supp
 
 
 test.describe('Task 3: Access Blocking Interceptors & Distinct Error Responses', () => {
-  const TEST_AUTH_DB_PATH = path.resolve(__dirname, 'test_auth_blocking.db');
-
-  test.beforeEach(() => {
-    cleanTestDb(TEST_AUTH_DB_PATH);
-  });
-
-  test.afterEach(() => {
-    cleanTestDb(TEST_AUTH_DB_PATH);
-  });
-
   test('enforces distinct access blocking across authenticateToken, login, mfa, refresh, and socket', async () => {
-    assertIsolatedTestDatabase(TEST_AUTH_DB_PATH);
-    process.env.DATABASE_PATH = TEST_AUTH_DB_PATH;
-    process.env.NODE_ENV = 'test';
-    process.env.IS_TEST_SERVER = 'true';
+    const { initIsolatedTestDatabase } = await import('./test-db-isolation.js');
+    await initIsolatedTestDatabase(TEST_SHARED_DB_PATH);
 
-    const db = new Database(TEST_AUTH_DB_PATH);
-    db.pragma('journal_mode = WAL');
-    db.pragma('foreign_keys = ON');
-
-    // Run migrations on isolated db
+    const { default: serverDb } = await import('../server/db/database.js');
     const { runAdminArchivingAndResetMigration } = await import('../server/db/migrations/20261028_admin_archiving_and_reset.cjs');
-    db.exec(`
-      CREATE TABLE users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        username TEXT UNIQUE NOT NULL,
-        email TEXT UNIQUE NOT NULL,
-        password_hash TEXT NOT NULL,
-        role TEXT NOT NULL DEFAULT 'student',
-        first_name TEXT NOT NULL,
-        last_name TEXT NOT NULL,
-        profile_picture TEXT,
-        mobile_number TEXT,
-        two_factor_enabled INTEGER DEFAULT 0,
-        two_factor_secret TEXT,
-        public_key TEXT,
-        is_active INTEGER DEFAULT 1,
-        is_super_admin INTEGER NOT NULL DEFAULT 0,
-        last_login TEXT,
-        deleted_at TEXT,
-        created_at TEXT DEFAULT (datetime('now')),
-        updated_at TEXT DEFAULT (datetime('now')),
-        token_version INTEGER DEFAULT 1,
-        permissions_version INTEGER DEFAULT 1,
-        created_by_admin_id INTEGER
-      );
+    runAdminArchivingAndResetMigration(serverDb);
 
-      CREATE TABLE password_reset_tokens (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER UNIQUE NOT NULL,
-        token_hash TEXT NOT NULL,
-        expires_at TEXT NOT NULL,
-        created_at TEXT DEFAULT (datetime('now')),
-        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-      );
-
-      CREATE TABLE sessions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER NOT NULL,
-        token_hash TEXT NOT NULL,
-        ip_address TEXT,
-        user_agent TEXT,
-        expires_at TEXT NOT NULL,
-        last_activity TEXT,
-        sudo_verified_at TEXT,
-        created_at TEXT DEFAULT (datetime('now')),
-        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-      );
-
-      CREATE TABLE admin_permissions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER NOT NULL,
-        permission TEXT NOT NULL,
-        granted_by INTEGER,
-        created_at TEXT DEFAULT (datetime('now')),
-        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-      );
-
-      CREATE TABLE mfa_login_challenges (
-        id TEXT PRIMARY KEY,
-        user_id INTEGER NOT NULL,
-        token_version INTEGER NOT NULL,
-        expires_at TEXT NOT NULL,
-        consumed INTEGER DEFAULT 0,
-        created_at TEXT DEFAULT (datetime('now')),
-        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-      );
+    serverDb.exec(`
+      DELETE FROM admin_audit_logs;
+      DELETE FROM mfa_login_challenges;
+      DELETE FROM admin_permissions;
+      DELETE FROM sessions;
+      DELETE FROM password_reset_tokens;
+      DELETE FROM email_verification_challenges;
+      DELETE FROM users;
 
       -- Seed: User 1 (Active Super Admin), User 2 (Archived Admin), User 3 (Reset-Pending Admin), User 4 (Inactive Admin)
       INSERT INTO users (id, username, email, password_hash, role, first_name, last_name, is_super_admin, is_active, token_version)
@@ -401,19 +436,16 @@ test.describe('Task 3: Access Blocking Interceptors & Distinct Error Responses',
              (4, 'inactive_admin', 'inactive@bfibd.org', '$2a$10$wT1dO/Gf3wK6zN2R6V3j3OGmG9pT3C0s6t4UvMh7N4X2f1m6J5g5i', 'admin', 'Inactive', 'Admin', 0, 0, 1);
     `);
 
-    runAdminArchivingAndResetMigration(db);
-
     // Set archived state on User 2
-    db.prepare("UPDATE users SET archived_at = datetime('now'), archive_reason = 'Former staff' WHERE id = 2").run();
+    serverDb.prepare("UPDATE users SET archived_at = datetime('now'), archive_reason = 'Former staff' WHERE id = 2").run();
     // Set reset-pending on User 3
-    db.prepare("UPDATE users SET password_reset_pending = 1 WHERE id = 3").run();
+    serverDb.prepare("UPDATE users SET password_reset_pending = 1 WHERE id = 3").run();
 
     // Create active sessions for test tokens
-    db.prepare("INSERT INTO sessions (id, user_id, token_hash, expires_at) VALUES (1, 1, 'h1', datetime('now', '+1 hour')), (2, 2, 'h2', datetime('now', '+1 hour')), (3, 3, 'h3', datetime('now', '+1 hour')), (4, 4, 'h4', datetime('now', '+1 hour'))").run();
+    serverDb.prepare("INSERT INTO sessions (id, user_id, token_hash, expires_at) VALUES (1, 1, 'h1', datetime('now', '+1 hour')), (2, 2, 'h2', datetime('now', '+1 hour')), (3, 3, 'h3', datetime('now', '+1 hour')), (4, 4, 'h4', datetime('now', '+1 hour'))").run();
 
     const jwt = (await import('jsonwebtoken')).default;
     const { getJwtSecret, getJwtRefreshSecret } = await import('../server/config/security.js');
-    const { default: serverDb } = await import('../server/db/database.js');
     const { authenticateToken } = await import('../server/middleware/auth.js');
     const authRoutes = (await import('../server/routes/auth.js')).default;
 
@@ -449,27 +481,23 @@ test.describe('Task 3: Access Blocking Interceptors & Distinct Error Responses',
     }
 
     // 1. authenticateToken tests
-    // Active Super Admin -> 200
     const tokenActive = jwt.sign({ id: 1, username: 'superadmin', role: 'admin', type: 'access', sessionId: 1, token_version: 1 }, getJwtSecret());
     const ctxActive = mockReqRes({ headers: { authorization: `Bearer ${tokenActive}` } });
     authenticateToken(ctxActive.req, ctxActive.res, ctxActive.next);
     assert.strictEqual(ctxActive.getResult().nextCalled, true, 'Active admin passes authenticateToken');
 
-    // Inactive Admin -> 401
     const tokenInactive = jwt.sign({ id: 4, username: 'inactive_admin', role: 'admin', type: 'access', sessionId: 4, token_version: 1 }, getJwtSecret());
     const ctxInactive = mockReqRes({ headers: { authorization: `Bearer ${tokenInactive}` } });
     authenticateToken(ctxInactive.req, ctxInactive.res, ctxInactive.next);
     assert.strictEqual(ctxInactive.getResult().statusCode, 401, 'Inactive admin receives 401');
     assert.strictEqual(ctxInactive.getResult().jsonPayload?.error, 'Account inactive or not found');
 
-    // Archived Admin -> 401
     const tokenArchived = jwt.sign({ id: 2, username: 'archived_admin', role: 'admin', type: 'access', sessionId: 2, token_version: 1 }, getJwtSecret());
     const ctxArchived = mockReqRes({ headers: { authorization: `Bearer ${tokenArchived}` } });
     authenticateToken(ctxArchived.req, ctxArchived.res, ctxArchived.next);
     assert.strictEqual(ctxArchived.getResult().statusCode, 401, 'Archived admin receives 401');
     assert.strictEqual(ctxArchived.getResult().jsonPayload?.error, 'Account inactive, archived, or not found');
 
-    // Reset-Pending Admin -> 403
     const tokenReset = jwt.sign({ id: 3, username: 'reset_pending_admin', role: 'admin', type: 'access', sessionId: 3, token_version: 1 }, getJwtSecret());
     const ctxReset = mockReqRes({ headers: { authorization: `Bearer ${tokenReset}` } });
     authenticateToken(ctxReset.req, ctxReset.res, ctxReset.next);
@@ -477,17 +505,14 @@ test.describe('Task 3: Access Blocking Interceptors & Distinct Error Responses',
     assert.strictEqual(ctxReset.getResult().jsonPayload?.code, 'PASSWORD_RESET_PENDING');
 
     // 2. /api/auth/login handler tests
-    // Find login route handler from router stack
     const loginLayer = authRoutes.stack.find(l => l.route?.path === '/login' && l.route?.methods?.post);
     const loginHandler = loginLayer.route.stack[loginLayer.route.stack.length - 1].handle;
 
-    // Archived user login attempt -> 401 Invalid credentials
     const ctxLoginArchived = mockReqRes({ body: { username: 'admin@archived_admin', password: 'Password123!', type: 'admin' } });
     await loginHandler(ctxLoginArchived.req, ctxLoginArchived.res);
     assert.strictEqual(ctxLoginArchived.getResult().statusCode, 401);
     assert.strictEqual(ctxLoginArchived.getResult().jsonPayload?.error, 'Invalid credentials');
 
-    // Reset-pending user login attempt -> 403 PASSWORD_RESET_PENDING
     const ctxLoginReset = mockReqRes({ body: { username: 'admin@reset_pending_admin', password: 'Password123!', type: 'admin' } });
     await loginHandler(ctxLoginReset.req, ctxLoginReset.res);
     assert.strictEqual(ctxLoginReset.getResult().statusCode, 403);
@@ -497,7 +522,6 @@ test.describe('Task 3: Access Blocking Interceptors & Distinct Error Responses',
     const mfaLayer = authRoutes.stack.find(l => l.route?.path === '/mfa-verify' && l.route?.methods?.post);
     const mfaHandler = mfaLayer.route.stack[mfaLayer.route.stack.length - 1].handle;
 
-    // MFA challenge token for archived user 2
     const mfaTokenArchived = jwt.sign(
       { id: 2, username: 'archived_admin', role: 'admin', type: 'mfa_challenge', jti: 'ch2', challengeId: 'ch2', token_version: 1 },
       getJwtSecret()
@@ -507,7 +531,6 @@ test.describe('Task 3: Access Blocking Interceptors & Distinct Error Responses',
     assert.strictEqual(ctxMfaArchived.getResult().statusCode, 401);
     assert.strictEqual(ctxMfaArchived.getResult().jsonPayload?.error, 'MFA challenge expired or invalidated. Account inactive or revoked.');
 
-    // MFA challenge token for reset-pending user 3
     const mfaTokenReset = jwt.sign(
       { id: 3, username: 'reset_pending_admin', role: 'admin', type: 'mfa_challenge', jti: 'ch3', challengeId: 'ch3', token_version: 1 },
       getJwtSecret()
@@ -521,11 +544,10 @@ test.describe('Task 3: Access Blocking Interceptors & Distinct Error Responses',
     const refreshLayer = authRoutes.stack.find(l => l.route?.path === '/refresh' && l.route?.methods?.post);
     const refreshHandler = refreshLayer.route.stack[refreshLayer.route.stack.length - 1].handle;
 
-    // Refresh token for archived user 2
     const cryptoMod = await import('crypto');
     const refreshArchived = jwt.sign({ id: 2, username: 'archived_admin', role: 'admin', token_version: 1 }, getJwtRefreshSecret());
     const hashArchived = cryptoMod.createHash('sha256').update(refreshArchived).digest('hex');
-    db.prepare("INSERT INTO sessions (id, user_id, token_hash, expires_at) VALUES (20, 2, ?, datetime('now', '+1 hour'))").run(hashArchived);
+    serverDb.prepare("INSERT INTO sessions (id, user_id, token_hash, expires_at) VALUES (20, 2, ?, datetime('now', '+1 hour'))").run(hashArchived);
 
     const ctxRefreshArchived = mockReqRes({ cookies: { bfi_refresh_token: refreshArchived } });
     await refreshHandler(ctxRefreshArchived.req, ctxRefreshArchived.res);
@@ -533,10 +555,9 @@ test.describe('Task 3: Access Blocking Interceptors & Distinct Error Responses',
     assert.strictEqual(ctxRefreshArchived.getResult().jsonPayload?.error, 'User not found');
     assert.ok(ctxRefreshArchived.getResult().cookiesCleared.includes('bfi_refresh_token'));
 
-    // Refresh token for reset-pending user 3
     const refreshReset = jwt.sign({ id: 3, username: 'reset_pending_admin', role: 'admin', token_version: 1 }, getJwtRefreshSecret());
     const hashReset = cryptoMod.createHash('sha256').update(refreshReset).digest('hex');
-    db.prepare("INSERT INTO sessions (id, user_id, token_hash, expires_at) VALUES (30, 3, ?, datetime('now', '+1 hour'))").run(hashReset);
+    serverDb.prepare("INSERT INTO sessions (id, user_id, token_hash, expires_at) VALUES (30, 3, ?, datetime('now', '+1 hour'))").run(hashReset);
 
     const ctxRefreshReset = mockReqRes({ cookies: { bfi_refresh_token: refreshReset } });
     await refreshHandler(ctxRefreshReset.req, ctxRefreshReset.res);
@@ -545,10 +566,9 @@ test.describe('Task 3: Access Blocking Interceptors & Distinct Error Responses',
     assert.ok(ctxRefreshReset.getResult().cookiesCleared.includes('bfi_refresh_token'));
 
     // 5. Socket.io handshake middleware tests
-    // Test the logic directly against db query
     function verifySocketConnection(rawToken) {
       const decoded = jwt.verify(rawToken, getJwtSecret());
-      const u = db.prepare('SELECT id, username, role, is_active, deleted_at, archived_at, password_reset_pending, token_version FROM users WHERE id = ?').get(decoded.id);
+      const u = serverDb.prepare('SELECT id, username, role, is_active, deleted_at, archived_at, password_reset_pending, token_version FROM users WHERE id = ?').get(decoded.id);
       if (!u || u.is_active !== 1 || u.deleted_at !== null || u.archived_at !== null) {
         throw new Error('Account inactive or revoked');
       }
@@ -561,8 +581,180 @@ test.describe('Task 3: Access Blocking Interceptors & Distinct Error Responses',
     assert.throws(() => verifySocketConnection(tokenArchived), /Account inactive or revoked/);
     assert.throws(() => verifySocketConnection(tokenReset), /Account password reset pending/);
     assert.strictEqual(verifySocketConnection(tokenActive), true);
+  });
+});
 
-    db.close();
-    try { serverDb.close(); } catch {}
+test.describe('Task 4: Mandatory Concurrency Control & Admin Archiving / Restoration Endpoints', () => {
+  test('enforces archiving, restoration, concurrency protection, and lifecycle state rules', async () => {
+    const { initIsolatedTestDatabase } = await import('./test-db-isolation.js');
+    await initIsolatedTestDatabase(TEST_SHARED_DB_PATH);
+
+    const { default: serverDb } = await import('../server/db/database.js');
+    const { runAdminArchivingAndResetMigration } = await import('../server/db/migrations/20261028_admin_archiving_and_reset.cjs');
+    runAdminArchivingAndResetMigration(serverDb);
+
+    serverDb.exec(`
+      DELETE FROM admin_audit_logs;
+      DELETE FROM mfa_login_challenges;
+      DELETE FROM admin_permissions;
+      DELETE FROM sessions;
+      DELETE FROM password_reset_tokens;
+      DELETE FROM email_verification_challenges;
+      DELETE FROM users;
+
+      -- Seed: User 1 (Super Admin), User 2 (Standard Active Admin)
+      INSERT INTO users (id, username, email, password_hash, role, first_name, last_name, is_super_admin, is_active, token_version)
+      VALUES (1, 'superadmin', 'super@bfibd.org', '$2a$10$wT1dO/Gf3wK6zN2R6V3j3OGmG9pT3C0s6t4UvMh7N4X2f1m6J5g5i', 'admin', 'Super', 'Admin', 1, 1, 1),
+             (2, 'admin_two', 'admin2@bfibd.org', '$2a$10$wT1dO/Gf3wK6zN2R6V3j3OGmG9pT3C0s6t4UvMh7N4X2f1m6J5g5i', 'admin', 'Admin', 'Two', 0, 1, 1);
+    `);
+
+    // Active session for Super Admin with recent sudo verification
+    serverDb.prepare("INSERT INTO sessions (id, user_id, token_hash, expires_at, sudo_verified_at) VALUES (1, 1, 'h1', datetime('now', '+1 hour'), datetime('now'))").run();
+    // Active session for User 2
+    serverDb.prepare("INSERT INTO sessions (id, user_id, token_hash, expires_at) VALUES (2, 2, 'h2', datetime('now', '+1 hour'))").run();
+
+    const { default: adminMgmtRoutes } = await import('../server/routes/admin-management.js');
+
+    function mockReqRes(options = {}) {
+      let statusCode = 200;
+      let jsonPayload = null;
+      let nextCalled = false;
+      const req = {
+        params: options.params || {},
+        query: options.query || {},
+        body: options.body || {},
+        headers: options.headers || {},
+        ip: '127.0.0.1',
+        user: options.user || {
+          id: 1,
+          username: 'superadmin',
+          role: 'admin',
+          is_super_admin: 1,
+          isSuperAdmin: true,
+          sessionId: 1,
+          permissions: ['*']
+        }
+      };
+      const res = {
+        status(code) {
+          statusCode = code;
+          return this;
+        },
+        json(payload) {
+          jsonPayload = payload;
+          return this;
+        }
+      };
+      const next = () => { nextCalled = true; };
+      return { req, res, next, getResult: () => ({ statusCode, jsonPayload, nextCalled }) };
+    }
+
+    function getHandler(method, pathStr) {
+      const layer = adminMgmtRoutes.stack.find(l => l.route?.path === pathStr && l.route?.methods?.[method.toLowerCase()]);
+      if (!layer) throw new Error(`Route not found: ${method} ${pathStr}`);
+      return layer.route.stack[layer.route.stack.length - 1].handle;
+    }
+
+    const archiveHandler = getHandler('POST', '/administrators/:id/archive');
+    const restoreHandler = getHandler('POST', '/administrators/:id/restore');
+    const statusHandler = getHandler('PATCH', '/administrators/:id/status');
+    const listHandler = getHandler('GET', '/administrators');
+    const summaryHandler = getHandler('GET', '/administrators/accountability/summary');
+
+    // 1. Super Admin cannot be archived
+    const ctxArchSuper = mockReqRes({ params: { id: '1' }, body: { expected_account_version: 1, reason: 'Valid reason to test' } });
+    await archiveHandler(ctxArchSuper.req, ctxArchSuper.res);
+    assert.strictEqual(ctxArchSuper.getResult().statusCode, 403, 'Super admin cannot be archived');
+
+    // 2. Missing expected_account_version
+    const ctxArchMissingVer = mockReqRes({ params: { id: '2' }, body: { reason: 'Valid reason' } });
+    await archiveHandler(ctxArchMissingVer.req, ctxArchMissingVer.res);
+    assert.strictEqual(ctxArchMissingVer.getResult().statusCode, 400, 'Missing version returns 400');
+    assert.strictEqual(ctxArchMissingVer.getResult().jsonPayload?.code, 'MISSING_ACCOUNT_VERSION');
+
+    // 3. Stale expected_account_version
+    const ctxArchStale = mockReqRes({ params: { id: '2' }, body: { expected_account_version: 999, reason: 'Valid reason to test' } });
+    await archiveHandler(ctxArchStale.req, ctxArchStale.res);
+    assert.strictEqual(ctxArchStale.getResult().statusCode, 409, 'Stale version returns 409');
+    assert.strictEqual(ctxArchStale.getResult().jsonPayload?.code, 'CONCURRENCY_CONFLICT');
+
+    // 4. Successful archive
+    const ctxArchSuccess = mockReqRes({ params: { id: '2' }, body: { expected_account_version: 1, reason: 'Offboarding staff member' } });
+    await archiveHandler(ctxArchSuccess.req, ctxArchSuccess.res);
+    assert.strictEqual(ctxArchSuccess.getResult().statusCode, 200, 'Archive succeeds');
+
+    const u2Archived = serverDb.prepare('SELECT is_active, archived_at, account_version, token_version, password_reset_pending FROM users WHERE id = 2').get();
+    assert.strictEqual(u2Archived.is_active, 0, 'Archived admin has is_active = 0');
+    assert.ok(u2Archived.archived_at !== null, 'archived_at is set');
+    assert.strictEqual(u2Archived.account_version, 2, 'account_version bumped to 2');
+    assert.strictEqual(u2Archived.token_version, 2, 'token_version bumped to 2');
+    assert.strictEqual(u2Archived.password_reset_pending, 0, 'password_reset_pending cleared');
+
+    const sessionsU2 = serverDb.prepare('SELECT COUNT(*) as count FROM sessions WHERE user_id = 2').get();
+    assert.strictEqual(sessionsU2.count, 0, 'Sessions revoked on archive');
+
+    const archiveAudit = serverDb.prepare("SELECT action, outcome FROM admin_audit_logs WHERE target_user_id = 2 AND action = 'archive_administrator'").get();
+    assert.ok(archiveAudit, 'Archive audit log was recorded');
+    assert.strictEqual(archiveAudit.outcome, 'success');
+
+    // Verify GET /administrators filters archived admins out of default list
+    const ctxListCurrent = mockReqRes({ query: {} });
+    await listHandler(ctxListCurrent.req, ctxListCurrent.res);
+    const currentAdmins = ctxListCurrent.getResult().jsonPayload?.administrators || [];
+    assert.strictEqual(currentAdmins.length, 1, 'Only 1 current admin (Super Admin)');
+    assert.strictEqual(currentAdmins[0].id, 1);
+
+    // Verify GET /administrators?status=archived returns archived admins
+    const ctxListArchived = mockReqRes({ query: { status: 'archived' } });
+    await listHandler(ctxListArchived.req, ctxListArchived.res);
+    const archivedAdmins = ctxListArchived.getResult().jsonPayload?.administrators || [];
+    assert.strictEqual(archivedAdmins.length, 1, '1 archived admin found');
+    assert.strictEqual(archivedAdmins[0].id, 2);
+
+    // Verify KPI summary counts
+    const ctxSummary = mockReqRes({});
+    await summaryHandler(ctxSummary.req, ctxSummary.res);
+    const summary = ctxSummary.getResult().jsonPayload;
+    assert.strictEqual(summary.total, 1, 'Total current admins = 1');
+    assert.strictEqual(summary.active, 1, 'Active admins = 1');
+    assert.strictEqual(summary.inactive, 0, 'Inactive current admins = 0');
+    assert.strictEqual(summary.archived, 1, 'Archived admins = 1');
+
+    // 5. Already archived admin -> 409 ALREADY_ARCHIVED
+    const ctxArchAlready = mockReqRes({ params: { id: '2' }, body: { expected_account_version: 2, reason: 'Repeat archive attempt' } });
+    await archiveHandler(ctxArchAlready.req, ctxArchAlready.res);
+    assert.strictEqual(ctxArchAlready.getResult().statusCode, 409);
+    assert.strictEqual(ctxArchAlready.getResult().jsonPayload?.code, 'ALREADY_ARCHIVED');
+
+    // 6. Status activation blocked for archived admin -> 400 ACCOUNT_ARCHIVED
+    const ctxStatusBlocked = mockReqRes({ params: { id: '2' }, body: { is_active: 1, expected_account_version: 2 } });
+    await statusHandler(ctxStatusBlocked.req, ctxStatusBlocked.res);
+    assert.strictEqual(ctxStatusBlocked.getResult().statusCode, 400);
+    assert.strictEqual(ctxStatusBlocked.getResult().jsonPayload?.code, 'ACCOUNT_ARCHIVED');
+
+    // 7. Successful restore -> Must restore as INACTIVE
+    const ctxRestoreSuccess = mockReqRes({ params: { id: '2' }, body: { expected_account_version: 2, reason: 'Rehiring staff member' } });
+    await restoreHandler(ctxRestoreSuccess.req, ctxRestoreSuccess.res);
+    assert.strictEqual(ctxRestoreSuccess.getResult().statusCode, 200);
+
+    const u2Restored = serverDb.prepare('SELECT is_active, archived_at, account_version FROM users WHERE id = 2').get();
+    assert.strictEqual(u2Restored.archived_at, null, 'archived_at cleared to NULL');
+    assert.strictEqual(u2Restored.is_active, 0, 'Restored admin is strictly INACTIVE');
+    assert.strictEqual(u2Restored.account_version, 3, 'account_version bumped to 3');
+
+    // 8. Stale request rejected after cycle
+    const ctxStalePostCycle = mockReqRes({ params: { id: '2' }, body: { expected_account_version: 1, reason: 'Stale attempt' } });
+    await archiveHandler(ctxStalePostCycle.req, ctxStalePostCycle.res);
+    assert.strictEqual(ctxStalePostCycle.getResult().statusCode, 409);
+    assert.strictEqual(ctxStalePostCycle.getResult().jsonPayload?.code, 'CONCURRENCY_CONFLICT');
+
+    // 9. Activating restored admin via /status with correct account_version
+    const ctxStatusActivate = mockReqRes({ params: { id: '2' }, body: { is_active: 1, expected_account_version: 3 } });
+    await statusHandler(ctxStatusActivate.req, ctxStatusActivate.res);
+    assert.strictEqual(ctxStatusActivate.getResult().statusCode, 200);
+
+    const u2Activated = serverDb.prepare('SELECT is_active, account_version FROM users WHERE id = 2').get();
+    assert.strictEqual(u2Activated.is_active, 1, 'Admin successfully activated');
+    assert.strictEqual(u2Activated.account_version, 4, 'account_version bumped to 4');
   });
 });
