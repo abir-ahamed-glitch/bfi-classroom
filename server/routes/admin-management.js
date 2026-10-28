@@ -671,7 +671,7 @@ router.get('/administrators', authenticateToken, requireSuperAdmin, (req, res) =
     }
 
     const admins = db.prepare(`
-      SELECT u.id, u.username, u.email, u.first_name, u.last_name, u.profile_picture, u.is_active,
+      SELECT u.id, u.username, u.email, u.role, u.first_name, u.last_name, u.profile_picture, u.is_active,
              u.is_super_admin, u.permissions_version, u.account_version, u.token_version, u.last_login, u.created_at, u.created_by_admin_id,
              u.archived_at, u.archived_by_admin_id, u.archive_reason,
              u.restored_at, u.restored_by_admin_id, u.restore_reason,
