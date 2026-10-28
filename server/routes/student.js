@@ -489,6 +489,7 @@ router.post('/change-password', authenticateToken, async (req, res) => {
     const newHash = bcrypt.hashSync(newPass, 12);
     db.prepare("UPDATE users SET password_hash = ?, token_version = token_version + 1, updated_at = datetime('now') WHERE id = ?").run(newHash, userId);
     db.prepare('DELETE FROM sessions WHERE user_id = ?').run(userId);
+    db.prepare('DELETE FROM password_reset_tokens WHERE user_id = ?').run(userId);
     
     res.json({ message: 'Password updated successfully' });
   } catch (error) {

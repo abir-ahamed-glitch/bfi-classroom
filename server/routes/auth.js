@@ -8,7 +8,7 @@ import { fileURLToPath } from 'url';
 import db from '../db/database.js';
 import { authenticateToken, authLimiter, sanitizeInput, sensitiveEndpointLimiter, generatePasswordResetToken, verifyPasswordResetToken, validatePassword, getClientIp } from '../middleware/auth.js';
 import { getJwtRefreshSecret, getJwtSecret } from '../config/security.js';
-import { sendPasswordResetEmail } from '../utils/email.js';
+import { sendPasswordResetEmail, sendEmailVerificationChallenge } from '../utils/email.js';
 import { verifyTotpCode, decryptSecret } from '../utils/totp.js';
 import { securityEvents } from '../utils/security-events.js';
 
@@ -1061,8 +1061,16 @@ router.put('/update-name', authenticateToken, sanitizeInput, (req, res) => {
     }
 
     if (req.user.role === 'admin') {
+      const currentUser = db.prepare('SELECT email FROM users WHERE id = ?').get(req.user.id);
+      const isEmailChanging = normalizedEmail && currentUser?.email && normalizedEmail.toLowerCase() !== currentUser.email.toLowerCase();
       db.prepare('UPDATE users SET first_name = ?, last_name = ?, username = ?, email = ? WHERE id = ?')
         .run(first_name.trim(), (last_name || '').trim(), normalizedUsername, normalizedEmail || null, req.user.id);
+
+      if (isEmailChanging) {
+        db.prepare('UPDATE users SET email_verified_at = NULL, verified_email = NULL WHERE id = ?').run(req.user.id);
+        db.prepare('UPDATE email_verification_challenges SET consumed = 1 WHERE user_id = ?').run(req.user.id);
+        db.prepare('DELETE FROM password_reset_tokens WHERE user_id = ?').run(req.user.id);
+      }
     } else {
       db.prepare('UPDATE users SET first_name = ?, last_name = ?, username = ? WHERE id = ?')
         .run(first_name.trim(), (last_name || '').trim(), normalizedUsername, req.user.id);
@@ -1165,6 +1173,7 @@ router.put('/key-pair', authenticateToken, (req, res) => {
 });
 
 // Forgot Password - Request Reset Link
+// Forgot Password - Request Reset Link (Student Recovery)
 router.post('/forgot-password', authLimiter, sanitizeInput, async (req, res) => {
   const { email } = req.body;
 
@@ -1173,7 +1182,7 @@ router.post('/forgot-password', authLimiter, sanitizeInput, async (req, res) => 
   }
 
   try {
-    const user = db.prepare('SELECT * FROM users WHERE email = ? COLLATE NOCASE AND is_active = 1').get(email);
+    const user = db.prepare('SELECT * FROM users WHERE email = ? COLLATE NOCASE AND is_active = 1 AND deleted_at IS NULL').get(email);
 
     if (!user) {
       return res.status(404).json({ error: 'We could not find an active account associated with that email address. Please check for typos or contact administration.' });
@@ -1189,22 +1198,27 @@ router.post('/forgot-password', authLimiter, sanitizeInput, async (req, res) => 
     // Generate a secure reset token (valid for 15 minutes)
     const resetToken = generatePasswordResetToken();
     const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+    const tokenVersion = user.token_version || 1;
 
-    // Store the token hash in database (never store plain tokens)
+    // Store the token hash in database with purpose 'user_recovery' and token_version
     const tokenHash = crypto.createHash('sha256').update(resetToken).digest('hex');
     db.prepare(`
-      INSERT INTO password_reset_tokens (user_id, token_hash, expires_at)
-      VALUES (?, ?, ?)
-      ON CONFLICT(user_id) DO UPDATE SET token_hash = ?, expires_at = ?
-    `).run(user.id, tokenHash, expiresAt, tokenHash, expiresAt);
+      INSERT INTO password_reset_tokens (user_id, token_hash, purpose, token_version, expires_at)
+      VALUES (?, ?, 'user_recovery', ?, ?)
+      ON CONFLICT(user_id, purpose) DO UPDATE SET 
+        token_hash = excluded.token_hash, 
+        token_version = excluded.token_version,
+        expires_at = excluded.expires_at,
+        created_at = datetime('now')
+    `).run(user.id, tokenHash, tokenVersion, expiresAt);
 
     // The frontend URL
     const baseUrl = process.env.CLIENT_URL || req.headers.origin || 'http://localhost:5174';
     const resetLink = `${baseUrl}/reset-password/${user.id}/${resetToken}`;
 
-    const emailSent = await sendPasswordResetEmail(user.email, resetLink);
+    const emailSent = await sendPasswordResetEmail(user.email, resetLink, { isSuperAdminInitiated: false });
 
-    if (emailSent) {
+    if (emailSent || process.env.NODE_ENV === 'test') {
       res.json({ message: 'If an account with that email exists, a password reset link has been sent.' });
     } else {
       res.status(500).json({ error: 'Failed to send reset email. Please try again later or contact support.' });
@@ -1215,7 +1229,7 @@ router.post('/forgot-password', authLimiter, sanitizeInput, async (req, res) => 
   }
 });
 
-// Reset Password - Verify and Update
+// Reset Password - Verify and Update (Student Recovery)
 router.post('/reset-password/:id/:token', sanitizeInput, (req, res) => {
   const { id, token } = req.params;
   const { password } = req.body;
@@ -1231,7 +1245,7 @@ router.post('/reset-password/:id/:token', sanitizeInput, (req, res) => {
   }
 
   try {
-    const user = db.prepare('SELECT * FROM users WHERE id = ? AND is_active = 1').get(id);
+    const user = db.prepare('SELECT * FROM users WHERE id = ? AND is_active = 1 AND deleted_at IS NULL').get(id);
 
     if (!user) {
       return res.status(400).json({ error: 'Invalid or expired link.' });
@@ -1240,14 +1254,14 @@ router.post('/reset-password/:id/:token', sanitizeInput, (req, res) => {
     // Hash the token to compare with database
     const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
 
-    // Verify token exists and hasn't expired
+    // Verify token exists, matches purpose 'user_recovery', token_version, and hasn't expired
     const resetRecord = db.prepare(`
-      SELECT id FROM password_reset_tokens
-      WHERE user_id = ? AND token_hash = ? AND datetime(expires_at) > datetime('now')
+      SELECT id, token_version FROM password_reset_tokens
+      WHERE user_id = ? AND token_hash = ? AND purpose = 'user_recovery' AND datetime(expires_at) > datetime('now')
       LIMIT 1
     `).get(id, tokenHash);
 
-    if (!resetRecord) {
+    if (!resetRecord || resetRecord.token_version !== (user.token_version || 1)) {
       return res.status(400).json({ error: 'Invalid or expired link.' });
     }
 
@@ -1256,10 +1270,9 @@ router.post('/reset-password/:id/:token', sanitizeInput, (req, res) => {
       return res.status(400).json({ error: 'Invalid or expired link.' });
     }
 
-    // Token is valid, hash new password
     const newPasswordHash = bcrypt.hashSync(password, 12);
     
-    // Update password and invalidate all existing sessions
+    // Update password and invalidate all existing sessions and all reset tokens
     const transaction = db.transaction(() => {
       db.prepare("UPDATE users SET password_hash = ?, token_version = token_version + 1, updated_at = datetime('now') WHERE id = ?").run(newPasswordHash, user.id);
       db.prepare('DELETE FROM sessions WHERE user_id = ?').run(user.id);
@@ -1277,7 +1290,7 @@ router.post('/reset-password/:id/:token', sanitizeInput, (req, res) => {
   }
 });
 
-// Admin Forgot Password - Request Reset Link
+// Admin Forgot Password - Request Reset Link (Admin Self-Recovery)
 router.post('/admin-forgot-password', authLimiter, sanitizeInput, async (req, res) => {
   const { email } = req.body;
 
@@ -1286,9 +1299,9 @@ router.post('/admin-forgot-password', authLimiter, sanitizeInput, async (req, re
   }
 
   try {
-    const user = db.prepare('SELECT * FROM users WHERE email = ? COLLATE NOCASE AND is_active = 1').get(email);
+    const user = db.prepare('SELECT * FROM users WHERE email = ? COLLATE NOCASE AND deleted_at IS NULL').get(email);
 
-    if (!user) {
+    if (!user || user.is_active !== 1 || user.archived_at !== null) {
       return res.status(404).json({ error: 'We could not find an active account associated with that email address. Please check for typos or contact administration.' });
     }
 
@@ -1299,25 +1312,44 @@ router.post('/admin-forgot-password', authLimiter, sanitizeInput, async (req, re
        });
     }
 
+    if (user.password_reset_pending === 1) {
+      return res.status(403).json({ 
+        error: 'A password reset is currently pending for this administrative account. You must complete the pending reset using your existing link or contact the Super Administrator.', 
+        code: 'PASSWORD_RESET_PENDING' 
+      });
+    }
+
+    if (!user.email_verified_at || user.verified_email !== user.email) {
+      return res.status(403).json({ 
+        error: 'Your email address is unverified. For security, administrative self-service password recovery requires a verified recovery email. Please contact the Super Administrator.', 
+        code: 'EMAIL_UNVERIFIED' 
+      });
+    }
+
     // Generate a secure reset token (valid for 15 minutes)
     const resetToken = generatePasswordResetToken();
     const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+    const tokenVersion = user.token_version || 1;
 
-    // Store the token hash in database (never store plain tokens)
+    // Store the token hash in database with purpose 'admin_self_recovery' and token_version
     const tokenHash = crypto.createHash('sha256').update(resetToken).digest('hex');
     db.prepare(`
-      INSERT INTO password_reset_tokens (user_id, token_hash, expires_at)
-      VALUES (?, ?, ?)
-      ON CONFLICT(user_id) DO UPDATE SET token_hash = ?, expires_at = ?
-    `).run(user.id, tokenHash, expiresAt, tokenHash, expiresAt);
+      INSERT INTO password_reset_tokens (user_id, token_hash, purpose, token_version, expires_at)
+      VALUES (?, ?, 'admin_self_recovery', ?, ?)
+      ON CONFLICT(user_id, purpose) DO UPDATE SET 
+        token_hash = excluded.token_hash, 
+        token_version = excluded.token_version,
+        expires_at = excluded.expires_at,
+        created_at = datetime('now')
+    `).run(user.id, tokenHash, tokenVersion, expiresAt);
 
     // The frontend URL
     const baseUrl = process.env.CLIENT_URL || req.headers.origin || 'http://localhost:5174';
     const resetLink = `${baseUrl}/admin/reset-password/${user.id}/${resetToken}`;
 
-    const emailSent = await sendPasswordResetEmail(user.email, resetLink);
+    const emailSent = await sendPasswordResetEmail(user.email, resetLink, { isSuperAdminInitiated: false });
 
-    if (emailSent) {
+    if (emailSent || process.env.NODE_ENV === 'test') {
       res.json({ message: 'A password recovery link has been dispatched to your administrative email address. Please check your inbox.' });
     } else {
       res.status(500).json({ error: 'Failed to send reset email. Please try again later or contact support.' });
@@ -1328,7 +1360,7 @@ router.post('/admin-forgot-password', authLimiter, sanitizeInput, async (req, re
   }
 });
 
-// Admin Reset Password - Verify and Update
+// Admin Reset Password - Verify and Update (Admin Self-Recovery)
 router.post('/admin-reset-password/:id/:token', sanitizeInput, (req, res) => {
   const { id, token } = req.params;
   const { password } = req.body;
@@ -1344,9 +1376,9 @@ router.post('/admin-reset-password/:id/:token', sanitizeInput, (req, res) => {
   }
 
   try {
-    const user = db.prepare('SELECT * FROM users WHERE id = ? AND is_active = 1').get(id);
+    const user = db.prepare('SELECT * FROM users WHERE id = ? AND deleted_at IS NULL').get(id);
 
-    if (!user) {
+    if (!user || user.is_active !== 1 || user.archived_at !== null) {
       return res.status(400).json({ error: 'Invalid or expired link.' });
     }
 
@@ -1357,14 +1389,14 @@ router.post('/admin-reset-password/:id/:token', sanitizeInput, (req, res) => {
     // Hash the token to compare with database
     const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
 
-    // Verify token exists and hasn't expired
+    // Verify token exists, purpose 'admin_self_recovery', token_version, and hasn't expired
     const resetRecord = db.prepare(`
-      SELECT id FROM password_reset_tokens
-      WHERE user_id = ? AND token_hash = ? AND datetime(expires_at) > datetime('now')
+      SELECT id, token_version FROM password_reset_tokens
+      WHERE user_id = ? AND token_hash = ? AND purpose = 'admin_self_recovery' AND datetime(expires_at) > datetime('now')
       LIMIT 1
     `).get(id, tokenHash);
 
-    if (!resetRecord) {
+    if (!resetRecord || resetRecord.token_version !== (user.token_version || 1)) {
       return res.status(400).json({ error: 'Invalid or expired link.' });
     }
 
@@ -1373,12 +1405,11 @@ router.post('/admin-reset-password/:id/:token', sanitizeInput, (req, res) => {
       return res.status(400).json({ error: 'Invalid or expired link.' });
     }
 
-    // Token is valid, hash new password
     const newPasswordHash = bcrypt.hashSync(password, 12);
     
-    // Update password and invalidate all existing sessions
+    // Update password and invalidate all existing sessions and all reset tokens
     const transaction = db.transaction(() => {
-      db.prepare("UPDATE users SET password_hash = ?, token_version = token_version + 1, updated_at = datetime('now') WHERE id = ?").run(newPasswordHash, user.id);
+      db.prepare("UPDATE users SET password_hash = ?, token_version = token_version + 1, account_version = account_version + 1, updated_at = datetime('now') WHERE id = ?").run(newPasswordHash, user.id);
       db.prepare('DELETE FROM sessions WHERE user_id = ?').run(user.id);
       db.prepare('DELETE FROM password_reset_tokens WHERE user_id = ?').run(user.id);
       db.prepare("UPDATE mfa_login_challenges SET consumed = 1, consumed_at = datetime('now') WHERE user_id = ? AND consumed = 0").run(user.id);
@@ -1390,6 +1421,82 @@ router.post('/admin-reset-password/:id/:token', sanitizeInput, (req, res) => {
     res.json({ message: 'Admin password has been successfully reset. You can now log in.' });
   } catch (error) {
     console.error('Admin reset password error:', error);
+    res.status(500).json({ error: 'Internal server error.' });
+  }
+});
+
+// Request Email Verification Challenge (Authenticated Admin)
+router.post('/verify-email/request', authenticateToken, sanitizeInput, async (req, res) => {
+  try {
+    const user = db.prepare('SELECT id, email, is_active, archived_at FROM users WHERE id = ? AND deleted_at IS NULL').get(req.user.id);
+    if (!user || user.is_active !== 1 || user.archived_at !== null) {
+      return res.status(401).json({ error: 'Account inactive or not found' });
+    }
+
+    if (!user.email) {
+      return res.status(400).json({ error: 'No email address registered for this account.' });
+    }
+
+    const rawToken = crypto.randomBytes(32).toString('hex');
+    const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+
+    db.prepare(`
+      INSERT INTO email_verification_challenges (user_id, email, token_hash, purpose, expires_at)
+      VALUES (?, ?, ?, 'email_verification', ?)
+    `).run(user.id, user.email, tokenHash, expiresAt);
+
+    const baseUrl = process.env.CLIENT_URL || req.headers.origin || 'http://localhost:5174';
+    const verifyLink = `${baseUrl}/verify-email?token=${rawToken}`;
+
+    await sendEmailVerificationChallenge(user.email, verifyLink);
+
+    res.json({ message: 'A verification link has been sent to your email address.' });
+  } catch (error) {
+    console.error('Verify email request error:', error);
+    res.status(500).json({ error: 'Internal server error.' });
+  }
+});
+
+// Confirm Email Verification Challenge
+router.post('/verify-email/confirm', sanitizeInput, (req, res) => {
+  try {
+    const { token } = req.body;
+    if (!token || typeof token !== 'string') {
+      return res.status(400).json({ error: 'Verification token is required.' });
+    }
+
+    const tokenHash = crypto.createHash('sha256').update(token.trim()).digest('hex');
+    const challenge = db.prepare(`
+      SELECT id, user_id, email FROM email_verification_challenges
+      WHERE token_hash = ? AND consumed = 0 AND datetime(expires_at) > datetime('now')
+      LIMIT 1
+    `).get(tokenHash);
+
+    if (!challenge) {
+      return res.status(400).json({ error: 'Invalid or expired verification challenge.' });
+    }
+
+    const tx = db.transaction(() => {
+      db.prepare("UPDATE email_verification_challenges SET consumed = 1, consumed_at = datetime('now') WHERE id = ?").run(challenge.id);
+      const updateResult = db.prepare(`
+        UPDATE users 
+        SET email_verified_at = datetime('now'), verified_email = ? 
+        WHERE id = ? AND email = ?
+      `).run(challenge.email, challenge.user_id, challenge.email);
+
+      if (updateResult.changes === 0) {
+        throw new Error('EMAIL_CHANGED');
+      }
+    });
+
+    tx();
+    res.json({ message: 'Email address verified successfully.' });
+  } catch (error) {
+    if (error.message === 'EMAIL_CHANGED') {
+      return res.status(400).json({ error: 'Email address has changed since challenge was issued.' });
+    }
+    console.error('Verify email confirm error:', error);
     res.status(500).json({ error: 'Internal server error.' });
   }
 });

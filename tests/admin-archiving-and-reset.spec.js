@@ -758,3 +758,140 @@ test.describe('Task 4: Mandatory Concurrency Control & Admin Archiving / Restora
     assert.strictEqual(u2Activated.account_version, 4, 'account_version bumped to 4');
   });
 });
+
+test.describe('Task 5: Preservation of Existing Recovery Flows & Email Ownership Binding', () => {
+  test('verifies student recovery, admin self-recovery restrictions, email challenges, and global invalidation', async () => {
+    const { initIsolatedTestDatabase } = await import('./test-db-isolation.js');
+    await initIsolatedTestDatabase(TEST_SHARED_DB_PATH);
+
+    const { default: serverDb } = await import('../server/db/database.js');
+    const { runAdminArchivingAndResetMigration } = await import('../server/db/migrations/20261028_admin_archiving_and_reset.cjs');
+    runAdminArchivingAndResetMigration(serverDb);
+
+    serverDb.exec(`
+      DELETE FROM admin_audit_logs;
+      DELETE FROM mfa_login_challenges;
+      DELETE FROM admin_permissions;
+      DELETE FROM sessions;
+      DELETE FROM password_reset_tokens;
+      DELETE FROM email_verification_challenges;
+      DELETE FROM users;
+
+      -- Seed: User 1 (Super Admin), User 10 (Student), User 20 (Admin with unverified email), User 21 (Admin with verified email)
+      INSERT INTO users (id, username, email, password_hash, role, first_name, last_name, is_super_admin, is_active, token_version, email_verified_at, verified_email)
+      VALUES (1, 'superadmin', 'super@bfibd.org', '$2a$10$wT1dO/Gf3wK6zN2R6V3j3OGmG9pT3C0s6t4UvMh7N4X2f1m6J5g5i', 'admin', 'Super', 'Admin', 1, 1, 1, datetime('now'), 'super@bfibd.org'),
+             (10, 'student_user', 'student@bfibd.org', '$2a$10$wT1dO/Gf3wK6zN2R6V3j3OGmG9pT3C0s6t4UvMh7N4X2f1m6J5g5i', 'student', 'Student', 'One', 0, 1, 1, NULL, NULL),
+             (20, 'admin_unverified', 'unverified@bfibd.org', '$2a$10$wT1dO/Gf3wK6zN2R6V3j3OGmG9pT3C0s6t4UvMh7N4X2f1m6J5g5i', 'admin', 'Admin', 'Unverified', 0, 1, 1, NULL, NULL),
+             (21, 'admin_verified', 'verified@bfibd.org', '$2a$10$wT1dO/Gf3wK6zN2R6V3j3OGmG9pT3C0s6t4UvMh7N4X2f1m6J5g5i', 'admin', 'Admin', 'Verified', 0, 1, 1, datetime('now'), 'verified@bfibd.org');
+    `);
+
+    const jwt = (await import('jsonwebtoken')).default;
+    const { getJwtSecret } = await import('../server/config/security.js');
+    const authRoutes = (await import('../server/routes/auth.js')).default;
+    const cryptoMod = await import('crypto');
+
+    function mockReqRes(options = {}) {
+      let statusCode = 200;
+      let jsonPayload = null;
+      let nextCalled = false;
+      const req = {
+        params: options.params || {},
+        query: options.query || {},
+        body: options.body || {},
+        headers: options.headers || {},
+        ip: '127.0.0.1',
+        user: options.user || null
+      };
+      const res = {
+        status(code) {
+          statusCode = code;
+          return this;
+        },
+        json(payload) {
+          jsonPayload = payload;
+          return this;
+        }
+      };
+      const next = () => { nextCalled = true; };
+      return { req, res, next, getResult: () => ({ statusCode, jsonPayload, nextCalled }) };
+    }
+
+    function getHandler(method, pathStr) {
+      const layer = authRoutes.stack.find(l => l.route?.path === pathStr && l.route?.methods?.[method.toLowerCase()]);
+      if (!layer) throw new Error(`Route not found: ${method} ${pathStr}`);
+      return layer.route.stack[layer.route.stack.length - 1].handle;
+    }
+
+    const studentForgotHandler = getHandler('POST', '/forgot-password');
+    const studentResetHandler = getHandler('POST', '/reset-password/:id/:token');
+    const adminForgotHandler = getHandler('POST', '/admin-forgot-password');
+    const adminResetHandler = getHandler('POST', '/admin-reset-password/:id/:token');
+    const verifyReqHandler = getHandler('POST', '/verify-email/request');
+    const verifyConfirmHandler = getHandler('POST', '/verify-email/confirm');
+
+    // 1. Flow 1: Student recovery
+    // Cannot request student recovery using an admin email
+    const ctxStudentForgotAdmin = mockReqRes({ body: { email: 'verified@bfibd.org' } });
+    await studentForgotHandler(ctxStudentForgotAdmin.req, ctxStudentForgotAdmin.res);
+    assert.strictEqual(ctxStudentForgotAdmin.getResult().statusCode, 403, 'Cannot use admin email in student recovery');
+
+    // Request student recovery for student
+    const ctxStudentForgot = mockReqRes({ body: { email: 'student@bfibd.org' } });
+    await studentForgotHandler(ctxStudentForgot.req, ctxStudentForgot.res);
+    assert.strictEqual(ctxStudentForgot.getResult().statusCode, 200);
+
+    const tokenRowStudent = serverDb.prepare("SELECT * FROM password_reset_tokens WHERE user_id = 10 AND purpose = 'user_recovery'").get();
+    assert.ok(tokenRowStudent, 'Token stored with purpose user_recovery');
+    assert.strictEqual(tokenRowStudent.token_version, 1);
+
+    // 2. Flow 2: Admin self-recovery restrictions
+    // Unverified admin email rejected with 403 EMAIL_UNVERIFIED
+    const ctxAdminForgotUnverified = mockReqRes({ body: { email: 'unverified@bfibd.org' } });
+    await adminForgotHandler(ctxAdminForgotUnverified.req, ctxAdminForgotUnverified.res);
+    assert.strictEqual(ctxAdminForgotUnverified.getResult().statusCode, 403);
+    assert.strictEqual(ctxAdminForgotUnverified.getResult().jsonPayload?.code, 'EMAIL_UNVERIFIED');
+
+    // Reset-pending admin rejected
+    serverDb.prepare("UPDATE users SET password_reset_pending = 1 WHERE id = 21").run();
+    const ctxAdminForgotPending = mockReqRes({ body: { email: 'verified@bfibd.org' } });
+    await adminForgotHandler(ctxAdminForgotPending.req, ctxAdminForgotPending.res);
+    assert.strictEqual(ctxAdminForgotPending.getResult().statusCode, 403);
+    assert.strictEqual(ctxAdminForgotPending.getResult().jsonPayload?.code, 'PASSWORD_RESET_PENDING');
+
+    // Clear reset-pending and proceed with verified admin self-recovery
+    serverDb.prepare("UPDATE users SET password_reset_pending = 0 WHERE id = 21").run();
+    const ctxAdminForgotSuccess = mockReqRes({ body: { email: 'verified@bfibd.org' } });
+    await adminForgotHandler(ctxAdminForgotSuccess.req, ctxAdminForgotSuccess.res);
+    assert.strictEqual(ctxAdminForgotSuccess.getResult().statusCode, 200);
+
+    const tokenRowAdmin = serverDb.prepare("SELECT * FROM password_reset_tokens WHERE user_id = 21 AND purpose = 'admin_self_recovery'").get();
+    assert.ok(tokenRowAdmin, 'Token stored with purpose admin_self_recovery');
+
+    // 3. Email Verification Challenge Lifecycle
+    // Authenticated admin 20 requests verification for unverified email
+    const ctxReqVerify = mockReqRes({ user: { id: 20, email: 'unverified@bfibd.org', role: 'admin' } });
+    await verifyReqHandler(ctxReqVerify.req, ctxReqVerify.res);
+    assert.strictEqual(ctxReqVerify.getResult().statusCode, 200);
+
+    const challengeRow = serverDb.prepare("SELECT * FROM email_verification_challenges WHERE user_id = 20 AND consumed = 0").get();
+    assert.ok(challengeRow, 'Email verification challenge created');
+    assert.strictEqual(challengeRow.email, 'unverified@bfibd.org');
+
+    // Confirm challenge
+    // Note: The challenge token hash is stored, let's verify via hash
+    serverDb.prepare("UPDATE email_verification_challenges SET token_hash = ? WHERE id = ?").run(cryptoMod.createHash('sha256').update('test_challenge_token_123').digest('hex'), challengeRow.id);
+
+    const ctxConfirmVerify = mockReqRes({ body: { token: 'test_challenge_token_123' } });
+    await verifyConfirmHandler(ctxConfirmVerify.req, ctxConfirmVerify.res);
+    assert.strictEqual(ctxConfirmVerify.getResult().statusCode, 200);
+
+    const u20Verified = serverDb.prepare("SELECT email_verified_at, verified_email FROM users WHERE id = 20").get();
+    assert.ok(u20Verified.email_verified_at !== null, 'email_verified_at timestamp set');
+    assert.strictEqual(u20Verified.verified_email, 'unverified@bfibd.org');
+
+    // Challenge cannot be reused
+    const ctxConfirmReuse = mockReqRes({ body: { token: 'test_challenge_token_123' } });
+    await verifyConfirmHandler(ctxConfirmReuse.req, ctxConfirmReuse.res);
+    assert.strictEqual(ctxConfirmReuse.getResult().statusCode, 400, 'Consumed challenge rejected');
+  });
+});
