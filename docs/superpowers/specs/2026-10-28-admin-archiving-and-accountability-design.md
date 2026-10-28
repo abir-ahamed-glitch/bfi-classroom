@@ -1,6 +1,6 @@
 # Architectural Design Specification: Admin Archiving, Accountability Ledger & Super Admin-Initiated Password Reset
 
-**Document Status:** Pending User Review & Approval  
+**Document Status:** Revised for User Approval (v2)  
 **Date:** 2026-10-28  
 **Workspace:** `E:\Antigravity\Project 2 - BFI Classroom\.worktrees\super-admin-integration`  
 **Target Branch:** `integration/super-admin-candidate`  
@@ -12,7 +12,7 @@
 
 This specification defines the architectural design, security controls, database schema extensions, and interface contracts for two interrelated subsystems in **BFI Classroom**:
 1. **Admin Archiving & Preserved Accountability History**: Moving former administrators out of active administration without deleting account identities, audit history, creator attribution, or dependent business records (students, batches, courses, payments).
-2. **Super Admin-Initiated Administrator Password Reset**: Enabling the Super Admin to initiate a controlled, single-use, expiring password reset for an administrator, with a persistent reset-pending state that blocks all system access until password replacement is completed.
+2. **Super Admin-Initiated Administrator Password Reset**: Enabling the Super Admin to initiate a controlled, single-use, 30-minute expiring password reset for an administrator, with a persistent reset-pending state that blocks all system access until password replacement is completed.
 
 ### Strict Non-Destructive Principles
 - **Decision Locked:** "Archive Admin instead of permanently deleting the account".
@@ -39,22 +39,48 @@ export function validatePassword(password) {
 
 ### 2.2 Sensitive-Action Verification (Sudo Mode)
 *Source:* `server/middleware/auth.js:417-481`
-- `requireRecentAuth` validates that the administrator has verified their password within the preceding **15 minutes** bound strictly to the active session (`sessions.sudo_verified_at`), or provided an inline `x-sudo-password`/`req.body.sudo_password`, or an `x-sudo-token` JWT.
+- `requireRecentAuth` validates that the administrator has verified their **account password** within the preceding **15 minutes** bound strictly to the active session (`sessions.sudo_verified_at`), or provided an inline `x-sudo-password`/`req.body.sudo_password`, or an `x-sudo-token` JWT.
+- **Explicit Clarification of Capability:** `requireRecentAuth` checks password verification only. **It does NOT challenge for or verify a fresh TOTP/MFA code for individual sensitive actions.** The design makes no claim of MFA-backed sudo verification; sensitive administrative actions require Super Admin password re-verification.
 - If unverified, returns HTTP 428 Precondition Required (`code: 'SUDO_REQUIRED'`, `requireSudo: true`).
 *Design Constraint:* Archiving, Restoring, Password Reset Initiation, and History Export strictly require `requireRecentAuth`.
 
-### 2.3 Recovery Email Mechanism Reality
+### 2.3 Recovery Email Mechanism Reality & Ownership Verification
 *Source:* `server/db/database.js:38-56` (`users` schema) & `server/routes/admin-management.js:1099-1145`
-- The `users` table contains `email TEXT UNIQUE NOT NULL`, but **has no `email_verified`, `is_verified`, or `email_verified_at` column**.
+- The `users` table contains `email TEXT UNIQUE NOT NULL`, but **has no `email_verified` or `email_verified_at` column**.
 - Admin emails are assigned directly by Super Admin upon creation and validated only via regex `validateEmail(email)`. No verification email handshake exists in BFI Classroom.
-- Email dispatch in `server/utils/email.js` uses Gmail SMTP (`EMAIL_USER`, `EMAIL_PASS`). SMTP may fail, be rate-limited, or be unconfigured in certain deployment environments.
-*Design Resolution:*
-1. The UI confirmation dialog explicitly presents the target administrator's username, full name, and stored email address, stating that the email was entered at creation and prompting Super Admin to confirm ownership.
-2. The server attempts delivery via `sendPasswordResetEmail`.
-3. If email delivery succeeds: Returns `{ success: true, delivery: 'email' }`.
-4. If email delivery fails: The failure is recorded in the audit ledger, but a single-use expiring reset link is generated and returned in a secure one-time modal for Super Admin to manually copy and deliver out-of-band.
+- **Zero-Assumption Rule:** Super Admin clicking "confirm" does **not** cryptographically verify mailbox ownership. Sending credentials or reset tokens to an unproven address risks account takeover or credential leakage if a typo was made.
+- **Explicit Email Ownership Verification Flow:**
+  - Introduce `users.email_verified_at TEXT DEFAULT NULL`.
+  - An address is considered verified **only** if `email_verified_at IS NOT NULL`.
+  - An email verification challenge (signed 24-hour verification token) is dispatched to the administrator's email. When the recipient visits the link, `email_verified_at = datetime('now')` is set.
+  - **No Automatic Reset Dispatch to Unverified Addresses:** If `targetUser.email_verified_at IS NULL`, the server rejects email reset dispatch with HTTP 400 `EMAIL_NOT_VERIFIED`.
+- **Manual Delivery as a Separate, Explicit Recovery Mode:**
+  - Manual out-of-band delivery is **NOT** an automatic fallback after SMTP failure.
+  - It is an explicit, separately chosen recovery option ("Generate Out-of-Band Single-Use Link") that Super Admin must intentionally select when:
+    a) The administrator's email is unverified, OR
+    b) Super Admin explicitly opts for physical/in-person or secure out-of-band delivery.
+  - Requires explicit Super Admin justification, password re-verification (`requireRecentAuth`), and is logged in the audit ledger under a dedicated action: `admin.generate_direct_reset_link`.
 
-### 2.4 Token Version, Session Invalidation & Sockets
+### 2.4 Critical Email Credential Security Notice
+*Source:* `server/utils/email.js:6-7`
+- **Security Finding:** `server/utils/email.js` contains a hard-coded fallback SMTP username and application password directly in the source code.
+- **Security Policy:**
+  1. Antigravity will **never** print, copy, or expose this credential in any chat response, plan, or specification.
+  2. The proposed implementation will completely strip the hard-coded fallback from `server/utils/email.js` and mandate protected environment variables:
+     ```javascript
+     const user = process.env.EMAIL_USER?.trim();
+     const pass = process.env.EMAIL_PASS?.replace(/\s+/g, '');
+     if (!user || !pass) {
+       return null; // SMTP unconfigured
+     }
+     ```
+  3. **Operator Action Required:** The authorized operator must immediately rotate this credential in Google Workspace / Gmail and configure it strictly inside the server's protected `.env` file. The agent will not alter production environment variables or credentials.
+- **Email Copy & Accuracy:**
+  - Update email subject: `Administrative Password Reset - BFI Classroom`.
+  - Update body copy: Describe the action clearly as a **Super Admin-initiated administrative reset** (not a user self-service request).
+  - Update expiry: Accurately state that the link is valid for **30 minutes** (correcting the outdated 15-minute text).
+
+### 2.5 Token Version, Session Invalidation & Sockets
 *Source:* `server/middleware/auth.js:84-101`, `server/routes/auth.js:812-815`, `server/server.js:547-582`
 - Privileged administrators are bound to `token_version` on `users` and active `sessions` records.
 - Session revocation requires:
@@ -79,29 +105,39 @@ ALTER TABLE users ADD COLUMN restored_at TEXT DEFAULT NULL;
 ALTER TABLE users ADD COLUMN restored_by_admin_id INTEGER REFERENCES users(id) DEFAULT NULL;
 ALTER TABLE users ADD COLUMN restore_reason TEXT DEFAULT NULL;
 
+-- Email ownership verification
+ALTER TABLE users ADD COLUMN email_verified_at TEXT DEFAULT NULL;
+
 -- Persistent password reset pending state
 ALTER TABLE users ADD COLUMN password_reset_pending INTEGER DEFAULT 0;
 ALTER TABLE users ADD COLUMN password_reset_requested_at TEXT DEFAULT NULL;
 ALTER TABLE users ADD COLUMN password_reset_requested_by INTEGER REFERENCES users(id) DEFAULT NULL;
 
--- Performant index for listing current vs archived admins and checking reset status
+-- Mandatory account versioning for optimistic concurrency protection
+ALTER TABLE users ADD COLUMN account_version INTEGER NOT NULL DEFAULT 1;
+
+-- Performant indexes
 CREATE INDEX IF NOT EXISTS idx_users_admin_archived ON users(role, archived_at);
 CREATE INDEX IF NOT EXISTS idx_users_password_reset_pending ON users(password_reset_pending);
+CREATE INDEX IF NOT EXISTS idx_users_account_version ON users(id, account_version);
 ```
 
-### 3.2 Additions to `password_reset_tokens` Table
-*Existing Schema:* `user_id INTEGER UNIQUE`, `token_hash TEXT`, `expires_at TEXT`.  
-Ensure `password_reset_tokens` supports the 30-minute expiry and single-use consumption.
+### 3.2 Opaque Token Schema: `password_reset_tokens`
+Completely abandon hybrid JWT approaches in favor of **100% opaque, high-entropy tokens**:
 ```sql
 CREATE TABLE IF NOT EXISTS password_reset_tokens (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  user_id INTEGER UNIQUE NOT NULL,
+  user_id INTEGER NOT NULL,
   token_hash TEXT NOT NULL,
+  purpose TEXT NOT NULL DEFAULT 'admin_password_reset' CHECK(purpose IN ('admin_password_reset', 'user_recovery')),
+  token_version INTEGER NOT NULL,
   expires_at TEXT NOT NULL,
   created_at TEXT DEFAULT (datetime('now')),
-  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  created_by_admin_id INTEGER REFERENCES users(id),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  UNIQUE(user_id, purpose)
 );
-CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_lookup ON password_reset_tokens(user_id, token_hash);
+CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_lookup ON password_reset_tokens(user_id, token_hash, purpose);
 ```
 
 ---
@@ -143,7 +179,7 @@ CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_lookup ON password_reset_to
 
 2. **`/api/auth/login` (`server/routes/auth.js`):**
    - Query filters `AND deleted_at IS NULL AND archived_at IS NULL`.
-   - Explicit check: If account is archived, reject.
+   - Explicit check: If account is archived, reject with HTTP 401.
    - If `user.password_reset_pending === 1`, reject with HTTP 403:
      `{ error: 'A password reset has been initiated for this account. You must set a new password using your reset link before logging in.', code: 'PASSWORD_RESET_PENDING' }`.
 
@@ -160,136 +196,190 @@ CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_lookup ON password_reset_to
 
 ---
 
-## 5. Admin Archiving & Restoration Lifecycle
+## 5. Mandatory Concurrency Protection & Account Lifecycle
 
-### 5.1 Safeguards & Invariants
-- **Protected Accounts:** Super Admin (ID 1) cannot be archived, deactivated, or peer-reset. Attempt returns HTTP 403.
-- **Server-Side Authorization:** Strictly `requireSuperAdmin` and `requireRecentAuth`.
-- **Reason & Confirmation:** Mandatory non-empty `reason` (minimum 5 characters, sanitized) on archive and restore.
-- **Atomic Operations:** Account changes and audit ledger writes execute within `db.transaction()`. If the audit write fails, all database modifications rollback.
+### 5.1 Mandatory Account Versioning Pattern
+Every mutation endpoint (`/archive`, `/restore`, `/status`, `/permissions`, `/reset-password`) **MANDATES** `expected_account_version` in the request body. If missing, null, or not an integer, the server immediately returns HTTP 400 Bad Request (`code: 'MISSING_ACCOUNT_VERSION'`).
+
+Inside the database transaction:
+```sql
+UPDATE users 
+SET ..., account_version = account_version + 1 
+WHERE id = ? AND account_version = ? AND <state_prerequisite>
+```
+If `result.changes === 0`, the transaction throws a `CONCURRENCY_CONFLICT` error, rolling back all writes and returning HTTP 409 Conflict:
+`{ error: 'Account state has changed or request is stale. Please reload the administrator details before retrying.', code: 'CONCURRENCY_CONFLICT' }`.
 
 ### 5.2 Archive Flow (`POST /api/admin/administrators/:id/archive`)
 1. **Validation & State Check:**
    - Target cannot be Super Admin ID 1.
-   - Target must exist and have `role = 'admin'`.
-   - **Duplicate/Stale Check:** If `target.archived_at !== null`, return HTTP 409 Conflict (`ALREADY_ARCHIVED`).
-   - If client sends `expected_version` and it mismatches current `permissions_version`, return HTTP 409 (`CONCURRENCY_CONFLICT`).
-2. **Atomic Execution:**
-   - Set `is_active = 0`, `archived_at = datetime('now')`, `archived_by_admin_id = req.user.id`, `archive_reason = reason.trim()`, `token_version = token_version + 1`.
-   - **Invalidate Reset Tokens:** `DELETE FROM password_reset_tokens WHERE user_id = targetId` and `password_reset_pending = 0`. Outstanding reset links become instantly and permanently invalid.
-   - Invalidate sessions: `DELETE FROM sessions WHERE user_id = targetId`.
-   - Invalidate MFA challenges: `UPDATE mfa_login_challenges SET consumed = 1 WHERE user_id = targetId`.
-   - Record audit log:
-     - `module: 'admin_management'`
-     - `action: 'archive_administrator'`
-     - `resource: 'admin:<id>'`
-     - `outcome: 'success'`
-     - `before_state`: `{ is_active: target.is_active, archived_at: null }`
-     - `after_state`: `{ is_active: 0, archived_at: <now>, archived_by: req.user.id }`
-     - `details`: `{ reason: reason.trim(), previous_status: target.is_active }`
+   - Requires mandatory `reason` (minimum 5 characters) and `expected_account_version`.
+   - Requires recent password verification (`requireRecentAuth`).
+2. **Atomic Execution (`db.transaction()`):**
+   - Execute update with concurrency and state guard:
+     ```sql
+     UPDATE users 
+     SET is_active = 0,
+         archived_at = datetime('now'),
+         archived_by_admin_id = ?,
+         archive_reason = ?,
+         token_version = token_version + 1,
+         account_version = account_version + 1,
+         password_reset_pending = 0
+     WHERE id = ? AND account_version = ? AND archived_at IS NULL
+     ```
+     If `changes === 0`:
+     - If `archived_at IS NOT NULL` -> Return HTTP 409 Conflict (`code: 'ALREADY_ARCHIVED'`).
+     - Otherwise -> Return HTTP 409 Conflict (`code: 'CONCURRENCY_CONFLICT'`).
+   - Invalidate all reset tokens: `DELETE FROM password_reset_tokens WHERE user_id = ?`. Outstanding links are permanently dead.
+   - Invalidate sessions: `DELETE FROM sessions WHERE user_id = ?`.
+   - Invalidate MFA challenges: `UPDATE mfa_login_challenges SET consumed = 1 WHERE user_id = ?`.
+   - Record audit log: `module: 'admin_management'`, `action: 'archive_administrator'`, `throwOnError: true`.
 3. **Real-time Disconnection:**
    - `securityEvents.emit('revoke_user', { userId: targetId })` immediately terminates all active WebSocket connections.
 
 ### 5.3 Restore Flow (`POST /api/admin/administrators/:id/restore`)
 1. **Validation & State Check:**
    - Target cannot be Super Admin ID 1.
-   - Target must exist and have `role = 'admin'`.
-   - **Duplicate/Stale Check:** If `target.archived_at === null`, return HTTP 409 Conflict (`NOT_ARCHIVED`).
-2. **Atomic Execution:**
-   - Set `archived_at = NULL`, `restored_at = datetime('now')`, `restored_by_admin_id = req.user.id`, `restore_reason = reason.trim()`.
-   - **Crucial Invariant:** Account is restored as **`is_active = 0` (INACTIVE)**.
-   - Old sessions and tokens remain deleted and revoked. No reset tokens are restored.
-   - Record audit log:
-     - `module: 'admin_management'`
-     - `action: 'restore_administrator'`
-     - `resource: 'admin:<id>'`
-     - `outcome: 'success'`
-     - `details`: `{ reason: reason.trim(), restored_status: 'inactive' }`
+   - Requires mandatory `reason` and `expected_account_version`.
+   - Requires recent password verification (`requireRecentAuth`).
+2. **Atomic Execution (`db.transaction()`):**
+   - Execute update with concurrency and state guard:
+     ```sql
+     UPDATE users 
+     SET archived_at = NULL,
+         restored_at = datetime('now'),
+         restored_by_admin_id = ?,
+         restore_reason = ?,
+         is_active = 0, -- CRITICAL: RESTORED AS INACTIVE
+         account_version = account_version + 1
+     WHERE id = ? AND account_version = ? AND archived_at IS NOT NULL
+     ```
+     If `changes === 0`:
+     - If `archived_at IS NULL` -> Return HTTP 409 Conflict (`code: 'NOT_ARCHIVED'`).
+     - Otherwise -> Return HTTP 409 Conflict (`code: 'CONCURRENCY_CONFLICT'`).
+   - Old sessions and reset tokens remain dead.
+   - Record audit log: `module: 'admin_management'`, `action: 'restore_administrator'`, `details: { restored_status: 'inactive' }`, `throwOnError: true`.
 3. **Explicit Activation Requirement:**
-   - To resume access, Super Admin must review assigned permissions in the UI and separately make an activation request (`PATCH /api/admin/administrators/:id/status`).
+   - Restored account is inactive. Super Admin must separately review permissions and activate via `PATCH /api/admin/administrators/:id/status`.
 
-### 5.4 Guarding Activation Endpoints Against Archived Accounts
-In `PATCH /api/admin/administrators/:id/status` (`server/routes/admin-management.js:1340`):
-```javascript
-if (targetUser.archived_at !== null) {
-  recordFailedAuditLog(req.user.id, targetId, 'update_status', 'Attempted to activate an archived administrator', req.ip);
-  return res.status(400).json({ 
-    error: 'Cannot activate an archived administrator. The account must be restored by Super Admin first.', 
-    code: 'ACCOUNT_ARCHIVED' 
-  });
-}
+### 5.4 Guarding Status Activation Against Archived Accounts
+In `PATCH /api/admin/administrators/:id/status`:
+```sql
+UPDATE users 
+SET is_active = ?,
+    token_version = token_version + 1,
+    account_version = account_version + 1,
+    updated_at = datetime('now')
+WHERE id = ? AND account_version = ? AND archived_at IS NULL
 ```
+If `changes === 0`: Check if user is archived. If `archived_at IS NOT NULL`, return HTTP 400 Bad Request (`code: 'ACCOUNT_ARCHIVED'`, error: `'Cannot activate an archived administrator. The account must be restored by Super Admin first.'`).
 
 ---
 
 ## 6. Super Admin-Initiated Password Reset Subsystem
 
-### 6.1 Requirements & Safeguards
-- **Super Admin Only:** Strictly enforced via `requireSuperAdmin` and `requireRecentAuth`.
-- **Target Restriction:** Target cannot be Super Admin (ID 1). Super Admin manages own credentials through the existing self-service recovery flow.
-- **Target Cannot Be Archived:** If `target.archived_at !== null`, reset initiation is blocked (`ACCOUNT_ARCHIVED`).
-- **No Password Exposure:** No existing password is ever decrypted, viewed, or exposed.
-- **No Side-Effects on Status:** Initiating or completing a reset does not reactivate an inactive account or modify existing permissions.
+### 6.1 Token Generation & Verification Protocol
+- **Cryptographic Randomness:** `const rawToken = crypto.randomBytes(32).toString('hex')` (64 hex characters, 256 bits of entropy).
+- **Storage:** Hash with SHA-256 before database insertion (`const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex')`).
+- **Expiry:** Strict **30 minutes** (`expires_at = new Date(Date.now() + 30 * 60 * 1000).toISOString()`).
+- **Purpose Binding:** `purpose = 'admin_password_reset'`.
+- **Credential Version Pinning:** The record in `password_reset_tokens` stores the target's current `token_version`.
+- **Global Reset Invalidation:** Every password-modifying route in the system (admin reset, self-service change password, profile update) **MUST** execute:
+  ```sql
+  DELETE FROM password_reset_tokens WHERE user_id = ?;
+  UPDATE users SET password_reset_pending = 0, token_version = token_version + 1 WHERE id = ?;
+  ```
+  This guarantees that changing a password through any path immediately kills any outstanding reset link.
 
-### 6.2 Reset Initiation Flow (`POST /api/admin/administrators/:id/reset-password`)
-1. **Pre-flight & Sudo Verification:**
-   - Validates `req.user` is Super Admin and has recent authentication within 15 minutes.
-   - Target must be a non-Super Admin administrator.
-   - Super Admin must submit `reason` and target identity confirmation (`confirm_username` matching target's username).
-2. **Atomic Token Generation & Revocation:**
-   - Generates a cryptographically secure random token (256-bit entropy via `crypto.randomBytes(32).toString('hex')`).
-   - Token payload signed as JWT with `expiresIn: '30m'`, `type: 'admin_password_reset'`, `userId: target.id`, `token_version: target.token_version + 1`.
-   - Token hash: `crypto.createHash('sha256').update(rawToken).digest('hex')`.
-   - Expires at: `Date.now() + 30 * 60 * 1000` (Dhaka-compatible ISO timestamp).
-   - In an atomic transaction:
-     - `DELETE FROM password_reset_tokens WHERE user_id = target.id` (any existing link is immediately invalidated).
-     - `INSERT INTO password_reset_tokens (user_id, token_hash, expires_at) VALUES (?, ?, ?)`
-     - `UPDATE users SET password_reset_pending = 1, password_reset_requested_at = datetime('now'), password_reset_requested_by = ?, token_version = token_version + 1 WHERE id = ?`
-     - `DELETE FROM sessions WHERE user_id = target.id`
-     - `UPDATE mfa_login_challenges SET consumed = 1 WHERE user_id = target.id`
-     - Record audit log: `action: 'admin.reset_password_initiated'`, `target_user_id: target.id`, `details: { reason }`.
-   - `securityEvents.emit('revoke_user', { userId: target.id })` to disconnect sockets.
-3. **Delivery Attempt & Secure Fallback:**
-   - URL generated: `${baseUrl}/admin/reset-password/${target.id}/${rawToken}`.
-   - Attempt `sendPasswordResetEmail(target.email, resetLink)`.
-   - **Case A: Email Delivery Succeeds:**
-     - Return `{ success: true, delivery: 'email', message: `Password reset link successfully sent to ${target.email}.` }`.
-   - **Case B: Email Delivery Fails or SMTP Unconfigured:**
-     - Record failure in audit log (`outcome: 'success'`, `details: { delivery: 'direct_link', email_failure: true }`).
-     - Return `{ success: true, delivery: 'direct_link', resetLink, warning: 'Email delivery failed. Copy this one-time link and deliver it securely to the administrator. It will not be shown again.' }`.
-     - UI presents a single-view modal with a secure copy button.
+### 6.2 Initiation Endpoints & Delivery Modes
+
+Super Admin can choose between two explicit endpoints based on ownership status:
+
+#### Option A: Verified Email Dispatch (`POST /api/admin/administrators/:id/reset-password/email`)
+- **Preconditions:**
+  - Target `email_verified_at IS NOT NULL`. If unverified, returns HTTP 400 (`code: 'EMAIL_NOT_VERIFIED'`).
+  - Target cannot be Super Admin ID 1.
+  - Requires `reason`, `expected_account_version`, and password re-verification (`requireRecentAuth`).
+- **Atomic Setup:**
+  - In `db.transaction()`:
+    - Atomically overwrite `password_reset_tokens` (deletes prior token for this user and purpose).
+    - Insert new token record with hash, 30m expiry, and target's `token_version`.
+    - Update user: `password_reset_pending = 1, password_reset_requested_at = datetime('now'), password_reset_requested_by = req.user.id, token_version = token_version + 1, account_version = account_version + 1`.
+    - Delete target's sessions and revoke MFA challenges.
+    - Record audit log: `action: 'admin.reset_password_initiated'`, `outcome: 'success'`, `throwOnError: true`.
+  - Disconnect sockets via `securityEvents.emit('revoke_user')`.
+- **SMTP Gateway Submission:**
+  - Constructs URL: `${process.env.APP_BASE_URL}/admin/reset-password/${target.id}/${rawToken}`.
+  - Attempts transmission via nodemailer.
+  - **SMTP Success:**
+    - Records audit log: `action: 'admin.mail_submitted'`, `outcome: 'success'`, `details: { recipient: target.email, note: 'Submitted to SMTP gateway; does not confirm mailbox receipt' }`.
+    - Returns HTTP 200: `{ success: true, message: 'Password reset link has been submitted to the administrator\'s verified email address.' }`.
+  - **SMTP Failure:**
+    - Records audit log: `action: 'admin.mail_submission_failed'`, `outcome: 'failed'`, `details: { recipient: target.email, error: redact(err.message) }`.
+    - **Crucial Rule:** Does NOT generate a fallback link or report success!
+    - Returns HTTP 502 Bad Gateway: `{ error: 'Failed to submit email to mail gateway. Reset was initiated but email was not sent. You may retry or use manual direct link generation.', code: 'SMTP_SUBMISSION_FAILED' }`.
+
+#### Option B: Out-of-Band Direct Link Generation (`POST /api/admin/administrators/:id/reset-password/direct-link`)
+- **Preconditions:**
+  - Explicitly selected by Super Admin (e.g. for unverified emails or air-gapped handoff).
+  - Target cannot be Super Admin ID 1.
+  - Requires `reason`, `expected_account_version`, and password re-verification (`requireRecentAuth`).
+- **Atomic Setup:**
+  - Same atomic token generation, session revocation, and `password_reset_pending = 1` as Option A.
+  - Records audit log: `action: 'admin.direct_reset_link_generated'`, `outcome: 'success'`, `details: { reason, delivery_channel: 'out_of_band' }`. (Raw token is **NEVER** stored in audit logs or console).
+- **Response:**
+  - Returns HTTP 200: `{ success: true, resetLink: `${process.env.APP_BASE_URL}/admin/reset-password/${target.id}/${rawToken}`, expires_in_minutes: 30 }`.
+  - Frontend presents a secure, single-view modal with a copy button and a warning that the link will not be displayed again.
 
 ### 6.3 Password Replacement Flow (`POST /api/admin/reset-password/:id/:token`)
-1. **Validation:**
-   - Validates `password` against verified policy regex (`validatePassword`).
-   - Verifies JWT token structure and signature.
-   - Hashes `token` with SHA-256 and queries `password_reset_tokens`:
-     `SELECT id FROM password_reset_tokens WHERE user_id = ? AND token_hash = ? AND datetime(expires_at) > datetime('now')`.
-   - If not found or expired: Return HTTP 400 (`code: 'INVALID_OR_EXPIRED_RESET_LINK'`).
-   - Target user must exist and have `deleted_at IS NULL`.
-   - **Archived Guard:** If `user.archived_at !== null`, return HTTP 400 (`ACCOUNT_ARCHIVED`).
-2. **Atomic Consumption & Password Replacement:**
-   - Runs in `db.transaction()`:
-     - Atomically consume token: `DELETE FROM password_reset_tokens WHERE user_id = ? AND token_hash = ?`. If `changes === 0`, race condition lost -> return HTTP 400 (`TOKEN_ALREADY_USED`).
-     - Hash new password: `bcrypt.hashSync(password, 12)`.
-     - Update account:
-       ```sql
-       UPDATE users 
-       SET password_hash = ?,
-           password_reset_pending = 0,
-           password_reset_requested_at = NULL,
-           password_reset_requested_by = NULL,
-           token_version = token_version + 1,
-           updated_at = datetime('now')
-       WHERE id = ?
-       ```
-       *(Note: `is_active` is NOT altered; if account was inactive, it remains inactive).*
-     - Revoke all remaining sessions and MFA challenges.
-     - Record audit log: `module: 'security'`, `action: 'admin.reset_password_completed'`, `target_user_id: user.id`.
-3. **Post-Reset Access:**
-   - Admin can now log in using the new password.
-   - If the account has 2FA enabled, they are prompted for their TOTP code as usual. MFA is never bypassed.
-   - If the account was inactive, login continues to be rejected until Super Admin activates it.
+1. **Validation & Rate Limiting:**
+   - Dedicated IP rate limit: 5 requests per 15 minutes.
+   - Password validated against [`validatePassword`](file:///E:/Antigravity/Project%202%20-%20BFI%20Classroom/.worktrees/super-admin-integration/server/middleware/auth.js#L382).
+   - Computes SHA-256 of incoming raw token.
+2. **Atomic Consumption & Replacement (`db.transaction()`):**
+   - Query user: Must have `deleted_at IS NULL` and `archived_at IS NULL`. (Archived users receive HTTP 400 `ACCOUNT_ARCHIVED`).
+   - Query token:
+     ```sql
+     SELECT id, token_version FROM password_reset_tokens 
+     WHERE user_id = ? AND token_hash = ? AND purpose = 'admin_password_reset' AND datetime(expires_at) > datetime('now')
+     ```
+     If not found: Return HTTP 400 (`code: 'INVALID_OR_EXPIRED_RESET_LINK'`).
+   - **Credential Version Check:** If `token.token_version !== user.token_version`, reject with HTTP 400 (`code: 'CREDENTIAL_VERSION_MISMATCH'`).
+   - **Atomic Consumption Guard:**
+     ```sql
+     DELETE FROM password_reset_tokens WHERE id = ?
+     ```
+     If `changes === 0`: Race condition lost -> return HTTP 400 `TOKEN_ALREADY_USED`.
+   - Update password hash, increment `account_version` and `token_version`, clear reset pending:
+     ```sql
+     UPDATE users 
+     SET password_hash = ?,
+         password_reset_pending = 0,
+         password_reset_requested_at = NULL,
+         password_reset_requested_by = NULL,
+         token_version = token_version + 1,
+         account_version = account_version + 1,
+         updated_at = datetime('now')
+     WHERE id = ?
+     ```
+     *(Notice: `is_active` is NOT touched. Inactive admins remain inactive).*
+   - Invalidate all sessions: `DELETE FROM sessions WHERE user_id = ?`.
+   - Record audit log: `module: 'security'`, `action: 'admin.reset_password_completed'`, `target_user_id: user.id`, `throwOnError: true`.
+3. **Completion Notification (Without Secrets):**
+   - If the administrator's email is verified (`email_verified_at IS NOT NULL`), dispatch an asynchronous security notice:
+     - Subject: `Security Alert: Your BFI Classroom Administrative Password Has Been Changed`
+     - Body: Informs the administrator that their password was successfully reset on `<date/time>` from IP `<ip>`. Contains **NO secrets, tokens, or credentials**. Advises contacting Super Admin immediately if unrecognized.
+
+### 6.4 Recovery Page Security Hardening
+- **Trusted Base URL:** Reset links strictly use `process.env.APP_BASE_URL` (or verified `process.env.CLIENT_URL`). Never trust unvalidated `req.headers.origin` or `req.headers.host`.
+- **Zero Log Leakage:** Reset tokens must never be written to access logs, application console, or analytics.
+- **Zero Third-Party Assets:** The reset page is completely self-contained. No external CDN scripts, third-party fonts, or tracking scripts that could receive the URL in a `Referer` header.
+- **HTTP Response Headers:**
+  - `Referrer-Policy: no-referrer`
+  - `Cache-Control: no-store, no-cache, must-revalidate, proxy-revalidate`
+  - `Pragma: no-cache`
+  - `X-Content-Type-Options: nosniff`
 
 ---
 
@@ -303,27 +393,15 @@ if (targetUser.archived_at !== null) {
 ### 7.2 Multi-Cycle Archive/Restore Accountability Timeline
 In `GET /api/admin/administrators/:id/accountability-profile`:
 - Queries all audit records where `target_user_id = ?` and `action IN ('archive_administrator', 'restore_administrator')` ordered by `id ASC`.
-- Builds a dedicated **Archive & Restoration Lifecycle Timeline** displaying every past archive/restore cycle with:
-  - Cycle number
-  - Action (`archive` or `restore`)
-  - Timestamp (Dhaka time)
-  - Operator (actor username, email, ID)
-  - Recorded Reason
+- Builds a dedicated **Archive & Restoration Lifecycle Timeline** displaying every past archive/restore cycle with cycle count, action, Dhaka timestamp, operator identity, and reason.
 
 ### 7.3 Audited Export Subsystem (`GET /api/admin/administrators/:id/export-history`)
 - **Server Authorization:** `authenticateToken`, `requireSuperAdmin`, `requireRecentAuth`.
-- **Query Parameters & Filters:**
-  - `module`: Filter by module (`admin_management`, `security`, `students`, `academic`, etc.) or `'all'`.
-  - `outcome`: Filter by `'success'`, `'failed'`, `'denied'`, or `'all'`.
-  - `startDate`, `endDate`: ISO date boundaries.
-  - `direction`: `'performed'` (`actor_id = id`), `'received'` (`target_user_id = id`), or `'all'`.
-  - `format`: `'csv'` or `'json'`.
-- **Hard Limit:** Maximum **5,000 records** per export to protect against memory exhaustion. Truncation is indicated in response headers (`X-Export-Truncated: true`).
-- **Sensitive Data Exclusion:**
-  - Database projection strictly selects non-sensitive columns.
-  - All audit `details`, `before_state`, and `after_state` payloads are scrubbed via `redactSensitiveData()` to remove passwords, tokens, MFA secrets, and recovery codes.
+- **Filters:** `module`, `outcome`, `startDate`, `endDate`, `direction` ('performed', 'received', 'all'), `format` ('csv', 'json').
+- **Hard Limit:** Maximum **5,000 records** per export. Truncation signaled via header `X-Export-Truncated: true`.
+- **Sensitive Data Exclusion:** Scrubbed via `redactSensitiveData()` to remove passwords, tokens, MFA secrets, and recovery codes.
 - **CSV Formula Injection (CSV Injection / DDE) Defense Algorithm:**
-  Spreadsheet applications (Excel, Calc, Sheets) execute formulas if a cell starts with `=`, `+`, `-`, `@`, `\t`, or `\r`. Attackers often evade simple checks by prepending spaces, quotes, or control characters.
+  Spreadsheet applications execute formulas starting with `=`, `+`, `-`, `@`, `\t`, or `\r`.
   *Sanitization Implementation:*
   ```javascript
   export function sanitizeCsvField(val) {
@@ -341,104 +419,78 @@ In `GET /api/admin/administrators/:id/accountability-profile`:
     return `"${str.replace(/"/g, '""')}"`;
   }
   ```
-- **Audit Logging:** Every export request logs an entry in `admin_audit_logs`:
-  `action: 'export_administrator_history'`, `module: 'admin_management'`, `details: { target_admin_id, format, record_count, filters }`.
+- **Audit Logging:** Every export request logs an entry in `admin_audit_logs`.
 
 ---
 
 ## 8. User Interface Architecture (Admin Management)
 
-### 8.1 Views & Navigation
+### 8.1 Dual Tab Layout & Accurately Labeled Counts
 In `src/pages/admin/AdminManagement.jsx`:
-- **Dual Tab Architecture:**
-  - Tab 1: **Current Administrators** (Lists all active and inactive admins; excludes archived admins).
-  - Tab 2: **Archived Administrators** (Lists all archived former admins).
-- **KPI Summary Cards (Mutually Exclusive, Accurately Labeled):**
+- **Tabs:** "Current Administrators" and "Archived Administrators".
+- **KPI Summary Cards (Mutually Exclusive, Explicitly Labeled):**
   - **Total Current Admins:** Counts all admins where `deleted_at IS NULL AND archived_at IS NULL` (includes Super Admin).
-  - **Active Admins:** Counts current admins with `is_active = 1`.
-  - **Inactive Admins:** Counts current admins with `is_active = 0`.
-  - **Archived Admins:** Counts former admins where `deleted_at IS NULL AND archived_at IS NOT NULL`. Clearly labeled: *"Former administrators preserved for accountability; not included in current totals."*
+  - **Active Admins:** Current admins with `is_active = 1`.
+  - **Inactive Admins:** Current admins with `is_active = 0`.
+  - **Archived Admins:** Former admins where `deleted_at IS NULL AND archived_at IS NOT NULL`. Labeled: *"Former administrators preserved for accountability; not included in current totals."*
 
-### 8.2 Archived Admins View
-- Search by username, full name, or email.
-- Filter and pagination.
-- Table columns:
-  1. **Administrator Identity:** Profile picture, Full Name, Username, Email, stable Admin ID badge.
-  2. **Archived Date:** Formatted in Dhaka Time (e.g. `28 Oct 2026, 04:30 PM`).
-  3. **Archived By:** Name and username of the Super Admin who archived the account.
-  4. **Reason:** Stored archive justification.
-  5. **Actions:**
-     - **View Profile:** Opens deep accountability profile with dual timelines, archive lifecycle, and security events.
-     - **Export History:** Opens export filter dialog (CSV/JSON).
-     - **Restore Admin:** Prompts for restore confirmation and reason.
-
-### 8.3 Modals & Interaction Flows
+### 8.2 Modals & Flows
 1. **Archive Admin Modal:**
-   - Displays clear warning: *"Archiving revokes all access, terminates active sessions, and moves the administrator out of the active list while preserving all historical records and accountability logs."*
-   - Requires mandatory Reason (min 5 chars).
-   - Requires Sudo Password verification.
+   - Displays clear warning on access removal and history preservation.
+   - Shows current `account_version` (sent in payload as `expected_account_version`).
+   - Requires mandatory Reason and Sudo Password.
 2. **Restore Admin Modal:**
-   - Displays notice: *"Restoring will return this administrator to the current list as INACTIVE. You must review their permissions and explicitly activate them before their access resumes."*
-   - Requires Reason and Sudo Password verification.
+   - Displays notice that the account will be restored as **INACTIVE**.
+   - Requires mandatory Reason, `expected_account_version`, and Sudo Password.
 3. **Reset Password Modal:**
-   - Displays target administrator details and registered email.
-   - Note on email verification: *"Note: BFI Classroom emails are registered at creation. Please verify this address belongs to the administrator."*
-   - Requires Sudo Password verification.
-   - If email delivery fails, transitions to a **Secure Link Display Modal** with copy button and warning: *"Email could not be delivered. Copy this single-use link and transmit it securely. It expires in 30 minutes and will not be displayed again."*
+   - Displays target administrator details and verified email status.
+   - If verified: Offers "Send to Verified Email" or "Generate Out-of-Band Link".
+   - If unverified: Displays notice that email is unverified; only "Generate Out-of-Band Link" is available.
+   - Requires Reason, `expected_account_version`, and Sudo Password.
+   - Secure Link Display Modal allows one-time copying with an expiry timer.
 
 ---
 
 ## 9. Comprehensive Testing & Verification Plan
 
 ### 9.1 Test Isolation & Safety
-- **Strict Guard:** All tests run exclusively against disposable, isolated SQLite databases using `tests/test-db-isolation.js` or in-memory SQLite fixtures.
-- **No Production Modification:** Production database `server/bfi_classroom.db` is never touched by tests.
+- **Strict Guard:** All tests run exclusively against disposable, isolated SQLite databases (`tests/test-db-isolation.js`).
+- **Zero Production Modification:** `server/bfi_classroom.db` is never touched by tests.
 
 ### 9.2 Automated Test Scenarios (`tests/admin-archiving-and-reset.spec.js`)
 
-1. **Access Blocking During Password Reset:**
-   - Reset initiated -> `password_reset_pending` set to 1.
-   - Verify `authenticateToken` rejects with HTTP 403 (`PASSWORD_RESET_PENDING`).
-   - Verify `/api/auth/login` rejects with HTTP 403.
-   - Verify `/api/auth/mfa-verify` rejects with HTTP 403.
-   - Verify `/api/auth/refresh` rejects with HTTP 403 and clears cookie.
-   - Verify socket handshake fails.
-   - Complete password replacement -> verify `password_reset_pending` cleared to 0.
-   - Verify inactive account remains inactive after password reset.
+1. **Role & Privilege Enforcement:**
+   - Ordinary admins or instructors attempting archive, restore, or reset receive HTTP 403.
+   - Attempting to archive, deactivate, or peer-reset Super Admin ID 1 receives HTTP 403.
 
-2. **Reset Token Lifecycle, Expiry & Superseding:**
+2. **Access Blocking During Password Reset:**
+   - Reset initiated -> `password_reset_pending = 1`.
+   - Verify `authenticateToken`, `/api/auth/login`, `/api/auth/mfa-verify`, `/api/auth/refresh`, and socket connection all reject with HTTP 403.
+   - Successful password replacement clears `password_reset_pending = 0`.
+   - Inactive account remains inactive after password reset.
+
+3. **Mandatory Concurrency Protection (`account_version`):**
+   - Mutation requests missing `expected_account_version` receive HTTP 400.
+   - Stale version submissions receive HTTP 409 `CONCURRENCY_CONFLICT`.
+   - Cycle test: Admin archived -> restored -> stale archive request with old version is rejected.
+
+4. **Token Lifecycle & Expiry:**
    - Verify token expires after 30 minutes; expired token returns HTTP 400.
-   - Initiate reset twice -> verify older token is deleted and cannot be used.
-   - Concurrent token use simulation -> verify atomic consumption ensures only 1 caller succeeds.
-   - Password replacement updates `token_version`, ensuring older tokens and sessions are dead.
+   - Initiate reset twice -> verify older token is destroyed and cannot be used.
+   - Global invalidation: User changes password via profile -> outstanding reset token is deleted.
+   - Race condition test: Concurrent token submissions result in exactly 1 success and 1 HTTP 400 `TOKEN_ALREADY_USED`.
 
-3. **Archiving & Reset Link Invalidation:**
-   - Generate reset link -> Archive admin -> verify reset link is deleted from DB.
-   - Attempt to use reset link after archiving -> returns HTTP 400.
-   - Restore admin -> verify reset link remains dead and cannot be reused.
+5. **Email Ownership & Failure Handling:**
+   - Attempting email reset on unverified address receives HTTP 400 `EMAIL_NOT_VERIFIED`.
+   - Mock SMTP failure -> recorded as `admin.mail_submission_failed` and returns HTTP 502 (never recorded as success).
+   - Direct link generation requires explicit authorization and logs `admin.direct_reset_link_generated`.
 
-4. **Archived Admin Access & Invariant Guards:**
-   - Archive admin -> verify immediate session deletion and token rejection.
-   - Verify archived admin cannot log in or refresh.
-   - Attempt to call `PATCH /api/admin/administrators/:id/status` on archived admin -> verify HTTP 400 rejection (`ACCOUNT_ARCHIVED`).
-   - Attempt to archive Super Admin (ID 1) -> verify HTTP 403 rejection.
+6. **Audit-Write Rollback Across All Operations:**
+   - Mock audit failure during `/archive` -> transaction rolls back; admin remains unarchived.
+   - Mock audit failure during `/restore` -> transaction rolls back; admin remains archived.
+   - Mock audit failure during `/reset-password` -> transaction rolls back; reset pending not set.
+   - Mock audit failure during password replacement -> transaction rolls back; old password remains.
 
-5. **Restoration State & Concurrency:**
-   - Restore archived admin -> verify `is_active === 0`.
-   - Verify restored admin cannot log in until explicitly activated.
-   - Archive already-archived admin -> verify HTTP 409 Conflict.
-   - Restore non-archived admin -> verify HTTP 409 Conflict.
-   - Stale optimistic concurrency conflict test.
-
-6. **Audit Ledger & Rollback Integrity:**
-   - Mock audit ledger failure -> verify archive transaction rolls back and admin remains unarchived.
-   - Multiple archive/restore cycles -> verify audit log contains every event and accountability profile returns full cycle list.
-
-7. **CSV Formula Injection Prevention:**
-   - Export history with payload containing `=cmd|' /C calc'!A0`, `   +SUM(1+1)`, `\t@dangerous`, and `"  -2+3"`.
-   - Verify every formula indicator is neutralized with `'` prefix and RFC-4180 escaped.
-
-8. **KPI Counts & Non-Overlap:**
-   - Create 1 super admin, 2 active admins, 1 inactive admin, 1 archived admin.
-   - Verify counts: current = 4, active = 3, inactive = 1, archived = 1.
-   - Mutually exclusive assertion: `active + inactive === current`.
+7. **CSV Formula Injection:**
+   - Export with values `=cmd|' /C calc'!A0`, `   +SUM(1+1)`, `\t@danger`, `"  -2+3"`.
+   - Verify all formula indicators are neutralized with `'` prefix and RFC 4180 quotes.
