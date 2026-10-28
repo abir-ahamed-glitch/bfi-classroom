@@ -658,6 +658,8 @@ test.describe('Task 3 & 4: Multiple Super Admin Governance, Peer Defenses & Midd
     const ctxPromote = mockReqRes({
       body: {
         target_id: candidateAdminId,
+        confirm_username: 'candidate@bfi',
+        reason: 'Promoting eligible administrator to Super Admin',
         challenge_id: challenge.challengeId,
         challenge_token: challenge.challengeToken,
         code
@@ -701,6 +703,8 @@ test.describe('Task 3 & 4: Multiple Super Admin Governance, Peer Defenses & Midd
     const ctxDemote = mockReqRes({
       body: {
         target_id: secondarySuperId,
+        confirm_username: 'secondary@bfi',
+        reason: 'Demoting secondary Super Admin back to administrator',
         challenge_id: challenge.challengeId,
         challenge_token: challenge.challengeToken,
         code
@@ -746,6 +750,8 @@ test.describe('Task 3 & 4: Multiple Super Admin Governance, Peer Defenses & Midd
       user: { id: 3, role: 'admin', is_super_admin: 1, sessionId: 'sess_3' },
       body: {
         target_id: 3,
+        confirm_username: 'candidate@bfi',
+        reason: 'Attempting to demote last usable super admin in test',
         challenge_id: challengeLast.challengeId,
         challenge_token: challengeLast.challengeToken,
         code: generateTotpCode(rawTotpSecret)
@@ -967,10 +973,10 @@ test.describe('Task 5: Universal 2FA Endpoints for All Users (Students, Instruct
     const remainingRec = db.prepare('SELECT COUNT(*) as c FROM user_mfa_recovery_codes WHERE user_id = ? AND used = 0').get(studentId);
     assert.strictEqual(remainingRec.c, 7, 'Used recovery code is consumed');
 
-    // 8. Disable MFA for student using valid TOTP code (clear last timestamp to simulate subsequent step)
+    // 8. Disable MFA for student using valid TOTP code and password (clear last timestamp to simulate subsequent step)
     db.prepare('UPDATE users SET last_totp_timestamp = 0 WHERE id = ?').run(studentId);
     const disableCode = generateTotpCode(secret);
-    const ctxDisable = mockReqRes({ body: { code: disableCode } });
+    const ctxDisable = mockReqRes({ body: { code: disableCode, password: studentPassword } });
     await disableHandler(ctxDisable.req, ctxDisable.res);
     assert.strictEqual(ctxDisable.getResult().statusCode, 200);
 

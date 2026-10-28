@@ -1134,7 +1134,7 @@ router.get('/administrators/audit-logs', authenticateToken, requireSuperAdmin, (
 
 
 // 3. POST /api/admin/administrators - Create a new ordinary administrator (Atomic & Sudo Protected)
-router.post('/administrators', authenticateToken, requireSuperAdmin, requireRecentAuth, sanitizeInput, (req, res) => {
+router.post('/administrators', authenticateToken, requireSuperAdmin, requireSuperAdminMfaEnrolled, requireRecentAuth, sanitizeInput, (req, res) => {
   try {
     const { username, email, password, firstName, lastName, permissions } = req.body;
 
@@ -1310,7 +1310,7 @@ router.get('/administrators/:id', authenticateToken, requireSuperAdmin, (req, re
 });
 
 // 5. PUT /api/admin/administrators/:id/permissions - Update permissions (Atomic, Sudo Protected, Optimistic Locking)
-router.put('/administrators/:id/permissions', authenticateToken, requireSuperAdmin, requireRecentAuth, sanitizeInput, (req, res) => {
+router.put('/administrators/:id/permissions', authenticateToken, requireSuperAdmin, requireSuperAdminMfaEnrolled, requireRecentAuth, sanitizeInput, (req, res) => {
   try {
     const targetId = Number(req.params.id);
     const { permissions, expected_version } = req.body;
@@ -1394,7 +1394,7 @@ router.put('/administrators/:id/permissions', authenticateToken, requireSuperAdm
 });
 
 // 6. PATCH /api/admin/administrators/:id/status - Activate or deactivate administrator (Atomic, Session Revoking & Sudo Protected)
-router.patch('/administrators/:id/status', authenticateToken, requireSuperAdmin, requireRecentAuth, sanitizeInput, (req, res) => {
+router.patch('/administrators/:id/status', authenticateToken, requireSuperAdmin, requireSuperAdminMfaEnrolled, requireRecentAuth, sanitizeInput, (req, res) => {
   try {
     const targetId = Number(req.params.id);
     const { is_active, expected_account_version } = req.body;
@@ -1514,7 +1514,7 @@ router.patch('/administrators/:id/status', authenticateToken, requireSuperAdmin,
 });
 
 // POST /api/admin/administrators/:id/archive - Archive administrator account (Atomic, Concurrency-Protected, Sudo Protected)
-router.post('/administrators/:id/archive', authenticateToken, requireSuperAdmin, requireRecentAuth, sanitizeInput, (req, res) => {
+router.post('/administrators/:id/archive', authenticateToken, requireSuperAdmin, requireSuperAdminMfaEnrolled, requireRecentAuth, sanitizeInput, (req, res) => {
   try {
     const targetId = Number(req.params.id);
     const { expected_account_version, reason } = req.body;
@@ -1634,7 +1634,7 @@ router.post('/administrators/:id/archive', authenticateToken, requireSuperAdmin,
 });
 
 // POST /api/admin/administrators/:id/restore - Restore an archived administrator account as INACTIVE (Atomic, Concurrency-Protected, Sudo Protected)
-router.post('/administrators/:id/restore', authenticateToken, requireSuperAdmin, requireRecentAuth, sanitizeInput, (req, res) => {
+router.post('/administrators/:id/restore', authenticateToken, requireSuperAdmin, requireSuperAdminMfaEnrolled, requireRecentAuth, sanitizeInput, (req, res) => {
   try {
     const targetId = Number(req.params.id);
     const { expected_account_version, reason } = req.body;
@@ -1751,7 +1751,7 @@ router.get('/permissions/defaults', authenticateToken, requireSuperAdmin, (req, 
 });
 
 // 9. PUT /api/admin/permissions/defaults - Update configured default permissions for future admins (Atomic & Sudo Protected)
-router.put('/permissions/defaults', authenticateToken, requireSuperAdmin, requireRecentAuth, sanitizeInput, (req, res) => {
+router.put('/permissions/defaults', authenticateToken, requireSuperAdmin, requireSuperAdminMfaEnrolled, requireRecentAuth, sanitizeInput, (req, res) => {
   try {
     const { permissions } = req.body;
     const validation = validatePermissionsInput(permissions);
@@ -1851,7 +1851,7 @@ function getValidatedAppUrl() {
 }
 
 // POST /api/admin/administrators/:id/reset-password/email - Super Admin-initiated password reset via verified email
-router.post('/administrators/:id/reset-password/email', authenticateToken, requireSuperAdmin, requireRecentAuth, sanitizeInput, async (req, res) => {
+router.post('/administrators/:id/reset-password/email', authenticateToken, requireSuperAdmin, requireSuperAdminMfaEnrolled, requireRecentAuth, sanitizeInput, async (req, res) => {
   try {
     const targetId = Number(req.params.id);
     const { expected_account_version, reason } = req.body;
@@ -1993,7 +1993,7 @@ router.post('/administrators/:id/reset-password/email', authenticateToken, requi
 });
 
 // POST /api/admin/administrators/:id/reset-password/direct-link - Super Admin direct out-of-band fragment link
-router.post('/administrators/:id/reset-password/direct-link', authenticateToken, requireSuperAdmin, requireRecentAuth, sanitizeInput, (req, res) => {
+router.post('/administrators/:id/reset-password/direct-link', authenticateToken, requireSuperAdmin, requireSuperAdminMfaEnrolled, requireRecentAuth, sanitizeInput, (req, res) => {
   try {
     const targetId = Number(req.params.id);
     const { expected_account_version, reason } = req.body;
@@ -2128,7 +2128,7 @@ router.post('/administrators/:id/reset-password/direct-link', authenticateToken,
 });
 
 // GET /api/admin/administrators/:id/export-history - Audited export of administrator accountability history
-router.get('/administrators/:id/export-history', authenticateToken, requireSuperAdmin, requireRecentAuth, sanitizeInput, (req, res) => {
+router.get('/administrators/:id/export-history', authenticateToken, requireSuperAdmin, requireSuperAdminMfaEnrolled, requireRecentAuth, sanitizeInput, (req, res) => {
   try {
     const adminId = Number(req.params.id);
     if (!Number.isInteger(adminId) || adminId <= 0) {
@@ -2351,11 +2351,27 @@ router.post('/super-admins/challenge', authenticateToken, requireSuperAdmin, req
 // POST /api/admin/super-admins/promote - Promote an admin to Super Administrator
 router.post('/super-admins/promote', authenticateToken, requireSuperAdmin, requireRecentAuth, requireSuperAdminMfaEnrolled, sanitizeInput, (req, res) => {
   try {
-    const { target_id, challenge_id, challenge_token, code, recovery_code } = req.body;
+    const { target_id, challenge_id, challenge_token, confirm_username, reason, code, recovery_code } = req.body;
     const targetId = Number(target_id);
 
     if (!targetId || !challenge_id || !challenge_token) {
       return res.status(400).json({ error: 'target_id, challenge_id, and challenge_token are required.', code: 'INVALID_INPUT' });
+    }
+
+    if (!confirm_username || typeof confirm_username !== 'string' || !confirm_username.trim()) {
+      return res.status(400).json({ error: 'Explicit target username confirmation is required.', code: 'CONFIRMATION_REQUIRED' });
+    }
+
+    if (!reason || typeof reason !== 'string' || reason.trim().length < 5) {
+      return res.status(400).json({ error: 'A valid business reason (minimum 5 characters) is required for Super Admin promotion.', code: 'REASON_REQUIRED' });
+    }
+
+    const targetPrecheck = db.prepare('SELECT id, username FROM users WHERE id = ?').get(targetId);
+    if (!targetPrecheck) {
+      return res.status(404).json({ error: 'Target administrator not found.', code: 'ADMIN_NOT_FOUND' });
+    }
+    if (targetPrecheck.username.trim().toLowerCase() !== confirm_username.trim().toLowerCase()) {
+      return res.status(400).json({ error: 'Confirmation username does not match target administrator username.', code: 'CONFIRMATION_MISMATCH' });
     }
 
     // Step-up verification
@@ -2450,7 +2466,7 @@ router.post('/super-admins/promote', authenticateToken, requireSuperAdmin, requi
         correlationId: req.correlationId,
         beforeState: { is_super_admin: 0, account_version: target.account_version },
         afterState: { is_super_admin: 1, account_version: target.account_version + 1 },
-        details: { username: target.username, email: target.email },
+        details: { username: target.username, email: target.email, reason: reason.trim() },
         ipAddress: req.ip || '',
         throwOnError: true
       });
@@ -2485,7 +2501,7 @@ router.post('/super-admins/promote', authenticateToken, requireSuperAdmin, requi
 // POST /api/admin/super-admins/demote - Demote a Super Administrator to ordinary administrator
 router.post('/super-admins/demote', authenticateToken, requireSuperAdmin, requireRecentAuth, requireSuperAdminMfaEnrolled, sanitizeInput, (req, res) => {
   try {
-    const { target_id, challenge_id, challenge_token, code, recovery_code } = req.body;
+    const { target_id, challenge_id, challenge_token, confirm_username, reason, code, recovery_code } = req.body;
     const targetId = Number(target_id);
 
     if (!targetId || !challenge_id || !challenge_token) {
@@ -2498,6 +2514,22 @@ router.post('/super-admins/demote', authenticateToken, requireSuperAdmin, requir
         error: 'The founding Super Administrator cannot be demoted, deleted, archived, or reset.',
         code: 'FOUNDING_OWNER_PROTECTED'
       });
+    }
+
+    if (!confirm_username || typeof confirm_username !== 'string' || !confirm_username.trim()) {
+      return res.status(400).json({ error: 'Explicit target username confirmation is required.', code: 'CONFIRMATION_REQUIRED' });
+    }
+
+    if (!reason || typeof reason !== 'string' || reason.trim().length < 5) {
+      return res.status(400).json({ error: 'A valid business reason (minimum 5 characters) is required for Super Admin demotion.', code: 'REASON_REQUIRED' });
+    }
+
+    const targetPrecheck = db.prepare('SELECT id, username FROM users WHERE id = ?').get(targetId);
+    if (!targetPrecheck) {
+      return res.status(404).json({ error: 'Target administrator not found.', code: 'ADMIN_NOT_FOUND' });
+    }
+    if (targetPrecheck.username.trim().toLowerCase() !== confirm_username.trim().toLowerCase()) {
+      return res.status(400).json({ error: 'Confirmation username does not match target administrator username.', code: 'CONFIRMATION_MISMATCH' });
     }
 
     // Step-up verification
@@ -2580,7 +2612,7 @@ router.post('/super-admins/demote', authenticateToken, requireSuperAdmin, requir
         correlationId: req.correlationId,
         beforeState: { is_super_admin: 1, account_version: target.account_version },
         afterState: { is_super_admin: 0, account_version: target.account_version + 1, permissions: [] },
-        details: { username: target.username, email: target.email },
+        details: { username: target.username, email: target.email, reason: reason.trim() },
         ipAddress: req.ip || '',
         throwOnError: true
       });

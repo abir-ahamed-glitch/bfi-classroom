@@ -20,14 +20,19 @@ export const ALLOWED_CHALLENGE_ACTIONS = [
  * @param {import('better-sqlite3').Database} db
  * @param {Object} params
  * @param {number} params.actorId
- * @param {string|number|null} [params.sessionId]
+ * @param {string|number} params.sessionId
  * @param {number} params.targetId
  * @param {string} params.action
  * @returns {{ challengeId: string, challengeToken: string, expiresAt: string }}
  */
-export function issueActionBoundChallenge(db, { actorId, sessionId = null, targetId, action }) {
+export function issueActionBoundChallenge(db, { actorId, sessionId, targetId, action }) {
   if (!actorId || !targetId || !action) {
     throw new Error('actorId, targetId, and action are required to issue an action-bound challenge.');
+  }
+
+  // SEC-13 DEFENSE: Strict session binding required
+  if (!sessionId) {
+    throw new Error('sessionId is required to issue an action-bound challenge.');
   }
 
   if (!ALLOWED_CHALLENGE_ACTIONS.includes(action)) {
@@ -47,7 +52,7 @@ export function issueActionBoundChallenge(db, { actorId, sessionId = null, targe
   `).run(
     challengeId,
     Number(actorId),
-    sessionId ? String(sessionId) : 'session_none',
+    String(sessionId),
     Number(targetId),
     String(action),
     challengeTokenHash,
@@ -67,7 +72,7 @@ export function issueActionBoundChallenge(db, { actorId, sessionId = null, targe
  * @param {import('better-sqlite3').Database} db
  * @param {Object} params
  * @param {number} params.actorId
- * @param {string|number|null} [params.sessionId]
+ * @param {string|number} params.sessionId
  * @param {number} params.targetId
  * @param {string} params.action
  * @param {string} params.challengeId
@@ -78,7 +83,7 @@ export function issueActionBoundChallenge(db, { actorId, sessionId = null, targe
  */
 export function verifyAndConsumeActionBoundChallenge(db, {
   actorId,
-  sessionId = null,
+  sessionId,
   targetId,
   action,
   challengeId,
@@ -88,6 +93,11 @@ export function verifyAndConsumeActionBoundChallenge(db, {
 }) {
   if (!challengeId || !challengeToken) {
     return { success: false, code: 'CHALLENGE_TOKEN_REQUIRED', error: 'Challenge ID and challenge token are required.' };
+  }
+
+  // SEC-13 DEFENSE: Strict session binding required for verification
+  if (!sessionId) {
+    return { success: false, code: 'SESSION_REQUIRED', error: 'Active session ID is required for action verification.' };
   }
 
   // 1. Fetch challenge record
@@ -111,11 +121,9 @@ export function verifyAndConsumeActionBoundChallenge(db, {
     return { success: false, code: 'TARGET_MISMATCH', error: 'Action verification challenge target mismatch.' };
   }
 
-  // 5. Validate session binding (if challenge was bound to a specific session)
-  if (challenge.session_id && challenge.session_id !== 'session_none' && sessionId) {
-    if (String(challenge.session_id) !== String(sessionId)) {
-      return { success: false, code: 'SESSION_MISMATCH', error: 'Action verification challenge session mismatch.' };
-    }
+  // 5. Validate session binding
+  if (String(challenge.session_id) !== String(sessionId)) {
+    return { success: false, code: 'SESSION_MISMATCH', error: 'Action verification challenge session mismatch.' };
   }
 
   // 6. Check consumed status
@@ -146,6 +154,7 @@ export function verifyAndConsumeActionBoundChallenge(db, {
 
   let totpStep = null;
   let matchedRecoveryId = null;
+  let matchedCodeHash = null;
   let recoveryTable = 'user_mfa_recovery_codes';
 
   if (code) {
@@ -179,6 +188,7 @@ export function verifyAndConsumeActionBoundChallenge(db, {
     for (const row of rows) {
       if (bcrypt.compareSync(cleanRecovery, row.code_hash)) {
         matchedRecoveryId = row.id;
+        matchedCodeHash = row.code_hash;
         break;
       }
     }
@@ -203,18 +213,26 @@ export function verifyAndConsumeActionBoundChallenge(db, {
       throw new Error('CHALLENGE_ALREADY_USED');
     }
 
-    // Update TOTP timestamp if TOTP was used
+    // Update TOTP timestamp if TOTP was used, enforcing replay/concurrency defense
     if (totpStep) {
-      db.prepare(`UPDATE users SET last_totp_timestamp = ? WHERE id = ?`).run(totpStep, actor.id);
+      const totpRes = db.prepare(`UPDATE users SET last_totp_timestamp = ? WHERE id = ? AND (last_totp_timestamp IS NULL OR last_totp_timestamp < ?)`).run(totpStep, actor.id, totpStep);
+      if (totpRes.changes === 0) {
+        throw new Error('TOTP_REPLAY_DETECTED');
+      }
     }
 
-    // Mark recovery code used if recovery code was used
+    // Mark recovery code used with concurrency check
     if (matchedRecoveryId) {
-      db.prepare(`UPDATE ${recoveryTable} SET used = 1, used_at = datetime('now') WHERE id = ?`).run(matchedRecoveryId);
-      // If table is user_mfa_recovery_codes, also mirror into admin_mfa_recovery_codes if present
+      const recRes = db.prepare(`UPDATE ${recoveryTable} SET used = 1, used_at = datetime('now') WHERE id = ? AND used = 0`).run(matchedRecoveryId);
+      if (recRes.changes === 0) {
+        throw new Error('RECOVERY_CODE_ALREADY_USED');
+      }
+
+      // Safely mirror into other table by code_hash, NOT numeric id!
       const tables = db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table'`).all().map(t => t.name);
-      if (recoveryTable === 'user_mfa_recovery_codes' && tables.includes('admin_mfa_recovery_codes')) {
-        db.prepare(`UPDATE admin_mfa_recovery_codes SET used = 1, used_at = datetime('now') WHERE id = ?`).run(matchedRecoveryId);
+      const otherTable = recoveryTable === 'user_mfa_recovery_codes' ? 'admin_mfa_recovery_codes' : 'user_mfa_recovery_codes';
+      if (tables.includes(otherTable)) {
+        db.prepare(`UPDATE ${otherTable} SET used = 1, used_at = datetime('now') WHERE user_id = ? AND code_hash = ? AND used = 0`).run(actor.id, matchedCodeHash);
       }
     }
   });
@@ -225,6 +243,12 @@ export function verifyAndConsumeActionBoundChallenge(db, {
   } catch (err) {
     if (err.message === 'CHALLENGE_ALREADY_USED') {
       return { success: false, code: 'CHALLENGE_ALREADY_USED', error: 'This action verification challenge has already been consumed.' };
+    }
+    if (err.message === 'TOTP_REPLAY_DETECTED') {
+      return { success: false, code: 'TOTP_REPLAY_DETECTED', error: 'Authenticator code already used. Please wait for the next 30-second token.' };
+    }
+    if (err.message === 'RECOVERY_CODE_ALREADY_USED') {
+      return { success: false, code: 'INVALID_RECOVERY_CODE', error: 'Recovery code already used.' };
     }
     throw err;
   }

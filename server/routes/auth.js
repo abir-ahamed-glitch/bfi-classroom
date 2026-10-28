@@ -1642,9 +1642,17 @@ router.post('/mfa/setup', authenticateToken, sanitizeInput, (req, res) => {
       return res.status(400).json({ error: 'Current password is required to set up two-factor authentication.', code: 'PASSWORD_REQUIRED' });
     }
 
-    const user = db.prepare('SELECT id, username, email, password_hash, two_factor_enabled FROM users WHERE id = ?').get(req.user.id);
+    const user = db.prepare('SELECT id, username, email, password_hash, two_factor_enabled, account_version, token_version FROM users WHERE id = ?').get(req.user.id);
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
+    }
+
+    // SEC-13 DEFENSE: Reject initial enrollment if MFA is already enabled on this account
+    if (user.two_factor_enabled === 1) {
+      return res.status(400).json({
+        error: 'Two-factor authentication is already enabled on this account. Use the replacement flow to update your authenticator.',
+        code: 'MFA_ALREADY_ENABLED'
+      });
     }
 
     if (!bcrypt.compareSync(password, user.password_hash)) {
@@ -1655,8 +1663,19 @@ router.post('/mfa/setup', authenticateToken, sanitizeInput, (req, res) => {
     const encryptedSecret = encryptSecret(secret);
     const otpauthUri = generateTotpUri({ secret, username: user.username || user.email, issuer: 'BFI Classroom' });
 
-    // Store in pending_two_factor_secret
-    db.prepare(`UPDATE users SET pending_two_factor_secret = ? WHERE id = ?`).run(encryptedSecret, user.id);
+    // SEC-13 DEFENSE: Cryptographically and contextually bind pending setup
+    const pendingPayload = JSON.stringify({
+      secret: encryptedSecret,
+      authorizedUserId: user.id,
+      authorizedSessionId: req.user.sessionId || 'session_default',
+      authorizedAccountVersion: user.account_version || 1,
+      purpose: 'enrolment',
+      existingFactorVerified: false,
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString()
+    });
+
+    db.prepare(`UPDATE users SET pending_two_factor_secret = ? WHERE id = ?`).run(pendingPayload, user.id);
 
     res.json({
       secret,
@@ -1676,12 +1695,57 @@ router.post('/mfa/verify-setup', authenticateToken, sanitizeInput, (req, res) =>
       return res.status(400).json({ error: 'Verification code is required.', code: 'CODE_REQUIRED' });
     }
 
-    const user = db.prepare('SELECT id, pending_two_factor_secret, account_version, token_version FROM users WHERE id = ?').get(req.user.id);
+    const user = db.prepare('SELECT id, two_factor_enabled, pending_two_factor_secret, account_version, token_version FROM users WHERE id = ?').get(req.user.id);
     if (!user || !user.pending_two_factor_secret) {
       return res.status(400).json({ error: 'No pending two-factor setup found. Please initiate setup first.', code: 'NO_PENDING_SETUP' });
     }
 
-    const plainSecret = decryptSecret(user.pending_two_factor_secret);
+    let parsed = null;
+    let pendingSecretEncrypted = user.pending_two_factor_secret;
+    try {
+      parsed = JSON.parse(user.pending_two_factor_secret);
+      if (parsed && parsed.secret) {
+        pendingSecretEncrypted = parsed.secret;
+      }
+    } catch {
+      // Legacy unparsed format
+    }
+
+    // SEC-13 DEFENSE: Recheck account state at activation
+    if (user.two_factor_enabled === 1) {
+      if (!parsed || parsed.purpose !== 'replacement' || parsed.existingFactorVerified !== true) {
+        return res.status(403).json({
+          error: 'Existing factor verification required to replace two-factor authentication.',
+          code: 'EXISTING_FACTOR_REQUIRED'
+        });
+      }
+    }
+
+    // SEC-13 DEFENSE: Session binding validation
+    if (parsed && parsed.authorizedSessionId && req.user.sessionId && parsed.authorizedSessionId !== req.user.sessionId) {
+      return res.status(403).json({
+        error: 'MFA activation must be completed from the specific session where setup was authorized.',
+        code: 'SESSION_MISMATCH'
+      });
+    }
+
+    // SEC-13 DEFENSE: Expiry validation (10 minutes)
+    if (parsed && parsed.expiresAt && new Date(parsed.expiresAt).getTime() <= Date.now()) {
+      return res.status(400).json({
+        error: 'MFA setup authorization has expired. Please authorize again.',
+        code: 'REPLACEMENT_EXPIRED'
+      });
+    }
+
+    // SEC-13 DEFENSE: Account version / credential version validation
+    if (parsed && parsed.authorizedAccountVersion && parsed.authorizedAccountVersion !== user.account_version) {
+      return res.status(409).json({
+        error: 'Account credentials or state changed during setup. Please start again.',
+        code: 'STALE_SETUP'
+      });
+    }
+
+    const plainSecret = decryptSecret(pendingSecretEncrypted);
     const verifyResult = verifyTotpCode(plainSecret, code);
     if (!verifyResult.valid) {
       return res.status(400).json({ error: 'Invalid verification code. Please check your authenticator app and try again.', code: 'INVALID_CODE' });
@@ -1694,14 +1758,14 @@ router.post('/mfa/verify-setup', authenticateToken, sanitizeInput, (req, res) =>
       db.prepare(`
         UPDATE users 
         SET two_factor_enabled = 1,
-            two_factor_secret = pending_two_factor_secret,
+            two_factor_secret = ?,
             pending_two_factor_secret = NULL,
             last_totp_timestamp = ?,
             account_version = account_version + 1,
             token_version = token_version + 1,
             updated_at = datetime('now')
         WHERE id = ?
-      `).run(verifyResult.step, user.id);
+      `).run(pendingSecretEncrypted, verifyResult.step, user.id);
 
       // 2. Clear existing recovery codes
       db.prepare('DELETE FROM user_mfa_recovery_codes WHERE user_id = ?').run(user.id);
@@ -1752,25 +1816,36 @@ router.post('/mfa/verify-setup', authenticateToken, sanitizeInput, (req, res) =>
 router.post('/mfa/replace', authenticateToken, sanitizeInput, (req, res) => {
   try {
     const { code, recoveryCode } = req.body;
-    const user = db.prepare('SELECT id, username, email, two_factor_enabled, two_factor_secret, last_totp_timestamp FROM users WHERE id = ?').get(req.user.id);
+    const user = db.prepare('SELECT id, username, email, two_factor_enabled, two_factor_secret, last_totp_timestamp, account_version FROM users WHERE id = ?').get(req.user.id);
     if (!user || user.two_factor_enabled !== 1 || !user.two_factor_secret) {
       return res.status(400).json({ error: 'Two-factor authentication is not currently enabled.', code: 'MFA_NOT_ENABLED' });
     }
 
     // Step-up verification: check TOTP or recovery code
     let verified = false;
+
     if (code) {
       const plainSecret = decryptSecret(user.two_factor_secret);
       const verifyRes = verifyTotpCode(plainSecret, code, { lastTimestamp: user.last_totp_timestamp || 0 });
-      if (verifyRes.valid) verified = true;
+      if (verifyRes.valid) {
+        verified = true;
+        db.prepare('UPDATE users SET last_totp_timestamp = ? WHERE id = ?').run(verifyRes.step, user.id);
+      }
     } else if (recoveryCode) {
       const cleanRec = String(recoveryCode).trim().toUpperCase();
       const rows = db.prepare('SELECT id, code_hash FROM user_mfa_recovery_codes WHERE user_id = ? AND used = 0').all(user.id);
       for (const row of rows) {
         if (bcrypt.compareSync(cleanRec, row.code_hash)) {
-          db.prepare("UPDATE user_mfa_recovery_codes SET used = 1, used_at = datetime('now') WHERE id = ?").run(row.id);
-          db.prepare("UPDATE admin_mfa_recovery_codes SET used = 1, used_at = datetime('now') WHERE id = ?").run(row.id);
-          verified = true;
+          // Atomically mark used
+          const updateRes = db.prepare("UPDATE user_mfa_recovery_codes SET used = 1, used_at = datetime('now') WHERE id = ? AND used = 0").run(row.id);
+          if (updateRes.changes > 0) {
+            // Safely mirror into admin_mfa_recovery_codes BY CODE_HASH and USER_ID, NOT numeric row id!
+            const tables = db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table'`).all().map(t => t.name);
+            if (tables.includes('admin_mfa_recovery_codes')) {
+              db.prepare("UPDATE admin_mfa_recovery_codes SET used = 1, used_at = datetime('now') WHERE user_id = ? AND code_hash = ? AND used = 0").run(user.id, row.code_hash);
+            }
+            verified = true;
+          }
           break;
         }
       }
@@ -1784,7 +1859,19 @@ router.post('/mfa/replace', authenticateToken, sanitizeInput, (req, res) => {
     const encryptedSecret = encryptSecret(secret);
     const otpauthUri = generateTotpUri({ secret, username: user.username || user.email, issuer: 'BFI Classroom' });
 
-    db.prepare(`UPDATE users SET pending_two_factor_secret = ? WHERE id = ?`).run(encryptedSecret, user.id);
+    // SEC-13 DEFENSE: Store authorized replacement metadata
+    const pendingPayload = JSON.stringify({
+      secret: encryptedSecret,
+      authorizedUserId: user.id,
+      authorizedSessionId: req.user.sessionId || 'session_default',
+      authorizedAccountVersion: user.account_version || 1,
+      purpose: 'replacement',
+      existingFactorVerified: true,
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString()
+    });
+
+    db.prepare(`UPDATE users SET pending_two_factor_secret = ? WHERE id = ?`).run(pendingPayload, user.id);
 
     res.json({
       secret,
@@ -1796,11 +1883,10 @@ router.post('/mfa/replace', authenticateToken, sanitizeInput, (req, res) => {
   }
 });
 
-// POST /api/auth/mfa/disable - Disable MFA (Step-up required; Super Admins blocked)
+// POST /api/auth/mfa/disable - Disable MFA (Password + Step-up required; Super Admins blocked)
 router.post('/mfa/disable', authenticateToken, sanitizeInput, (req, res) => {
   try {
-    const { code, recoveryCode } = req.body;
-    const user = db.prepare('SELECT id, username, role, is_super_admin, two_factor_enabled, two_factor_secret, last_totp_timestamp FROM users WHERE id = ?').get(req.user.id);
+    const user = db.prepare('SELECT id, username, email, password_hash, role, is_super_admin, two_factor_enabled, two_factor_secret, last_totp_timestamp FROM users WHERE id = ?').get(req.user.id);
     if (!user || user.two_factor_enabled !== 1) {
       return res.status(400).json({ error: 'Two-factor authentication is not enabled.', code: 'MFA_NOT_ENABLED' });
     }
@@ -1811,6 +1897,17 @@ router.post('/mfa/disable', authenticateToken, sanitizeInput, (req, res) => {
         error: 'Super Administrators cannot disable two-factor authentication. Universal 2FA is mandatory for privileged accounts.',
         code: 'SUPER_ADMIN_MFA_MANDATORY'
       });
+    }
+
+    const { password, code, recoveryCode } = req.body;
+
+    // SEC-13 DEFENSE: Password verification required to disable MFA
+    if (!password) {
+      return res.status(400).json({ error: 'Current password is required to disable two-factor authentication.', code: 'PASSWORD_REQUIRED' });
+    }
+
+    if (!bcrypt.compareSync(password, user.password_hash)) {
+      return res.status(401).json({ error: 'Incorrect password. Verification failed.', code: 'INVALID_PASSWORD' });
     }
 
     // Step-up verification
