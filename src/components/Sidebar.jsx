@@ -333,7 +333,7 @@ export default function Sidebar({ isNotifOpen, setIsNotifOpen }) {
                 color: 'var(--accent-primary)', marginTop: '2px',
                 textTransform: 'uppercase',
               }}>
-                <Shield size={9} /> Admin Panel
+                <Shield size={9} /> {isSuperAdminUser ? 'Super Admin Panel' : 'Admin Panel'}
               </div>
             )}
           </div>
