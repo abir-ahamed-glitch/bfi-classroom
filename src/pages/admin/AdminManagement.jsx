@@ -440,6 +440,33 @@ export default function AdminManagement() {
   };
 
 
+  // Modal Open Handlers
+  const openArchiveModal = (admin) => {
+    setArchiveTarget(admin);
+    setArchiveReason('');
+    setArchiveSudoPassword('');
+    setArchiveError('');
+  };
+
+  const openRestoreModal = (admin) => {
+    setRestoreTarget(admin);
+    setRestoreReason('');
+    setRestoreSudoPassword('');
+    setRestoreError('');
+  };
+
+  const openResetModal = (admin) => {
+    setResetTarget(admin);
+    setResetMethod('email');
+    setResetReason('');
+    setResetSudoPassword('');
+    setResetError('');
+  };
+
+  const triggerExportHistory = (adminId) => {
+    handleExportHistory(adminId, 'csv');
+  };
+
   // Fetch initial data
   const fetchData = async () => {
     setLoading(true);
@@ -448,21 +475,25 @@ export default function AdminManagement() {
       const token = localStorage.getItem('token');
       const headers = { 'Authorization': `Bearer ${token}` };
 
-      const [adminsRes, catalogRes, defaultsRes] = await Promise.all([
+      const [adminsRes, archivedRes, catalogRes, defaultsRes] = await Promise.all([
         fetch('/api/admin/administrators', { headers }),
+        fetch('/api/admin/administrators?status=archived', { headers }),
         fetch('/api/admin/permissions/catalog', { headers }),
         fetch('/api/admin/permissions/defaults', { headers })
       ]);
 
       if (!adminsRes.ok) throw new Error('Failed to load administrators');
+      if (!archivedRes.ok) throw new Error('Failed to load archived administrators');
       if (!catalogRes.ok) throw new Error('Failed to load permissions catalog');
       if (!defaultsRes.ok) throw new Error('Failed to load default permissions');
 
       const adminsData = await adminsRes.json();
+      const archivedData = await archivedRes.json();
       const catalogData = await catalogRes.json();
       const defaultsData = await defaultsRes.json();
 
       setAdministrators(adminsData.administrators || []);
+      setArchivedAdmins(archivedData.administrators || []);
       setCatalog(catalogData);
       const defaultsList = defaultsData.default_permissions || defaultsData.defaultPermissions || [];
       setDefaultPermissions(defaultsList);
@@ -1083,6 +1114,18 @@ export default function AdminManagement() {
     );
   }, [administrators, searchQuery]);
 
+  // Filtered archived administrator list
+  const filteredArchivedAdmins = useMemo(() => {
+    const q = (archivedSearchQuery || '').toLowerCase().trim();
+    if (!q) return archivedAdmins;
+    return archivedAdmins.filter(a => 
+      (a.username && a.username.toLowerCase().includes(q)) ||
+      (a.email && a.email.toLowerCase().includes(q)) ||
+      (a.first_name && a.first_name.toLowerCase().includes(q)) ||
+      (a.last_name && a.last_name.toLowerCase().includes(q))
+    );
+  }, [archivedAdmins, archivedSearchQuery]);
+
   if (!currentUser?.is_super_admin) {
     return (
       <div className="admin-mgmt-container page-container" style={{ textAlign: 'center', paddingTop: '4rem' }}>
@@ -1257,144 +1300,315 @@ export default function AdminManagement() {
       {/* Tab 1: Administrators List */}
       {activeTab === 'administrators' && (
         <div>
-          <div className="admin-mgmt-controls">
-            <div className="admin-search-input-wrap">
-              <Search size={16} className="admin-search-icon" />
-              <input 
-                type="text" 
-                placeholder="Search by name, email, or username..." 
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-              />
-            </div>
-            <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
-              Showing {filteredAdmins.length} of {administrators.length} accounts
-            </div>
+          {/* Sub-view Navigation Pills */}
+          <div className="admin-subview-pills" style={{ display: 'flex', gap: '0.5rem', marginBottom: '1.25rem' }}>
+            <button
+              type="button"
+              className={`subview-pill ${adminSubView === 'current' ? 'active' : ''}`}
+              onClick={() => setAdminSubView('current')}
+              data-testid="subview-current-admins"
+            >
+              <Users size={15} /> Current Administrators ({administrators.length})
+            </button>
+            <button
+              type="button"
+              className={`subview-pill ${adminSubView === 'archived' ? 'active' : ''}`}
+              onClick={() => setAdminSubView('archived')}
+              data-testid="subview-archived-admins"
+            >
+              <Archive size={15} /> Archived Administrators ({archivedAdmins.length})
+            </button>
           </div>
 
-          <div className="admin-table-card">
-            <table className="admin-mgmt-table">
-              <thead>
-                <tr>
-                  <th>Administrator</th>
-                  <th>Username</th>
-                  <th>Email</th>
-                  <th>Status</th>
-                  <th>Permissions</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredAdmins.map((admin) => {
-                  const isSuper = Boolean(admin.is_super_admin);
-                  return (
-                    <tr key={admin.id}>
-                      <td>
-                        <div className="admin-user-cell">
-                          <div className={`admin-avatar-chip ${isSuper ? '' : 'ordinary'}`}>
-                            {admin.first_name ? admin.first_name[0].toUpperCase() : 'A'}
-                          </div>
-                          <div>
-                            <div className="admin-user-info-name">
-                              {admin.first_name || ''} {admin.last_name || ''}
-                              {isSuper ? (
-                                <span className="badge-super-admin">
-                                  <Shield size={10} /> Super Admin
-                                </span>
-                              ) : (
-                                <span className="badge-ordinary-admin">Admin</span>
+          {adminSubView === 'current' ? (
+            <div>
+              <div className="admin-mgmt-controls">
+                <div className="admin-search-input-wrap">
+                  <Search size={16} className="admin-search-icon" />
+                  <input 
+                    type="text" 
+                    placeholder="Search by name, email, or username..." 
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                  />
+                </div>
+                <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
+                  Showing {filteredAdmins.length} of {administrators.length} accounts
+                </div>
+              </div>
+
+              <div className="admin-table-card">
+                <table className="admin-mgmt-table">
+                  <thead>
+                    <tr>
+                      <th>Administrator</th>
+                      <th>Username</th>
+                      <th>Email</th>
+                      <th>Status</th>
+                      <th>Permissions</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredAdmins.map((admin) => {
+                      const isSuper = Boolean(admin.is_super_admin);
+                      return (
+                        <tr key={admin.id}>
+                          <td>
+                            <div className="admin-user-cell">
+                              <div className={`admin-avatar-chip ${isSuper ? '' : 'ordinary'}`}>
+                                {admin.first_name ? admin.first_name[0].toUpperCase() : 'A'}
+                              </div>
+                              <div>
+                                <div className="admin-user-info-name">
+                                  {admin.first_name || ''} {admin.last_name || ''}
+                                  {isSuper ? (
+                                    <span className="badge-super-admin">
+                                      <Shield size={10} /> Super Admin
+                                    </span>
+                                  ) : (
+                                    <span className="badge-ordinary-admin">Admin</span>
+                                  )}
+                                  {admin.password_reset_pending === 1 && (
+                                    <span className="badge-reset-pending" style={{ marginLeft: '0.4rem', fontSize: '0.7rem', padding: '0.15rem 0.4rem', borderRadius: '4px', background: 'rgba(234, 179, 8, 0.15)', color: '#eab308', border: '1px solid rgba(234, 179, 8, 0.3)' }}>
+                                      Reset Pending
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="admin-user-info-sub">
+                                  ID: {admin.id} &bull; Joined: {admin.created_at_dhaka || new Date(admin.created_at).toLocaleDateString()}
+                                </div>
+                              </div>
+                            </div>
+                          </td>
+
+                          <td>
+                            <span style={{ fontFamily: 'monospace', fontWeight: 600 }}>{admin.username}</span>
+                          </td>
+
+                          <td style={{ color: 'var(--text-secondary)' }}>
+                            {admin.email}
+                            {admin.email_verified_at && (
+                              <span title={`Verified: ${admin.email_verified_at}`} style={{ marginLeft: '0.35rem', color: '#10b981', display: 'inline-flex', verticalAlign: 'middle' }}>
+                                <CheckCircle2 size={13} />
+                              </span>
+                            )}
+                          </td>
+
+                          <td>
+                            {isSuper ? (
+                              <span className="status-toggle-pill active" style={{ cursor: 'default' }}>
+                                <Check size={12} /> Active (Protected)
+                              </span>
+                            ) : (
+                              <button
+                                type="button"
+                                className={`status-toggle-pill ${admin.is_active ? 'active' : 'inactive'}`}
+                                onClick={() => handleToggleStatus(admin)}
+                                title={`Click to ${admin.is_active ? 'deactivate' : 'activate'}`}
+                              >
+                                {admin.is_active ? <Check size={12} /> : <X size={12} />}
+                                {admin.is_active ? 'Active' : 'Inactive'}
+                              </button>
+                            )}
+                          </td>
+
+                          <td>
+                            {isSuper ? (
+                              <span style={{ fontWeight: 600, color: '#fb7185' }}>
+                                Full Platform Access
+                              </span>
+                            ) : (
+                              <span style={{ fontSize: '0.85rem' }}>
+                                <strong>{(admin.permissions || []).length}</strong> permissions granted
+                              </span>
+                            )}
+                          </td>
+
+                          <td>
+                            <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                              <button
+                                type="button"
+                                className="btn-secondary"
+                                style={{ padding: '0.4rem 0.75rem', minHeight: '36px', fontSize: '0.8rem' }}
+                                onClick={() => openAdminProfile(admin.id)}
+                                data-testid={`view-profile-${admin.id}`}
+                                title="View Accountability Profile"
+                              >
+                                <Eye size={14} /> Profile
+                              </button>
+                              {!isSuper && (
+                                <>
+                                  <button
+                                    type="button"
+                                    className="btn-secondary"
+                                    style={{ padding: '0.4rem 0.75rem', minHeight: '36px', fontSize: '0.8rem' }}
+                                    onClick={() => {
+                                      setEditAdmin(admin);
+                                      setEditPermissions(admin.permissions || []);
+                                      setConcurrencyConflict(null);
+                                    }}
+                                  >
+                                    <Settings size={14} /> Edit Access
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="btn-secondary"
+                                    style={{ padding: '0.4rem 0.75rem', minHeight: '36px', fontSize: '0.8rem', color: '#eab308' }}
+                                    onClick={() => openResetModal(admin)}
+                                    data-testid={`reset-admin-${admin.id}`}
+                                    title="Reset Administrator Password"
+                                  >
+                                    <Key size={14} /> Reset
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="btn-secondary btn-danger-ghost"
+                                    style={{ padding: '0.4rem 0.75rem', minHeight: '36px', fontSize: '0.8rem', color: '#f43f5e' }}
+                                    onClick={() => openArchiveModal(admin)}
+                                    data-testid={`archive-admin-${admin.id}`}
+                                    title="Archive Administrator Account"
+                                  >
+                                    <Archive size={14} /> Archive
+                                  </button>
+                                </>
                               )}
                             </div>
-                            <div className="admin-user-info-sub">
-                              ID: {admin.id} &bull; Joined: {admin.created_at_dhaka || new Date(admin.created_at).toLocaleDateString()}
+                          </td>
+                        </tr>
+                      );
+                    })}
+
+                    {filteredAdmins.length === 0 && (
+                      <tr>
+                        <td colSpan="6" style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-secondary)' }}>
+                          No administrators found matching your query.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ) : (
+            <div>
+              <div className="admin-mgmt-controls">
+                <div className="admin-search-input-wrap">
+                  <Search size={16} className="admin-search-icon" />
+                  <input 
+                    type="text" 
+                    placeholder="Search archived by name, email, or username..." 
+                    value={archivedSearchQuery}
+                    onChange={(e) => setArchivedSearchQuery(e.target.value)}
+                    data-testid="archived-search-input"
+                  />
+                </div>
+                <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
+                  Showing {filteredArchivedAdmins.length} of {archivedAdmins.length} archived accounts
+                </div>
+              </div>
+
+              <div className="admin-table-card">
+                <table className="admin-mgmt-table" data-testid="archived-admins-table">
+                  <thead>
+                    <tr>
+                      <th>Former Administrator</th>
+                      <th>Username</th>
+                      <th>Email</th>
+                      <th>Archived At</th>
+                      <th>Reason & Governance</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredArchivedAdmins.map((admin) => (
+                      <tr key={admin.id}>
+                        <td>
+                          <div className="admin-user-cell">
+                            <div className="admin-avatar-chip archived" style={{ opacity: 0.6 }}>
+                              {admin.first_name ? admin.first_name[0].toUpperCase() : 'A'}
+                            </div>
+                            <div>
+                              <div className="admin-user-info-name">
+                                {admin.first_name || ''} {admin.last_name || ''}
+                                <span className="badge-archived-admin" style={{ marginLeft: '0.4rem', fontSize: '0.7rem', padding: '0.15rem 0.4rem', borderRadius: '4px', background: 'rgba(148, 163, 184, 0.2)', color: '#94a3b8' }}>
+                                  Archived
+                                </span>
+                              </div>
+                              <div className="admin-user-info-sub">
+                                ID: {admin.id} &bull; Joined: {admin.created_at_dhaka || new Date(admin.created_at).toLocaleDateString()}
+                              </div>
                             </div>
                           </div>
-                        </div>
-                      </td>
+                        </td>
 
-                      <td>
-                        <span style={{ fontFamily: 'monospace', fontWeight: 600 }}>{admin.username}</span>
-                      </td>
+                        <td>
+                          <span style={{ fontFamily: 'monospace', fontWeight: 600 }}>{admin.username}</span>
+                        </td>
 
-                      <td style={{ color: 'var(--text-secondary)' }}>
-                        {admin.email}
-                      </td>
+                        <td style={{ color: 'var(--text-secondary)' }}>
+                          {admin.email}
+                        </td>
 
-                      <td>
-                        {isSuper ? (
-                          <span className="status-toggle-pill active" style={{ cursor: 'default' }}>
-                            <Check size={12} /> Active (Protected)
-                          </span>
-                        ) : (
-                          <button
-                            type="button"
-                            className={`status-toggle-pill ${admin.is_active ? 'active' : 'inactive'}`}
-                            onClick={() => handleToggleStatus(admin)}
-                            title={`Click to ${admin.is_active ? 'deactivate' : 'activate'}`}
-                          >
-                            {admin.is_active ? <Check size={12} /> : <X size={12} />}
-                            {admin.is_active ? 'Active' : 'Inactive'}
-                          </button>
-                        )}
-                      </td>
+                        <td style={{ fontSize: '0.85rem' }}>
+                          {admin.archived_at_dhaka || (admin.archived_at ? new Date(admin.archived_at).toLocaleString() : 'N/A')}
+                        </td>
 
-                      <td>
-                        {isSuper ? (
-                          <span style={{ fontWeight: 600, color: '#fb7185' }}>
-                            Full Platform Access
-                          </span>
-                        ) : (
-                          <span style={{ fontSize: '0.85rem' }}>
-                            <strong>{(admin.permissions || []).length}</strong> permissions granted
-                          </span>
-                        )}
-                      </td>
+                        <td style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                          <em>{admin.archive_reason || 'No reason provided'}</em>
+                        </td>
 
-                      <td>
-                        <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
-                          <button
-                            type="button"
-                            className="btn-secondary"
-                            style={{ padding: '0.4rem 0.75rem', minHeight: '36px', fontSize: '0.8rem' }}
-                            onClick={() => openAdminProfile(admin.id)}
-                            data-testid={`view-profile-${admin.id}`}
-                            title="View Accountability Profile"
-                          >
-                            <Eye size={14} /> Profile
-                          </button>
-                          {!isSuper && (
+                        <td>
+                          <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center', flexWrap: 'wrap' }}>
                             <button
                               type="button"
                               className="btn-secondary"
                               style={{ padding: '0.4rem 0.75rem', minHeight: '36px', fontSize: '0.8rem' }}
-                              onClick={() => {
-                                setEditAdmin(admin);
-                                setEditPermissions(admin.permissions || []);
-                                setConcurrencyConflict(null);
-                              }}
+                              onClick={() => openAdminProfile(admin.id)}
+                              data-testid={`view-profile-${admin.id}`}
+                              title="View Accountability Profile"
                             >
-                              <Settings size={14} /> Edit Access
+                              <Eye size={14} /> Profile
                             </button>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
+                            <button
+                              type="button"
+                              className="btn-secondary"
+                              style={{ padding: '0.4rem 0.75rem', minHeight: '36px', fontSize: '0.8rem' }}
+                              onClick={() => triggerExportHistory(admin.id)}
+                              data-testid={`export-history-${admin.id}`}
+                              title="Export Accountability History (CSV)"
+                            >
+                              <Download size={14} /> Export
+                            </button>
+                            <button
+                              type="button"
+                              className="btn-secondary btn-restore"
+                              style={{ padding: '0.4rem 0.75rem', minHeight: '36px', fontSize: '0.8rem', color: '#10b981' }}
+                              onClick={() => openRestoreModal(admin)}
+                              data-testid={`restore-admin-${admin.id}`}
+                              title="Restore Administrator (will be inactive)"
+                            >
+                              <RotateCcw size={14} /> Restore
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
 
-                {filteredAdmins.length === 0 && (
-                  <tr>
-                    <td colSpan="6" style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-secondary)' }}>
-                      No administrators found matching your query.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
+                    {filteredArchivedAdmins.length === 0 && (
+                      <tr>
+                        <td colSpan="6" style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-secondary)' }}>
+                          No archived administrators found.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
         </div>
       )}
-
 
       {/* Tab: Accountability & Governance Dashboard */}
       {activeTab === 'accountability' && (
@@ -1428,6 +1642,16 @@ export default function AdminManagement() {
               <div>
                 <div className="accountability-val" data-testid="kpi-inactive-admins">{accountabilitySummary.inactive}</div>
                 <div className="accountability-lbl">Inactive Administrators</div>
+              </div>
+            </div>
+
+            <div className="accountability-card">
+              <div className="accountability-icon-wrap archived" style={{ background: 'rgba(148, 163, 184, 0.15)', color: '#94a3b8' }}>
+                <Archive size={24} />
+              </div>
+              <div>
+                <div className="accountability-val" data-testid="kpi-archived-admins">{accountabilitySummary.archived || 0}</div>
+                <div className="accountability-lbl">Archived Administrators</div>
               </div>
             </div>
 

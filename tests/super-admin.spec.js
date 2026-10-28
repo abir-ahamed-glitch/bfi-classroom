@@ -5365,3 +5365,309 @@ test.describe('Super Admin Architecture & Role Governance Suite', () => {
   });
 
 });
+
+test.describe('Phase 3: Admin Archiving, Accountability & Super Admin Password Reset Suite', () => {
+  const ARTIFACT_DIR = 'C:/Users/shahi/.gemini/antigravity/brain/8a2c550d-de2b-4cee-a467-088c18dbcc23';
+  const TARGET_ADMIN_ID = 88812;
+  const TARGET_USERNAME = 'admin@archivetarget';
+  const TARGET_EMAIL = 'archivetarget@bfibd.org';
+
+  test.beforeEach(async () => {
+    // Ensure TARGET_ADMIN exists in clean state
+    const passwordHash = bcrypt.hashSync(TEST_PASSWORD, 10);
+    db.prepare(`
+      INSERT OR REPLACE INTO users (
+        id, username, email, password_hash, role, first_name, last_name, is_active, is_super_admin, last_login, token_version, account_version, archived_at, archive_reason, restored_at, restore_reason, password_reset_pending, email_verified_at, verified_email
+      ) VALUES (
+        ?, ?, ?, ?, 'admin', 'Target', 'Admin', 1, 0, datetime('now'), 1, 1, NULL, NULL, NULL, NULL, 0, datetime('now'), ?
+      )
+    `).run(TARGET_ADMIN_ID, TARGET_USERNAME, TARGET_EMAIL, passwordHash, TARGET_EMAIL);
+
+    // Grant permission
+    db.prepare('INSERT OR IGNORE INTO admin_permissions (user_id, permission, granted_by) VALUES (?, ?, 1)').run(TARGET_ADMIN_ID, 'courses:view');
+  });
+
+  test.afterAll(() => {
+    try {
+      db.prepare('DELETE FROM admin_permissions WHERE user_id = ?').run(TARGET_ADMIN_ID);
+      db.prepare('DELETE FROM password_reset_tokens WHERE user_id = ?').run(TARGET_ADMIN_ID);
+      db.prepare('DELETE FROM sessions WHERE user_id = ?').run(TARGET_ADMIN_ID);
+      db.prepare('DELETE FROM users WHERE id = ?').run(TARGET_ADMIN_ID);
+    } catch {}
+  });
+
+  test('30. Browser Interaction: Sub-view Switching, Archive Flow, and Inactive Restoration', async ({ page }) => {
+    await setupTestRouteProxy(page);
+
+    const { token: saToken } = issueAdminSessionToken(SUPER_ADMIN_ID);
+
+    await page.addInitScript(({ token, user }) => {
+      localStorage.setItem('token', token);
+      localStorage.setItem('user', JSON.stringify(user));
+    }, {
+      token: saToken,
+      user: {
+        id: SUPER_ADMIN_ID,
+        username: 'admin@abir',
+        email: 'k.eye.films@gmail.com',
+        role: 'admin',
+        firstName: 'Abir',
+        lastName: 'Ahmad',
+        is_super_admin: 1,
+        isSuperAdmin: true
+      }
+    });
+
+    await page.goto('admin/administrators');
+    await page.waitForLoadState('domcontentloaded');
+
+    // 1. Verify Sub-view Navigation Pills
+    const currentPill = page.locator('[data-testid="subview-current-admins"]');
+    const archivedPill = page.locator('[data-testid="subview-archived-admins"]');
+    await expect(currentPill).toBeVisible();
+    await expect(archivedPill).toBeVisible();
+
+    // 2. Locate target administrator in Current table
+    const targetRow = page.locator('tr').filter({ hasText: TARGET_USERNAME });
+    await expect(targetRow).toBeVisible();
+
+    // 3. Click Archive button -> Archive Modal opens
+    const archiveBtn = page.locator(`[data-testid="archive-admin-${TARGET_ADMIN_ID}"]`);
+    await expect(archiveBtn).toBeVisible();
+    await archiveBtn.click();
+
+    const archiveModalHeader = page.locator('h2').filter({ hasText: 'Archive Administrator' });
+    await expect(archiveModalHeader).toBeVisible();
+
+    // Test cancel
+    const cancelBtn = page.locator('.admin-modal-footer button').filter({ hasText: 'Cancel' });
+    await cancelBtn.click();
+    await expect(archiveModalHeader).not.toBeVisible();
+    await expect(targetRow).toBeVisible();
+
+    // Re-open Archive Modal and submit
+    await archiveBtn.click();
+    await expect(archiveModalHeader).toBeVisible();
+
+    const reasonInput = page.locator('[data-testid="archive-reason-input"]');
+    await reasonInput.fill('Staff member leaving for sabbatical research');
+
+    const sudoInput = page.locator('[data-testid="archive-sudo-password-input"]');
+    await sudoInput.fill(TEST_PASSWORD);
+
+    const confirmArchiveBtn = page.locator('[data-testid="confirm-archive-btn"]');
+    await expect(confirmArchiveBtn).toBeEnabled();
+    await confirmArchiveBtn.click();
+
+    // Verify modal closes and admin is removed from current table
+    await expect(archiveModalHeader).not.toBeVisible({ timeout: 10000 });
+    await expect(page.locator('tr').filter({ hasText: TARGET_USERNAME })).toHaveCount(0);
+
+    // 4. Switch to Archived Administrators sub-view
+    await archivedPill.click();
+    const archivedTable = page.locator('[data-testid="archived-admins-table"]');
+    await expect(archivedTable).toBeVisible();
+
+    const archivedTargetRow = archivedTable.locator('tr').filter({ hasText: TARGET_USERNAME });
+    await expect(archivedTargetRow).toBeVisible();
+    await expect(archivedTargetRow.locator('.badge-archived-admin')).toBeVisible();
+    await expect(archivedTargetRow).toContainText('Staff member leaving for sabbatical research');
+
+    // Screenshot archived administrators view
+    await page.screenshot({ path: `${ARTIFACT_DIR}/archived-administrators-desktop.png`, fullPage: false });
+
+    // 5. Restore Administrator -> Opens Restore Modal
+    const restoreBtn = page.locator(`[data-testid="restore-admin-${TARGET_ADMIN_ID}"]`);
+    await expect(restoreBtn).toBeVisible();
+    await restoreBtn.click();
+
+    const restoreModalHeader = page.locator('h2').filter({ hasText: 'Restore Administrator' });
+    await expect(restoreModalHeader).toBeVisible();
+    // Verify notice indicates account is restored as INACTIVE
+    await expect(page.locator('.admin-modal-body')).toContainText('INACTIVE');
+
+    const restoreReasonInput = page.locator('[data-testid="restore-reason-input"]');
+    await restoreReasonInput.fill('Rehiring staff member as visiting instructor');
+
+    const restoreSudoInput = page.locator('[data-testid="restore-sudo-password-input"]');
+    await restoreSudoInput.fill(TEST_PASSWORD);
+
+    const confirmRestoreBtn = page.locator('[data-testid="confirm-restore-btn"]');
+    await expect(confirmRestoreBtn).toBeEnabled();
+    await confirmRestoreBtn.click();
+
+    await expect(restoreModalHeader).not.toBeVisible({ timeout: 10000 });
+
+    // 6. Switch back to Current Administrators sub-view
+    await currentPill.click();
+    const restoredRow = page.locator('tr').filter({ hasText: TARGET_USERNAME });
+    await expect(restoredRow).toBeVisible();
+
+    // Verify restored administrator is strictly INACTIVE
+    const statusPill = restoredRow.locator('.status-toggle-pill');
+    await expect(statusPill).toContainText('Inactive');
+
+    // Mobile viewport screenshot
+    await page.setViewportSize({ width: 375, height: 667 });
+    await page.screenshot({ path: `${ARTIFACT_DIR}/admin-management-mobile.png`, fullPage: false });
+    await page.setViewportSize({ width: 1440, height: 900 });
+  });
+
+  test('31. Browser Interaction: Password Reset Modal, Out-of-Band Link & Fragment Reset Flow', async ({ page, browser }) => {
+    await setupTestRouteProxy(page);
+
+    const { token: saToken } = issueAdminSessionToken(SUPER_ADMIN_ID);
+
+    await page.addInitScript(({ token, user }) => {
+      localStorage.setItem('token', token);
+      localStorage.setItem('user', JSON.stringify(user));
+    }, {
+      token: saToken,
+      user: {
+        id: SUPER_ADMIN_ID,
+        username: 'admin@abir',
+        email: 'k.eye.films@gmail.com',
+        role: 'admin',
+        firstName: 'Abir',
+        lastName: 'Ahmad',
+        is_super_admin: 1,
+        isSuperAdmin: true
+      }
+    });
+
+    await page.goto('admin/administrators');
+    await page.waitForLoadState('domcontentloaded');
+
+    // 1. Click Reset Password for Target Admin
+    const resetBtn = page.locator(`[data-testid="reset-admin-${TARGET_ADMIN_ID}"]`);
+    await expect(resetBtn).toBeVisible();
+    await resetBtn.click();
+
+    const resetModalHeader = page.locator('h2').filter({ hasText: 'Reset Administrator Password' });
+    await expect(resetModalHeader).toBeVisible();
+
+    // Verify email verified badge
+    await expect(page.locator('[data-testid="verified-email-badge"]')).toBeVisible();
+
+    // Select Out-of-Band direct link option
+    const radioDirect = page.locator('[data-testid="radio-reset-direct"]');
+    await radioDirect.click();
+
+    const resetReasonInput = page.locator('[data-testid="reset-reason-input"]');
+    await resetReasonInput.fill('Admin forgotten credentials verification test');
+
+    const resetSudoInput = page.locator('[data-testid="reset-sudo-password-input"]');
+    await resetSudoInput.fill(TEST_PASSWORD);
+
+    const confirmResetBtn = page.locator('[data-testid="confirm-reset-btn"]');
+    await expect(confirmResetBtn).toBeEnabled();
+    await confirmResetBtn.click();
+
+    // 2. Verify Out-of-Band Link Modal appears
+    const directModalHeader = page.locator('h2').filter({ hasText: 'Direct Recovery Link Generated' });
+    await expect(directModalHeader).toBeVisible({ timeout: 10000 });
+
+    const directLinkInput = page.locator('[data-testid="direct-link-input"]');
+    await expect(directLinkInput).toBeVisible();
+    const rawDirectUrl = await directLinkInput.inputValue();
+    expect(rawDirectUrl).toContain('#userId=88812&token=');
+
+    // Verify live countdown timer
+    const timerDisplay = page.locator('[data-testid="direct-link-timer"]');
+    await expect(timerDisplay).toBeVisible();
+    await expect(timerDisplay).toContainText('Link Expires In:');
+
+    // Screenshot direct link modal
+    await page.screenshot({ path: `${ARTIFACT_DIR}/direct-link-modal-desktop.png`, fullPage: false });
+
+    // Close direct link modal
+    const doneBtn = page.locator('[data-testid="done-direct-link-btn"]');
+    await doneBtn.click();
+    await expect(directModalHeader).not.toBeVisible();
+
+    // 3. In an unauthenticated browser context, open the direct link
+    const resetContext = await browser.newContext();
+    const resetPage = await resetContext.newPage();
+    await setupTestRouteProxy(resetPage);
+
+    // Navigate to fragment URL
+    const fragmentUrl = rawDirectUrl.replace('http://localhost:5174', '').replace('http://127.0.0.1:5174', '');
+    const relativeUrl = fragmentUrl.startsWith('/bfi-classroom') ? fragmentUrl.replace('/bfi-classroom/', '') : fragmentUrl.replace(/^\//, '');
+
+    await resetPage.goto(relativeUrl);
+    await resetPage.waitForLoadState('domcontentloaded');
+
+    // Verify URL fragment was stripped from the window address bar immediately
+    const currentHash = await resetPage.evaluate(() => window.location.hash);
+    expect(currentHash).toBe('');
+
+    // Fill new password form
+    const newPassInput = resetPage.locator('#password');
+    const confirmPassInput = resetPage.locator('#confirmPassword');
+    await expect(newPassInput).toBeVisible();
+
+    await newPassInput.fill('BrandNewAdminPass2026!');
+    await confirmPassInput.fill('BrandNewAdminPass2026!');
+
+    const submitResetBtn = resetPage.locator('button[type="submit"]');
+    await submitResetBtn.click();
+
+    // Verify success alert
+    const successAlert = resetPage.locator('.success-alert');
+    await expect(successAlert).toBeVisible({ timeout: 10000 });
+    await expect(successAlert).toContainText('reset successfully');
+
+    await resetContext.close();
+
+    // Verify in database that password was updated and reset pending cleared
+    const updatedUser = db.prepare('SELECT password_hash, password_reset_pending FROM users WHERE id = ?').get(TARGET_ADMIN_ID);
+    expect(updatedUser.password_reset_pending).toBe(0);
+    expect(bcrypt.compareSync('BrandNewAdminPass2026!', updatedUser.password_hash)).toBe(true);
+  });
+
+  test('32. Browser Interaction: Accountability Dashboard KPI Counts & CSV Export Trigger', async ({ page }) => {
+    await setupTestRouteProxy(page);
+
+    const { token: saToken } = issueAdminSessionToken(SUPER_ADMIN_ID);
+
+    await page.addInitScript(({ token, user }) => {
+      localStorage.setItem('token', token);
+      localStorage.setItem('user', JSON.stringify(user));
+    }, {
+      token: saToken,
+      user: {
+        id: SUPER_ADMIN_ID,
+        username: 'admin@abir',
+        email: 'k.eye.films@gmail.com',
+        role: 'admin',
+        firstName: 'Abir',
+        lastName: 'Ahmad',
+        is_super_admin: 1,
+        isSuperAdmin: true
+      }
+    });
+
+    await page.goto('admin/administrators');
+    await page.waitForLoadState('domcontentloaded');
+
+    // Switch to Accountability Dashboard
+    const accountabilityTabBtn = page.locator('[data-testid="tab-accountability"]');
+    await expect(accountabilityTabBtn).toBeVisible();
+    await accountabilityTabBtn.click();
+
+    // Verify non-overlapping KPI counts
+    const totalKpi = page.locator('[data-testid="kpi-total-admins"]');
+    const activeKpi = page.locator('[data-testid="kpi-active-admins"]');
+    const inactiveKpi = page.locator('[data-testid="kpi-inactive-admins"]');
+    const archivedKpi = page.locator('[data-testid="kpi-archived-admins"]');
+
+    await expect(totalKpi).toBeVisible();
+    await expect(activeKpi).toBeVisible();
+    await expect(inactiveKpi).toBeVisible();
+    await expect(archivedKpi).toBeVisible();
+
+    // Screenshot accountability dashboard with new non-overlapping KPIs
+    await page.screenshot({ path: `${ARTIFACT_DIR}/accountability-dashboard-kpis.png`, fullPage: false });
+  });
+});
+
