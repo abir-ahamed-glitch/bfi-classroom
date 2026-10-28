@@ -147,7 +147,8 @@ export function authenticateToken(req, res, next) {
     }
 
     // Privilege is strictly bound to stable database ID 1, active admin role, and positive flag
-    const isSuper = Number(user.id) === 1 && user.role === 'admin' && (user.is_super_admin === 1 || user.is_super_admin === true);
+    // Super Administrator privilege applies to any active admin with is_super_admin === 1
+    const isSuper = user.role === 'admin' && (user.is_super_admin === 1 || user.is_super_admin === true);
 
     let permissions = [];
     if (isSuper) {
@@ -179,11 +180,15 @@ export function authenticateToken(req, res, next) {
   }
 }
 
+// Founding Owner (Root Administrator) Immunity Helper
+export function isFoundingOwner(userId) {
+  return Number(userId) === 1;
+}
+
 // Super Admin Privileges Helper
 export function isSuperAdmin(user) {
   if (!user || !user.id) return false;
-  // Privilege is strictly bound to stable database ID 1, admin role, and positive flag
-  return Number(user.id) === 1 && user.role === 'admin' && (user.is_super_admin === 1 || user.is_super_admin === true || user.isSuperAdmin === true);
+  return user.role === 'admin' && (user.is_super_admin === 1 || user.is_super_admin === true || user.isSuperAdmin === true);
 }
 
 // Super Admin Access Control Middleware
@@ -203,7 +208,7 @@ export function requireSuperAdmin(req, res, next) {
     return res.status(401).json({ error: 'Account inactive or not found' });
   }
 
-  if (Number(currentUser.id) !== 1 || currentUser.role !== 'admin' || !currentUser.is_super_admin) {
+  if (currentUser.archived_at !== null || currentUser.role !== 'admin' || !currentUser.is_super_admin) {
     try {
       recordAuditLog({
         actorId: currentUser.id,
@@ -224,6 +229,27 @@ export function requireSuperAdmin(req, res, next) {
 }
 
 // Fine-Grained Modular Permission Enforcement Middleware
+/**
+ * Controlled Enrolment Transition Middleware
+ * Super Admins without completed 2FA cannot perform sensitive governance ceremonies.
+ */
+export function requireSuperAdminMfaEnrolled(req, res, next) {
+  if (!req.user) {
+    return res.status(401).json({ error: 'Authentication required' });
+  }
+  if (isSuperAdmin(req.user)) {
+    const u = db.prepare('SELECT two_factor_enabled FROM users WHERE id = ?').get(req.user.id);
+    if (!u || u.two_factor_enabled !== 1) {
+      return res.status(403).json({
+        error: 'Super Administrator two-factor authentication enrollment is required for privileged governance operations.',
+        code: 'SUPER_ADMIN_MFA_ENROLLMENT_REQUIRED',
+        requireMfaEnrollment: true
+      });
+    }
+  }
+  next();
+}
+
 export function requirePermission(permission) {
   return (req, res, next) => {
     if (!req.user) {

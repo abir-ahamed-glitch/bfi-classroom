@@ -1,3 +1,4 @@
+import './test-env-setup.js';
 import test from 'node:test';
 import assert from 'node:assert';
 import path from 'path';
@@ -15,6 +16,9 @@ const TEST_ISOLATED_DIR = path.resolve(__dirname, '..', '.tmp_test_runs');
 if (!fs.existsSync(TEST_ISOLATED_DIR)) {
   fs.mkdirSync(TEST_ISOLATED_DIR, { recursive: true });
 }
+
+const TEST_SHARED_GOV_DB = path.resolve(TEST_ISOLATED_DIR, 'test_shared_governance.db');
+process.env.DATABASE_PATH = TEST_SHARED_GOV_DB;
 
 const TEST_DB_PATH = path.join(TEST_ISOLATED_DIR, `test_super_admin_2fa_${Date.now()}.db`);
 
@@ -508,5 +512,311 @@ test.describe('Task 2: Action-Bound Step-Up Verification Helper (server/utils/ac
     });
     assert.strictEqual(replayRec.success, false);
     assert.strictEqual(replayRec.code, 'INVALID_RECOVERY_CODE');
+  });
+});
+
+test.describe('Task 3 & 4: Multiple Super Admin Governance, Peer Defenses & Middleware', () => {
+  let db;
+  let testDbPath;
+  let adminMgmtRoutes;
+  let rawTotpSecret;
+  const foundingOwnerId = 1;
+  const secondarySuperId = 2;
+  const candidateAdminId = 3;
+
+  function mockReqRes(options = {}) {
+    let statusCode = 200;
+    let jsonPayload = null;
+    let nextCalled = false;
+    const req = {
+      ip: '127.0.0.1',
+      params: options.params || {},
+      body: options.body || {},
+      query: options.query || {},
+      headers: options.headers || {},
+      correlationId: 'test-corr-id',
+      originalUrl: options.url || '/api/admin/test',
+      user: options.user || {
+        id: foundingOwnerId,
+        username: 'admin@abir',
+        role: 'admin',
+        is_super_admin: 1,
+        isSuperAdmin: true,
+        sessionId: 'session_owner_123',
+        permissions: ['*']
+      }
+    };
+    const res = {
+      status(code) {
+        statusCode = code;
+        return this;
+      },
+      json(payload) {
+        jsonPayload = payload;
+        return this;
+      }
+    };
+    const next = () => { nextCalled = true; };
+    return { req, res, next, getResult: () => ({ statusCode, jsonPayload, nextCalled }) };
+  }
+
+  function getHandler(router, method, pathStr) {
+    const layer = router.stack.find(l => l.route?.path === pathStr && l.route?.methods?.[method.toLowerCase()]);
+    if (!layer) throw new Error(`Route not found: ${method} ${pathStr}`);
+    return layer.route.stack[layer.route.stack.length - 1].handle;
+  }
+
+  test.beforeEach(async () => {
+    db = (await import('../server/db/database.js')).default;
+    db.pragma('foreign_keys = ON');
+
+    const { generateTotpSecret, encryptSecret } = await import('../server/utils/totp.js');
+    rawTotpSecret = generateTotpSecret();
+
+    // Clean tables
+    db.exec(`
+      DELETE FROM action_bound_challenges;
+      DELETE FROM admin_permissions;
+      DELETE FROM sessions;
+      DELETE FROM password_reset_tokens;
+      DELETE FROM user_mfa_recovery_codes;
+      DELETE FROM admin_audit_logs;
+      DELETE FROM users;
+    `);
+
+    // 1. Founding Owner (ID 1): active, unarchived, MFA enabled
+    db.prepare(`
+      INSERT INTO users (id, username, email, password_hash, first_name, last_name, role, is_super_admin, is_active, two_factor_enabled, two_factor_secret, email_verified_at, verified_email)
+      VALUES (1, 'admin@abir', 'k.eye.films@gmail.com', 'hash', 'Super', 'Admin', 'admin', 1, 1, 1, ?, datetime('now'), 'k.eye.films@gmail.com')
+    `).run(encryptSecret(rawTotpSecret));
+
+    // 2. Secondary Super Admin (ID 2): active, unarchived, MFA enabled
+    db.prepare(`
+      INSERT INTO users (id, username, email, password_hash, first_name, last_name, role, is_super_admin, is_active, two_factor_enabled, two_factor_secret, email_verified_at, verified_email)
+      VALUES (2, 'secondary@bfi', 'secondary@bfi.local', 'hash', 'Secondary', 'SuperAdmin', 'admin', 1, 1, 1, ?, datetime('now'), 'secondary@bfi.local')
+    `).run(encryptSecret(rawTotpSecret));
+
+    // 3. Candidate Admin (ID 3): active, email verified, MFA enrolled, ordinary admin
+    db.prepare(`
+      INSERT INTO users (id, username, email, password_hash, first_name, last_name, role, is_super_admin, is_active, two_factor_enabled, two_factor_secret, email_verified_at, verified_email)
+      VALUES (3, 'candidate@bfi', 'candidate@bfi.local', 'hash', 'Candidate', 'Admin', 'admin', 0, 1, 1, ?, datetime('now'), 'candidate@bfi.local')
+    `).run(encryptSecret(rawTotpSecret));
+
+    // 4. Ineligible Admin (ID 4): active, but no MFA and unverified email
+    db.prepare(`
+      INSERT INTO users (id, username, email, password_hash, first_name, last_name, role, is_super_admin, is_active, two_factor_enabled)
+      VALUES (4, 'ineligible@bfi', 'ineligible@bfi.local', 'hash', 'Ineligible', 'Admin', 'admin', 0, 1, 0)
+    `).run();
+
+    adminMgmtRoutes = (await import('../server/routes/admin-management.js')).default;
+  });
+
+  test.afterEach(() => {
+    // Shared db is maintained across tests
+  });
+
+  test('challenge issuance: validates preconditions and protects founding owner', async () => {
+    const challengeHandler = getHandler(adminMgmtRoutes, 'POST', '/super-admins/challenge');
+
+    // 1. Ineligible admin (no email verification / MFA) rejected on promotion challenge
+    const ctxIneligible = mockReqRes({ body: { target_id: 4, action: 'promote_super_admin' } });
+    await challengeHandler(ctxIneligible.req, ctxIneligible.res);
+    assert.strictEqual(ctxIneligible.getResult().statusCode, 400);
+    assert.strictEqual(ctxIneligible.getResult().jsonPayload.code, 'EMAIL_VERIFICATION_REQUIRED');
+
+    // 2. Founding owner demotion challenge strictly rejected
+    const ctxDemoteOwner = mockReqRes({ body: { target_id: foundingOwnerId, action: 'demote_super_admin' } });
+    await challengeHandler(ctxDemoteOwner.req, ctxDemoteOwner.res);
+    assert.strictEqual(ctxDemoteOwner.getResult().statusCode, 403);
+    assert.strictEqual(ctxDemoteOwner.getResult().jsonPayload.code, 'FOUNDING_OWNER_PROTECTED');
+
+    // 3. Valid promotion challenge for candidate
+    const ctxCandidate = mockReqRes({ body: { target_id: candidateAdminId, action: 'promote_super_admin' } });
+    await challengeHandler(ctxCandidate.req, ctxCandidate.res);
+    assert.strictEqual(ctxCandidate.getResult().statusCode, 200);
+    assert.ok(ctxCandidate.getResult().jsonPayload.challengeId);
+    assert.ok(ctxCandidate.getResult().jsonPayload.challengeToken);
+  });
+
+  test('promotes eligible admin to Super Admin with step-up verification, session revocation, and version bump', async () => {
+    const { issueActionBoundChallenge } = await import('../server/utils/action-challenges.js');
+    const { generateTotpCode } = await import('../server/utils/totp.js');
+    const promoteHandler = getHandler(adminMgmtRoutes, 'POST', '/super-admins/promote');
+
+    // Add session for candidate
+    db.prepare(`INSERT INTO sessions (id, user_id, token_hash, expires_at) VALUES (101, ?, 'hash', datetime('now', '+1 hour'))`).run(candidateAdminId);
+
+    // Issue challenge
+    const challenge = issueActionBoundChallenge(db, {
+      actorId: foundingOwnerId,
+      sessionId: 'session_owner_123',
+      targetId: candidateAdminId,
+      action: 'promote_super_admin'
+    });
+
+    const code = generateTotpCode(rawTotpSecret);
+    const ctxPromote = mockReqRes({
+      body: {
+        target_id: candidateAdminId,
+        challenge_id: challenge.challengeId,
+        challenge_token: challenge.challengeToken,
+        code
+      }
+    });
+
+    await promoteHandler(ctxPromote.req, ctxPromote.res);
+    assert.strictEqual(ctxPromote.getResult().statusCode, 200);
+    assert.strictEqual(ctxPromote.getResult().jsonPayload.user.is_super_admin, 1);
+
+    // Verify database state: is_super_admin = 1, sessions deleted, versions bumped
+    const updated = db.prepare('SELECT is_super_admin, account_version, token_version FROM users WHERE id = ?').get(candidateAdminId);
+    assert.strictEqual(updated.is_super_admin, 1, 'Target must now be Super Admin');
+    assert.strictEqual(updated.account_version, 2, 'account_version must bump');
+    assert.strictEqual(updated.token_version, 2, 'token_version must bump');
+
+    const sessions = db.prepare('SELECT COUNT(*) as c FROM sessions WHERE user_id = ?').get(candidateAdminId);
+    assert.strictEqual(sessions.c, 0, 'Target sessions must be revoked');
+
+    const audit = db.prepare("SELECT action, outcome FROM admin_audit_logs WHERE target_user_id = ? AND action = 'super_admin_promoted'").get(candidateAdminId);
+    assert.ok(audit, 'Audit log must be recorded');
+  });
+
+  test('demotes secondary Super Admin to ordinary admin with zero permissions, but protects last usable Super Admin', async () => {
+    const { issueActionBoundChallenge } = await import('../server/utils/action-challenges.js');
+    const { generateTotpCode } = await import('../server/utils/totp.js');
+    const demoteHandler = getHandler(adminMgmtRoutes, 'POST', '/super-admins/demote');
+
+    // Add session for secondary
+    db.prepare(`INSERT INTO sessions (id, user_id, token_hash, expires_at) VALUES (102, 2, 'hash', datetime('now', '+1 hour'))`).run();
+
+    // 1. Demote secondary Super Admin (ID 2): Succeeds because founding owner (ID 1) remains usable
+    const challenge = issueActionBoundChallenge(db, {
+      actorId: foundingOwnerId,
+      sessionId: 'session_owner_123',
+      targetId: secondarySuperId,
+      action: 'demote_super_admin'
+    });
+
+    const code = generateTotpCode(rawTotpSecret);
+    const ctxDemote = mockReqRes({
+      body: {
+        target_id: secondarySuperId,
+        challenge_id: challenge.challengeId,
+        challenge_token: challenge.challengeToken,
+        code
+      }
+    });
+
+    await demoteHandler(ctxDemote.req, ctxDemote.res);
+    assert.strictEqual(ctxDemote.getResult().statusCode, 200);
+    assert.strictEqual(ctxDemote.getResult().jsonPayload.user.is_super_admin, 0);
+
+    const demotedUser = db.prepare('SELECT is_super_admin, account_version FROM users WHERE id = ?').get(secondarySuperId);
+    assert.strictEqual(demotedUser.is_super_admin, 0, 'Must be ordinary admin');
+
+    const secSessions = db.prepare('SELECT COUNT(*) as c FROM sessions WHERE user_id = ?').get(secondarySuperId);
+    assert.strictEqual(secSessions.c, 0, 'Sessions must be revoked');
+
+    // 2. Attempting to demote founding owner (ID 1) is blocked by founding owner immunity
+    const ctxDemoteOwner = mockReqRes({
+      user: { id: secondarySuperId, role: 'admin', is_super_admin: 1 },
+      body: {
+        target_id: foundingOwnerId,
+        challenge_id: 'any',
+        challenge_token: 'any'
+      }
+    });
+    await demoteHandler(ctxDemoteOwner.req, ctxDemoteOwner.res);
+    assert.strictEqual(ctxDemoteOwner.getResult().statusCode, 403);
+    assert.strictEqual(ctxDemoteOwner.getResult().jsonPayload.code, 'FOUNDING_OWNER_PROTECTED');
+
+    // 3. Last Usable Super Admin defense: Demoting remaining Super Admin when count is 1
+    // Promote user 3 first so secondary can attempt to demote user 3 when only 1 usable would remain
+    db.prepare('UPDATE users SET is_super_admin = 0 WHERE id = 1').run(); // Simulate owner inactive/demoted in test
+    db.prepare('UPDATE users SET is_super_admin = 1 WHERE id = 3').run(); // User 3 is now only usable
+
+    const challengeLast = issueActionBoundChallenge(db, {
+      actorId: 3,
+      sessionId: 'sess_3',
+      targetId: 3,
+      action: 'demote_super_admin'
+    });
+
+    const ctxLast = mockReqRes({
+      user: { id: 3, role: 'admin', is_super_admin: 1, sessionId: 'sess_3' },
+      body: {
+        target_id: 3,
+        challenge_id: challengeLast.challengeId,
+        challenge_token: challengeLast.challengeToken,
+        code: generateTotpCode(rawTotpSecret)
+      }
+    });
+    await demoteHandler(ctxLast.req, ctxLast.res);
+    assert.strictEqual(ctxLast.getResult().statusCode, 409);
+    assert.strictEqual(ctxLast.getResult().jsonPayload.code, 'LAST_SUPER_ADMIN_PROTECTED');
+  });
+
+  test('peer reset defense: blocks password resets on Super Admins and founding owner', async () => {
+    const directResetHandler = getHandler(adminMgmtRoutes, 'POST', '/administrators/:id/reset-password/direct-link');
+    const emailResetHandler = getHandler(adminMgmtRoutes, 'POST', '/administrators/:id/reset-password/email');
+
+    // 1. Direct link on Founding Owner (ID 1)
+    const ctxOwnerDirect = mockReqRes({ params: { id: '1' }, body: { expected_account_version: 1, reason: 'test' } });
+    await directResetHandler(ctxOwnerDirect.req, ctxOwnerDirect.res);
+    assert.strictEqual(ctxOwnerDirect.getResult().statusCode, 403);
+    assert.strictEqual(ctxOwnerDirect.getResult().jsonPayload.code, 'FOUNDING_OWNER_PROTECTED');
+
+    // 2. Direct link on Peer Super Admin (ID 2)
+    const ctxPeerDirect = mockReqRes({ params: { id: '2' }, body: { expected_account_version: 1, reason: 'test' } });
+    await directResetHandler(ctxPeerDirect.req, ctxPeerDirect.res);
+    assert.strictEqual(ctxPeerDirect.getResult().statusCode, 403);
+    assert.strictEqual(ctxPeerDirect.getResult().jsonPayload.code, 'PEER_RESET_FORBIDDEN');
+
+    // 3. Email reset on Peer Super Admin (ID 2)
+    const ctxPeerEmail = mockReqRes({ params: { id: '2' }, body: { expected_account_version: 1, reason: 'test' } });
+    await emailResetHandler(ctxPeerEmail.req, ctxPeerEmail.res);
+    assert.strictEqual(ctxPeerEmail.getResult().statusCode, 403);
+    assert.strictEqual(ctxPeerEmail.getResult().jsonPayload.code, 'PEER_RESET_FORBIDDEN');
+  });
+
+  test('last usable Super Admin defense: blocks deactivating or archiving the last usable Super Admin', async () => {
+    const statusHandler = getHandler(adminMgmtRoutes, 'PATCH', '/administrators/:id/status');
+    const archiveHandler = getHandler(adminMgmtRoutes, 'POST', '/administrators/:id/archive');
+
+    // Ensure only 1 usable Super Admin in database (Secondary Super Admin ID 2)
+    db.prepare('UPDATE users SET is_active = 0 WHERE id = 1').run(); // Owner inactive
+
+    // Attempt to deactivate user 2 (only usable Super Admin)
+    const ctxDeactLast = mockReqRes({ params: { id: '2' }, body: { is_active: 0, expected_account_version: 1 } });
+    await statusHandler(ctxDeactLast.req, ctxDeactLast.res);
+    assert.strictEqual(ctxDeactLast.getResult().statusCode, 409);
+    assert.strictEqual(ctxDeactLast.getResult().jsonPayload.code, 'LAST_SUPER_ADMIN_PROTECTED');
+
+    // Attempt to archive user 2 (only usable Super Admin)
+    const ctxArchLast = mockReqRes({ params: { id: '2' }, body: { reason: 'Archiving last one', expected_account_version: 1 } });
+    await archiveHandler(ctxArchLast.req, ctxArchLast.res);
+    assert.strictEqual(ctxArchLast.getResult().statusCode, 409);
+    assert.strictEqual(ctxArchLast.getResult().jsonPayload.code, 'LAST_SUPER_ADMIN_PROTECTED');
+  });
+
+  test('middleware: requireSuperAdminMfaEnrolled gates Super Admins without completed 2FA', async () => {
+    const { requireSuperAdminMfaEnrolled } = await import('../server/middleware/auth.js');
+
+    // User without MFA enrolled
+    db.prepare('UPDATE users SET two_factor_enabled = 0 WHERE id = 2').run();
+
+    const ctxNoMfa = mockReqRes({ user: { id: 2, role: 'admin', is_super_admin: 1 } });
+    requireSuperAdminMfaEnrolled(ctxNoMfa.req, ctxNoMfa.res, ctxNoMfa.next);
+
+    assert.strictEqual(ctxNoMfa.getResult().statusCode, 403);
+    assert.strictEqual(ctxNoMfa.getResult().jsonPayload.code, 'SUPER_ADMIN_MFA_ENROLLMENT_REQUIRED');
+    assert.strictEqual(ctxNoMfa.getResult().nextCalled, false);
+
+    // User with MFA enrolled
+    db.prepare('UPDATE users SET two_factor_enabled = 1 WHERE id = 2').run();
+    const ctxWithMfa = mockReqRes({ user: { id: 2, role: 'admin', is_super_admin: 1 } });
+    requireSuperAdminMfaEnrolled(ctxWithMfa.req, ctxWithMfa.res, ctxWithMfa.next);
+
+    assert.strictEqual(ctxWithMfa.getResult().nextCalled, true);
   });
 });

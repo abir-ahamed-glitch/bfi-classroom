@@ -5,7 +5,9 @@ import jwt from 'jsonwebtoken';
 import db from '../db/database.js';
 import { 
   authenticateToken, 
-  requireSuperAdmin, 
+  requireSuperAdmin,
+  requireSuperAdminMfaEnrolled,
+  isFoundingOwner, 
   requireRole, 
   requireRecentAuth, 
   sanitizeInput, 
@@ -26,6 +28,7 @@ import { getJwtSecret } from '../config/security.js';
 import { securityEvents } from '../utils/security-events.js';
 import { recordAuditLog, formatDhakaTimestamp, redactSensitiveData } from '../services/auditLedgerService.js';
 import { sendPasswordResetEmail } from '../utils/email.js';
+import { ALLOWED_CHALLENGE_ACTIONS, issueActionBoundChallenge, verifyAndConsumeActionBoundChallenge } from '../utils/action-challenges.js';
 
 const router = express.Router();
 
@@ -686,7 +689,7 @@ router.get('/administrators', authenticateToken, requireSuperAdmin, (req, res) =
     const getPerms = db.prepare('SELECT permission FROM admin_permissions WHERE user_id = ?');
 
     const result = admins.map(a => {
-      const isSuper = Number(a.id) === 1 && Boolean(a.is_super_admin);
+      const isSuper = a.role === 'admin' && Boolean(a.is_super_admin);
       const permissions = isSuper ? ['*'] : getPerms.all(a.id).map(p => p.permission);
       const creatorName = a.created_by_admin_id ? (a.creator_username || a.creator_email || `Admin #${a.created_by_admin_id}`) : 'Unknown/Legacy';
       return {
@@ -827,7 +830,7 @@ router.get('/administrators/:id/accountability-profile', authenticateToken, requ
       return res.status(404).json({ error: 'Administrator not found' });
     }
 
-    const isSuper = Number(admin.id) === 1 && Boolean(admin.is_super_admin);
+    const isSuper = admin.role === 'admin' && Boolean(admin.is_super_admin);
     const getPerms = db.prepare('SELECT permission FROM admin_permissions WHERE user_id = ?');
     const effectivePermissions = isSuper ? ['*'] : getPerms.all(adminId).map(p => p.permission);
 
@@ -1286,7 +1289,7 @@ router.get('/administrators/:id', authenticateToken, requireSuperAdmin, (req, re
       return res.status(404).json({ error: 'Administrator not found' });
     }
 
-    const isSuper = Number(admin.id) === 1 && Boolean(admin.is_super_admin);
+    const isSuper = admin.role === 'admin' && Boolean(admin.is_super_admin);
     const permissions = isSuper
       ? ['*']
       : db.prepare('SELECT permission FROM admin_permissions WHERE user_id = ?').all(admin.id).map(p => p.permission);
@@ -1410,10 +1413,29 @@ router.patch('/administrators/:id/status', authenticateToken, requireSuperAdmin,
 
     if (targetId === 1) {
       recordFailedAuditLog(req.user.id, targetId, 'update_status', 'Attempted to deactivate Super Admin account', req.ip);
-      return res.status(403).json({ error: 'Cannot deactivate the Super Administrator account.' });
+      return res.status(403).json({ error: 'Cannot deactivate the founding Super Administrator account.', code: 'FOUNDING_OWNER_PROTECTED' });
     }
 
-    const targetUser = db.prepare('SELECT id, username, role, is_active, archived_at, account_version FROM users WHERE id = ? AND deleted_at IS NULL').get(targetId);
+    const targetUser = db.prepare('SELECT id, username, role, is_active, archived_at, account_version, is_super_admin FROM users WHERE id = ? AND deleted_at IS NULL').get(targetId);
+    if (!targetUser || targetUser.role !== 'admin') {
+      return res.status(404).json({ error: 'Administrator not found.' });
+    }
+
+    if (is_active === 0 && targetUser.is_super_admin === 1) {
+      const usableCount = db.prepare(`
+        SELECT COUNT(*) as c FROM users
+        WHERE role = 'admin' AND is_super_admin = 1
+          AND is_active = 1 AND archived_at IS NULL AND deleted_at IS NULL
+          AND password_reset_pending = 0 AND two_factor_enabled = 1
+          AND id != ?
+      `).get(targetId).c;
+      if (usableCount === 0) {
+        return res.status(409).json({
+          error: 'Cannot deactivate the last usable Super Administrator. At least one active, unarchived, MFA-enrolled Super Administrator must remain.',
+          code: 'LAST_SUPER_ADMIN_PROTECTED'
+        });
+      }
+    }
     if (!targetUser || targetUser.role !== 'admin') {
       return res.status(404).json({ error: 'Administrator not found.' });
     }
@@ -1500,7 +1522,7 @@ router.post('/administrators/:id/archive', authenticateToken, requireSuperAdmin,
 
     if (targetId === 1) {
       recordFailedAuditLog(req.user.id, targetId, 'archive_administrator', 'Cannot archive Super Admin', req.ip);
-      return res.status(403).json({ error: 'Cannot archive the Super Administrator account.' });
+      return res.status(403).json({ error: 'Cannot archive the founding Super Administrator account.', code: 'FOUNDING_OWNER_PROTECTED' });
     }
 
     if (expected_account_version === undefined || expected_account_version === null || typeof expected_account_version !== 'number') {
@@ -1514,7 +1536,22 @@ router.post('/administrators/:id/archive', authenticateToken, requireSuperAdmin,
       return res.status(400).json({ error: 'A valid archive reason (minimum 5 characters) is required.' });
     }
 
-    const targetUser = db.prepare('SELECT id, username, role, is_active, archived_at, account_version FROM users WHERE id = ? AND deleted_at IS NULL').get(targetId);
+    const targetUser = db.prepare('SELECT id, username, role, is_active, archived_at, account_version, is_super_admin FROM users WHERE id = ? AND deleted_at IS NULL').get(targetId);
+    if (targetUser && targetUser.is_super_admin === 1) {
+      const usableCount = db.prepare(`
+        SELECT COUNT(*) as c FROM users
+        WHERE role = 'admin' AND is_super_admin = 1
+          AND is_active = 1 AND archived_at IS NULL AND deleted_at IS NULL
+          AND password_reset_pending = 0 AND two_factor_enabled = 1
+          AND id != ?
+      `).get(targetId).c;
+      if (usableCount === 0) {
+        return res.status(409).json({
+          error: 'Cannot archive the last usable Super Administrator. At least one active, unarchived, MFA-enrolled Super Administrator must remain.',
+          code: 'LAST_SUPER_ADMIN_PROTECTED'
+        });
+      }
+    }
     if (!targetUser || targetUser.role !== 'admin') {
       return res.status(404).json({ error: 'Administrator not found.' });
     }
@@ -1821,8 +1858,8 @@ router.post('/administrators/:id/reset-password/email', authenticateToken, requi
     const { expected_account_version, reason } = req.body;
 
     if (targetId === 1) {
-      recordFailedAuditLog(req.user.id, targetId, 'admin_password_reset', 'Cannot reset Super Admin password', req.ip);
-      return res.status(403).json({ error: 'Cannot reset the Super Administrator password.' });
+      recordFailedAuditLog(req.user.id, targetId, 'admin_password_reset', 'Cannot reset founding Super Admin password', req.ip);
+      return res.status(403).json({ error: 'Cannot reset the founding Super Administrator password.', code: 'FOUNDING_OWNER_PROTECTED' });
     }
 
     if (expected_account_version === undefined || expected_account_version === null || typeof expected_account_version !== 'number') {
@@ -1832,7 +1869,11 @@ router.post('/administrators/:id/reset-password/email', authenticateToken, requi
       });
     }
 
-    const targetUser = db.prepare('SELECT id, username, email, role, is_active, archived_at, account_version, token_version, email_verified_at, verified_email FROM users WHERE id = ? AND deleted_at IS NULL').get(targetId);
+    const targetUser = db.prepare('SELECT id, username, email, role, is_active, archived_at, account_version, token_version, email_verified_at, verified_email, is_super_admin FROM users WHERE id = ? AND deleted_at IS NULL').get(targetId);
+    if (targetUser && targetUser.is_super_admin === 1) {
+      recordFailedAuditLog(req.user.id, targetId, 'admin_password_reset', 'Cannot reset peer Super Admin password', req.ip);
+      return res.status(403).json({ error: 'Super Administrators cannot reset passwords for other Super Administrators.', code: 'PEER_RESET_FORBIDDEN' });
+    }
     if (!targetUser || targetUser.role !== 'admin') {
       return res.status(404).json({ error: 'Administrator not found.' });
     }
@@ -1959,8 +2000,8 @@ router.post('/administrators/:id/reset-password/direct-link', authenticateToken,
     const { expected_account_version, reason } = req.body;
 
     if (targetId === 1) {
-      recordFailedAuditLog(req.user.id, targetId, 'admin_password_reset', 'Cannot reset Super Admin password', req.ip);
-      return res.status(403).json({ error: 'Cannot reset the Super Administrator password.' });
+      recordFailedAuditLog(req.user.id, targetId, 'admin_password_reset', 'Cannot reset founding Super Admin password', req.ip);
+      return res.status(403).json({ error: 'Cannot reset the founding Super Administrator password.', code: 'FOUNDING_OWNER_PROTECTED' });
     }
 
     if (expected_account_version === undefined || expected_account_version === null || typeof expected_account_version !== 'number') {
@@ -1970,7 +2011,11 @@ router.post('/administrators/:id/reset-password/direct-link', authenticateToken,
       });
     }
 
-    const targetUser = db.prepare('SELECT id, username, email, role, is_active, archived_at, account_version, token_version FROM users WHERE id = ? AND deleted_at IS NULL').get(targetId);
+    const targetUser = db.prepare('SELECT id, username, email, role, is_active, archived_at, account_version, token_version, is_super_admin FROM users WHERE id = ? AND deleted_at IS NULL').get(targetId);
+    if (targetUser && targetUser.is_super_admin === 1) {
+      recordFailedAuditLog(req.user.id, targetId, 'admin_password_reset', 'Cannot reset peer Super Admin password', req.ip);
+      return res.status(403).json({ error: 'Super Administrators cannot reset passwords for other Super Administrators.', code: 'PEER_RESET_FORBIDDEN' });
+    }
     if (!targetUser || targetUser.role !== 'admin') {
       return res.status(404).json({ error: 'Administrator not found.' });
     }
@@ -2220,4 +2265,353 @@ router.get('/administrators/:id/export-history', authenticateToken, requireSuper
 });
 
 export { getValidatedAppUrl };
+
+// ==========================================
+// MULTIPLE SUPER ADMIN GOVERNANCE ENDPOINTS
+// ==========================================
+
+// POST /api/admin/super-admins/challenge - Issue action-bound challenge for Super Admin ceremonies
+router.post('/super-admins/challenge', authenticateToken, requireSuperAdmin, requireRecentAuth, requireSuperAdminMfaEnrolled, sanitizeInput, (req, res) => {
+  try {
+    const { target_id, action } = req.body;
+    const targetId = Number(target_id);
+
+    if (!targetId || !action) {
+      return res.status(400).json({ error: 'target_id and action are required.', code: 'INVALID_INPUT' });
+    }
+
+    if (!ALLOWED_CHALLENGE_ACTIONS.includes(action)) {
+      return res.status(400).json({ error: `Invalid action: ${action}. Allowed actions: ${ALLOWED_CHALLENGE_ACTIONS.join(', ')}`, code: 'INVALID_ACTION' });
+    }
+
+    const targetUser = db.prepare('SELECT id, username, role, is_active, archived_at, deleted_at, is_super_admin, email_verified_at, verified_email, email, two_factor_enabled FROM users WHERE id = ?').get(targetId);
+    if (!targetUser || targetUser.role !== 'admin' || targetUser.deleted_at !== null) {
+      return res.status(404).json({ error: 'Target administrator not found.', code: 'ADMIN_NOT_FOUND' });
+    }
+
+    if (action === 'demote_super_admin') {
+      if (Number(targetId) === 1) {
+        return res.status(403).json({
+          error: 'The founding Super Administrator cannot be demoted, deleted, archived, or reset.',
+          code: 'FOUNDING_OWNER_PROTECTED'
+        });
+      }
+      if (targetUser.is_super_admin !== 1) {
+        return res.status(400).json({
+          error: 'Target administrator is not a Super Administrator.',
+          code: 'NOT_SUPER_ADMIN'
+        });
+      }
+    } else if (action === 'promote_super_admin') {
+      if (targetUser.is_super_admin === 1) {
+        return res.status(400).json({
+          error: 'Administrator is already a Super Administrator.',
+          code: 'ALREADY_SUPER_ADMIN'
+        });
+      }
+      if (targetUser.archived_at !== null) {
+        return res.status(400).json({
+          error: 'Cannot promote an archived administrator. Restore the account first.',
+          code: 'ACCOUNT_ARCHIVED'
+        });
+      }
+      if (targetUser.is_active !== 1) {
+        return res.status(400).json({
+          error: 'Cannot promote an inactive administrator.',
+          code: 'ACCOUNT_INACTIVE'
+        });
+      }
+      if (!targetUser.email || !targetUser.email_verified_at || targetUser.verified_email !== targetUser.email) {
+        return res.status(400).json({
+          error: 'Administrator email must be verified prior to Super Administrator promotion.',
+          code: 'EMAIL_VERIFICATION_REQUIRED'
+        });
+      }
+      if (targetUser.two_factor_enabled !== 1) {
+        return res.status(400).json({
+          error: 'Administrator must have two-factor authentication enabled prior to Super Administrator promotion.',
+          code: 'MFA_ENROLLMENT_REQUIRED'
+        });
+      }
+    }
+
+    const challenge = issueActionBoundChallenge(db, {
+      actorId: req.user.id,
+      sessionId: req.user.sessionId,
+      targetId,
+      action
+    });
+
+    res.json(challenge);
+  } catch (err) {
+    console.error('Error issuing action bound challenge:', err);
+    res.status(500).json({ error: 'Failed to issue action challenge' });
+  }
+});
+
+// POST /api/admin/super-admins/promote - Promote an admin to Super Administrator
+router.post('/super-admins/promote', authenticateToken, requireSuperAdmin, requireRecentAuth, requireSuperAdminMfaEnrolled, sanitizeInput, (req, res) => {
+  try {
+    const { target_id, challenge_id, challenge_token, code, recovery_code } = req.body;
+    const targetId = Number(target_id);
+
+    if (!targetId || !challenge_id || !challenge_token) {
+      return res.status(400).json({ error: 'target_id, challenge_id, and challenge_token are required.', code: 'INVALID_INPUT' });
+    }
+
+    // Step-up verification
+    const verifyRes = verifyAndConsumeActionBoundChallenge(db, {
+      actorId: req.user.id,
+      sessionId: req.user.sessionId,
+      targetId,
+      action: 'promote_super_admin',
+      challengeId: challenge_id,
+      challengeToken: challenge_token,
+      code,
+      recoveryCode: recovery_code
+    });
+
+    if (!verifyRes.success) {
+      return res.status(401).json({ error: verifyRes.error, code: verifyRes.code });
+    }
+
+    // Atomic transaction for promotion
+    const promoteTx = db.transaction(() => {
+      const target = db.prepare(`
+        SELECT id, username, email, role, is_active, archived_at, deleted_at, is_super_admin, email_verified_at, verified_email, two_factor_enabled, account_version, token_version
+        FROM users WHERE id = ?
+      `).get(targetId);
+
+      if (!target || target.role !== 'admin' || target.deleted_at !== null) {
+        const err = new Error('Target administrator not found.');
+        err.code = 'ADMIN_NOT_FOUND';
+        err.status = 404;
+        throw err;
+      }
+
+      if (target.is_super_admin === 1) {
+        const err = new Error('Administrator is already a Super Administrator.');
+        err.code = 'ALREADY_SUPER_ADMIN';
+        err.status = 400;
+        throw err;
+      }
+
+      if (target.archived_at !== null) {
+        const err = new Error('Cannot promote an archived administrator.');
+        err.code = 'ACCOUNT_ARCHIVED';
+        err.status = 400;
+        throw err;
+      }
+
+      if (target.is_active !== 1) {
+        const err = new Error('Cannot promote an inactive administrator.');
+        err.code = 'ACCOUNT_INACTIVE';
+        err.status = 400;
+        throw err;
+      }
+
+      if (!target.email || !target.email_verified_at || target.verified_email !== target.email) {
+        const err = new Error('Administrator email must be verified prior to Super Administrator promotion.');
+        err.code = 'EMAIL_VERIFICATION_REQUIRED';
+        err.status = 400;
+        throw err;
+      }
+
+      if (target.two_factor_enabled !== 1) {
+        const err = new Error('Administrator must have two-factor authentication enabled prior to Super Administrator promotion.');
+        err.code = 'MFA_ENROLLMENT_REQUIRED';
+        err.status = 400;
+        throw err;
+      }
+
+      // Promote target
+      db.prepare(`
+        UPDATE users
+        SET is_super_admin = 1,
+            account_version = account_version + 1,
+            token_version = token_version + 1,
+            updated_at = datetime('now')
+        WHERE id = ?
+      `).run(targetId);
+
+      // Super Admins have universal implicit permissions; clean up granular rows
+      db.prepare('DELETE FROM admin_permissions WHERE user_id = ?').run(targetId);
+
+      // Revoke all existing sessions so target must sign in fresh
+      db.prepare('DELETE FROM sessions WHERE user_id = ?').run(targetId);
+
+      // Record audit log
+      recordAuditLog({
+        actorId: req.user.id,
+        targetUserId: targetId,
+        action: 'super_admin_promoted',
+        module: 'admin_management',
+        resource: `admin:${targetId}`,
+        outcome: 'success',
+        correlationId: req.correlationId,
+        beforeState: { is_super_admin: 0, account_version: target.account_version },
+        afterState: { is_super_admin: 1, account_version: target.account_version + 1 },
+        details: { username: target.username, email: target.email },
+        ipAddress: req.ip || '',
+        throwOnError: true
+      });
+
+      return {
+        id: target.id,
+        username: target.username,
+        is_super_admin: 1,
+        isSuperAdmin: true,
+        account_version: target.account_version + 1
+      };
+    });
+
+    const resultUser = promoteTx();
+
+    // Terminate socket connections to force refresh
+    securityEvents.emit('revoke_user', { userId: targetId });
+
+    res.json({
+      message: 'Administrator successfully promoted to Super Administrator.',
+      user: resultUser
+    });
+  } catch (err) {
+    if (err.status && err.code) {
+      return res.status(err.status).json({ error: err.message, code: err.code });
+    }
+    console.error('Error promoting administrator to Super Admin:', err);
+    res.status(500).json({ error: 'Failed to promote administrator to Super Administrator' });
+  }
+});
+
+// POST /api/admin/super-admins/demote - Demote a Super Administrator to ordinary administrator
+router.post('/super-admins/demote', authenticateToken, requireSuperAdmin, requireRecentAuth, requireSuperAdminMfaEnrolled, sanitizeInput, (req, res) => {
+  try {
+    const { target_id, challenge_id, challenge_token, code, recovery_code } = req.body;
+    const targetId = Number(target_id);
+
+    if (!targetId || !challenge_id || !challenge_token) {
+      return res.status(400).json({ error: 'target_id, challenge_id, and challenge_token are required.', code: 'INVALID_INPUT' });
+    }
+
+    // Policy 1: Founding owner protection
+    if (Number(targetId) === 1) {
+      return res.status(403).json({
+        error: 'The founding Super Administrator cannot be demoted, deleted, archived, or reset.',
+        code: 'FOUNDING_OWNER_PROTECTED'
+      });
+    }
+
+    // Step-up verification
+    const verifyRes = verifyAndConsumeActionBoundChallenge(db, {
+      actorId: req.user.id,
+      sessionId: req.user.sessionId,
+      targetId,
+      action: 'demote_super_admin',
+      challengeId: challenge_id,
+      challengeToken: challenge_token,
+      code,
+      recoveryCode: recovery_code
+    });
+
+    if (!verifyRes.success) {
+      return res.status(401).json({ error: verifyRes.error, code: verifyRes.code });
+    }
+
+    // Atomic transaction for demotion
+    const demoteTx = db.transaction(() => {
+      const target = db.prepare(`
+        SELECT id, username, email, role, is_active, archived_at, deleted_at, is_super_admin, account_version, token_version
+        FROM users WHERE id = ?
+      `).get(targetId);
+
+      if (!target || target.role !== 'admin' || target.deleted_at !== null) {
+        const err = new Error('Target administrator not found.');
+        err.code = 'ADMIN_NOT_FOUND';
+        err.status = 404;
+        throw err;
+      }
+
+      if (target.is_super_admin !== 1) {
+        const err = new Error('Target administrator is not a Super Administrator.');
+        err.code = 'NOT_SUPER_ADMIN';
+        err.status = 400;
+        throw err;
+      }
+
+      // Policy 2: Last usable Super Admin defense
+      const usableSuperAdminCount = db.prepare(`
+        SELECT COUNT(*) as c FROM users
+        WHERE role = 'admin' AND is_super_admin = 1
+          AND is_active = 1 AND archived_at IS NULL AND deleted_at IS NULL
+          AND password_reset_pending = 0 AND two_factor_enabled = 1
+          AND id != ?
+      `).get(targetId).c;
+
+      if (usableSuperAdminCount === 0) {
+        const err = new Error('Cannot demote the last usable Super Administrator. At least one active, unarchived, MFA-enrolled Super Administrator must remain.');
+        err.code = 'LAST_SUPER_ADMIN_PROTECTED';
+        err.status = 409;
+        throw err;
+      }
+
+      // Demote target: becomes ordinary admin with ZERO permissions
+      db.prepare(`
+        UPDATE users
+        SET is_super_admin = 0,
+            account_version = account_version + 1,
+            token_version = token_version + 1,
+            updated_at = datetime('now')
+        WHERE id = ?
+      `).run(targetId);
+
+      // Ensure zero permissions: delete all rows in admin_permissions
+      db.prepare('DELETE FROM admin_permissions WHERE user_id = ?').run(targetId);
+
+      // Invalidate all active sessions so target must log in again as ordinary admin
+      db.prepare('DELETE FROM sessions WHERE user_id = ?').run(targetId);
+
+      // Record audit log
+      recordAuditLog({
+        actorId: req.user.id,
+        targetUserId: targetId,
+        action: 'super_admin_demoted',
+        module: 'admin_management',
+        resource: `admin:${targetId}`,
+        outcome: 'success',
+        correlationId: req.correlationId,
+        beforeState: { is_super_admin: 1, account_version: target.account_version },
+        afterState: { is_super_admin: 0, account_version: target.account_version + 1, permissions: [] },
+        details: { username: target.username, email: target.email },
+        ipAddress: req.ip || '',
+        throwOnError: true
+      });
+
+      return {
+        id: target.id,
+        username: target.username,
+        is_super_admin: 0,
+        isSuperAdmin: false,
+        account_version: target.account_version + 1,
+        permissions: []
+      };
+    });
+
+    const resultUser = demoteTx();
+
+    // Terminate socket connections
+    securityEvents.emit('revoke_user', { userId: targetId });
+
+    res.json({
+      message: 'Super Administrator demoted to ordinary administrator with zero permissions.',
+      user: resultUser
+    });
+  } catch (err) {
+    if (err.status && err.code) {
+      return res.status(err.status).json({ error: err.message, code: err.code });
+    }
+    console.error('Error demoting Super Administrator:', err);
+    res.status(500).json({ error: 'Failed to demote Super Administrator' });
+  }
+});
+
 export default router;

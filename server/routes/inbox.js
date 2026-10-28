@@ -1029,7 +1029,7 @@ router.get('/recipients', authenticateToken, (req, res) => {
     }
     const isViewerAdmin = req.user.role === 'admin';
     const normalizedUsers = (users || []).map(u => {
-      const isSuper = isViewerAdmin && Number(u.id) === 1 && u.role === 'admin' && Boolean(u.is_super_admin);
+      const isSuper = isViewerAdmin && u.role === 'admin' && Boolean(u.is_super_admin);
       return {
         ...u,
         is_super_admin: isSuper ? 1 : 0,
@@ -1142,7 +1142,7 @@ router.get('/users', authenticateToken, (req, res) => {
 
     const isViewerAdmin = req.user.role === 'admin';
     const normalizedUsers = (users || []).map(u => {
-      const isSuper = isViewerAdmin && Number(u.id) === 1 && u.role === 'admin' && Boolean(u.is_super_admin);
+      const isSuper = isViewerAdmin && u.role === 'admin' && Boolean(u.is_super_admin);
       return {
         ...u,
         is_super_admin: isSuper ? 1 : 0,

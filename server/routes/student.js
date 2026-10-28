@@ -21,7 +21,7 @@ function fetchUserProfileData(userId, includePrivateData = false, isViewerAdmin 
   if (!baseUser) return null;
 
   // Viewer-aware identity privacy: only admin viewers receive Super Admin designation
-  const isSuper = Boolean(isViewerAdmin) && Number(baseUser.id) === 1 && baseUser.role === 'admin' && Boolean(baseUser.is_super_admin);
+  const isSuper = Boolean(isViewerAdmin) && baseUser.role === 'admin' && Boolean(baseUser.is_super_admin);
   baseUser.is_super_admin = isSuper ? 1 : 0;
   baseUser.isSuperAdmin = isSuper;
 
@@ -56,7 +56,7 @@ function fetchUserProfileData(userId, includePrivateData = false, isViewerAdmin 
 // Get student or instructor profile
 router.get('/profile', authenticateToken, async (req, res) => {
   try {
-    const isViewerAdmin = req.user.role === 'admin' || Number(req.user.id) === 1;
+    const isViewerAdmin = req.user.role === 'admin';
     const data = fetchUserProfileData(req.user.id, true, isViewerAdmin);
     
     if (!data) {

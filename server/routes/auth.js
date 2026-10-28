@@ -26,7 +26,7 @@ function buildUserPayload(user) {
     profile = { full_name: `${user.first_name} ${user.last_name}` };
   }
 
-  const isSuper = Number(user.id) === 1 && user.role === 'admin' && (user.is_super_admin === 1 || user.is_super_admin === true || user.isSuperAdmin === true);
+  const isSuper = user.role === 'admin' && (user.is_super_admin === 1 || user.is_super_admin === true || user.isSuperAdmin === true);
 
   let permissions = [];
   if (isSuper) {
@@ -57,7 +57,7 @@ function buildUserPayload(user) {
 }
 
 function signAccessToken(user, sessionId = null) {
-  const isSuper = Number(user.id) === 1 && user.role === 'admin' && (user.is_super_admin === 1 || user.is_super_admin === true || user.isSuperAdmin === true);
+  const isSuper = user.role === 'admin' && (user.is_super_admin === 1 || user.is_super_admin === true || user.isSuperAdmin === true);
   // Privileged administrators use 15m short-lived tokens; non-privileged users use standard expiry
   const isPrivileged = user.role === 'admin';
   const expiresIn = isPrivileged ? '15m' : (process.env.JWT_EXPIRY || '365d');
@@ -95,7 +95,7 @@ function setRefreshCookie(req, res, token) {
 }
 
 function issueRefreshToken(req, res, user) {
-  const isSuper = Number(user.id) === 1 && user.role === 'admin' && (user.is_super_admin === 1 || user.is_super_admin === true || user.isSuperAdmin === true);
+  const isSuper = user.role === 'admin' && (user.is_super_admin === 1 || user.is_super_admin === true || user.isSuperAdmin === true);
   const refreshToken = jwt.sign(
     { id: user.id, username: user.username, role: user.role, is_super_admin: isSuper ? 1 : 0, token_version: user.token_version || 1 },
     getJwtRefreshSecret(),
@@ -913,7 +913,7 @@ router.get('/me', authenticateToken, (req, res) => {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    const isSuper = Number(user.id) === 1 && user.role === 'admin' && (user.is_super_admin === 1 || user.is_super_admin === true);
+    const isSuper = user.role === 'admin' && (user.is_super_admin === 1 || user.is_super_admin === true);
 
     let permissions = [];
     if (isSuper) {
@@ -1078,7 +1078,7 @@ router.put('/update-name', authenticateToken, sanitizeInput, (req, res) => {
     }
 
     const updated = db.prepare('SELECT id, username, email, role, first_name, last_name, profile_picture, public_key, is_super_admin FROM users WHERE id = ?').get(req.user.id);
-    const isSuper = Number(updated.id) === 1 && updated.role === 'admin' && (updated.is_super_admin === 1 || updated.is_super_admin === true);
+    const isSuper = updated.role === 'admin' && (updated.is_super_admin === 1 || updated.is_super_admin === true);
     res.json({
       message: 'Profile updated successfully',
       user: {
