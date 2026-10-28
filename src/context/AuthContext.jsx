@@ -22,7 +22,7 @@ export function AuthProvider({ children }) {
   useEffect(() => {
     const token = localStorage.getItem('token');
     if (token) {
-      const cachedUser = localStorage.getItem(AUTH_USER_CACHE_KEY);
+      const cachedUser = localStorage.getItem(AUTH_USER_CACHE_KEY) || localStorage.getItem('user');
       if (cachedUser) {
         try {
           const parsed = JSON.parse(cachedUser);

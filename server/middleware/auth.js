@@ -199,7 +199,7 @@ export function requireSuperAdmin(req, res, next) {
 
   // Re-verify against real-time database state
   const currentUser = db.prepare(`
-    SELECT id, role, is_active, deleted_at, is_super_admin 
+    SELECT id, role, is_active, deleted_at, archived_at, is_super_admin 
     FROM users 
     WHERE id = ?
   `).get(req.user.id);
@@ -208,7 +208,7 @@ export function requireSuperAdmin(req, res, next) {
     return res.status(401).json({ error: 'Account inactive or not found' });
   }
 
-  if (currentUser.archived_at !== null || currentUser.role !== 'admin' || !currentUser.is_super_admin) {
+  if (Boolean(currentUser.archived_at) || currentUser.role !== 'admin' || !currentUser.is_super_admin) {
     try {
       recordAuditLog({
         actorId: currentUser.id,
