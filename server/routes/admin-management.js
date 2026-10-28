@@ -675,7 +675,7 @@ router.get('/administrators', authenticateToken, requireSuperAdmin, (req, res) =
              u.is_super_admin, u.permissions_version, u.account_version, u.token_version, u.last_login, u.created_at, u.created_by_admin_id,
              u.archived_at, u.archived_by_admin_id, u.archive_reason,
              u.restored_at, u.restored_by_admin_id, u.restore_reason,
-             u.password_reset_pending, u.email_verified_at, u.verified_email,
+             u.password_reset_pending, u.email_verified_at, u.verified_email, u.two_factor_enabled,
              c.username as creator_username, c.email as creator_email,
              ab.username as archiver_username, rb.username as restorer_username
       FROM users u
@@ -816,7 +816,7 @@ router.get('/administrators/:id/accountability-profile', authenticateToken, requ
         u.created_at, u.updated_at, u.created_by_admin_id,
         u.archived_at, u.archived_by_admin_id, u.archive_reason,
         u.restored_at, u.restored_by_admin_id, u.restore_reason,
-        u.email_verified_at, u.verified_email, u.account_version,
+        u.email_verified_at, u.verified_email, u.two_factor_enabled, u.account_version,
         ap.whatsapp_number as phone_number, ap.full_name, ap.bio,
         c.username as creator_username, c.email as creator_email,
         c.first_name as creator_first_name, c.last_name as creator_last_name

@@ -44,6 +44,16 @@ export default function AdminManagement() {
   const [restoreError, setRestoreError] = useState('');
   const [isRestoring, setIsRestoring] = useState(false);
 
+  // Governance Modal State (Promote / Demote Super Admin)
+  const [govModal, setGovModal] = useState(null); // null | { action: 'promote' | 'demote', admin: object }
+  const [govChallenge, setGovChallenge] = useState(null);
+  const [govCode, setGovCode] = useState('');
+  const [govRecoveryCode, setGovRecoveryCode] = useState('');
+  const [govUseRecovery, setGovUseRecovery] = useState(false);
+  const [govSudoPassword, setGovSudoPassword] = useState('');
+  const [govError, setGovError] = useState('');
+  const [isGovSubmitting, setIsGovSubmitting] = useState(false);
+
   // Reset Password Modal State
   const [resetTarget, setResetTarget] = useState(null);
   const [resetMethod, setResetMethod] = useState('email'); // 'email' | 'direct'
@@ -223,6 +233,99 @@ export default function AdminManagement() {
     }, 1000);
     return () => clearInterval(interval);
   }, [directLinkResult]);
+
+  // Governance Action: Open Step-Up Modal and Request Challenge
+  const openGovernanceModal = async (action, admin) => {
+    setGovModal({ action, admin });
+    setGovChallenge(null);
+    setGovCode('');
+    setGovRecoveryCode('');
+    setGovUseRecovery(false);
+    setGovSudoPassword('');
+    setGovError('');
+    setIsGovSubmitting(false);
+
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch('/api/admin/super-admins/challenge', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ action, targetUserId: admin.id })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to issue action challenge');
+      }
+      setGovChallenge(data);
+    } catch (err) {
+      setGovError(err.message || 'Failed to prepare step-up challenge');
+    }
+  };
+
+  // Governance Action: Submit Step-Up Verification
+  const handleConfirmGovernance = async (e) => {
+    e.preventDefault();
+    if (!govModal || !govChallenge) return;
+    const { action, admin } = govModal;
+    setIsGovSubmitting(true);
+    setGovError('');
+
+    try {
+      const token = localStorage.getItem('token');
+      const headers = {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      };
+
+      if (govSudoPassword) {
+        const vRes = await fetch('/api/admin/auth/verify-password', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ password: govSudoPassword })
+        });
+        const vData = await vRes.json();
+        if (!vRes.ok) throw new Error(vData.error || 'Sudo password verification failed');
+        headers['X-Sudo-Token'] = vData.sudoToken;
+        setSudoToken(vData.sudoToken);
+        sessionStorage.setItem('sudo_token', vData.sudoToken);
+      } else if (sudoToken) {
+        headers['X-Sudo-Token'] = sudoToken;
+      }
+
+      const endpoint = action === 'promote' 
+        ? '/api/admin/super-admins/promote' 
+        : '/api/admin/super-admins/demote';
+
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          challengeId: govChallenge.challengeId,
+          challengeToken: govChallenge.challengeToken,
+          code: govUseRecovery ? undefined : govCode.trim(),
+          recoveryCode: govUseRecovery ? govRecoveryCode.trim() : undefined,
+          targetUserId: admin.id,
+          expected_version: admin.account_version || 1
+        })
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || `Failed to ${action} administrator`);
+      }
+
+      setSuccessMsg(`Administrator ${admin.username} successfully ${action === 'promote' ? 'promoted to Super Admin' : 'demoted to ordinary admin'}.`);
+      setGovModal(null);
+      fetchData();
+    } catch (err) {
+      setGovError(err.message || 'Operation failed');
+    } finally {
+      setIsGovSubmitting(false);
+    }
+  };
 
   // Handle Archive Submission
   const handleConfirmArchive = async (e) => {
@@ -1126,7 +1229,8 @@ export default function AdminManagement() {
     );
   }, [archivedAdmins, archivedSearchQuery]);
 
-  if (!currentUser?.is_super_admin) {
+  const isCurrentSuperAdmin = Boolean(currentUser?.is_super_admin || currentUser?.isSuperAdmin);
+  if (!isCurrentSuperAdmin) {
     return (
       <div className="admin-mgmt-container page-container" style={{ textAlign: 'center', paddingTop: '4rem' }}>
         <ShieldAlert size={48} color="#ef4444" style={{ margin: '0 auto 1rem' }} />
@@ -1362,7 +1466,11 @@ export default function AdminManagement() {
                               <div>
                                 <div className="admin-user-info-name">
                                   {admin.first_name || ''} {admin.last_name || ''}
-                                  {isSuper ? (
+                                  {admin.id === 1 ? (
+                                    <span className="badge-super-admin" style={{ background: 'linear-gradient(135deg, rgba(225,29,72,0.2), rgba(139,92,246,0.2))', border: '1px solid rgba(225,29,72,0.4)', color: '#fb7185' }} title="Protected Founding Owner">
+                                      <Shield size={10} /> Founding Owner
+                                    </span>
+                                  ) : isSuper ? (
                                     <span className="badge-super-admin">
                                       <Shield size={10} /> Super Admin
                                     </span>
@@ -1437,8 +1545,48 @@ export default function AdminManagement() {
                               >
                                 <Eye size={14} /> Profile
                               </button>
-                              {!isSuper && (
+                              {/* Super Admin Promotion & Demotion Actions */}
+                              {admin.id === 1 ? (
+                                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontStyle: 'italic', padding: '0.25rem 0.5rem' }}>
+                                  Protected Founding Account
+                                </span>
+                              ) : isSuper ? (
+                                <button
+                                  type="button"
+                                  className="btn-secondary btn-danger-ghost"
+                                  style={{ padding: '0.4rem 0.75rem', minHeight: '36px', fontSize: '0.8rem', color: '#f43f5e' }}
+                                  onClick={() => openGovernanceModal('demote', admin)}
+                                  data-testid={`demote-admin-${admin.id}`}
+                                  title="Demote to Ordinary Administrator"
+                                >
+                                  <RotateCcw size={14} /> Demote
+                                </button>
+                              ) : (
                                 <>
+                                  {admin.is_active && admin.email_verified_at && admin.two_factor_enabled ? (
+                                    <button
+                                      type="button"
+                                      className="btn-secondary"
+                                      style={{ padding: '0.4rem 0.75rem', minHeight: '36px', fontSize: '0.8rem', color: '#a855f7' }}
+                                      onClick={() => openGovernanceModal('promote', admin)}
+                                      data-testid={`promote-admin-${admin.id}`}
+                                      title="Promote to Super Administrator"
+                                    >
+                                      <ShieldCheck size={14} /> Promote
+                                    </button>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      className="btn-secondary"
+                                      disabled
+                                      style={{ padding: '0.4rem 0.75rem', minHeight: '36px', fontSize: '0.8rem', opacity: 0.5, cursor: 'not-allowed' }}
+                                      title={!admin.is_active ? "Cannot promote inactive admin" : !admin.email_verified_at ? "Promotion requires verified recovery email" : "Promotion requires enrolled Two-Factor Authentication"}
+                                      data-testid={`promote-admin-disabled-${admin.id}`}
+                                    >
+                                      <Shield size={14} /> Promote
+                                    </button>
+                                  )}
+
                                   <button
                                     type="button"
                                     className="btn-secondary"
@@ -3227,6 +3375,174 @@ export default function AdminManagement() {
                   data-testid="confirm-reset-btn"
                 >
                   {isResetting ? 'Processing...' : resetMethod === 'email' ? 'Dispatch Reset Email' : 'Generate Direct Link'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>,
+        document.body
+      )}
+
+
+      {/* ── Super Admin Governance Modal (Promote / Demote) ──────────────── */}
+      {govModal && typeof document !== 'undefined' && createPortal(
+        <div className="admin-modal-backdrop" onClick={(e) => e.target === e.currentTarget && setGovModal(null)}>
+          <div className="admin-modal-dialog admin-modal" style={{ maxWidth: '520px', width: '90vw' }}>
+            <div className="admin-modal-header" style={{ borderBottomColor: govModal.action === 'promote' ? 'rgba(168, 85, 247, 0.4)' : 'rgba(239, 68, 68, 0.4)' }}>
+              <h2>
+                {govModal.action === 'promote' ? (
+                  <><ShieldCheck size={20} color="#a855f7" /> Promote to Super Administrator</>
+                ) : (
+                  <><RotateCcw size={20} color="#ef4444" /> Demote to Ordinary Administrator</>
+                )}
+              </h2>
+              <button type="button" className="admin-modal-close-btn" onClick={() => setGovModal(null)} data-testid="close-gov-modal-btn">
+                <X size={20} />
+              </button>
+            </div>
+
+            <form onSubmit={handleConfirmGovernance}>
+              <div className="admin-modal-body">
+                {/* Target User Info */}
+                <div style={{
+                  background: 'rgba(255, 255, 255, 0.04)',
+                  padding: '1rem',
+                  borderRadius: '8px',
+                  marginBottom: '1.25rem',
+                  border: '1px solid var(--glass-border, rgba(255, 255, 255, 0.1))'
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div>
+                      <div style={{ fontWeight: 600, fontSize: '0.95rem' }}>{govModal.admin.first_name} {govModal.admin.last_name}</div>
+                      <div style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', fontFamily: 'monospace' }}>
+                        {govModal.admin.username} &bull; {govModal.admin.email}
+                      </div>
+                    </div>
+                    <span className="badge-pill" style={{ fontSize: '0.75rem' }}>
+                      ID: {govModal.admin.id}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Explanatory / Warning Callout */}
+                {govModal.action === 'demote' ? (
+                  <div style={{
+                    background: 'rgba(239, 68, 68, 0.12)',
+                    border: '1px solid rgba(239, 68, 68, 0.3)',
+                    color: '#fca5a5',
+                    padding: '0.85rem 1rem',
+                    borderRadius: '8px',
+                    marginBottom: '1.25rem',
+                    fontSize: '0.85rem',
+                    lineHeight: 1.45
+                  }}>
+                    <div style={{ fontWeight: 700, marginBottom: '0.25rem', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                      <AlertTriangle size={15} /> Immediate Governance Impact
+                    </div>
+                    Demoting this Super Admin strips all privileges to 0 permissions and revokes all active sessions immediately. They will be forced to log in again and will require deliberate permission assignment.
+                  </div>
+                ) : (
+                  <div style={{
+                    background: 'rgba(168, 85, 247, 0.12)',
+                    border: '1px solid rgba(168, 85, 247, 0.3)',
+                    color: '#e9d5ff',
+                    padding: '0.85rem 1rem',
+                    borderRadius: '8px',
+                    marginBottom: '1.25rem',
+                    fontSize: '0.85rem',
+                    lineHeight: 1.45
+                  }}>
+                    <div style={{ fontWeight: 700, marginBottom: '0.25rem', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                      <ShieldCheck size={15} /> Full Platform Authority
+                    </div>
+                    Promoting this administrator grants full, unconditional platform privileges (*). Their sessions will be revoked and a fresh login with 2FA will be required.
+                  </div>
+                )}
+
+                {govError && (
+                  <div style={{
+                    background: 'rgba(239, 68, 68, 0.15)',
+                    color: '#fca5a5',
+                    padding: '0.75rem',
+                    borderRadius: '6px',
+                    marginBottom: '1rem',
+                    fontSize: '0.85rem'
+                  }}>
+                    {govError}
+                  </div>
+                )}
+
+                {/* Step-Up Verification Code */}
+                <div className="form-group" style={{ marginBottom: '1rem' }}>
+                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: '0.4rem' }}>
+                    {govUseRecovery ? 'Emergency Backup Recovery Code' : '6-Digit Authenticator Code (Step-Up Verification)'}
+                  </label>
+                  <input
+                    type="text"
+                    className="admin-input"
+                    style={{ width: '100%', padding: '0.6rem', borderRadius: '6px', fontFamily: 'monospace', textAlign: 'center', fontSize: '1.1rem', letterSpacing: '0.15em' }}
+                    value={govUseRecovery ? govRecoveryCode : govCode}
+                    onChange={(e) => {
+                      if (govUseRecovery) {
+                        setGovRecoveryCode(e.target.value);
+                      } else {
+                        setGovCode(e.target.value.replace(/\D/g, '').slice(0, 6));
+                      }
+                    }}
+                    placeholder={govUseRecovery ? 'e.g. A1B2-C3D4' : '000 000'}
+                    maxLength={govUseRecovery ? 30 : 6}
+                    required
+                    autoFocus
+                    data-testid="gov-code-input"
+                  />
+                  <div style={{ marginTop: '0.4rem', textAlign: 'right' }}>
+                    <button
+                      type="button"
+                      style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '0.78rem', textDecoration: 'underline' }}
+                      onClick={() => {
+                        setGovUseRecovery(!govUseRecovery);
+                        setGovError('');
+                      }}
+                    >
+                      {govUseRecovery ? '← Use 6-Digit Authenticator Code' : 'Lost device? Use Recovery Code'}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Optional Sudo Password */}
+                <div className="form-group" style={{ marginBottom: '1rem' }}>
+                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: '0.4rem' }}>
+                    Account Password (Re-authentication)
+                  </label>
+                  <input
+                    type="password"
+                    className="admin-input"
+                    style={{ width: '100%', padding: '0.6rem', borderRadius: '6px' }}
+                    value={govSudoPassword}
+                    onChange={(e) => setGovSudoPassword(e.target.value)}
+                    placeholder="Enter your current password..."
+                    data-testid="gov-sudo-password-input"
+                  />
+                </div>
+              </div>
+
+              <div className="admin-modal-footer" style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem' }}>
+                <button type="button" className="btn-secondary" onClick={() => setGovModal(null)}>
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className={govModal.action === 'promote' ? 'btn-primary' : 'btn-danger'}
+                  style={{
+                    padding: '0.5rem 1.25rem',
+                    borderRadius: '6px',
+                    fontWeight: 600,
+                    background: govModal.action === 'promote' ? '#a855f7' : '#ef4444'
+                  }}
+                  disabled={isGovSubmitting || (govUseRecovery ? !govRecoveryCode.trim() : govCode.length !== 6)}
+                  data-testid="confirm-gov-btn"
+                >
+                  {isGovSubmitting ? 'Processing...' : govModal.action === 'promote' ? 'Confirm Promotion' : 'Confirm Demotion'}
                 </button>
               </div>
             </form>
