@@ -1058,6 +1058,62 @@ test.describe('Task 6: Super Admin-Initiated Reset Endpoints & URL Fragment Arch
     assert.strictEqual(u2PostDirect.password_reset_pending, 1);
     assert.strictEqual(u2PostDirect.is_active, 0, 'Inactive admin is still inactive');
 
+    // 6a. Hostile Origin header defense: Link MUST NOT trust Origin or Host headers
+    const ctxHostile = mockReqRes({
+      params: { id: '3' },
+      body: { expected_account_version: 2, reason: 'Testing hostile headers' },
+      headers: {
+        origin: 'http://evil-phishing-site.com',
+        host: 'evil-phishing-site.com',
+        'x-forwarded-host': 'evil-phishing-site.com'
+      }
+    });
+    await directLinkHandler(ctxHostile.req, ctxHostile.res);
+    assert.strictEqual(ctxHostile.getResult().statusCode, 200);
+    const hostileDirectUrl = ctxHostile.getResult().jsonPayload.direct_url;
+    assert.ok(!hostileDirectUrl.includes('evil-phishing-site.com'), 'Hostile origin/host header was completely ignored');
+    const { getValidatedAppUrl: resolveAppUrl } = await import('../server/routes/admin-management.js');
+    assert.ok(hostileDirectUrl.startsWith(resolveAppUrl()), 'direct_url strictly uses trusted configured URL');
+
+    // 6b. Fail safely BEFORE mutation when URL configuration is missing
+    const origAppUrl = process.env.APP_URL;
+    const origClientUrl = process.env.CLIENT_URL;
+    const origFrontendUrl = process.env.FRONTEND_URL;
+    delete process.env.APP_URL;
+    delete process.env.CLIENT_URL;
+    delete process.env.FRONTEND_URL;
+
+    const u3BeforeFailedConfig = serverDb.prepare('SELECT account_version, password_reset_pending FROM users WHERE id = 3').get();
+    const ctxMissingConfig = mockReqRes({ params: { id: '3' }, body: { expected_account_version: u3BeforeFailedConfig.account_version } });
+    await directLinkHandler(ctxMissingConfig.req, ctxMissingConfig.res);
+    assert.strictEqual(ctxMissingConfig.getResult().statusCode, 500, 'Returns 500 when URL is unconfigured');
+    assert.strictEqual(ctxMissingConfig.getResult().jsonPayload?.code, 'INVALID_URL_CONFIGURATION');
+
+    // Verify account state was NOT modified and transaction did not run
+    const u3AfterFailedConfig = serverDb.prepare('SELECT account_version, password_reset_pending FROM users WHERE id = 3').get();
+    assert.strictEqual(u3AfterFailedConfig.account_version, u3BeforeFailedConfig.account_version, 'account_version unchanged on config error');
+
+    // Restore configuration
+    process.env.APP_URL = origAppUrl || 'http://localhost:5174/bfi-classroom';
+    if (origClientUrl) process.env.CLIENT_URL = origClientUrl;
+    if (origFrontendUrl) process.env.FRONTEND_URL = origFrontendUrl;
+
+    // 6c. Production HTTPS requirement check via getValidatedAppUrl
+    const { getValidatedAppUrl } = await import('../server/routes/admin-management.js');
+    const origNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    process.env.APP_URL = 'http://insecure-domain.com/bfi-classroom';
+    assert.throws(() => getValidatedAppUrl(), (err) => {
+      return err.code === 'INVALID_URL_CONFIGURATION' && err.message.includes('HTTPS');
+    }, 'Rejects non-HTTPS in production');
+
+    process.env.APP_URL = 'https://secure.bfibd.org';
+    const prodValidUrl = getValidatedAppUrl();
+    assert.strictEqual(prodValidUrl, 'https://secure.bfibd.org/bfi-classroom', 'Preserves base path when configured');
+
+    process.env.NODE_ENV = origNodeEnv;
+    process.env.APP_URL = origAppUrl || 'http://localhost:5174/bfi-classroom';
+
     // Direct link generation audit log does not leak the token
     const directAudit = serverDb.prepare("SELECT * FROM admin_audit_logs WHERE target_user_id = 2 AND action = 'admin.direct_reset_link_generated'").get();
     assert.ok(directAudit, 'Audit log recorded');

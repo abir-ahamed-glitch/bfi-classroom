@@ -1769,6 +1769,51 @@ router.put('/permissions/defaults', authenticateToken, requireSuperAdmin, requir
   }
 });
 
+/**
+ * Resolves and validates the trusted application URL from environment configuration.
+ * Never trusts request headers (Origin/Host) or hardcoded localhost fallbacks.
+ * Enforces HTTPS in production and preserves the application base path.
+ */
+function getValidatedAppUrl() {
+  const configured = process.env.APP_URL || process.env.CLIENT_URL || process.env.FRONTEND_URL;
+  if (!configured || typeof configured !== 'string' || !configured.trim()) {
+    const err = new Error('Application URL is not configured. Configure APP_URL or CLIENT_URL in the environment.');
+    err.code = 'INVALID_URL_CONFIGURATION';
+    throw err;
+  }
+
+  let parsed;
+  try {
+    parsed = new URL(configured.trim());
+  } catch {
+    const err = new Error('Configured application URL is malformed.');
+    err.code = 'INVALID_URL_CONFIGURATION';
+    throw err;
+  }
+
+  if (process.env.NODE_ENV === 'production') {
+    if (parsed.protocol !== 'https:') {
+      const err = new Error('Application URL must use HTTPS in production.');
+      err.code = 'INVALID_URL_CONFIGURATION';
+      throw err;
+    }
+  } else {
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      const err = new Error('Application URL must use HTTP or HTTPS.');
+      err.code = 'INVALID_URL_CONFIGURATION';
+      throw err;
+    }
+  }
+
+  let basePath = parsed.pathname.replace(/\/+$/, '');
+  if (!basePath) {
+    const customBase = process.env.APP_BASE_PATH || process.env.VITE_BASE_PATH || '/bfi-classroom';
+    basePath = '/' + customBase.replace(/^\/+|\/+$/g, '');
+  }
+
+  return `${parsed.origin}${basePath}`;
+}
+
 // POST /api/admin/administrators/:id/reset-password/email - Super Admin-initiated password reset via verified email
 router.post('/administrators/:id/reset-password/email', authenticateToken, requireSuperAdmin, requireRecentAuth, sanitizeInput, async (req, res) => {
   try {
@@ -1812,6 +1857,17 @@ router.post('/administrators/:id/reset-password/email', authenticateToken, requi
       return res.status(400).json({ 
         error: 'Target administrator does not have a verified email address. Password reset link cannot be dispatched via email without email ownership confirmation.', 
         code: 'EMAIL_NOT_VERIFIED' 
+      });
+    }
+
+    let baseUrl;
+    try {
+      baseUrl = getValidatedAppUrl();
+    } catch (urlErr) {
+      recordFailedAuditLog(req.user.id, targetId, 'admin_password_reset', `Invalid URL configuration: ${urlErr.message}`, req.ip);
+      return res.status(500).json({ 
+        error: 'Application URL configuration is invalid. Password reset cannot be initiated until APP_URL is correctly configured.',
+        code: 'INVALID_URL_CONFIGURATION'
       });
     }
 
@@ -1870,7 +1926,6 @@ router.post('/administrators/:id/reset-password/email', authenticateToken, requi
     resetTx();
     securityEvents.emit('revoke_user', { userId: targetId });
 
-    const baseUrl = process.env.CLIENT_URL || req.headers.origin || 'http://localhost:5174';
     const resetLink = `${baseUrl}/admin/reset-password#userId=${targetUser.id}&token=${rawToken}`;
 
     const emailSent = await sendPasswordResetEmail(targetUser.email, resetLink, { isSuperAdminInitiated: true });
@@ -1936,6 +1991,17 @@ router.post('/administrators/:id/reset-password/direct-link', authenticateToken,
       });
     }
 
+    let baseUrl;
+    try {
+      baseUrl = getValidatedAppUrl();
+    } catch (urlErr) {
+      recordFailedAuditLog(req.user.id, targetId, 'admin_password_reset', `Invalid URL configuration: ${urlErr.message}`, req.ip);
+      return res.status(500).json({ 
+        error: 'Application URL configuration is invalid. Password reset cannot be initiated until APP_URL is correctly configured.',
+        code: 'INVALID_URL_CONFIGURATION'
+      });
+    }
+
     const rawToken = crypto.randomBytes(32).toString('hex');
     const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
     const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
@@ -1995,7 +2061,6 @@ router.post('/administrators/:id/reset-password/direct-link', authenticateToken,
     res.setHeader('Pragma', 'no-cache');
     res.setHeader('Expires', '0');
 
-    const baseUrl = process.env.CLIENT_URL || req.headers.origin || 'http://localhost:5174';
     const directUrl = `${baseUrl}/admin/reset-password#userId=${targetUser.id}&token=${rawToken}`;
 
     res.json({
@@ -2154,4 +2219,5 @@ router.get('/administrators/:id/export-history', authenticateToken, requireSuper
   }
 });
 
+export { getValidatedAppUrl };
 export default router;

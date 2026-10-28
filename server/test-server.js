@@ -9,6 +9,7 @@ process.env.DATABASE_PATH = path.resolve(__dirname, 'test_isolated_bfi.db');
 process.env.PORT = process.env.PORT || '3099';
 process.env.IS_TEST_SERVER = 'true';
 process.env.NODE_ENV = 'test';
+process.env.APP_URL = process.env.APP_URL || process.env.CLIENT_URL || 'http://localhost:5174/bfi-classroom';
 
 console.log(`[TestServer] Starting isolated test backend: db=${process.env.DATABASE_PATH} port=${process.env.PORT}`);
 
