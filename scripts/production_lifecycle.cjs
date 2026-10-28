@@ -100,6 +100,8 @@ function parseJwtPayload(token) {
   }
 }
 
+const MIN_MAINTENANCE_BUFFER_SEC = 15 * 60; // 15 minutes minimum lifespan buffer for deployment
+
 function validateTokenPair(saToken, oaToken, label, allowMock = false) {
   if (!saToken || !oaToken) {
     return { valid: false, reason: `Incomplete token pair provided via ${label} (both Super Admin and Ordinary Admin tokens are required).` };
@@ -120,14 +122,125 @@ function validateTokenPair(saToken, oaToken, label, allowMock = false) {
   }
 
   const nowSec = Math.floor(Date.now() / 1000);
-  if (typeof saPayload.exp === 'number' && saPayload.exp <= nowSec) {
-    return { valid: false, reason: `Super Admin token provided via ${label} has expired (exp: ${saPayload.exp}, now: ${nowSec}).` };
+  if (typeof saPayload.exp === 'number') {
+    if (saPayload.exp <= nowSec) {
+      return { valid: false, reason: `Super Admin token provided via ${label} has expired (exp: ${saPayload.exp}, now: ${nowSec}).` };
+    }
+    const remainingSec = saPayload.exp - nowSec;
+    if (remainingSec < MIN_MAINTENANCE_BUFFER_SEC) {
+      return {
+        valid: false,
+        reason: `Super Admin token expires in ${Math.max(0, Math.floor(remainingSec / 60))}m, which is insufficient for the 15m deployment maintenance window. Token must be refreshed before deployment.`
+      };
+    }
   }
-  if (typeof oaPayload.exp === 'number' && oaPayload.exp <= nowSec) {
-    return { valid: false, reason: `Ordinary Admin token provided via ${label} has expired (exp: ${oaPayload.exp}, now: ${nowSec}).` };
+
+  if (typeof oaPayload.exp === 'number') {
+    if (oaPayload.exp <= nowSec) {
+      return { valid: false, reason: `Ordinary Admin token provided via ${label} has expired (exp: ${oaPayload.exp}, now: ${nowSec}).` };
+    }
+    const remainingSec = oaPayload.exp - nowSec;
+    if (remainingSec < MIN_MAINTENANCE_BUFFER_SEC) {
+      return {
+        valid: false,
+        reason: `Ordinary Admin token expires in ${Math.max(0, Math.floor(remainingSec / 60))}m, which is insufficient for the 15m deployment maintenance window. Token must be refreshed before deployment.`
+      };
+    }
+  }
+
+  // Pre-validate role claims in payload
+  if (saPayload.role && saPayload.role !== 'admin') {
+    return { valid: false, reason: `Super Admin token has role '${saPayload.role}', expected 'admin'.` };
+  }
+  const saIsSuper = saPayload.is_super_admin === 1 || saPayload.is_super_admin === true || saPayload.isSuperAdmin === true;
+  if (saPayload.is_super_admin !== undefined && !saIsSuper) {
+    return { valid: false, reason: 'Super Admin token does not assert super admin privileges in claims.' };
+  }
+
+  if (oaPayload.role && oaPayload.role !== 'admin') {
+    return { valid: false, reason: `Ordinary Admin token has role '${oaPayload.role}', expected 'admin'.` };
+  }
+  const oaIsSuper = oaPayload.is_super_admin === 1 || oaPayload.is_super_admin === true || oaPayload.isSuperAdmin === true;
+  if (oaIsSuper) {
+    return { valid: false, reason: 'Ordinary Admin token incorrectly asserts super admin privileges; distinct administrative roles required.' };
+  }
+
+  if (saPayload.id && oaPayload.id && saPayload.id === oaPayload.id) {
+    return { valid: false, reason: 'Super Admin and Ordinary Admin tokens belong to the same account ID; distinct administrative identities required.' };
   }
 
   return { valid: true, saPayload, oaPayload };
+}
+
+// Low-level HTTP bearer request helper for token preflight verification
+function sendBearerGet(urlStr, token, timeoutMs = 5000) {
+  return new Promise((resolve, reject) => {
+    let parsed;
+    try { parsed = new URL(urlStr); } catch (e) { return reject(e); }
+    const transport = parsed.protocol === 'https:' ? https : http;
+    const req = transport.request(parsed, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Accept': 'application/json'
+      },
+      timeout: timeoutMs
+    }, (res) => {
+      let data = '';
+      res.on('data', c => { data += c; });
+      res.on('end', () => {
+        let json = null;
+        try { if (data && data.trim()) json = JSON.parse(data); } catch {}
+        resolve({ status: res.statusCode, json, body: data });
+      });
+    });
+    req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
+    req.on('error', err => reject(err));
+    req.end();
+  });
+}
+
+// Authenticated token verification against live server endpoint (GET /api/auth/me)
+async function verifyTokensAgainstLiveServer(saToken, oaToken, baseUrl = 'http://127.0.0.1:3001', timeoutMs = 5000) {
+  const meUrl = `${baseUrl.replace(/\/+$/, '')}/api/auth/me`;
+  let saRes, oaRes;
+  try {
+    saRes = await sendBearerGet(meUrl, saToken, timeoutMs);
+  } catch (err) {
+    return { reachable: false, error: err.message };
+  }
+
+  try {
+    oaRes = await sendBearerGet(meUrl, oaToken, timeoutMs);
+  } catch (err) {
+    return { reachable: false, error: err.message };
+  }
+
+  if (saRes.status !== 200) {
+    const errText = (saRes.json && saRes.json.error) ? saRes.json.error : `HTTP ${saRes.status}`;
+    return { reachable: true, verified: false, reason: `Super Admin token rejected by server (${errText})` };
+  }
+  if (oaRes.status !== 200) {
+    const errText = (oaRes.json && oaRes.json.error) ? oaRes.json.error : `HTTP ${oaRes.status}`;
+    return { reachable: true, verified: false, reason: `Ordinary Admin token rejected by server (${errText})` };
+  }
+
+  const saUser = saRes.json;
+  const oaUser = oaRes.json;
+
+  if (!saUser || saUser.role !== 'admin' || (!saUser.is_super_admin && !saUser.isSuperAdmin)) {
+    return { reachable: true, verified: false, reason: `Super Admin account (ID ${saUser ? saUser.id : 'unknown'}) lacks verified super admin status on server.` };
+  }
+
+  if (!oaUser || oaUser.role !== 'admin' || oaUser.is_super_admin || oaUser.isSuperAdmin) {
+    return { reachable: true, verified: false, reason: `Ordinary Admin account (ID ${oaUser ? oaUser.id : 'unknown'}) does not have ordinary admin status on server.` };
+  }
+
+  if (saUser.id === oaUser.id) {
+    return { reachable: true, verified: false, reason: 'Super Admin and Ordinary Admin tokens authenticated to the same user ID.' };
+  }
+
+  return { reachable: true, verified: true, superAdmin: saUser, ordinaryAdmin: oaUser };
 }
 
 // Strict fail-closed command runner
@@ -198,6 +311,8 @@ async function executeDeployment(options = {}) {
   }
 
   let credHandoffMode = null;
+  let activeSaToken = null;
+  let activeOaToken = null;
 
   // Check token files
   const saFile = options.superAdminTokenFile || process.env.SUPER_ADMIN_TOKEN_FILE;
@@ -211,9 +326,9 @@ async function executeDeployment(options = {}) {
       logFatal('ABORT DEPLOYMENT: Configured token file(s) do not exist on disk. Halting before stopping services.');
       throw new Error('Configured smoke token file missing on disk');
     }
-    const fileSaToken = fs.readFileSync(saFile, 'utf8').trim();
-    const fileOaToken = fs.readFileSync(oaFile, 'utf8').trim();
-    const fileValidation = validateTokenPair(fileSaToken, fileOaToken, 'token files', isRehearsal);
+    activeSaToken = fs.readFileSync(saFile, 'utf8').trim();
+    activeOaToken = fs.readFileSync(oaFile, 'utf8').trim();
+    const fileValidation = validateTokenPair(activeSaToken, activeOaToken, 'token files', isRehearsal);
     if (!fileValidation.valid) {
       logFatal(`ABORT DEPLOYMENT: ${fileValidation.reason} Halting before stopping services.`);
       throw new Error(`Smoke token file validation failed: ${fileValidation.reason}`);
@@ -229,7 +344,9 @@ async function executeDeployment(options = {}) {
       logFatal('ABORT DEPLOYMENT: Partial smoke token pair provided. Both SUPER_ADMIN_TOKEN and ADMIN_TOKEN are required. Halting before stopping services.');
       throw new Error('Incomplete smoke token environment pair');
     }
-    const envValidation = validateTokenPair(envSaToken, envOaToken, 'environment / options', isRehearsal);
+    activeSaToken = envSaToken;
+    activeOaToken = envOaToken;
+    const envValidation = validateTokenPair(activeSaToken, activeOaToken, 'environment / options', isRehearsal);
     if (!envValidation.valid) {
       logFatal(`ABORT DEPLOYMENT: ${envValidation.reason} Halting before stopping services.`);
       throw new Error(`Smoke token validation failed: ${envValidation.reason}`);
@@ -258,7 +375,23 @@ async function executeDeployment(options = {}) {
     throw new Error('Missing or invalid smoke credentials in non-interactive environment');
   }
 
-  logStep('0.1', `Credential handoff capability verified (${credHandoffMode})`);
+  logStep('0.1', `Credential channel availability verified (${credHandoffMode})`);
+
+  // 0.1.1 Pre-disruption Authenticated Token Verification (if unattended tokens provided and server reachable)
+  if (activeSaToken && activeOaToken && !isRehearsal) {
+    const liveServerCheck = await verifyTokensAgainstLiveServer(activeSaToken, activeOaToken, options.baseUrl || 'http://127.0.0.1:3001');
+    if (liveServerCheck.reachable) {
+      if (!liveServerCheck.verified) {
+        logFatal(`ABORT DEPLOYMENT: Pre-disruption token verification failed on live server: ${liveServerCheck.reason}. Halting before stopping any services.`);
+        throw new Error(`Pre-disruption token verification failed: ${liveServerCheck.reason}`);
+      }
+      logStep('0.1.1', `✅ Pre-disruption authenticated verification confirmed (Super Admin ID ${liveServerCheck.superAdmin.id}, Ordinary Admin ID ${liveServerCheck.ordinaryAdmin.id} via GET /api/auth/me)`);
+    } else {
+      logStep('0.1.1', '⚠️ Live server offline/unreachable on loopback. Unattended token syntax, claims, and 15m maintenance buffer pre-validated; authenticated cryptographic verification deferred to loopback restart.');
+    }
+  } else if (credHandoffMode === 'Interactive TTY' || credHandoffMode === 'Programmatic Credential Provider') {
+    logStep('0.1.1', 'Confidential interactive handoff channel configured. Authenticated credentials will be collected and verified via loopback during Phase 5.');
+  }
 
   // Preserve recovery tooling in server/.recovery_tools outside git-managed tree
   const recoveryToolsDir = path.join(serverDir, '.recovery_tools');
@@ -551,9 +684,9 @@ async function executeDeployment(options = {}) {
   const maintTokenFile = path.join(serverDir, '.maintenance_auth_token');
 
   try {
-    // 5.3.1 Bounded Credential Handoff
+    // 5.3.1 Bounded Credential Verification or Interactive Handoff
     if ((!saToken && !saTokenFile) || (!oaToken && !oaTokenFile)) {
-      logStep('5.3.1', 'Generating ephemeral maintenance capabilities and initiating bounded credential handoff...');
+      logStep('5.3.1', 'Authorizing loopback Turnstile exemption capability for interactive maintenance login...');
       const saMaintenanceToken = crypto.randomBytes(32).toString('hex');
       const oaMaintenanceToken = crypto.randomBytes(32).toString('hex');
       const now = Date.now();
@@ -592,7 +725,19 @@ async function executeDeployment(options = {}) {
       saTokenFile = authResult.superAdminTokenFile;
       oaTokenFile = authResult.adminTokenFile;
       smokeAuthCleanup = authResult.cleanup;
-      logStep('5.3.1', '✅ Bounded credential handoff successful: both identities and roles verified.');
+      logStep('5.3.1', '✅ Bounded credential handoff successful: both identities and roles verified via GET /api/auth/me.');
+    } else {
+      if (!isRehearsal) {
+        logStep('5.3.1', 'Verifying unattended smoke credentials against restarted loopback backend (GET /api/auth/me)...');
+        const tokenToVerifySa = saToken || (saTokenFile ? fs.readFileSync(saTokenFile, 'utf8').trim() : '');
+        const tokenToVerifyOa = oaToken || (oaTokenFile ? fs.readFileSync(oaTokenFile, 'utf8').trim() : '');
+        const loopbackVerify = await verifyTokensAgainstLiveServer(tokenToVerifySa, tokenToVerifyOa, options.baseUrl || 'http://127.0.0.1:3001');
+        if (!loopbackVerify.reachable || !loopbackVerify.verified) {
+          logFatal(`ABORT DEPLOYMENT: Smoke credentials failed authenticated loopback verification on restarted backend: ${loopbackVerify.reason || 'Server unreachable'}`);
+          throw new Error(`Post-restart smoke credential verification failed: ${loopbackVerify.reason || 'Server unreachable'}`);
+        }
+        logStep('5.3.1', `✅ Authenticated loopback verification passed (Super Admin ID ${loopbackVerify.superAdmin.id}, Ordinary Admin ID ${loopbackVerify.ordinaryAdmin.id}).`);
+      }
     }
 
     logStep('5.4', 'Executing 18-assertion production smoke check over loopback...');
@@ -1059,13 +1204,18 @@ async function executeRollback(options = {}) {
 
 // CLI Entrypoint
 if (require.main === module) {
-  const action = process.argv[2];
-  const isRehearsal = process.argv.includes('--is-rehearsal');
-  const targetCommitArg = process.argv.find((a, i) => process.argv[i - 1] === '--target-commit');
-  const prevRevArg = process.argv.find((a, i) => process.argv[i - 1] === '--previous-revision');
-  const rootDirArg = process.argv.find((a, i) => process.argv[i - 1] === '--root-dir');
-  const dbPathArg = process.argv.find((a, i) => process.argv[i - 1] === '--database-path');
-  const allowPostReopening = process.argv.includes('--allow-post-reopening-reconciliation');
+  const args = process.argv.slice(2);
+  let action = args.find(a => a === 'deploy' || a === 'rollback');
+  if (!action) {
+    if (args.includes('--rollback')) action = 'rollback';
+    else if (args.includes('--deploy')) action = 'deploy';
+  }
+  const isRehearsal = args.includes('--is-rehearsal');
+  const targetCommitArg = args.find((a, i) => args[i - 1] === '--target-commit') || process.env.TARGET_COMMIT;
+  const prevRevArg = args.find((a, i) => args[i - 1] === '--previous-revision');
+  const rootDirArg = args.find((a, i) => args[i - 1] === '--root-dir');
+  const dbPathArg = args.find((a, i) => args[i - 1] === '--database-path');
+  const allowPostReopening = args.includes('--allow-post-reopening-reconciliation');
 
   if (action === 'deploy') {
     executeDeployment({

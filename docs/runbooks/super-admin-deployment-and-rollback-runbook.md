@@ -44,42 +44,51 @@ The implementation consumes only specific, well-defined security environment var
 
 ---
 
-## 3. Pre-Disruption Prerequisites
+## 3. Pre-Disruption Prerequisites & Credential Preflight
 
 Before executing any commands that alter live services or databases, the operator must verify all prerequisites:
 
 1. **Target Commit Provenance:**
-   - Must be an immutable 40-character Git commit hash (e.g. `c6322facc753d35fc28c16a8d9a279814e11d221`). Mutable branch names (`main`, `HEAD`) are strictly rejected by the production runner.
-2. **Cold-Start Tooling Extraction:**
-   - The canonical lifecycle runner automatically extracts all 6 critical tools from the approved `targetCommit` into `server/.recovery_tools` outside git management:
+   - Must be an immutable 40-character Git commit hash (e.g. `1cd4b1b269be444a4141b1e1008d0a6c95ac7c94`). Mutable branch names (`main`, `HEAD`) are strictly rejected by the production runner in production mode.
+2. **Cold-Start Tooling Extraction & Provenance:**
+   - The canonical lifecycle runner automatically extracts all 6 critical tools from the approved `TARGET_COMMIT` into `server/.recovery_tools` outside git management:
      - `scripts/preflight_lockdown_check.cjs`
      - `scripts/verify_isolation.cjs`
      - `scripts/run_migrations.cjs`
      - `scripts/production_smoke_check.cjs`
      - `scripts/production_lifecycle.cjs`
      - `scripts/obtain_smoke_credentials.cjs`
-   - Verifies SHA-256 checksums of each tool and executes a cold-start bundle load test in a clean Node subprocess before proceeding.
-3. **Smoke Credential Handoff Capability:**
-   - **Supported Channel A (Interactive):** An interactive terminal (TTY) is attached. The operator provides credentials on demand via zero-echo prompts during Phase 5.
-   - **Supported Channel B (Unattended Tokens):** `SUPER_ADMIN_TOKEN` and `ADMIN_TOKEN` (or `SUPER_ADMIN_TOKEN_FILE` and `ADMIN_TOKEN_FILE` with mode `0o600`) are provided in the environment. Both tokens must be valid, well-formed JWTs and must not be expired.
-   - **Strict Fail-Closed Rejection:** `SMOKE_SUPER_ADMIN_PASSWORD` is unsupported. Partial, expired, or malformed credentials throw an immediate fatal error in Phase 0 with **zero service-stop commands**.
+   - The runner verifies SHA-256 checksums of each extracted tool against the target tree and executes a cold-start bundle load test in a clean Node subprocess before proceeding to service lockdown.
+3. **Smoke Credential Preflight & Verification:**
+   - **Supported Channel A (Confidential Interactive Handoff):** An interactive terminal (TTY) is attached or a programmatic credential provider is configured. The operator provides credentials on demand via zero-echo prompts during Phase 5 over loopback.
+   - **Supported Channel B (Unattended Tokens):** `SUPER_ADMIN_TOKEN` and `ADMIN_TOKEN` (or `SUPER_ADMIN_TOKEN_FILE` and `ADMIN_TOKEN_FILE` with mode `0o600`) are supplied. Preflight performs:
+     1. **Structural and Expiration Verification:** Enforces valid 3-part JWT format, matching administrative roles, distinct account identities, and a minimum 15-minute expiration buffer (`exp - now >= 900s`) to ensure tokens do not expire midway through the deployment window.
+     2. **Pre-Disruption Authenticated Verification:** If the live backend is reachable prior to disruption, both tokens are validated against `GET /api/auth/me`. If either token fails authentication or role checks, deployment immediately halts with **zero service stops**.
+   - **Strict Fail-Closed Rejection:** `SMOKE_SUPER_ADMIN_PASSWORD` is unsupported. Partial, expired, or malformed credentials throw an immediate fatal error in Phase 0. Fabricated authentication tokens are strictly forbidden; all access tokens must be authentically issued by the backend.
 
 ---
 
 ## 4. Canonical Deployment Procedure
 
-The entire deployment is executed by running the verified canonical runner:
+The deployment is executed using positional action syntax (`deploy`):
 
 ```bash
 # In an interactive operator terminal:
-TARGET_COMMIT=<40-char-sha> node scripts/production_lifecycle.cjs
+TARGET_COMMIT=<40-char-sha> node scripts/production_lifecycle.cjs deploy
+
+# Or alternatively specifying target commit via flag:
+node scripts/production_lifecycle.cjs deploy --target-commit <40-char-sha>
+
+# Or running directly from the verified recovery bundle extracted from the target commit:
+node server/.recovery_tools/production_lifecycle.cjs deploy --target-commit <40-char-sha>
 ```
 
 ### Phase Walkthrough & Safety Gates:
 
 ```
 [Phase 0] Staging & Provenance Gate
-  ├── Step 0.1: Validate smoke credential capability (Tokens or Interactive TTY)
+  ├── Step 0.1: Validate smoke credential channel availability (Tokens or Interactive TTY)
+  ├── Step 0.1.1: If unattended tokens: verify JWT claims, 15m expiration buffer, and live server GET /api/auth/me
   ├── Step 0.2: Extract 6 recovery tools from TARGET_COMMIT -> server/.recovery_tools (SHA-256 checked)
   └── Step 0.3: Cold-start bundle load verification in clean Node process
 
@@ -99,9 +108,9 @@ TARGET_COMMIT=<40-char-sha> node scripts/production_lifecycle.cjs
 [Phase 3] Pinned Commit Checkout & Build Gate
   ├── Step 3.1: Record preDeploymentRevision -> server/pre_deployment_revision.txt
   ├── Step 3.2: git checkout <TARGET_COMMIT> (Enforce exact HEAD match)
-  ├── Step 3.3: npm ci --omit=dev --legacy-peer-deps
-  ├── Step 3.4: npm run build
-  └── Step 3.5: Verify build artifacts (dist/index.html, dist/404.html)
+  ├── Step 3.2b: NODE_ENV=development npm ci --legacy-peer-deps (Installs devDependencies for build toolchain)
+  ├── Step 3.3: npm run build (Compiles frontend production bundles into dist/)
+  └── Step 3.4: npm prune --omit=dev --legacy-peer-deps (Prunes devDependencies for runtime isolation)
 
 [Phase 4] Atomic Database Migration Gate
   └── Step 4.1: node server/.recovery_tools/run_migrations.cjs (Atomic single-transaction execution)
@@ -109,7 +118,9 @@ TARGET_COMMIT=<40-char-sha> node scripts/production_lifecycle.cjs
 [Phase 5] Loopback-Isolated Smoke Verification Gate
   ├── Step 5.1: Verify Nginx remains stopped (Zero public ingress)
   ├── Step 5.2: pm2 start ecosystem.config.cjs (Isolated to 127.0.0.1:3001)
-  ├── Step 5.3: Bounded credential handoff (Interactive zero-echo or pre-validated tokens)
+  ├── Step 5.3: Authenticated smoke verification:
+  │     ├── If unattended: verify tokens against loopback GET /api/auth/me
+  │     └── If interactive: bounded credential handoff via obtainSmokeCredentials over loopback
   ├── Step 5.4: Execute 18-assertion production smoke check over loopback
   └── Step 5.5: Securely zero-fill and unlink temporary token files
 
@@ -124,10 +135,14 @@ TARGET_COMMIT=<40-char-sha> node scripts/production_lifecycle.cjs
 
 ## 5. Emergency Rollback Runbook
 
-If any failure occurs during Phases 1 through 5 (e.g. migration error, build failure, smoke assertion failure), the canonical rollback routine is automatically triggered or may be invoked manually:
+If any failure occurs during Phases 1 through 5 (e.g. migration error, build failure, smoke assertion failure), the canonical rollback routine is automatically triggered or may be invoked manually using the positional `rollback` action:
 
 ```bash
-node server/.recovery_tools/production_lifecycle.cjs --rollback
+# Executing from the verified recovery bundle extracted from the target commit:
+node server/.recovery_tools/production_lifecycle.cjs rollback
+
+# Or from repository scripts:
+node scripts/production_lifecycle.cjs rollback
 ```
 
 ### Safety Invariants & Rollback Gates:
@@ -147,7 +162,7 @@ node server/.recovery_tools/production_lifecycle.cjs --rollback
    - Live database, WAL, and SHM sidecars are quarantined together into a timestamped directory `server/quarantine_YYYYMMDDHHMMSS`.
    - The validated backup is restored to the primary database path.
    - Restored database integrity and baseline row counts (`pre_deployment_baseline.json`) are verified before starting services.
-   - Restores the original Git revision recorded in `pre_deployment_revision.txt`, runs `npm ci`, `npm run build`, and `npm prune`.
+   - Restores the original Git revision recorded in `pre_deployment_revision.txt`, runs `npm ci --legacy-peer-deps`, `npm run build`, and `npm prune --omit=dev --legacy-peer-deps`.
    - Restarts PM2, verifies loopback HTTP 200, sets `trafficMayReopen = true`, and restarts Nginx.
 
 ---

@@ -1,31 +1,43 @@
 /**
  * Safe Spreadsheet Parser Wrapper (Hardened Client-Side Parser)
  * 
- * Mitigations for:
- * - GHSA-4r6h-8v6p-xvw6 / CVE-2023-30533 (Prototype Pollution in SheetJS <0.19.3)
- * - GHSA-5pgg-2g8v-p4x9 / CVE-2024-22363 (ReDoS via crafted number formats in SheetJS <0.20.2)
+ * Primary Mitigation:
+ * - Upstream patched SheetJS release (>=0.19.3, currently 0.20.3 from https://cdn.sheetjs.com/)
+ *   structurally fixes GHSA-4r6h-8v6p-xvw6 (CVE-2023-30533 prototype pollution) and
+ *   GHSA-5pgg-2g8v-p4x9 (CVE-2024-22363 ReDoS).
  * 
- * Security Controls:
- * 1. Bounded Input Size: Rejects files > 10MB to prevent client-side denial-of-service / memory exhaustion.
- * 2. Disabled Risky Features: Disables formula parsing (cellFormula: false), HTML generation (cellHTML: false),
- *    styles (cellStyles: false), VBA macros (bookVBA: false), and dependency tracking (bookDeps: false).
- * 3. Active Prototype Pollution Guard: Snapshots Object.prototype before reading. If any property was injected,
- *    it cleans the prototype and throws an explicit security error.
- * 4. Clean Data Sanitization: Validates that extracted rows and cells contain only primitive strings or values,
- *    preventing prototype chain inheritance exploits.
+ * Defense-in-Depth & Processing Bounds:
+ * 1. Compressed Input Size Bound: Rejects files > 10MB to prevent memory exhaustion from oversized payloads.
+ * 2. Expansion & Processing Bounds: Caps parsed rows via `sheetRows: 5000`, columns via range decode (max 100),
+ *    and total extracted cells (max 50,000) to neutralize decompression/XML bomb amplification where a small
+ *    compressed file expands into millions of virtual cells.
+ * 3. Feature Minimization: Sets `cellFormula: false`, `cellHTML: false`, `cellStyles: false`,
+ *    `bookVBA: false`, and `bookDeps: false`. Note: SheetJS does not evaluate formulas during read; setting
+ *    `cellFormula: false` ensures formula AST expressions (`cell.f`) are neither parsed nor retained.
+ * 4. Secondary Prototype Anomaly Guard: Compares Object.prototype property keys before and after parse.
+ *    Note: Post-parse cleanup is an anomaly detection and defense-in-depth safety rail, NOT a substitute
+ *    for the patched upstream library.
+ * 5. Clean Tabular Output: Validates worksheet properties and transforms cell outputs into primitive strings,
+ *    ensuring clean arrays without object-prototype inheritance hazards.
  */
 
 import * as XLSX from 'xlsx';
 
-export const MAX_SPREADSHEET_BYTES = 10 * 1024 * 1024; // 10MB limit
+export const MAX_SPREADSHEET_BYTES = 10 * 1024 * 1024; // 10MB compressed limit
+export const MAX_SPREADSHEET_ROWS = 5000;               // Max rows parsed
+export const MAX_SPREADSHEET_COLS = 100;                // Max columns parsed
+export const MAX_SPREADSHEET_CELLS = 50000;             // Max total extracted cells
 
 /**
  * Safely parses spreadsheet data (Uint8Array, ArrayBuffer, or Buffer) into a 2D array of strings.
  * 
  * @param {Uint8Array|ArrayBuffer|Buffer} data - Binary file data
- * @param {Object} [options] - Additional options
+ * @param {Object} [options] - Parsing and bounding options
  * @param {number} [options.sheetIndex=0] - 0-based sheet index to parse (default: 0)
- * @param {number} [options.maxBytes=10485760] - Max allowable size in bytes
+ * @param {number} [options.maxBytes=10485760] - Max allowable input size in bytes
+ * @param {number} [options.maxRows=5000] - Max rows parsed (bounds parser expansion)
+ * @param {number} [options.maxCols=100] - Max allowable columns
+ * @param {number} [options.maxCells=50000] - Max total allowable extracted cells
  * @returns {Array<Array<string>>} Clean 2D array of cell values
  */
 export function safeReadSpreadsheet(data, options = {}) {
@@ -34,6 +46,10 @@ export function safeReadSpreadsheet(data, options = {}) {
   }
 
   const maxBytes = options.maxBytes || MAX_SPREADSHEET_BYTES;
+  const maxRows = options.maxRows || MAX_SPREADSHEET_ROWS;
+  const maxCols = options.maxCols || MAX_SPREADSHEET_COLS;
+  const maxCells = options.maxCells || MAX_SPREADSHEET_CELLS;
+
   const byteLength = data.byteLength !== undefined ? data.byteLength : (data.length || 0);
 
   if (byteLength > maxBytes) {
@@ -48,7 +64,7 @@ export function safeReadSpreadsheet(data, options = {}) {
     input = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
   }
 
-  // 1. Snapshot Object.prototype keys before invoking SheetJS
+  // 1. Snapshot Object.prototype keys before invoking SheetJS (secondary anomaly guard)
   const originalKeys = new Set([
     ...Object.getOwnPropertyNames(Object.prototype),
     ...Object.getOwnPropertySymbols(Object.prototype)
@@ -57,7 +73,7 @@ export function safeReadSpreadsheet(data, options = {}) {
   let wb;
   let pollutionDetected = false;
   try {
-    // 2. Parse with safe options stripping risky features
+    // 2. Parse with safe options stripping risky features and bounding row parsing
     wb = XLSX.read(input, {
       type: 'array',
       cellFormula: false,
@@ -66,10 +82,11 @@ export function safeReadSpreadsheet(data, options = {}) {
       bookVBA: false,
       bookDeps: false,
       WTF: false,
-      dense: false
+      dense: false,
+      sheetRows: maxRows
     });
   } finally {
-    // 3. Active Prototype Pollution Guard & Remediation
+    // 3. Secondary Prototype Anomaly Guard
     const currentKeys = [
       ...Object.getOwnPropertyNames(Object.prototype),
       ...Object.getOwnPropertySymbols(Object.prototype)
@@ -103,11 +120,27 @@ export function safeReadSpreadsheet(data, options = {}) {
 
   const ws = wb.Sheets[sheetName];
 
-  // Disallow forbidden keys on worksheet object
+  // Disallow forbidden prototype keys directly on worksheet object
   for (const dangerousKey of ['__proto__', 'constructor', 'prototype']) {
     if (Object.prototype.hasOwnProperty.call(ws, dangerousKey)) {
       delete ws[dangerousKey];
       throw new Error(`Malicious worksheet structure rejected: dangerous property '${dangerousKey}' detected.`);
+    }
+  }
+
+  // Validate column expansion bounds from sheet range if available
+  if (ws['!ref']) {
+    try {
+      const range = XLSX.utils.decode_range(ws['!ref']);
+      const colCount = (range.e.c - range.s.c) + 1;
+      if (colCount > maxCols) {
+        throw new Error(`Spreadsheet exceeds allowable column limit (${colCount} columns > ${maxCols} max).`);
+      }
+    } catch (err) {
+      if (err.message && err.message.includes('column limit')) {
+        throw err;
+      }
+      // If range decode fails, proceed to row-by-row validation
     }
   }
 
@@ -118,14 +151,24 @@ export function safeReadSpreadsheet(data, options = {}) {
     return [];
   }
 
-  // 5. Clean 2D array output ensuring prototype hygiene
+  // 5. Clean 2D array output ensuring prototype hygiene and total cell bounds
   const clean2D = [];
-  for (let r = 0; r < rawData.length; r++) {
+  let totalCellCount = 0;
+  const rowLimit = Math.min(rawData.length, maxRows);
+
+  for (let r = 0; r < rowLimit; r++) {
     const row = rawData[r];
     if (!Array.isArray(row)) continue;
 
+    const colLimit = Math.min(row.length, maxCols);
     const cleanRow = [];
-    for (let c = 0; c < row.length; c++) {
+
+    for (let c = 0; c < colLimit; c++) {
+      totalCellCount++;
+      if (totalCellCount > maxCells) {
+        throw new Error(`Spreadsheet exceeds allowable cell limit (${totalCellCount} cells > ${maxCells} max).`);
+      }
+
       const cell = row[c];
       if (cell === null || cell === undefined) {
         cleanRow.push('');
