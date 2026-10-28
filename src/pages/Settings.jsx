@@ -1,7 +1,11 @@
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo, useCallback } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
-import { Shield, Key, User, Save, AlertCircle, Palette, Check, Sun, Moon, Pencil, X, Search } from 'lucide-react';
+import { 
+  Shield, Key, User, Save, AlertCircle, Palette, Check, Sun, Moon, Pencil, X, Search,
+  ShieldCheck, ShieldAlert, KeyRound, QrCode, Download, Copy, AlertTriangle, CheckCircle2, RefreshCw, Lock
+} from 'lucide-react';
+import AuthenticatorQRCode from '../components/AuthenticatorQRCode';
 
 // Searchable metadata for each settings section
 const SECTIONS_META = [
@@ -10,6 +14,7 @@ const SECTIONS_META = [
   { id: 'account-info',    keywords: 'account info username role status badge verified' },
   { id: 'profile-details', keywords: 'profile details name first last recovery email edit' },
   { id: 'change-password', keywords: 'change password security current new confirm update' },
+  { id: 'two-factor-auth', keywords: 'two-factor 2fa mfa authenticator otp security code qr backup recovery' },
 ];
 
 export default function Settings() {
@@ -29,6 +34,249 @@ export default function Settings() {
   const [usernameStatus, setUsernameStatus] = useState({ state: 'idle', message: '' });
   const usernameBlocked = usernameStatus.state === 'taken' || usernameStatus.state === 'error' || usernameStatus.state === 'checking';
   const [searchQuery, setSearchQuery] = useState('');
+
+  // ── Universal 2FA State ──────────────────────────────────────────────────
+  const [mfaStatus, setMfaStatus] = useState({
+    enabled: false,
+    recoveryCodesRemaining: 0,
+    loading: true,
+  });
+  const [mfaModal, setMfaModal] = useState(null); // null | 'setup' | 'replace' | 'disable' | 'recovery_codes'
+  const [mfaStep, setMfaStep] = useState(1); // 1: password, 2: scan QR & verify, 3: recovery codes
+  const [mfaPassword, setMfaPassword] = useState('');
+  const [mfaSetupData, setMfaSetupData] = useState({ secret: '', otpauthUri: '' });
+  const [mfaVerificationCode, setMfaVerificationCode] = useState('');
+  const [mfaRecoveryCodes, setMfaRecoveryCodes] = useState([]);
+  const [mfaError, setMfaError] = useState('');
+  const [mfaLoading, setMfaLoading] = useState(false);
+  const [mfaCopiedCodes, setMfaCopiedCodes] = useState(false);
+  const [mfaAcknowledgedCodes, setMfaAcknowledgedCodes] = useState(false);
+  const [mfaReplaceMethod, setMfaReplaceMethod] = useState('password'); // 'password' | 'recovery'
+  const [mfaRecoveryInput, setMfaRecoveryInput] = useState('');
+
+  const isSuperAdmin = currentUser?.is_super_admin === 1 || currentUser?.isSuperAdmin === true;
+
+  const fetchMfaStatus = useCallback(async () => {
+    try {
+      const res = await fetch('/api/auth/mfa/status', {
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('token')}`,
+        },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setMfaStatus({
+          enabled: !!data.enabled,
+          recoveryCodesRemaining: data.recoveryCodesRemaining ?? 0,
+          loading: false,
+        });
+      } else {
+        setMfaStatus(prev => ({ ...prev, loading: false }));
+      }
+    } catch {
+      setMfaStatus(prev => ({ ...prev, loading: false }));
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchMfaStatus();
+  }, [fetchMfaStatus]);
+
+  const openMfaSetup = () => {
+    setMfaModal('setup');
+    setMfaStep(1);
+    setMfaPassword('');
+    setMfaSetupData({ secret: '', otpauthUri: '' });
+    setMfaVerificationCode('');
+    setMfaRecoveryCodes([]);
+    setMfaError('');
+    setMfaAcknowledgedCodes(false);
+  };
+
+  const openMfaReplace = () => {
+    setMfaModal('replace');
+    setMfaStep(1);
+    setMfaPassword('');
+    setMfaRecoveryInput('');
+    setMfaReplaceMethod('password');
+    setMfaSetupData({ secret: '', otpauthUri: '' });
+    setMfaVerificationCode('');
+    setMfaRecoveryCodes([]);
+    setMfaError('');
+    setMfaAcknowledgedCodes(false);
+  };
+
+  const openMfaDisable = () => {
+    if (isSuperAdmin) return;
+    setMfaModal('disable');
+    setMfaPassword('');
+    setMfaVerificationCode('');
+    setMfaError('');
+  };
+
+  const closeMfaModal = () => {
+    setMfaModal(null);
+    setMfaStep(1);
+    setMfaPassword('');
+    setMfaRecoveryInput('');
+    setMfaSetupData({ secret: '', otpauthUri: '' });
+    setMfaVerificationCode('');
+    setMfaRecoveryCodes([]);
+    setMfaError('');
+    setMfaAcknowledgedCodes(false);
+  };
+
+  const handleMfaSetupStep1 = async (e) => {
+    e.preventDefault();
+    setMfaError('');
+    setMfaLoading(true);
+
+    try {
+      const res = await fetch('/api/auth/mfa/setup', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('token')}`,
+        },
+        body: JSON.stringify({ password: mfaPassword }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to initiate 2FA setup');
+      }
+      setMfaSetupData({ secret: data.secret, otpauthUri: data.otpauthUri });
+      setMfaStep(2);
+    } catch (err) {
+      setMfaError(err.message || 'Verification failed. Please check your password.');
+    } finally {
+      setMfaLoading(false);
+    }
+  };
+
+  const handleMfaReplaceStep1 = async (e) => {
+    e.preventDefault();
+    setMfaError('');
+    setMfaLoading(true);
+
+    try {
+      const res = await fetch('/api/auth/mfa/replace', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('token')}`,
+        },
+        body: JSON.stringify({
+          password: mfaReplaceMethod === 'password' ? mfaPassword : undefined,
+          recoveryCode: mfaReplaceMethod === 'recovery' ? mfaRecoveryInput.trim() : undefined,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to reconfigure 2FA');
+      }
+      setMfaSetupData({ secret: data.secret, otpauthUri: data.otpauthUri });
+      setMfaStep(2);
+    } catch (err) {
+      setMfaError(err.message || 'Verification failed.');
+    } finally {
+      setMfaLoading(false);
+    }
+  };
+
+  const handleMfaVerifyStep2 = async (e) => {
+    e.preventDefault();
+    setMfaError('');
+    setMfaLoading(true);
+
+    try {
+      const res = await fetch('/api/auth/mfa/verify-setup', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('token')}`,
+        },
+        body: JSON.stringify({ code: mfaVerificationCode.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Invalid authenticator code');
+      }
+      setMfaRecoveryCodes(data.recoveryCodes || []);
+      setMfaStep(3);
+      fetchMfaStatus();
+    } catch (err) {
+      setMfaError(err.message || 'Invalid code. Check your authenticator app and try again.');
+    } finally {
+      setMfaLoading(false);
+    }
+  };
+
+  const handleMfaDisableSubmit = async (e) => {
+    e.preventDefault();
+    setMfaError('');
+    setMfaLoading(true);
+
+    try {
+      const res = await fetch('/api/auth/mfa/disable', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('token')}`,
+        },
+        body: JSON.stringify({
+          password: mfaPassword || undefined,
+          code: mfaVerificationCode.trim() || undefined,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to disable 2FA');
+      }
+      closeMfaModal();
+      fetchMfaStatus();
+    } catch (err) {
+      setMfaError(err.message || 'Failed to disable 2FA.');
+    } finally {
+      setMfaLoading(false);
+    }
+  };
+
+  const handleCopyRecoveryCodes = () => {
+    if (!mfaRecoveryCodes.length) return;
+    const text = mfaRecoveryCodes.join('\n');
+    navigator.clipboard.writeText(text);
+    setMfaCopiedCodes(true);
+    setTimeout(() => setMfaCopiedCodes(false), 2500);
+  };
+
+  const handleDownloadRecoveryCodes = () => {
+    if (!mfaRecoveryCodes.length) return;
+    const content = [
+      '=======================================================',
+      'BFI CLASSROOM — TWO-FACTOR AUTHENTICATION RECOVERY CODES',
+      `Account: ${currentUser?.username || 'user'}`,
+      `Generated: ${new Date().toISOString()}`,
+      '=======================================================',
+      '',
+      'INSTRUCTIONS:',
+      '- Each backup recovery code can be used ONCE to sign in or reconfigure 2FA.',
+      '- Keep these codes secret in a password manager or safe physical location.',
+      '',
+      ...mfaRecoveryCodes.map((code, idx) => `[${idx + 1}] ${code}`),
+      '',
+      '=======================================================',
+    ].join('\n');
+
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `bfi-recovery-codes-${currentUser?.username || 'user'}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
 
   // Derive which section IDs are visible based on the current search query
   const visibleSections = useMemo(() => {
@@ -541,9 +789,420 @@ export default function Settings() {
             </form>
           </section>}
 
+          {/* ── Two-Factor Authentication (2FA) ──────────────────────────────── */}
+          {show('two-factor-auth') && <section className="glass-panel" style={{ padding: '2rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+              <h3 className="font-display" style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '0.75rem', fontSize: '1.2rem' }}>
+                <ShieldCheck size={20} style={{ color: 'var(--accent-primary)' }} /> Two-Factor Authentication
+              </h3>
+              {mfaStatus.loading ? (
+                <span className="badge-pill" style={{ opacity: 0.6 }}>Checking...</span>
+              ) : mfaStatus.enabled ? (
+                <span style={{
+                  display: 'inline-flex', alignItems: 'center', gap: '0.35rem',
+                  padding: '0.25rem 0.65rem', borderRadius: '999px',
+                  background: 'rgba(16,185,129,0.12)', color: '#10b981',
+                  border: '1px solid rgba(16,185,129,0.25)', fontSize: '0.78rem', fontWeight: 600,
+                }}>
+                  <CheckCircle2 size={13} /> Active &amp; Protected
+                </span>
+              ) : (
+                <span style={{
+                  display: 'inline-flex', alignItems: 'center', gap: '0.35rem',
+                  padding: '0.25rem 0.65rem', borderRadius: '999px',
+                  background: 'rgba(245,158,11,0.12)', color: '#f59e0b',
+                  border: '1px solid rgba(245,158,11,0.25)', fontSize: '0.78rem', fontWeight: 600,
+                }}>
+                  <AlertTriangle size={13} /> Not Configured
+                </span>
+              )}
+            </div>
+
+            {/* Super Admin Mandatory Badge & Warning */}
+            {isSuperAdmin && (
+              <div style={{
+                marginBottom: '1.25rem', padding: '0.85rem 1rem', borderRadius: '10px',
+                background: mfaStatus.enabled ? 'rgba(99,102,241,0.08)' : 'rgba(225,29,72,0.1)',
+                border: mfaStatus.enabled ? '1px solid rgba(99,102,241,0.2)' : '1px solid rgba(225,29,72,0.3)',
+                display: 'flex', alignItems: 'flex-start', gap: '0.75rem',
+              }}>
+                <ShieldAlert size={18} style={{ color: mfaStatus.enabled ? 'var(--accent-primary)' : 'var(--danger)', flexShrink: 0, marginTop: '2px' }} />
+                <div>
+                  <div style={{ fontWeight: 700, fontSize: '0.86rem', color: mfaStatus.enabled ? 'var(--accent-primary)' : 'var(--danger)' }}>
+                    Mandatory Super Admin Requirement
+                  </div>
+                  <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginTop: '2px', lineHeight: 1.4 }}>
+                    {mfaStatus.enabled 
+                      ? 'Two-Factor Authentication is active. As a Super Administrator, 2FA cannot be disabled to protect institutional governance.'
+                      : 'Governance actions (promoting, demoting, archiving administrators) are restricted until you complete authenticator enrollment.'}
+                  </p>
+                </div>
+              </div>
+            )}
+
+            <p style={{ fontSize: '0.84rem', color: 'var(--text-muted)', marginBottom: '1.5rem', lineHeight: 1.5 }}>
+              Enhance account security by requiring an authenticator code (Google Authenticator, Microsoft Authenticator, 1Password, or Authy) on sign in.
+            </p>
+
+            {mfaStatus.enabled ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+                <div style={{
+                  padding: '1rem', borderRadius: '10px',
+                  background: 'rgba(255,255,255,0.03)', border: '1px solid var(--glass-border)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.5rem',
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
+                    <KeyRound size={17} style={{ color: 'var(--accent-primary)' }} />
+                    <span style={{ fontSize: '0.85rem', color: 'var(--text-primary)' }}>
+                      Emergency Recovery Codes
+                    </span>
+                  </div>
+                  <span style={{ fontSize: '0.8rem', fontWeight: 600, color: mfaStatus.recoveryCodesRemaining <= 2 ? 'var(--danger)' : 'var(--text-secondary)' }}>
+                    {mfaStatus.recoveryCodesRemaining} of 8 remaining
+                  </span>
+                </div>
+
+                <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={openMfaReplace}
+                    style={{ flex: 1, minWidth: '160px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem' }}
+                  >
+                    <RefreshCw size={15} /> Reconfigure App
+                  </button>
+                  {!isSuperAdmin && (
+                    <button
+                      type="button"
+                      className="btn"
+                      onClick={openMfaDisable}
+                      style={{
+                        flex: 1, minWidth: '140px',
+                        background: 'rgba(239,68,68,0.1)', color: 'var(--danger)',
+                        border: '1px solid rgba(239,68,68,0.25)',
+                      }}
+                    >
+                      Disable 2FA
+                    </button>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={openMfaSetup}
+                  style={{ width: '100%', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem' }}
+                >
+                  <ShieldCheck size={18} /> Enable Two-Factor Authentication
+                </button>
+              </div>
+            )}
+          </section>}
+
         </div>
 
       </div>
+
+
+      {/* ── Universal 2FA Modals Overlay ────────────────────────────────────── */}
+      {mfaModal && (
+        <div style={{
+          position: 'fixed', inset: 0, zIndex: 9999,
+          background: 'rgba(0,0,0,0.75)', backdropFilter: 'blur(6px)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem',
+        }}>
+          <div className="glass-panel" style={{
+            width: '100%', maxWidth: '480px', maxHeight: '90vh', overflowY: 'auto',
+            padding: '2rem', borderRadius: '20px', background: 'var(--bg-surface, #13131a)',
+            border: '1px solid var(--glass-border)', boxShadow: '0 20px 40px rgba(0,0,0,0.5)',
+            position: 'relative',
+          }}>
+            {/* Modal Header */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.25rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                <KeyRound size={22} style={{ color: 'var(--accent-primary)' }} />
+                <h3 className="font-display" style={{ margin: 0, fontSize: '1.25rem' }}>
+                  {mfaModal === 'setup' && (mfaStep === 1 ? 'Verify Password' : mfaStep === 2 ? 'Scan Authenticator QR' : 'Backup Recovery Codes')}
+                  {mfaModal === 'replace' && (mfaStep === 1 ? 'Reconfigure 2FA' : mfaStep === 2 ? 'Scan New QR' : 'Fresh Recovery Codes')}
+                  {mfaModal === 'disable' && 'Disable Two-Factor Authentication'}
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={closeMfaModal}
+                style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '4px' }}
+                aria-label="Close modal"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            {mfaError && (
+              <div style={{
+                marginBottom: '1.25rem', padding: '0.75rem 1rem', borderRadius: '8px',
+                background: 'rgba(239,68,68,0.12)', border: '1px solid rgba(239,68,68,0.25)',
+                color: 'var(--danger)', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.5rem',
+              }}>
+                <AlertCircle size={16} style={{ flexShrink: 0 }} />
+                <span>{mfaError}</span>
+              </div>
+            )}
+
+            {/* SETUP / REPLACE: Step 1 (Password or Recovery Code) */}
+            {mfaStep === 1 && (mfaModal === 'setup' || mfaModal === 'replace') && (
+              <form onSubmit={mfaModal === 'setup' ? handleMfaSetupStep1 : handleMfaReplaceStep1} style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+                <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', lineHeight: 1.5, margin: 0 }}>
+                  {mfaModal === 'setup'
+                    ? 'To begin setup, please confirm your current account password.'
+                    : 'To replace your authenticator, confirm with either your password or an emergency recovery code.'}
+                </p>
+
+                {mfaModal === 'replace' && (
+                  <div style={{ display: 'flex', gap: '0.5rem', borderBottom: '1px solid var(--glass-border)', paddingBottom: '0.75rem' }}>
+                    <button
+                      type="button"
+                      onClick={() => { setMfaReplaceMethod('password'); setMfaError(''); }}
+                      className={`btn btn-sm ${mfaReplaceMethod === 'password' ? 'btn-primary' : 'btn-secondary'}`}
+                    >
+                      Use Password
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setMfaReplaceMethod('recovery'); setMfaError(''); }}
+                      className={`btn btn-sm ${mfaReplaceMethod === 'recovery' ? 'btn-primary' : 'btn-secondary'}`}
+                    >
+                      Use Recovery Code
+                    </button>
+                  </div>
+                )}
+
+                {mfaReplaceMethod === 'password' ? (
+                  <div className="input-group">
+                    <label>Account Password</label>
+                    <input
+                      type="password"
+                      className="input-glass"
+                      required
+                      placeholder="Enter your current password"
+                      value={mfaPassword}
+                      onChange={e => setMfaPassword(e.target.value)}
+                      autoFocus
+                    />
+                  </div>
+                ) : (
+                  <div className="input-group">
+                    <label>Emergency Recovery Code</label>
+                    <input
+                      type="text"
+                      className="input-glass font-mono text-center tracking-wider"
+                      required
+                      placeholder="e.g. A1B2-C3D4"
+                      value={mfaRecoveryInput}
+                      onChange={e => setMfaRecoveryInput(e.target.value)}
+                      autoFocus
+                    />
+                  </div>
+                )}
+
+                <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'flex-end', marginTop: '0.5rem' }}>
+                  <button type="button" className="btn btn-secondary" onClick={closeMfaModal}>
+                    Cancel
+                  </button>
+                  <button type="submit" className="btn btn-primary" disabled={mfaLoading}>
+                    {mfaLoading ? 'Verifying...' : 'Continue'}
+                  </button>
+                </div>
+              </form>
+            )}
+
+            {/* SETUP / REPLACE: Step 2 (Scan QR Code & Enter TOTP) */}
+            {mfaStep === 2 && (mfaModal === 'setup' || mfaModal === 'replace') && (
+              <form onSubmit={handleMfaVerifyStep2} style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+                <p style={{ fontSize: '0.84rem', color: 'var(--text-secondary)', textAlign: 'center', margin: 0 }}>
+                  Scan the QR code below using your authenticator app (Google Authenticator, Authy, 1Password), then enter the 6-digit verification code.
+                </p>
+
+                {/* Local Canvas QR Code Component */}
+                <AuthenticatorQRCode
+                  otpauthUri={mfaSetupData.otpauthUri}
+                  secret={mfaSetupData.secret}
+                  accountName={currentUser?.username || 'BFI User'}
+                />
+
+                <div className="input-group">
+                  <label htmlFor="totpVerifyInput">6-Digit Verification Code</label>
+                  <input
+                    id="totpVerifyInput"
+                    type="text"
+                    inputMode="numeric"
+                    className="input-glass font-mono text-center text-lg tracking-widest"
+                    placeholder="000 000"
+                    maxLength={6}
+                    required
+                    value={mfaVerificationCode}
+                    onChange={e => setMfaVerificationCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                    autoFocus
+                  />
+                </div>
+
+                <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'flex-end', marginTop: '0.5rem' }}>
+                  <button type="button" className="btn btn-secondary" onClick={closeMfaModal}>
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className="btn btn-primary"
+                    disabled={mfaLoading || mfaVerificationCode.length !== 6}
+                  >
+                    {mfaLoading ? 'Activating...' : 'Activate 2FA'}
+                  </button>
+                </div>
+              </form>
+            )}
+
+            {/* SETUP / REPLACE: Step 3 (Display 8 Emergency Recovery Codes) */}
+            {mfaStep === 3 && (mfaModal === 'setup' || mfaModal === 'replace') && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+                <div style={{ textAlign: 'center' }}>
+                  <div style={{
+                    width: '48px', height: '48px', borderRadius: '50%',
+                    background: 'rgba(16,185,129,0.15)', color: '#10b981',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 0.75rem',
+                  }}>
+                    <CheckCircle2 size={26} />
+                  </div>
+                  <h4 style={{ margin: '0 0 0.35rem 0', fontSize: '1.15rem', color: 'var(--text-primary)' }}>
+                    Two-Factor Authentication Activated!
+                  </h4>
+                  <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', lineHeight: 1.4, margin: 0 }}>
+                    Save these 8 single-use emergency recovery codes. If you ever lose your phone or authenticator app, these codes are the ONLY way to access your account.
+                  </p>
+                </div>
+
+                {/* 8 Recovery Codes Grid */}
+                <div style={{
+                  display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '0.5rem',
+                  background: 'rgba(0,0,0,0.25)', padding: '1rem', borderRadius: '12px',
+                  border: '1px solid var(--glass-border)',
+                }}>
+                  {mfaRecoveryCodes.map((code, idx) => (
+                    <div
+                      key={idx}
+                      style={{
+                        padding: '0.5rem', borderRadius: '6px',
+                        background: 'rgba(255,255,255,0.04)',
+                        fontFamily: 'monospace', fontSize: '0.9rem',
+                        textAlign: 'center', fontWeight: 600,
+                        color: 'var(--text-primary)', letterSpacing: '0.05em',
+                      }}
+                    >
+                      {code}
+                    </div>
+                  ))}
+                </div>
+
+                {/* Actions: Copy & Download */}
+                <div style={{ display: 'flex', gap: '0.75rem' }}>
+                  <button
+                    type="button"
+                    onClick={handleCopyRecoveryCodes}
+                    className="btn btn-secondary"
+                    style={{ flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '0.4rem', fontSize: '0.82rem' }}
+                  >
+                    {mfaCopiedCodes ? <Check size={14} style={{ color: '#10b981' }} /> : <Copy size={14} />}
+                    {mfaCopiedCodes ? 'Copied to Clipboard' : 'Copy Codes'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleDownloadRecoveryCodes}
+                    className="btn btn-secondary"
+                    style={{ flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '0.4rem', fontSize: '0.82rem' }}
+                  >
+                    <Download size={14} /> Download .txt
+                  </button>
+                </div>
+
+                {/* Acknowledgment Checkbox */}
+                <label style={{
+                  display: 'flex', alignItems: 'flex-start', gap: '0.6rem',
+                  fontSize: '0.82rem', color: 'var(--text-secondary)', cursor: 'pointer',
+                  padding: '0.5rem', borderRadius: '8px', background: 'rgba(255,255,255,0.02)',
+                }}>
+                  <input
+                    type="checkbox"
+                    checked={mfaAcknowledgedCodes}
+                    onChange={e => setMfaAcknowledgedCodes(e.target.checked)}
+                    style={{ marginTop: '3px' }}
+                  />
+                  <span>I have securely saved these 8 emergency recovery codes in a safe place.</span>
+                </label>
+
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={closeMfaModal}
+                  disabled={!mfaAcknowledgedCodes}
+                  style={{ width: '100%', marginTop: '0.5rem' }}
+                >
+                  Done
+                </button>
+              </div>
+            )}
+
+            {/* DISABLE MODAL */}
+            {mfaModal === 'disable' && (
+              <form onSubmit={handleMfaDisableSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+                <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', lineHeight: 1.5, margin: 0 }}>
+                  Disabling two-factor authentication makes your account less secure. Please confirm with your password or a 6-digit code.
+                </p>
+
+                <div className="input-group">
+                  <label>Account Password</label>
+                  <input
+                    type="password"
+                    className="input-glass"
+                    placeholder="Enter account password"
+                    value={mfaPassword}
+                    onChange={e => setMfaPassword(e.target.value)}
+                  />
+                </div>
+
+                <div style={{ textAlign: 'center', fontSize: '0.78rem', color: 'var(--text-muted)' }}>— OR —</div>
+
+                <div className="input-group">
+                  <label>6-Digit Authenticator Code</label>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    className="input-glass font-mono text-center tracking-widest"
+                    placeholder="000 000"
+                    maxLength={6}
+                    value={mfaVerificationCode}
+                    onChange={e => setMfaVerificationCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                  />
+                </div>
+
+                <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'flex-end', marginTop: '0.5rem' }}>
+                  <button type="button" className="btn btn-secondary" onClick={closeMfaModal}>
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className="btn"
+                    style={{ background: 'rgba(239,68,68,0.85)', color: '#fff' }}
+                    disabled={mfaLoading || (!mfaPassword && mfaVerificationCode.length !== 6)}
+                  >
+                    {mfaLoading ? 'Disabling...' : 'Confirm Disable 2FA'}
+                  </button>
+                </div>
+              </form>
+            )}
+
+          </div>
+        </div>
+      )}
 
       {/* No-results empty state */}
       {visibleSections && visibleSections.length === 0 && (

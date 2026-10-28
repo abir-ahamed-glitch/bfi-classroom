@@ -1,7 +1,7 @@
 import TurnstileWidget from '../components/TurnstileWidget';
 import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { Film, User, Lock, ArrowRight, Loader2, Eye, EyeOff, ShieldAlert } from 'lucide-react';
+import { Film, User, Lock, ArrowRight, Loader2, Eye, EyeOff, ShieldAlert, KeyRound } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import './Login.css'; // Add a specific CSS file for Login
 
@@ -14,7 +14,16 @@ export default function Login() {
   const [turnstileToken, setTurnstileToken] = useState('');
   const [errorField, setErrorField] = useState('');
   const [turnstileResetKey, setTurnstileResetKey] = useState(0);
-  const { login } = useAuth();
+  // MFA Challenge State
+  const [mfaPending, setMfaPending] = useState(false);
+  const [mfaToken, setMfaToken] = useState(null);
+  const [totpCode, setTotpCode] = useState('');
+  const [recoveryCode, setRecoveryCode] = useState('');
+  const [useRecovery, setUseRecovery] = useState(false);
+  const [mfaError, setMfaError] = useState('');
+  const [isVerifyingMfa, setIsVerifyingMfa] = useState(false);
+
+  const { login, verifyMfa } = useAuth();
   const navigate = useNavigate();
 
   const handleSubmit = async (e) => {
@@ -31,7 +40,16 @@ export default function Login() {
     }
 
     try {
-      await login(username, password, 'student', token);
+      const res = await login(username, password, 'student', token);
+      if (res && res.requireMfa) {
+        setMfaToken(res.mfaToken);
+        setMfaPending(true);
+        setMfaError('');
+        setTotpCode('');
+        setRecoveryCode('');
+        setUseRecovery(false);
+        return;
+      }
       navigate('/', { replace: true });
     } catch (err) {
       setError(err.message || 'Failed to login. Please check your credentials.');
@@ -41,6 +59,33 @@ export default function Login() {
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const handleMfaSubmit = async (e) => {
+    e.preventDefault();
+    setMfaError('');
+    setIsVerifyingMfa(true);
+
+    try {
+      await verifyMfa(mfaToken, {
+        code: useRecovery ? undefined : totpCode.trim(),
+        recoveryCode: useRecovery ? recoveryCode.trim() : undefined,
+      });
+      navigate('/', { replace: true });
+    } catch (err) {
+      setMfaError(err.message || 'Invalid verification code. Please try again.');
+    } finally {
+      setIsVerifyingMfa(false);
+    }
+  };
+
+  const handleCancelMfa = () => {
+    setMfaPending(false);
+    setMfaToken(null);
+    setTotpCode('');
+    setRecoveryCode('');
+    setUseRecovery(false);
+    setMfaError('');
   };
 
   return (
@@ -75,7 +120,77 @@ export default function Login() {
           <p>Bangladesh Film Institute's Digital Hub</p>
         </div>
 
-        <form onSubmit={handleSubmit} className="login-form glass-panel">
+        {mfaPending ? (
+          <form onSubmit={handleMfaSubmit} className="login-form glass-panel">
+            <h2 className="font-display" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'center' }}>
+              <KeyRound className="text-primary" size={24} /> Two-Factor Verification
+            </h2>
+            <p className="subtitle">
+              {useRecovery 
+                ? 'Enter an emergency backup recovery code to access your account.' 
+                : 'Enter the 6-digit verification code from your authenticator app.'}
+            </p>
+
+            {mfaError && <div className="error-alert">{mfaError}</div>}
+
+            <div className="input-group">
+              <label htmlFor="mfaCode">{useRecovery ? 'Recovery Code' : '6-Digit Security Code'}</label>
+              <div className="input-wrapper">
+                <input 
+                  id="mfaCode"
+                  type="text" 
+                  className="input-glass font-mono text-center tracking-widest text-lg" 
+                  placeholder={useRecovery ? "e.g. A1B2-C3D4" : "000 000"}
+                  value={useRecovery ? recoveryCode : totpCode}
+                  onChange={(e) => {
+                    if (useRecovery) {
+                      setRecoveryCode(e.target.value);
+                    } else {
+                      const val = e.target.value.replace(/\D/g, '').slice(0, 6);
+                      setTotpCode(val);
+                    }
+                  }}
+                  autoFocus
+                  maxLength={useRecovery ? 30 : 6}
+                  required
+                />
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '0.5rem 0 1rem' }}>
+              <button
+                type="button"
+                className="text-sm text-gradient font-medium"
+                style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
+                onClick={() => {
+                  setUseRecovery(!useRecovery);
+                  setMfaError('');
+                }}
+              >
+                {useRecovery ? '← Use Authenticator App Code' : 'Lost device? Use Recovery Code'}
+              </button>
+            </div>
+
+            <button 
+              type="submit" 
+              className="btn btn-primary w-full login-btn"
+              disabled={isVerifyingMfa || (useRecovery ? !recoveryCode.trim() : totpCode.length !== 6)}
+            >
+              {isVerifyingMfa ? <Loader2 size={18} className="spin" /> : 'Verify & Continue'}
+              {!isVerifyingMfa && <ArrowRight size={18} />}
+            </button>
+
+            <button
+              type="button"
+              className="btn btn-secondary w-full"
+              style={{ marginTop: '0.75rem' }}
+              onClick={handleCancelMfa}
+            >
+              Back to Sign In
+            </button>
+          </form>
+        ) : (
+          <form onSubmit={handleSubmit} className="login-form glass-panel">
           <h2 className="font-display">Welcome Back</h2>
           <p className="subtitle">Sign in to continue your filmmaking journey.</p>
           
@@ -191,6 +306,7 @@ export default function Login() {
             </Link>
           </div>
         </form>
+        )}
 
         <div className="login-footer">
           <p>Student registration is handled by the institute.</p>
