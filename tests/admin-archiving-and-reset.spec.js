@@ -895,3 +895,205 @@ test.describe('Task 5: Preservation of Existing Recovery Flows & Email Ownership
     assert.strictEqual(ctxConfirmReuse.getResult().statusCode, 400, 'Consumed challenge rejected');
   });
 });
+
+test.describe('Task 6: Super Admin-Initiated Reset Endpoints & URL Fragment Architecture', () => {
+  test('verifies email dispatch, out-of-band direct links, version binding, and completion endpoint', async () => {
+    const { initIsolatedTestDatabase } = await import('./test-db-isolation.js');
+    await initIsolatedTestDatabase(TEST_SHARED_DB_PATH);
+
+    const { default: serverDb } = await import('../server/db/database.js');
+    const { runAdminArchivingAndResetMigration } = await import('../server/db/migrations/20261028_admin_archiving_and_reset.cjs');
+    runAdminArchivingAndResetMigration(serverDb);
+
+    serverDb.exec(`
+      DELETE FROM admin_audit_logs;
+      DELETE FROM mfa_login_challenges;
+      DELETE FROM admin_permissions;
+      DELETE FROM sessions;
+      DELETE FROM password_reset_tokens;
+      DELETE FROM email_verification_challenges;
+      DELETE FROM users;
+
+      -- Seed: User 1 (Super Admin), User 2 (Inactive Admin with unverified email), User 3 (Active Admin with verified email), User 4 (Archived Admin)
+      INSERT INTO users (id, username, email, password_hash, role, first_name, last_name, is_super_admin, is_active, token_version, account_version, email_verified_at, verified_email)
+      VALUES (1, 'superadmin', 'super@bfibd.org', '$2a$10$wT1dO/Gf3wK6zN2R6V3j3OGmG9pT3C0s6t4UvMh7N4X2f1m6J5g5i', 'admin', 'Super', 'Admin', 1, 1, 1, 1, datetime('now'), 'super@bfibd.org'),
+             (2, 'inactive_admin', 'inactive@bfibd.org', '$2a$10$wT1dO/Gf3wK6zN2R6V3j3OGmG9pT3C0s6t4UvMh7N4X2f1m6J5g5i', 'admin', 'Inactive', 'Admin', 0, 0, 1, 1, NULL, NULL),
+             (3, 'verified_admin', 'verified@bfibd.org', '$2a$10$wT1dO/Gf3wK6zN2R6V3j3OGmG9pT3C0s6t4UvMh7N4X2f1m6J5g5i', 'admin', 'Verified', 'Admin', 0, 1, 1, 1, datetime('now'), 'verified@bfibd.org'),
+             (4, 'archived_admin', 'archived@bfibd.org', '$2a$10$wT1dO/Gf3wK6zN2R6V3j3OGmG9pT3C0s6t4UvMh7N4X2f1m6J5g5i', 'admin', 'Archived', 'Admin', 0, 0, 1, 1, NULL, NULL);
+    `);
+
+    // Set archived state on User 4
+    serverDb.prepare("UPDATE users SET archived_at = datetime('now'), archive_reason = 'Archived' WHERE id = 4").run();
+
+    // Active session for Super Admin with sudo
+    serverDb.prepare("INSERT INTO sessions (id, user_id, token_hash, expires_at, sudo_verified_at) VALUES (1, 1, 'h1', datetime('now', '+1 hour'), datetime('now'))").run();
+    // Active session for User 3
+    serverDb.prepare("INSERT INTO sessions (id, user_id, token_hash, expires_at) VALUES (3, 3, 'h3', datetime('now', '+1 hour'))").run();
+
+    const { default: adminMgmtRoutes } = await import('../server/routes/admin-management.js');
+    const { default: authRoutes } = await import('../server/routes/auth.js');
+    const bcrypt = (await import('bcryptjs')).default;
+
+    function mockReqRes(options = {}) {
+      let statusCode = 200;
+      let jsonPayload = null;
+      let nextCalled = false;
+      const headers = {};
+      const req = {
+        params: options.params || {},
+        query: options.query || {},
+        body: options.body || {},
+        headers: options.headers || {},
+        ip: '127.0.0.1',
+        user: options.user || {
+          id: 1,
+          username: 'superadmin',
+          role: 'admin',
+          is_super_admin: 1,
+          isSuperAdmin: true,
+          sessionId: 1,
+          permissions: ['*']
+        }
+      };
+      const res = {
+        status(code) {
+          statusCode = code;
+          return this;
+        },
+        json(payload) {
+          jsonPayload = payload;
+          return this;
+        },
+        setHeader(name, val) {
+          headers[name.toLowerCase()] = val;
+          return this;
+        }
+      };
+      const next = () => { nextCalled = true; };
+      return { req, res, next, getResult: () => ({ statusCode, jsonPayload, nextCalled, headers }) };
+    }
+
+    function getAdminHandler(method, pathStr) {
+      const layer = adminMgmtRoutes.stack.find(l => l.route?.path === pathStr && l.route?.methods?.[method.toLowerCase()]);
+      if (!layer) throw new Error(`Route not found: ${method} ${pathStr} on adminMgmtRoutes`);
+      return layer.route.stack[layer.route.stack.length - 1].handle;
+    }
+
+    function getAuthHandler(method, pathStr) {
+      const layer = authRoutes.stack.find(l => l.route?.path === pathStr && l.route?.methods?.[method.toLowerCase()]);
+      if (!layer) throw new Error(`Route not found: ${method} ${pathStr} on authRoutes`);
+      return layer.route.stack[layer.route.stack.length - 1].handle;
+    }
+
+    const emailResetHandler = getAdminHandler('POST', '/administrators/:id/reset-password/email');
+    const directLinkHandler = getAdminHandler('POST', '/administrators/:id/reset-password/direct-link');
+    const completeResetHandler = getAuthHandler('POST', '/admin/reset-password/complete');
+
+    // 1. Super Admin cannot be reset
+    const ctxResetSuper = mockReqRes({ params: { id: '1' }, body: { expected_account_version: 1 } });
+    await emailResetHandler(ctxResetSuper.req, ctxResetSuper.res);
+    assert.strictEqual(ctxResetSuper.getResult().statusCode, 403);
+
+    // 2. Concurrency checks on email reset
+    const ctxMissingVer = mockReqRes({ params: { id: '3' }, body: {} });
+    await emailResetHandler(ctxMissingVer.req, ctxMissingVer.res);
+    assert.strictEqual(ctxMissingVer.getResult().statusCode, 400);
+    assert.strictEqual(ctxMissingVer.getResult().jsonPayload?.code, 'MISSING_ACCOUNT_VERSION');
+
+    const ctxStaleVer = mockReqRes({ params: { id: '3' }, body: { expected_account_version: 999 } });
+    await emailResetHandler(ctxStaleVer.req, ctxStaleVer.res);
+    assert.strictEqual(ctxStaleVer.getResult().statusCode, 409);
+    assert.strictEqual(ctxStaleVer.getResult().jsonPayload?.code, 'CONCURRENCY_CONFLICT');
+
+    // 3. Archived admin cannot receive reset
+    const ctxArchived = mockReqRes({ params: { id: '4' }, body: { expected_account_version: 1 } });
+    await emailResetHandler(ctxArchived.req, ctxArchived.res);
+    assert.strictEqual(ctxArchived.getResult().statusCode, 400);
+    assert.strictEqual(ctxArchived.getResult().jsonPayload?.code, 'ACCOUNT_ARCHIVED');
+
+    // 4. Email dispatch to unverified account returns 400 EMAIL_NOT_VERIFIED
+    const ctxUnverified = mockReqRes({ params: { id: '2' }, body: { expected_account_version: 1 } });
+    await emailResetHandler(ctxUnverified.req, ctxUnverified.res);
+    assert.strictEqual(ctxUnverified.getResult().statusCode, 400);
+    assert.strictEqual(ctxUnverified.getResult().jsonPayload?.code, 'EMAIL_NOT_VERIFIED');
+
+    // 5. Successful email dispatch to verified account (User 3)
+    const ctxEmailSuccess = mockReqRes({ params: { id: '3' }, body: { expected_account_version: 1, reason: 'Routine credential refresh' } });
+    await emailResetHandler(ctxEmailSuccess.req, ctxEmailSuccess.res);
+    assert.strictEqual(ctxEmailSuccess.getResult().statusCode, 200);
+
+    const u3PostEmail = serverDb.prepare('SELECT account_version, token_version, password_reset_pending FROM users WHERE id = 3').get();
+    assert.strictEqual(u3PostEmail.account_version, 2, 'account_version incremented to 2');
+    assert.strictEqual(u3PostEmail.token_version, 2, 'token_version incremented to 2');
+    assert.strictEqual(u3PostEmail.password_reset_pending, 1, 'password_reset_pending set to 1');
+
+    const tokenRow3 = serverDb.prepare("SELECT * FROM password_reset_tokens WHERE user_id = 3 AND purpose = 'admin_password_reset'").get();
+    assert.ok(tokenRow3, 'Token stored with purpose admin_password_reset');
+    assert.strictEqual(tokenRow3.token_version, 2, 'Token version matches bumped user token_version');
+    assert.strictEqual(tokenRow3.created_by_admin_id, 1, 'created_by_admin_id recorded');
+
+    // Sessions for User 3 were cleared
+    const sessionsU3 = serverDb.prepare('SELECT COUNT(*) as c FROM sessions WHERE user_id = 3').get().c;
+    assert.strictEqual(sessionsU3, 0, 'Target sessions revoked');
+
+    // 6. Direct Link Generation (Works even if email unverified, e.g. User 2)
+    const ctxDirect = mockReqRes({ params: { id: '2' }, body: { expected_account_version: 1, reason: 'Manual recovery link' } });
+    await directLinkHandler(ctxDirect.req, ctxDirect.res);
+    assert.strictEqual(ctxDirect.getResult().statusCode, 200);
+
+    const directRes = ctxDirect.getResult();
+    assert.ok(directRes.headers['cache-control']?.includes('no-store'), 'Direct link response has no-store cache control');
+    assert.ok(directRes.jsonPayload?.direct_url, 'Response contains direct_url');
+    assert.ok(directRes.jsonPayload.direct_url.includes('#userId=2&token='), 'direct_url uses URL fragment format');
+
+    // Verify token extracted from URL fragment
+    const fragment = directRes.jsonPayload.direct_url.split('#')[1];
+    const urlParams = new URLSearchParams(fragment);
+    const rawDirectToken = urlParams.get('token');
+    assert.ok(rawDirectToken, 'Fragment contains raw token');
+
+    const u2PostDirect = serverDb.prepare('SELECT account_version, token_version, password_reset_pending, is_active FROM users WHERE id = 2').get();
+    assert.strictEqual(u2PostDirect.account_version, 2);
+    assert.strictEqual(u2PostDirect.token_version, 2);
+    assert.strictEqual(u2PostDirect.password_reset_pending, 1);
+    assert.strictEqual(u2PostDirect.is_active, 0, 'Inactive admin is still inactive');
+
+    // Direct link generation audit log does not leak the token
+    const directAudit = serverDb.prepare("SELECT * FROM admin_audit_logs WHERE target_user_id = 2 AND action = 'admin.direct_reset_link_generated'").get();
+    assert.ok(directAudit, 'Audit log recorded');
+    assert.strictEqual(directAudit.details.includes(rawDirectToken), false, 'Audit log must never leak raw token');
+
+    // 7. Complete Password Reset (POST /api/admin/reset-password/complete)
+    // A) Rejects weak password
+    const ctxWeak = mockReqRes({ body: { userId: 2, token: rawDirectToken, password: 'weak' } });
+    await completeResetHandler(ctxWeak.req, ctxWeak.res);
+    assert.strictEqual(ctxWeak.getResult().statusCode, 400);
+
+    // B) Rejects wrong token
+    const ctxBadToken = mockReqRes({ body: { userId: 2, token: 'wrong_token', password: 'NewSecurePassword123!' } });
+    await completeResetHandler(ctxBadToken.req, ctxBadToken.res);
+    assert.strictEqual(ctxBadToken.getResult().statusCode, 400);
+
+    // C) Successful reset on Inactive Admin 2
+    const ctxCompleteSuccess = mockReqRes({ body: { userId: 2, token: rawDirectToken, password: 'NewSecurePassword123!' } });
+    await completeResetHandler(ctxCompleteSuccess.req, ctxCompleteSuccess.res);
+    assert.strictEqual(ctxCompleteSuccess.getResult().statusCode, 200);
+
+    const u2PostComplete = serverDb.prepare('SELECT password_hash, password_reset_pending, account_version, token_version, is_active FROM users WHERE id = 2').get();
+    assert.strictEqual(u2PostComplete.password_reset_pending, 0, 'password_reset_pending cleared');
+    assert.strictEqual(u2PostComplete.is_active, 0, 'Inactive account stays inactive after reset');
+    assert.strictEqual(u2PostComplete.account_version, 3, 'account_version bumped');
+    assert.strictEqual(u2PostComplete.token_version, 3, 'token_version bumped');
+    assert.strictEqual(bcrypt.compareSync('NewSecurePassword123!', u2PostComplete.password_hash), true, 'Password hash updated');
+
+    // Tokens cleared
+    const tokensU2 = serverDb.prepare('SELECT COUNT(*) as c FROM password_reset_tokens WHERE user_id = 2').get().c;
+    assert.strictEqual(tokensU2, 0, 'Reset tokens consumed');
+
+    // D) Replaying consumed token fails
+    const ctxReplay = mockReqRes({ body: { userId: 2, token: rawDirectToken, password: 'AnotherPassword123!' } });
+    await completeResetHandler(ctxReplay.req, ctxReplay.res);
+    assert.strictEqual(ctxReplay.getResult().statusCode, 400);
+  });
+});
+

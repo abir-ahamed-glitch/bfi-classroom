@@ -1,17 +1,42 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { Lock, Eye, EyeOff, Loader2, CheckCircle } from 'lucide-react';
 import './Login.css';
 
 export default function AdminResetPassword() {
-  const { id, token } = useParams();
+  const { id: paramId, token: paramToken } = useParams();
   const navigate = useNavigate();
   
+  const [userId, setUserId] = useState(paramId || '');
+  const [token, setToken] = useState(paramToken || '');
+  const [isSuperAdminFlow, setIsSuperAdminFlow] = useState(false);
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [status, setStatus] = useState({ type: '', message: '' });
   const [isLoading, setIsLoading] = useState(false);
+
+  useEffect(() => {
+    // Check URL fragment first (#userId=...&token=...)
+    if (window.location.hash) {
+      const hashStr = window.location.hash.startsWith('#') ? window.location.hash.slice(1) : window.location.hash;
+      const searchParams = new URLSearchParams(hashStr);
+      const hashUserId = searchParams.get('userId');
+      const hashToken = searchParams.get('token');
+
+      if (hashUserId && hashToken) {
+        setUserId(hashUserId);
+        setToken(hashToken);
+        setIsSuperAdminFlow(true);
+        // Immediately scrub the fragment from browser address bar / history
+        window.history.replaceState(null, '', window.location.pathname);
+      }
+    } else if (paramId && paramToken) {
+      setUserId(paramId);
+      setToken(paramToken);
+      setIsSuperAdminFlow(false);
+    }
+  }, [paramId, paramToken]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -21,17 +46,36 @@ export default function AdminResetPassword() {
       return setStatus({ type: 'error', message: 'Passwords do not match.' });
     }
 
-    if (password.length < 6) {
-      return setStatus({ type: 'error', message: 'Password must be at least 6 characters long.' });
+    const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>/?]).{8,}$/;
+    if (!passwordRegex.test(password)) {
+      return setStatus({ 
+        type: 'error', 
+        message: 'Password must be at least 8 characters and include uppercase, lowercase, number, and special character.' 
+      });
+    }
+
+    if (!userId || !token) {
+      return setStatus({
+        type: 'error',
+        message: 'Invalid or missing reset token. Please request a new recovery link.'
+      });
     }
 
     setIsLoading(true);
 
     try {
-      const response = await fetch(`/api/auth/admin-reset-password/${id}/${token}`, {
+      let endpoint = `/api/auth/admin-reset-password/${userId}/${token}`;
+      let payload = { password };
+
+      if (isSuperAdminFlow) {
+        endpoint = '/api/auth/admin/reset-password/complete';
+        payload = { userId: Number(userId), token, password };
+      }
+
+      const response = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password })
+        body: JSON.stringify(payload)
       });
 
       const data = await response.json();

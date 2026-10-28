@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import express from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
@@ -23,6 +24,7 @@ import {
 import { getJwtSecret } from '../config/security.js';
 import { securityEvents } from '../utils/security-events.js';
 import { recordAuditLog, formatDhakaTimestamp, redactSensitiveData } from '../services/auditLedgerService.js';
+import { sendPasswordResetEmail } from '../utils/email.js';
 
 const router = express.Router();
 
@@ -1734,6 +1736,255 @@ router.put('/permissions/defaults', authenticateToken, requireSuperAdmin, requir
   } catch (err) {
     console.error('Error updating default permissions:', err);
     res.status(500).json({ error: 'Failed to update default permissions' });
+  }
+});
+
+// POST /api/admin/administrators/:id/reset-password/email - Super Admin-initiated password reset via verified email
+router.post('/administrators/:id/reset-password/email', authenticateToken, requireSuperAdmin, requireRecentAuth, sanitizeInput, async (req, res) => {
+  try {
+    const targetId = Number(req.params.id);
+    const { expected_account_version, reason } = req.body;
+
+    if (targetId === 1) {
+      recordFailedAuditLog(req.user.id, targetId, 'admin_password_reset', 'Cannot reset Super Admin password', req.ip);
+      return res.status(403).json({ error: 'Cannot reset the Super Administrator password.' });
+    }
+
+    if (expected_account_version === undefined || expected_account_version === null || typeof expected_account_version !== 'number') {
+      return res.status(400).json({ 
+        error: 'Expected account version is required for concurrency control.', 
+        code: 'MISSING_ACCOUNT_VERSION' 
+      });
+    }
+
+    const targetUser = db.prepare('SELECT id, username, email, role, is_active, archived_at, account_version, token_version, email_verified_at, verified_email FROM users WHERE id = ? AND deleted_at IS NULL').get(targetId);
+    if (!targetUser || targetUser.role !== 'admin') {
+      return res.status(404).json({ error: 'Administrator not found.' });
+    }
+
+    if (targetUser.archived_at !== null) {
+      return res.status(400).json({ 
+        error: 'Cannot reset password for an archived administrator. Restore the account first.', 
+        code: 'ACCOUNT_ARCHIVED' 
+      });
+    }
+
+    if (targetUser.account_version !== expected_account_version) {
+      recordFailedAuditLog(req.user.id, targetId, 'admin_password_reset', "Concurrency conflict: expected version " + expected_account_version + " but found " + targetUser.account_version, req.ip);
+      return res.status(409).json({ 
+        error: 'Account state has changed or request is stale. Please reload the administrator details before retrying.', 
+        code: 'CONCURRENCY_CONFLICT',
+        currentVersion: targetUser.account_version
+      });
+    }
+
+    if (!targetUser.email || !targetUser.email_verified_at || targetUser.verified_email !== targetUser.email) {
+      return res.status(400).json({ 
+        error: 'Target administrator does not have a verified email address. Password reset link cannot be dispatched via email without email ownership confirmation.', 
+        code: 'EMAIL_NOT_VERIFIED' 
+      });
+    }
+
+    const rawToken = crypto.randomBytes(32).toString('hex');
+    const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+    const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+    const nextTokenVersion = (targetUser.token_version || 1) + 1;
+    const nextAccountVersion = expected_account_version + 1;
+
+    const resetTx = db.transaction(() => {
+      const updateResult = db.prepare(`
+        UPDATE users 
+        SET account_version = ?,
+            token_version = ?,
+            password_reset_pending = 1,
+            password_reset_requested_at = datetime('now'),
+            password_reset_requested_by = ?,
+            updated_at = datetime('now')
+        WHERE id = ? AND account_version = ? AND archived_at IS NULL
+      `).run(nextAccountVersion, nextTokenVersion, req.user.id, targetId, expected_account_version);
+
+      if (updateResult.changes === 0) {
+        throw new Error('CONCURRENCY_CONFLICT');
+      }
+
+      db.prepare(`
+        INSERT INTO password_reset_tokens (user_id, token_hash, purpose, token_version, created_by_admin_id, expires_at)
+        VALUES (?, ?, 'admin_password_reset', ?, ?, ?)
+        ON CONFLICT(user_id, purpose) DO UPDATE SET 
+          token_hash = excluded.token_hash, 
+          token_version = excluded.token_version,
+          created_by_admin_id = excluded.created_by_admin_id,
+          expires_at = excluded.expires_at,
+          created_at = datetime('now')
+      `).run(targetId, tokenHash, nextTokenVersion, req.user.id, expiresAt);
+
+      db.prepare('DELETE FROM sessions WHERE user_id = ?').run(targetId);
+      db.prepare("UPDATE mfa_login_challenges SET consumed = 1, consumed_at = datetime('now') WHERE user_id = ? AND consumed = 0").run(targetId);
+
+      recordAuditLog({
+        actorId: req.user.id,
+        targetUserId: targetId,
+        action: 'admin.mail_submitted',
+        module: 'admin_management',
+        resource: `admin:${targetId}`,
+        outcome: 'success',
+        correlationId: req.correlationId,
+        beforeState: { password_reset_pending: targetUser.password_reset_pending, account_version: expected_account_version },
+        afterState: { password_reset_pending: 1, account_version: nextAccountVersion },
+        details: { reason: reason ? reason.trim() : 'Super Admin-initiated password reset via email', expires_in: '30m' },
+        ipAddress: req.ip || '',
+        throwOnError: true
+      });
+    });
+
+    resetTx();
+    securityEvents.emit('revoke_user', { userId: targetId });
+
+    const baseUrl = process.env.CLIENT_URL || req.headers.origin || 'http://localhost:5174';
+    const resetLink = `${baseUrl}/admin/reset-password#userId=${targetUser.id}&token=${rawToken}`;
+
+    const emailSent = await sendPasswordResetEmail(targetUser.email, resetLink, { isSuperAdminInitiated: true });
+
+    if (!emailSent && process.env.NODE_ENV !== 'test') {
+      recordFailedAuditLog(req.user.id, targetId, 'admin.mail_submission_failed', 'SMTP transport dispatch failed', req.ip);
+      return res.status(500).json({ error: 'Failed to send reset email. Please try generating an out-of-band recovery link.' });
+    }
+
+    res.json({
+      message: 'Reset link dispatched to verified administrator email.',
+      expires_in: '30m',
+      account_version: nextAccountVersion
+    });
+  } catch (err) {
+    if (err.message === 'CONCURRENCY_CONFLICT') {
+      return res.status(409).json({ 
+        error: 'Account state has changed or request is stale. Please reload the administrator details before retrying.', 
+        code: 'CONCURRENCY_CONFLICT' 
+      });
+    }
+    console.error('Error initiating admin password reset by email:', err);
+    res.status(500).json({ error: 'Failed to initiate password reset' });
+  }
+});
+
+// POST /api/admin/administrators/:id/reset-password/direct-link - Super Admin direct out-of-band fragment link
+router.post('/administrators/:id/reset-password/direct-link', authenticateToken, requireSuperAdmin, requireRecentAuth, sanitizeInput, (req, res) => {
+  try {
+    const targetId = Number(req.params.id);
+    const { expected_account_version, reason } = req.body;
+
+    if (targetId === 1) {
+      recordFailedAuditLog(req.user.id, targetId, 'admin_password_reset', 'Cannot reset Super Admin password', req.ip);
+      return res.status(403).json({ error: 'Cannot reset the Super Administrator password.' });
+    }
+
+    if (expected_account_version === undefined || expected_account_version === null || typeof expected_account_version !== 'number') {
+      return res.status(400).json({ 
+        error: 'Expected account version is required for concurrency control.', 
+        code: 'MISSING_ACCOUNT_VERSION' 
+      });
+    }
+
+    const targetUser = db.prepare('SELECT id, username, email, role, is_active, archived_at, account_version, token_version FROM users WHERE id = ? AND deleted_at IS NULL').get(targetId);
+    if (!targetUser || targetUser.role !== 'admin') {
+      return res.status(404).json({ error: 'Administrator not found.' });
+    }
+
+    if (targetUser.archived_at !== null) {
+      return res.status(400).json({ 
+        error: 'Cannot reset password for an archived administrator. Restore the account first.', 
+        code: 'ACCOUNT_ARCHIVED' 
+      });
+    }
+
+    if (targetUser.account_version !== expected_account_version) {
+      recordFailedAuditLog(req.user.id, targetId, 'admin_password_reset', "Concurrency conflict: expected version " + expected_account_version + " but found " + targetUser.account_version, req.ip);
+      return res.status(409).json({ 
+        error: 'Account state has changed or request is stale. Please reload the administrator details before retrying.', 
+        code: 'CONCURRENCY_CONFLICT',
+        currentVersion: targetUser.account_version
+      });
+    }
+
+    const rawToken = crypto.randomBytes(32).toString('hex');
+    const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+    const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+    const nextTokenVersion = (targetUser.token_version || 1) + 1;
+    const nextAccountVersion = expected_account_version + 1;
+
+    const resetTx = db.transaction(() => {
+      const updateResult = db.prepare(`
+        UPDATE users 
+        SET account_version = ?,
+            token_version = ?,
+            password_reset_pending = 1,
+            password_reset_requested_at = datetime('now'),
+            password_reset_requested_by = ?,
+            updated_at = datetime('now')
+        WHERE id = ? AND account_version = ? AND archived_at IS NULL
+      `).run(nextAccountVersion, nextTokenVersion, req.user.id, targetId, expected_account_version);
+
+      if (updateResult.changes === 0) {
+        throw new Error('CONCURRENCY_CONFLICT');
+      }
+
+      db.prepare(`
+        INSERT INTO password_reset_tokens (user_id, token_hash, purpose, token_version, created_by_admin_id, expires_at)
+        VALUES (?, ?, 'admin_password_reset', ?, ?, ?)
+        ON CONFLICT(user_id, purpose) DO UPDATE SET 
+          token_hash = excluded.token_hash, 
+          token_version = excluded.token_version,
+          created_by_admin_id = excluded.created_by_admin_id,
+          expires_at = excluded.expires_at,
+          created_at = datetime('now')
+      `).run(targetId, tokenHash, nextTokenVersion, req.user.id, expiresAt);
+
+      db.prepare('DELETE FROM sessions WHERE user_id = ?').run(targetId);
+      db.prepare("UPDATE mfa_login_challenges SET consumed = 1, consumed_at = datetime('now') WHERE user_id = ? AND consumed = 0").run(targetId);
+
+      recordAuditLog({
+        actorId: req.user.id,
+        targetUserId: targetId,
+        action: 'admin.direct_reset_link_generated',
+        module: 'admin_management',
+        resource: `admin:${targetId}`,
+        outcome: 'success',
+        correlationId: req.correlationId,
+        beforeState: { password_reset_pending: targetUser.password_reset_pending, account_version: expected_account_version },
+        afterState: { password_reset_pending: 1, account_version: nextAccountVersion },
+        details: { reason: reason ? reason.trim() : 'Manual out-of-band delivery', delivery_mode: 'manual_out_of_band', expires_in: '30m' },
+        ipAddress: req.ip || '',
+        throwOnError: true
+      });
+    });
+
+    resetTx();
+    securityEvents.emit('revoke_user', { userId: targetId });
+
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+
+    const baseUrl = process.env.CLIENT_URL || req.headers.origin || 'http://localhost:5174';
+    const directUrl = `${baseUrl}/admin/reset-password#userId=${targetUser.id}&token=${rawToken}`;
+
+    res.json({
+      message: 'Direct recovery link generated.',
+      direct_url: directUrl,
+      expires_at: expiresAt,
+      expires_in_seconds: 1800,
+      account_version: nextAccountVersion,
+      instructions: 'Share this link over a secure out-of-band channel. It expires in 30 minutes.'
+    });
+  } catch (err) {
+    if (err.message === 'CONCURRENCY_CONFLICT') {
+      return res.status(409).json({ 
+        error: 'Account state has changed or request is stale. Please reload the administrator details before retrying.', 
+        code: 'CONCURRENCY_CONFLICT' 
+      });
+    }
+    console.error('Error generating direct reset link:', err);
+    res.status(500).json({ error: 'Failed to generate direct reset link' });
   }
 });
 

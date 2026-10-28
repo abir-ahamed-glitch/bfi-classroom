@@ -1,3 +1,4 @@
+import { formatDhakaTimestamp, recordAuditLog } from '../services/auditLedgerService.js';
 import express from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
@@ -8,7 +9,7 @@ import { fileURLToPath } from 'url';
 import db from '../db/database.js';
 import { authenticateToken, authLimiter, sanitizeInput, sensitiveEndpointLimiter, generatePasswordResetToken, verifyPasswordResetToken, validatePassword, getClientIp } from '../middleware/auth.js';
 import { getJwtRefreshSecret, getJwtSecret } from '../config/security.js';
-import { sendPasswordResetEmail, sendEmailVerificationChallenge } from '../utils/email.js';
+import { sendPasswordResetEmail, sendEmailVerificationChallenge, sendPasswordChangeNotificationEmail } from '../utils/email.js';
 import { verifyTotpCode, decryptSecret } from '../utils/totp.js';
 import { securityEvents } from '../utils/security-events.js';
 
@@ -1497,6 +1498,100 @@ router.post('/verify-email/confirm', sanitizeInput, (req, res) => {
       return res.status(400).json({ error: 'Email address has changed since challenge was issued.' });
     }
     console.error('Verify email confirm error:', error);
+    res.status(500).json({ error: 'Internal server error.' });
+  }
+});
+
+// POST /admin/reset-password/complete - Complete Super Admin-initiated password reset
+router.post('/admin/reset-password/complete', sanitizeInput, async (req, res) => {
+  const { userId, token, password } = req.body;
+
+  if (!userId || !token || !password) {
+    return res.status(400).json({ error: 'User ID, token, and new password are required.' });
+  }
+
+  if (!validatePassword(password)) {
+    return res.status(400).json({
+      error: 'Password must be at least 8 characters and include uppercase, lowercase, number, and special character.'
+    });
+  }
+
+  try {
+    const user = db.prepare('SELECT id, email, role, is_active, archived_at, token_version, account_version, password_reset_pending FROM users WHERE id = ? AND deleted_at IS NULL').get(userId);
+
+    if (!user) {
+      return res.status(400).json({ error: 'Invalid or expired link.' });
+    }
+
+    if (user.archived_at !== null) {
+      return res.status(400).json({ error: 'Account is archived. Please contact administration.', code: 'ACCOUNT_ARCHIVED' });
+    }
+
+    if (user.role !== 'admin' && user.role !== 'instructor') {
+      return res.status(403).json({ error: 'Access denied. You do not have administrative privileges.' });
+    }
+
+    const tokenHash = crypto.createHash('sha256').update(token.trim()).digest('hex');
+
+    const resetRecord = db.prepare(`
+      SELECT id, token_version FROM password_reset_tokens
+      WHERE user_id = ? AND token_hash = ? AND purpose = 'admin_password_reset' AND datetime(expires_at) > datetime('now')
+      LIMIT 1
+    `).get(user.id, tokenHash);
+
+    if (!resetRecord || resetRecord.token_version !== (user.token_version || 1)) {
+      return res.status(400).json({ error: 'Invalid or expired reset link.' });
+    }
+
+    const newPasswordHash = bcrypt.hashSync(password, 12);
+
+    const transaction = db.transaction(() => {
+      db.prepare(`
+        UPDATE users 
+        SET password_hash = ?, 
+            token_version = token_version + 1, 
+            account_version = account_version + 1, 
+            password_reset_pending = 0, 
+            password_reset_requested_at = NULL, 
+            password_reset_requested_by = NULL, 
+            updated_at = datetime('now') 
+        WHERE id = ?
+      `).run(newPasswordHash, user.id);
+
+      db.prepare('DELETE FROM sessions WHERE user_id = ?').run(user.id);
+      db.prepare('DELETE FROM password_reset_tokens WHERE user_id = ?').run(user.id);
+      db.prepare("UPDATE mfa_login_challenges SET consumed = 1, consumed_at = datetime('now') WHERE user_id = ? AND consumed = 0").run(user.id);
+
+      try {
+        recordAuditLog({
+          actorId: user.id,
+          targetUserId: user.id,
+          action: 'admin.password_reset_completed',
+          module: 'admin_management',
+          resource: `admin:${user.id}`,
+          outcome: 'success',
+          details: { method: 'super_admin_reset_token' },
+          ipAddress: req.ip || '',
+          throwOnError: false
+        });
+      } catch {}
+    });
+
+    transaction();
+    securityEvents.emit('revoke_user', { userId: user.id });
+
+    if (user.email) {
+      try {
+        const dhakaTime = formatDhakaTimestamp(new Date());
+        await sendPasswordChangeNotificationEmail(user.email, { dhakaTime, ipAddress: req.ip || 'Unknown' });
+      } catch (emailErr) {
+        console.error('Failed to dispatch password change alert email:', emailErr);
+      }
+    }
+
+    res.json({ message: 'Administrator password reset successfully. You can now log in.' });
+  } catch (error) {
+    console.error('Admin reset password complete error:', error);
     res.status(500).json({ error: 'Internal server error.' });
   }
 });
