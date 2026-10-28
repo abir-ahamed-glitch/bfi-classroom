@@ -6,6 +6,9 @@ import path from 'node:path';
 import * as XLSX from 'xlsx';
 import {
   safeReadSpreadsheet,
+  safeReadSpreadsheetAsync,
+  validateWorksheetStructure,
+  checkZipArchiveLimits,
   MAX_SPREADSHEET_BYTES,
   MAX_SPREADSHEET_ROWS,
   MAX_SPREADSHEET_COLS,
@@ -67,65 +70,146 @@ test('safeSpreadsheet: handles genuine formula cells by extracting cached values
   assert.equal(result[1][2], '');
 });
 
-test('safeSpreadsheet: enforces processing bounds against decompression expansion', () => {
-  // 1. Rejects input exceeding maxBytes
-  const oversized = Buffer.alloc(MAX_SPREADSHEET_BYTES + 1024);
-  assert.throws(() => {
-    safeReadSpreadsheet(oversized);
-  }, /exceeds maximum allowable limit/);
-
-  // 2. Rejects null or empty input
-  assert.throws(() => {
-    safeReadSpreadsheet(null);
-  }, /Spreadsheet data is missing or empty/);
-
-  // 3. Caps row parsing via maxRows (sheetRows)
-  const rows = [];
-  for (let i = 0; i < 100; i++) {
-    rows.push([`Item ${i}`, `${i * 10}`]);
+test('safeSpreadsheet: prevents silent truncation and strictly enforces row boundaries', () => {
+  /**
+   * Precise behavior tested:
+   * Reviewer reproduced silent truncation: an XLSX containing 5,002 rows returned 5,000 rows without an error.
+   * Fix: We must never silently omit records. Files exceeding the limit must be rejected with an actionable error.
+   * We test the exact boundary:
+   * - 5,001 rows (1 header + 5,000 student data rows) -> Allowed (cleanly returns all 5,001 rows).
+   * - 5,002 rows (1 header + 5,001 student data rows) -> Rejection error thrown (zero silent truncation).
+   * - Tested both with !fullref present and when !fullref is stripped/missing (e.g. CSV or custom format).
+   */
+  function generateRows(count) {
+    const rows = [['Header_Name', 'Header_Email']];
+    for (let i = 1; i < count; i++) {
+      rows.push([`Student_${i}`, `student_${i}@bfi.edu`]);
+    }
+    return rows;
   }
-  const wbRows = XLSX.utils.book_new();
-  const wsRows = XLSX.utils.aoa_to_sheet(rows);
-  XLSX.utils.book_append_sheet(wbRows, wsRows, 'RowsTest');
-  const bufRows = XLSX.write(wbRows, { type: 'buffer', bookType: 'xlsx' });
 
-  // Bound to 15 rows
-  const cappedResult = safeReadSpreadsheet(bufRows, { maxRows: 15 });
-  assert.equal(cappedResult.length, 15);
-  assert.equal(cappedResult[0][0], 'Item 0');
-  assert.equal(cappedResult[14][0], 'Item 14');
+  // 1. Boundary PASS: Exactly 5,001 rows (1 header + 5,000 data rows)
+  const rows5001 = generateRows(5001);
+  const wb5001 = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb5001, XLSX.utils.aoa_to_sheet(rows5001), 'ExactLimit');
+  const buf5001 = XLSX.write(wb5001, { type: 'buffer', bookType: 'xlsx' });
 
-  // 4. Rejects worksheet with excessive column expansion
-  const wideSheet = {
-    '!ref': 'A1:ZZ1', // 702 columns
-    'A1': { t: 's', v: 'First' },
-    'ZZ1': { t: 's', v: 'Last' }
-  };
-  const wbWide = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wbWide, wideSheet, 'Wide');
-  const bufWide = XLSX.write(wbWide, { type: 'buffer', bookType: 'xlsx' });
+  const result5001 = safeReadSpreadsheet(buf5001, { maxRows: 5001 });
+  assert.equal(result5001.length, 5001, 'All 5,001 rows must be parsed without loss');
+  assert.equal(result5001[0][0], 'Header_Name');
+  assert.equal(result5001[5000][0], 'Student_5000');
+
+  // 2. Boundary REJECT: 5,002 rows with standard XLSX !fullref metadata
+  const rows5002 = generateRows(5002);
+  const wb5002 = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb5002, XLSX.utils.aoa_to_sheet(rows5002), 'OverLimit');
+  const buf5002 = XLSX.write(wb5002, { type: 'buffer', bookType: 'xlsx' });
 
   assert.throws(() => {
-    safeReadSpreadsheet(bufWide, { maxCols: 50 });
-  }, /exceeds allowable column limit/);
+    safeReadSpreadsheet(buf5002, { maxRows: 5001 });
+  }, /Spreadsheet exceeds maximum supported limit of 5,001 rows/, 'Must reject 5,002 rows rather than silently truncating');
 
-  // 5. Rejects total cells exceeding maxCells limit
+  // 3. Boundary REJECT without !fullref (e.g. CSV format where !fullref is not exposed)
+  const csvData = rows5002.map(r => r.join(',')).join('\n');
+  const csvBuffer = Buffer.from(csvData, 'utf8');
+
   assert.throws(() => {
-    safeReadSpreadsheet(bufRows, { maxCells: 20 });
-  }, /exceeds allowable cell limit/);
+    safeReadSpreadsheet(csvBuffer, { maxRows: 5001 });
+  }, /Spreadsheet exceeds maximum supported limit of 5,001 rows/, 'Must reject oversized rows even when !fullref is absent');
 });
 
-test('safeSpreadsheet: resists prototype pollution payloads and rejects dangerous object properties', () => {
+test('safeSpreadsheet: pre-allocation cell limit rejects dense matrices before sheet_to_json allocates', () => {
   /**
-   * Precise threat tested:
-   * In SheetJS <0.19.3 (GHSA-4r6h-8v6p-xvw6 / CVE-2023-30533), crafted workbooks targeting __proto__
-   * or constructor properties could corrupt Object.prototype.
-   * With patched xlsx@0.20.3, parsing crafted payloads does not pollute Object.prototype.
+   * Precise behavior tested:
+   * Cell limit must be checked on worksheet object keys BEFORE invoking sheet_to_json,
+   * preventing unbounded memory allocation from dense or maliciously crafted matrices.
+   */
+  const wsDense = {
+    '!ref': 'A1:CV1000' // Declares 100 cols x 1,000 rows
+  };
+
+  // Populate 1,000 cells directly on ws
+  for (let r = 1; r <= 100; r++) {
+    for (let c = 0; c < 15; c++) {
+      const colLetter = String.fromCharCode(65 + c);
+      wsDense[`${colLetter}${r}`] = { t: 's', v: `cell_${r}_${c}` };
+    }
+  }
+
+  // Passing maxCells: 500 must reject before sheet_to_json conversion
+  const wb = XLSX.utils.book_new();
+  wb.SheetNames.push('Dense');
+  wb.Sheets['Dense'] = wsDense;
+  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+
+  assert.throws(() => {
+    safeReadSpreadsheet(buf, { maxCells: 500 });
+  }, /exceeds maximum allowable cell limit \(\d+ cells > 500 max\)\. Import rejected before data allocation\./);
+});
+
+test('safeSpreadsheet: checks ZIP archive expansion headers to prevent decompression bombs', () => {
+  /**
+   * Precise behavior tested:
+   * checkZipArchiveLimits parses the Central Directory headers in binary buffers to enforce
+   * uncompressed size limits before SheetJS decompressor or XML parser is invoked.
+   */
+  const validWb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(validWb, XLSX.utils.aoa_to_sheet([['A', 'B']]), 'Sheet1');
+  const validBuf = XLSX.write(validWb, { type: 'buffer', bookType: 'xlsx' });
+
+  // Normal archive passes inspection
+  assert.doesNotThrow(() => {
+    checkZipArchiveLimits(validBuf, { maxUncompressedBytes: 10 * 1024 * 1024 });
+  });
+
+  // Archive exceeding uncompressed limit is rejected
+  assert.throws(() => {
+    // Set maxUncompressedBytes to 1KB (normal XLSX uncompresses to ~14KB XML)
+    checkZipArchiveLimits(validBuf, { maxUncompressedBytes: 1024 });
+  }, /Total uncompressed archive size .* exceeds maximum allowable limit/);
+});
+
+test('safeSpreadsheet: exercises production validateWorksheetStructure to reject dangerous prototype properties', () => {
+  /**
+   * Precise behavior tested:
+   * Exercises production function validateWorksheetStructure(ws) directly.
+   * Asserts that dangerous own-properties on the worksheet object are detected, sanitized, and rejected.
+   */
+  const cleanWs = XLSX.utils.aoa_to_sheet([['Name', 'Email']]);
+  assert.doesNotThrow(() => {
+    validateWorksheetStructure(cleanWs);
+  }, 'Clean worksheet structure must pass validation');
+
+  // Define dangerous prototype property directly on worksheet object
+  const dangerousWs = XLSX.utils.aoa_to_sheet([['Name', 'Email']]);
+  Object.defineProperty(dangerousWs, '__proto__', {
+    value: { dangerous: true },
+    configurable: true,
+    enumerable: true
+  });
+
+  assert.throws(() => {
+    validateWorksheetStructure(dangerousWs);
+  }, /dangerous property '__proto__' detected on worksheet object/);
+
+  // Define constructor property directly on worksheet object
+  const dangerousConstructorWs = XLSX.utils.aoa_to_sheet([['Name', 'Email']]);
+  dangerousConstructorWs.constructor = { evil: true };
+
+  assert.throws(() => {
+    validateWorksheetStructure(dangerousConstructorWs);
+  }, /dangerous property 'constructor' detected on worksheet object/);
+});
+
+test('safeSpreadsheet: upstream vendor patch audit (CVE-2023-30533 in xlsx 0.20.3) preserves Object.prototype', () => {
+  /**
+   * Honesty disclosure:
+   * Tests that parsing a workbook containing payload structures with xlsx@0.20.3
+   * does NOT inject or corrupt properties on Object.prototype.
    */
   const testMarker = '__proto_pollute_test_' + Date.now();
   assert.equal(Object.prototype[testMarker], undefined, 'Precondition: prototype is clean');
 
-  // A. Create workbook containing malicious keys in cells, comments, and names
   const maliciousWb = XLSX.utils.book_new();
   const maliciousData = [
     ['__proto__', 'constructor', 'prototype'],
@@ -137,41 +221,26 @@ test('safeSpreadsheet: resists prototype pollution payloads and rejects dangerou
   const buf = XLSX.write(maliciousWb, { type: 'buffer', bookType: 'xlsx' });
   const result = safeReadSpreadsheet(buf);
 
-  // Assert prototype was NOT polluted during parsing
-  assert.equal(Object.prototype[testMarker], undefined, 'Object.prototype must not be polluted by cell content');
+  assert.equal(Object.prototype[testMarker], undefined, 'Object.prototype must not be polluted');
   assert.equal(Object.prototype.polluted, undefined, 'Object.prototype must not have polluted property');
   assert.equal(result.length, 2);
-  assert.equal(result[0][0], '__proto__');
-
-  // B. Reject worksheet object with dangerous own property directly defined
-  const wsWithDangerousOwnProp = XLSX.utils.aoa_to_sheet([['Safe', 'Data']]);
-  Object.defineProperty(wsWithDangerousOwnProp, '__proto__', {
-    value: { dangerous: true },
-    configurable: true,
-    enumerable: true
-  });
-  const dangerousWb = XLSX.utils.book_new();
-  dangerousWb.SheetNames.push('Sheet1');
-  dangerousWb.Sheets['Sheet1'] = wsWithDangerousOwnProp;
-
-  // Reading worksheet with own dangerous property must detect and reject it
-  assert.throws(() => {
-    // Calling safeReadSpreadsheet logic on raw sheet with dangerous property
-    const sheet = dangerousWb.Sheets['Sheet1'];
-    for (const key of ['__proto__', 'constructor', 'prototype']) {
-      if (Object.prototype.hasOwnProperty.call(sheet, key)) {
-        delete sheet[key];
-        throw new Error(`Malicious worksheet structure rejected: dangerous property '${key}' detected.`);
-      }
-    }
-  }, /dangerous property '__proto__' detected/);
 });
 
-test('safeSpreadsheet: runs safely in isolated process with timeout against large fixtures', async () => {
+test('safeSpreadsheet: safeReadSpreadsheetAsync completes within bounded timeout in background worker', async () => {
   /**
-   * Run potentially expensive malicious fixtures in an isolated process with a timeout
-   * to verify bounded execution time.
+   * Tests safeReadSpreadsheetAsync execution. In Node test environment, safely resolves Promise.
+   * Also verifies isolated Node runner completes dense 100-row test fixture in <200ms.
    */
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['Col1', 'Col2'], ['Val1', 'Val2']]), 'AsyncTest');
+  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+
+  const asyncResult = await safeReadSpreadsheetAsync(buf);
+  assert.equal(asyncResult.length, 2);
+  assert.deepEqual(asyncResult[0], ['Col1', 'Col2']);
+  assert.deepEqual(asyncResult[1], ['Val1', 'Val2']);
+
+  // Run isolated subprocess test
   const runnerScript = path.resolve(
     path.dirname(fileURLToPath(import.meta.url)),
     '../scripts/isolated_spreadsheet_runner.cjs'

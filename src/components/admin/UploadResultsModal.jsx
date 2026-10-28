@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Upload, X, Check, AlertTriangle, FileText, Loader2 } from 'lucide-react';
 import { useDropzone } from 'react-dropzone';
 import * as XLSX from 'xlsx';
-import { safeReadSpreadsheet } from '../../utils/safeSpreadsheet';
+import { safeReadSpreadsheetAsync } from '../../utils/safeSpreadsheet';
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf';
 import './BatchFormModal.css';
 
@@ -80,11 +80,18 @@ export default function UploadResultsModal({ isOpen, onClose, batchId, onUploadS
           }
         } else {
           const bstr = new Uint8Array(evt.target.result);
-          data2D = safeReadSpreadsheet(bstr);
+          data2D = await safeReadSpreadsheetAsync(bstr, { maxRows: 5001 });
         }
       } catch (parseErr) {
         console.error("Parse error:", parseErr);
-        setErrorMsg("Failed to parse file. Please ensure it's a valid Excel, CSV, or PDF document.");
+        setErrorMsg(parseErr.message || "Failed to parse file. Please ensure it's a valid Excel, CSV, or PDF document.");
+        setPreviewData([]);
+        setIsProcessing(false);
+        return;
+      }
+
+      if (data2D && data2D.length > 5001) {
+        setErrorMsg(`Spreadsheet contains ${data2D.length.toLocaleString()} rows, which exceeds the maximum supported limit of 5,000 records (plus 1 header row). Import rejected to prevent partial data import.`);
         setPreviewData([]);
         setIsProcessing(false);
         return;

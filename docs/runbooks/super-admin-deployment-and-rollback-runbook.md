@@ -62,8 +62,15 @@ Before executing any commands that alter live services or databases, the operato
 3. **Smoke Credential Preflight & Verification:**
    - **Supported Channel A (Confidential Interactive Handoff):** An interactive terminal (TTY) is attached or a programmatic credential provider is configured. The operator provides credentials on demand via zero-echo prompts during Phase 5 over loopback.
    - **Supported Channel B (Unattended Tokens):** `SUPER_ADMIN_TOKEN` and `ADMIN_TOKEN` (or `SUPER_ADMIN_TOKEN_FILE` and `ADMIN_TOKEN_FILE` with mode `0o600`) are supplied. Preflight performs:
-     1. **Structural and Expiration Verification:** Enforces valid 3-part JWT format, matching administrative roles, distinct account identities, and a minimum 15-minute expiration buffer (`exp - now >= 900s`) to ensure tokens do not expire midway through the deployment window.
-     2. **Pre-Disruption Authenticated Verification:** If the live backend is reachable prior to disruption, both tokens are validated against `GET /api/auth/me`. If either token fails authentication or role checks, deployment immediately halts with **zero service stops**.
+     1. **Syntax, Expiration & Maintenance Buffer Verification:**
+        - Enforces valid 3-part JWT format and requires a **finite numeric expiration claim** (`typeof exp === 'number' && Number.isFinite(exp)`). Non-numeric, NaN, or string expiration claims are strictly rejected.
+        - Enforces a minimum **15-minute expiration buffer** (`exp - now >= 900s`). This buffer is strictly calibrated against the configured 15-minute deployment maintenance window, guaranteeing that unattended credentials do not expire midway through offline backup creation, asset building, schema migrations, or post-restart verification.
+        - Enforces distinct administrative identities (`saPayload.id !== oaPayload.id`), verified Super Admin privileges for the primary token, and ordinary admin role for the secondary token.
+     2. **Pre-Disruption Authenticated Verification & Failure Isolation:**
+        - When unattended tokens are configured, the runner evaluates credentials against `GET /api/auth/me` on the live server before disruption.
+        - **Explicit Authentication Rejection:** Any explicit failure (HTTP 401, 403, 404, or unverified admin role) is recorded immediately and **never masked** by subsequent timeouts or network resets. Deployment immediately halts in Phase 0.
+        - **Ambiguity vs. Confirmed Downtime:** Confirmed service downtime (`ECONNREFUSED` on port 3001) is strictly distinguished from ambiguous connection failures (`ETIMEDOUT`, `ECONNRESET`, or HTTP 5xx). Ambiguous connection failures fail closed; they are **never** treated as permission for unattended deployment.
+        - **Zero Service-Stop Guarantee:** All preflight rejections occur in Phase 0 prior to issuing any service alteration commands (`systemctl stop nginx`, `pm2 stop`). Production services remain completely undisturbed.
    - **Strict Fail-Closed Rejection:** `SMOKE_SUPER_ADMIN_PASSWORD` is unsupported. Partial, expired, or malformed credentials throw an immediate fatal error in Phase 0. Fabricated authentication tokens are strictly forbidden; all access tokens must be authentically issued by the backend.
 
 ---

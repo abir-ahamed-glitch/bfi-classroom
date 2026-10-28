@@ -19,6 +19,8 @@
 
 const fs = require('fs');
 const path = require('path');
+const http = require('http');
+const https = require('https');
 const crypto = require('crypto');
 const child_process = require('child_process');
 const Database = require('better-sqlite3');
@@ -102,7 +104,7 @@ function parseJwtPayload(token) {
 
 const MIN_MAINTENANCE_BUFFER_SEC = 15 * 60; // 15 minutes minimum lifespan buffer for deployment
 
-function validateTokenPair(saToken, oaToken, label, allowMock = false) {
+function validateTokenPair(saToken, oaToken, label, allowMock = false, options = {}) {
   if (!saToken || !oaToken) {
     return { valid: false, reason: `Incomplete token pair provided via ${label} (both Super Admin and Ordinary Admin tokens are required).` };
   }
@@ -121,31 +123,37 @@ function validateTokenPair(saToken, oaToken, label, allowMock = false) {
     return { valid: false, reason: `Ordinary Admin token provided via ${label} is malformed or not a valid JWT format.` };
   }
 
-  const nowSec = Math.floor(Date.now() / 1000);
-  if (typeof saPayload.exp === 'number') {
-    if (saPayload.exp <= nowSec) {
-      return { valid: false, reason: `Super Admin token provided via ${label} has expired (exp: ${saPayload.exp}, now: ${nowSec}).` };
-    }
-    const remainingSec = saPayload.exp - nowSec;
-    if (remainingSec < MIN_MAINTENANCE_BUFFER_SEC) {
-      return {
-        valid: false,
-        reason: `Super Admin token expires in ${Math.max(0, Math.floor(remainingSec / 60))}m, which is insufficient for the 15m deployment maintenance window. Token must be refreshed before deployment.`
-      };
-    }
+  // Require finite numeric expiry claim for unattended tokens
+  if (typeof saPayload.exp !== 'number' || !Number.isFinite(saPayload.exp)) {
+    return { valid: false, reason: `Super Admin token provided via ${label} lacks a valid finite numeric 'exp' expiration claim.` };
+  }
+  if (typeof oaPayload.exp !== 'number' || !Number.isFinite(oaPayload.exp)) {
+    return { valid: false, reason: `Ordinary Admin token provided via ${label} lacks a valid finite numeric 'exp' expiration claim.` };
   }
 
-  if (typeof oaPayload.exp === 'number') {
-    if (oaPayload.exp <= nowSec) {
-      return { valid: false, reason: `Ordinary Admin token provided via ${label} has expired (exp: ${oaPayload.exp}, now: ${nowSec}).` };
-    }
-    const remainingSec = oaPayload.exp - nowSec;
-    if (remainingSec < MIN_MAINTENANCE_BUFFER_SEC) {
-      return {
-        valid: false,
-        reason: `Ordinary Admin token expires in ${Math.max(0, Math.floor(remainingSec / 60))}m, which is insufficient for the 15m deployment maintenance window. Token must be refreshed before deployment.`
-      };
-    }
+  const requiredBufferSec = options.maintenanceDurationSec || MIN_MAINTENANCE_BUFFER_SEC;
+  const nowSec = Math.floor(Date.now() / 1000);
+
+  const remainingSecSa = saPayload.exp - nowSec;
+  if (remainingSecSa <= 0) {
+    return { valid: false, reason: `Super Admin token provided via ${label} has already expired (exp: ${saPayload.exp}, now: ${nowSec}).` };
+  }
+  if (remainingSecSa < requiredBufferSec) {
+    return {
+      valid: false,
+      reason: `Super Admin token expires in ${Math.max(0, Math.floor(remainingSecSa / 60))}m, which is insufficient for the 15m deployment maintenance duration buffer (minimum ${requiredBufferSec}s required). Token must be refreshed before deployment.`
+    };
+  }
+
+  const remainingSecOa = oaPayload.exp - nowSec;
+  if (remainingSecOa <= 0) {
+    return { valid: false, reason: `Ordinary Admin token provided via ${label} has already expired (exp: ${oaPayload.exp}, now: ${nowSec}).` };
+  }
+  if (remainingSecOa < requiredBufferSec) {
+    return {
+      valid: false,
+      reason: `Ordinary Admin token expires in ${Math.max(0, Math.floor(remainingSecOa / 60))}m, which is insufficient for the 15m deployment maintenance duration buffer (minimum ${requiredBufferSec}s required). Token must be refreshed before deployment.`
+    };
   }
 
   // Pre-validate role claims in payload
@@ -201,46 +209,108 @@ function sendBearerGet(urlStr, token, timeoutMs = 5000) {
 }
 
 // Authenticated token verification against live server endpoint (GET /api/auth/me)
+// Rejects explicit authentication failures immediately and preserves them even if another request fails.
+// Distinguishes confirmed service downtime (ECONNREFUSED) from ambiguous connection failures (timeout/reset).
 async function verifyTokensAgainstLiveServer(saToken, oaToken, baseUrl = 'http://127.0.0.1:3001', timeoutMs = 5000) {
   const meUrl = `${baseUrl.replace(/\/+$/, '')}/api/auth/me`;
-  let saRes, oaRes;
+  let saRes = null, oaRes = null;
+  let saErr = null, oaErr = null;
+
   try {
     saRes = await sendBearerGet(meUrl, saToken, timeoutMs);
   } catch (err) {
-    return { reachable: false, error: err.message };
+    saErr = err;
+  }
+
+  // 1. Check Super Admin response for explicit auth failure immediately!
+  let explicitFailureReason = null;
+  if (saRes) {
+    if (saRes.status === 401 || saRes.status === 403 || saRes.status === 404) {
+      const errText = (saRes.json && saRes.json.error) ? saRes.json.error : `HTTP ${saRes.status}`;
+      explicitFailureReason = `Super Admin token rejected by server (${errText})`;
+    } else if (saRes.status === 200) {
+      const saUser = saRes.json;
+      if (!saUser || saUser.role !== 'admin' || (!saUser.is_super_admin && !saUser.isSuperAdmin)) {
+        explicitFailureReason = `Super Admin account (ID ${saUser ? saUser.id : 'unknown'}) lacks verified super admin privileges on server.`;
+      }
+    }
   }
 
   try {
     oaRes = await sendBearerGet(meUrl, oaToken, timeoutMs);
   } catch (err) {
-    return { reachable: false, error: err.message };
+    oaErr = err;
   }
 
-  if (saRes.status !== 200) {
-    const errText = (saRes.json && saRes.json.error) ? saRes.json.error : `HTTP ${saRes.status}`;
-    return { reachable: true, verified: false, reason: `Super Admin token rejected by server (${errText})` };
-  }
-  if (oaRes.status !== 200) {
-    const errText = (oaRes.json && oaRes.json.error) ? oaRes.json.error : `HTTP ${oaRes.status}`;
-    return { reachable: true, verified: false, reason: `Ordinary Admin token rejected by server (${errText})` };
-  }
-
-  const saUser = saRes.json;
-  const oaUser = oaRes.json;
-
-  if (!saUser || saUser.role !== 'admin' || (!saUser.is_super_admin && !saUser.isSuperAdmin)) {
-    return { reachable: true, verified: false, reason: `Super Admin account (ID ${saUser ? saUser.id : 'unknown'}) lacks verified super admin status on server.` };
+  // If Super Admin had an explicit auth failure, preserve it and return immediately!
+  // It must NEVER be masked by any subsequent network or connection error.
+  if (explicitFailureReason) {
+    return {
+      status: 'auth_failure',
+      reason: explicitFailureReason,
+      explicitAuthFailure: true
+    };
   }
 
-  if (!oaUser || oaUser.role !== 'admin' || oaUser.is_super_admin || oaUser.isSuperAdmin) {
-    return { reachable: true, verified: false, reason: `Ordinary Admin account (ID ${oaUser ? oaUser.id : 'unknown'}) does not have ordinary admin status on server.` };
+  // Check Ordinary Admin response for explicit auth rejection
+  if (oaRes) {
+    if (oaRes.status === 401 || oaRes.status === 403 || oaRes.status === 404) {
+      const errText = (oaRes.json && oaRes.json.error) ? oaRes.json.error : `HTTP ${oaRes.status}`;
+      return {
+        status: 'auth_failure',
+        reason: `Ordinary Admin token rejected by server (${errText})`,
+        explicitAuthFailure: true
+      };
+    } else if (oaRes.status === 200) {
+      const oaUser = oaRes.json;
+      if (!oaUser || oaUser.role !== 'admin' || oaUser.is_super_admin || oaUser.isSuperAdmin) {
+        return {
+          status: 'auth_failure',
+          reason: `Ordinary Admin account (ID ${oaUser ? oaUser.id : 'unknown'}) does not have ordinary admin privileges on server.`,
+          explicitAuthFailure: true
+        };
+      }
+    }
   }
 
-  if (saUser.id === oaUser.id) {
-    return { reachable: true, verified: false, reason: 'Super Admin and Ordinary Admin tokens authenticated to the same user ID.' };
+  // If both requests returned HTTP 200 and valid roles:
+  if (saRes && saRes.status === 200 && oaRes && oaRes.status === 200) {
+    if (saRes.json.id === oaRes.json.id) {
+      return {
+        status: 'auth_failure',
+        reason: 'Super Admin and Ordinary Admin tokens authenticated to the same user ID.',
+        explicitAuthFailure: true
+      };
+    }
+    return {
+      status: 'authenticated',
+      superAdmin: saRes.json,
+      ordinaryAdmin: oaRes.json
+    };
   }
 
-  return { reachable: true, verified: true, superAdmin: saUser, ordinaryAdmin: oaUser };
+  // If we reach here, at least one request failed with a network error or server error (HTTP 5xx).
+  // Distinguish CONFIRMED service downtime (ECONNREFUSED) from AMBIGUOUS failures.
+  const isSaRefused = Boolean(saErr && saErr.code === 'ECONNREFUSED');
+  const isOaRefused = Boolean(oaErr && oaErr.code === 'ECONNREFUSED');
+
+  // Confirmed offline: port is strictly closed on both attempts (or first attempt if second unattempted)
+  if (isSaRefused && (isOaRefused || !oaRes)) {
+    return {
+      status: 'confirmed_offline',
+      reason: 'Confirmed server offline: connection refused on port'
+    };
+  }
+
+  // Any other error (timeout, ECONNRESET, EHOSTUNREACH, HTTP 5xx, or mismatch where one succeeded and other errored)
+  // is an AMBIGUOUS connection failure. We must NOT treat ambiguity as permission for unattended deployment!
+  const ambiguousErr = saErr || oaErr;
+  const ambiguousDetail = ambiguousErr ? (ambiguousErr.message || ambiguousErr.code) : `SA status ${saRes ? saRes.status : 'err'}, OA status ${oaRes ? oaRes.status : 'err'}`;
+  return {
+    status: 'ambiguous_failure',
+    reason: `Ambiguous connection failure to live server: ${ambiguousDetail}`,
+    isAmbiguous: true
+  };
 }
 
 // Strict fail-closed command runner
@@ -379,15 +449,20 @@ async function executeDeployment(options = {}) {
 
   // 0.1.1 Pre-disruption Authenticated Token Verification (if unattended tokens provided and server reachable)
   if (activeSaToken && activeOaToken && !isRehearsal) {
-    const liveServerCheck = await verifyTokensAgainstLiveServer(activeSaToken, activeOaToken, options.baseUrl || 'http://127.0.0.1:3001');
-    if (liveServerCheck.reachable) {
-      if (!liveServerCheck.verified) {
-        logFatal(`ABORT DEPLOYMENT: Pre-disruption token verification failed on live server: ${liveServerCheck.reason}. Halting before stopping any services.`);
-        throw new Error(`Pre-disruption token verification failed: ${liveServerCheck.reason}`);
-      }
+    const liveServerCheck = await verifyTokensAgainstLiveServer(activeSaToken, activeOaToken, options.baseUrl || 'http://127.0.0.1:3001', options.tokenPreflightTimeoutMs || 5000);
+    if (liveServerCheck.status === 'auth_failure') {
+      logFatal(`ABORT DEPLOYMENT: Pre-disruption token verification failed on live server: ${liveServerCheck.reason}. Halting before stopping any services.`);
+      throw new Error(`Pre-disruption token verification failed: ${liveServerCheck.reason}`);
+    } else if (liveServerCheck.status === 'ambiguous_failure') {
+      logFatal(`ABORT DEPLOYMENT: Pre-disruption credential check ambiguous on live server: ${liveServerCheck.reason}. Ambiguous connection failure cannot be assumed safe for unattended deployment. Halting before stopping any services.`);
+      throw new Error(`Pre-disruption credential check ambiguous: ${liveServerCheck.reason}`);
+    } else if (liveServerCheck.status === 'authenticated') {
       logStep('0.1.1', `✅ Pre-disruption authenticated verification confirmed (Super Admin ID ${liveServerCheck.superAdmin.id}, Ordinary Admin ID ${liveServerCheck.ordinaryAdmin.id} via GET /api/auth/me)`);
+    } else if (liveServerCheck.status === 'confirmed_offline') {
+      logStep('0.1.1', `⚠️ Live server confirmed offline on loopback (${liveServerCheck.reason}). Unattended token syntax, claims, and 15m maintenance buffer pre-validated; authenticated cryptographic verification deferred to loopback restart.`);
     } else {
-      logStep('0.1.1', '⚠️ Live server offline/unreachable on loopback. Unattended token syntax, claims, and 15m maintenance buffer pre-validated; authenticated cryptographic verification deferred to loopback restart.');
+      logFatal(`ABORT DEPLOYMENT: Unknown live server check status: ${liveServerCheck.status}. Halting before stopping any services.`);
+      throw new Error(`Unknown live server check status: ${liveServerCheck.status}`);
     }
   } else if (credHandoffMode === 'Interactive TTY' || credHandoffMode === 'Programmatic Credential Provider') {
     logStep('0.1.1', 'Confidential interactive handoff channel configured. Authenticated credentials will be collected and verified via loopback during Phase 5.');
@@ -732,9 +807,9 @@ async function executeDeployment(options = {}) {
         const tokenToVerifySa = saToken || (saTokenFile ? fs.readFileSync(saTokenFile, 'utf8').trim() : '');
         const tokenToVerifyOa = oaToken || (oaTokenFile ? fs.readFileSync(oaTokenFile, 'utf8').trim() : '');
         const loopbackVerify = await verifyTokensAgainstLiveServer(tokenToVerifySa, tokenToVerifyOa, options.baseUrl || 'http://127.0.0.1:3001');
-        if (!loopbackVerify.reachable || !loopbackVerify.verified) {
-          logFatal(`ABORT DEPLOYMENT: Smoke credentials failed authenticated loopback verification on restarted backend: ${loopbackVerify.reason || 'Server unreachable'}`);
-          throw new Error(`Post-restart smoke credential verification failed: ${loopbackVerify.reason || 'Server unreachable'}`);
+        if (loopbackVerify.status !== 'authenticated') {
+          logFatal(`ABORT DEPLOYMENT: Smoke credentials failed authenticated loopback verification on restarted backend: ${loopbackVerify.reason || 'Server unreachable or authentication rejected'}`);
+          throw new Error(`Post-restart smoke credential verification failed: ${loopbackVerify.reason || 'Server unreachable or authentication rejected'}`);
         }
         logStep('5.3.1', `✅ Authenticated loopback verification passed (Super Admin ID ${loopbackVerify.superAdmin.id}, Ordinary Admin ID ${loopbackVerify.ordinaryAdmin.id}).`);
       }
@@ -1244,4 +1319,11 @@ if (require.main === module) {
   }
 }
 
-module.exports = { executeDeployment, executeRollback, runCommandStrict, writeStateAtomic };
+module.exports = {
+  executeDeployment,
+  executeRollback,
+  runCommandStrict,
+  writeStateAtomic,
+  validateTokenPair,
+  verifyTokensAgainstLiveServer
+};

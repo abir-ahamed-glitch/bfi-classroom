@@ -5,7 +5,7 @@ import mammoth from 'mammoth';
 import * as pdfjsLib from 'pdfjs-dist';
 import { UploadCloud, CheckCircle2, FileSpreadsheet, X, AlertCircle, History, Download, Clapperboard, Film, FileText, MoreVertical } from 'lucide-react';
 import { getOrdinalSuffix } from '../../utils/formatUtils';
-import { safeReadSpreadsheet } from '../../utils/safeSpreadsheet';
+import { safeReadSpreadsheetAsync } from '../../utils/safeSpreadsheet';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.mjs`;
 
@@ -194,11 +194,18 @@ export default function BulkRegisteredStudentImport({ onImportComplete }) {
         } else {
           // Default to XLSX / CSV
           const bstr = new Uint8Array(evt.target.result);
-          data2D = safeReadSpreadsheet(bstr);
+          data2D = await safeReadSpreadsheetAsync(bstr, { maxRows: 5001 });
         }
       } catch (parseErr) {
         console.error("Parse error:", parseErr);
-        setErrorMsg("Failed to parse file. Please ensure it's a valid Excel, Word, or PDF document.");
+        setErrorMsg(parseErr.message || "Failed to parse file. Please ensure it's a valid Excel, Word, or PDF document.");
+        setPreviewData([]);
+        return;
+      }
+
+      if (data2D && data2D.length > 5001) {
+        setErrorMsg(`Spreadsheet contains ${data2D.length.toLocaleString()} rows, which exceeds the maximum supported limit of 5,000 students (plus 1 header row). Import rejected to prevent partial data import.`);
+        setPreviewData([]);
         return;
       }
 
