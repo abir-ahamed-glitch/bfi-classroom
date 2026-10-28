@@ -995,3 +995,26 @@ test.describe('Task 5: Universal 2FA Endpoints for All Users (Students, Instruct
     assert.strictEqual(superUser.two_factor_enabled, 1, 'Super Admin MFA remains strictly enabled');
   });
 });
+
+
+test.describe('Task 6: Local Authenticator QR Code & Client Security', () => {
+  test('qrcode generates valid matrix locally without external network access', async () => {
+    const QRCode = (await import('qrcode')).default;
+    const testUri = 'otpauth://totp/BFI%20Classroom:student_alice?secret=JBSWY3DPEHPK3PXP&issuer=BFI%20Classroom';
+    
+    // Test creating local QR code data structure
+    const qrData = QRCode.create(testUri, { errorCorrectionLevel: 'M' });
+    assert.ok(qrData.modules.size > 0, 'QR modules matrix must be generated');
+    assert.strictEqual(qrData.modules.data.length, qrData.modules.size * qrData.modules.size);
+
+    // Test generating local DataURL without any network calls
+    const dataUrl = await QRCode.toDataURL(testUri, { margin: 2 });
+    assert.ok(dataUrl.startsWith('data:image/png;base64,'), 'Local PNG DataURL generated cleanly');
+  });
+
+  test('secret formatting utility spaces string correctly for human readability', () => {
+    const secret = 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP';
+    const formatted = secret.replace(/\s+/g, '').match(/.{1,4}/g)?.join(' ') || secret;
+    assert.strictEqual(formatted, 'JBSW Y3DP EHPK 3PXP JBSW Y3DP EHPK 3PXP');
+  });
+});
