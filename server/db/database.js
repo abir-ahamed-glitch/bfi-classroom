@@ -15,6 +15,7 @@ const { runPrivilegedSafeguardsMigration } = require('./migrations/20261024_priv
 const { runMfaSingleUseChallengesMigration } = require('./migrations/20261024_mfa_single_use_challenges.cjs');
 const { runAdminAccountabilityMigration } = require('./migrations/20261025_admin_accountability.cjs');
 const { runAdminArchivingAndResetMigration } = require('./migrations/20261028_admin_archiving_and_reset.cjs');
+const { runUniversalMfaAndSuperAdminMigration } = require('./migrations/20261029_universal_mfa_and_super_admin.cjs');
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1504,6 +1505,9 @@ export function initializeDatabase() {
 
     // Run Admin Archiving, Email Verification & Password Reset migration
     runAdminArchivingAndResetMigration(db);
+
+    // Run Universal MFA & Multiple Super Admin migration
+    runUniversalMfaAndSuperAdminMigration(db);
 
     console.log('✅ Course Maker tables and columns verified');
   } catch (err) {

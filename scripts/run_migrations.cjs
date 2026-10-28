@@ -34,6 +34,7 @@ const { runPrivilegedSafeguardsMigration } = require(path.join(migrationsDir, '2
 const { runMfaSingleUseChallengesMigration } = require(path.join(migrationsDir, '20261024_mfa_single_use_challenges.cjs'));
 const { runAdminAccountabilityMigration } = require(path.join(migrationsDir, '20261025_admin_accountability.cjs'));
 const { runAdminArchivingAndResetMigration } = require(path.join(migrationsDir, '20261028_admin_archiving_and_reset.cjs'));
+const { runUniversalMfaAndSuperAdminMigration } = require(path.join(migrationsDir, '20261029_universal_mfa_and_super_admin.cjs'));
 
 const MIGRATIONS = [
   { name: '20261023_super_admin', runner: runSuperAdminMigration },
@@ -42,6 +43,7 @@ const MIGRATIONS = [
   { name: '20261024_mfa_single_use_challenges', runner: runMfaSingleUseChallengesMigration },
   { name: '20261025_admin_accountability', runner: runAdminAccountabilityMigration },
   { name: '20261028_admin_archiving_and_reset', runner: runAdminArchivingAndResetMigration },
+  { name: '20261029_universal_mfa_and_super_admin', runner: runUniversalMfaAndSuperAdminMigration },
 ];
 
 function resolveDatabasePath() {
@@ -158,6 +160,30 @@ function assertSchemaIntegrity(db) {
   for (const col of ['purpose', 'token_version', 'created_by_admin_id']) {
     if (!resetTokenCols.includes(col)) {
       throw new Error(`Assertion failed: column password_reset_tokens.${col} does not exist.`);
+    }
+  }
+
+  // 8D. Verify user_mfa_recovery_codes table and columns
+  const userRecoveryExists = db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='user_mfa_recovery_codes'`).get();
+  if (!userRecoveryExists) {
+    throw new Error('Assertion failed: table user_mfa_recovery_codes does not exist.');
+  }
+  const userRecoveryCols = db.prepare(`PRAGMA table_info(user_mfa_recovery_codes)`).all().map(c => c.name);
+  for (const col of ['id', 'user_id', 'code_hash', 'used', 'used_at', 'created_at']) {
+    if (!userRecoveryCols.includes(col)) {
+      throw new Error(`Assertion failed: column user_mfa_recovery_codes.${col} does not exist.`);
+    }
+  }
+
+  // 8E. Verify action_bound_challenges table and columns
+  const actionBoundExists = db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='action_bound_challenges'`).get();
+  if (!actionBoundExists) {
+    throw new Error('Assertion failed: table action_bound_challenges does not exist.');
+  }
+  const actionBoundCols = db.prepare(`PRAGMA table_info(action_bound_challenges)`).all().map(c => c.name);
+  for (const col of ['id', 'actor_id', 'session_id', 'target_id', 'action', 'challenge_token_hash', 'expires_at', 'consumed', 'consumed_at', 'created_at']) {
+    if (!actionBoundCols.includes(col)) {
+      throw new Error(`Assertion failed: column action_bound_challenges.${col} does not exist.`);
     }
   }
 
