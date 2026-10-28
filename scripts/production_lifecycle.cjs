@@ -163,21 +163,78 @@ async function executeDeployment(options = {}) {
   for (const scriptRel of requiredScripts) {
     const sName = path.basename(scriptRel);
     const destPath = path.join(recoveryToolsDir, sName);
-    const srcPath = path.resolve(rootDir, scriptRel);
 
-    if (fs.existsSync(destPath) && fs.statSync(destPath).size > 0) {
-      logStep('0.1', `Preserved tool verified in ${recoveryToolsDir}: ${sName}`);
-    } else if (fs.existsSync(srcPath)) {
-      fs.copyFileSync(srcPath, destPath);
-      logStep('0.1', `Preserved ${sName} in ${recoveryToolsDir}`);
+    let extractedContent = null;
+    if (!isRehearsal) {
+      const showRes = spawner('git', ['show', `${targetCommit}:${scriptRel}`], { encoding: 'utf8', timeout: 10000, shell: false });
+      if (showRes.error || showRes.status !== 0 || !showRes.stdout) {
+        logFatal(`Failed to extract required script "${scriptRel}" from target commit ${targetCommit}: ${showRes.stderr || showRes.error}`);
+        throw new Error(`Failed to extract ${scriptRel} from target commit`);
+      }
+      extractedContent = showRes.stdout;
     } else {
-      logFatal(`Required operational script missing from both recovery tools and repository: ${scriptRel}`);
-      throw new Error(`Required script missing: ${scriptRel}`);
+      const srcPath = path.resolve(rootDir, scriptRel);
+      if (fs.existsSync(srcPath)) {
+        extractedContent = fs.readFileSync(srcPath, 'utf8');
+      } else if (fs.existsSync(destPath)) {
+        extractedContent = fs.readFileSync(destPath, 'utf8');
+      } else {
+        const repoPath = path.resolve(__dirname, '..', scriptRel);
+        if (fs.existsSync(repoPath)) {
+          extractedContent = fs.readFileSync(repoPath, 'utf8');
+        } else {
+          throw new Error(`Required script missing in rehearsal: ${scriptRel}`);
+        }
+      }
     }
+
+    fs.writeFileSync(destPath, extractedContent, 'utf8');
+    try { fs.chmodSync(destPath, 0o755); } catch {}
+
+    const hash = crypto.createHash('sha256').update(extractedContent).digest('hex');
+    const diskHash = crypto.createHash('sha256').update(fs.readFileSync(destPath)).digest('hex');
+    if (hash !== diskHash) {
+      logFatal(`Hash verification mismatch for extracted tool: ${sName}`);
+      throw new Error(`Hash mismatch for ${sName}`);
+    }
+    logStep('0.1', `Extracted & verified ${sName} (SHA-256: ${hash.slice(0, 16)}...) from ${targetCommit.slice(0, 8)}`);
   }
 
-  // Initialize deployment state
+  // 0.2 Cold-start bundle loading verification in a fresh Node process
+  const probeCode = `
+    const path = require('path');
+    const dir = process.argv[1];
+    const tools = ${JSON.stringify(requiredScripts.map(s => path.basename(s)))};
+    for (const t of tools) {
+      require(path.join(dir, t));
+    }
+    console.log('BUNDLE_VERIFIED_OK');
+  `;
+  const probeResult = spawner(process.execPath, ['-e', probeCode, recoveryToolsDir], { encoding: 'utf8', timeout: 10000, shell: false });
+  if (probeResult.status !== 0 || !probeResult.stdout || !probeResult.stdout.includes('BUNDLE_VERIFIED_OK')) {
+    logFatal(`Cold-start load verification failed for recovery tools in ${recoveryToolsDir}: ${probeResult.stderr || probeResult.error}`);
+    throw new Error('Recovery tool bundle failed cold-start loading verification');
+  }
+  logStep('0.2', `Cold-start bundle loading verified for all 6 recovery tools in ${recoveryToolsDir}`);
+
+  // 0.3 Pre-flight credential handoff capability verification
+  const hasEnvTokens = Boolean(
+    (process.env.SUPER_ADMIN_TOKEN && process.env.ADMIN_TOKEN) ||
+    process.env.SMOKE_SUPER_ADMIN_PASSWORD
+  );
+  const hasInteractiveTty = Boolean(process.stdin && process.stdin.isTTY);
+
+  if (!hasEnvTokens && !hasInteractiveTty && !isRehearsal) {
+    logFatal('ABORT DEPLOYMENT: Non-interactive execution detected without pre-supplied smoke credentials (SUPER_ADMIN_TOKEN / ADMIN_TOKEN). Unattended execution cannot complete interactive credential handoff. Halting before stopping any production services.');
+    throw new Error('Missing smoke credentials in non-interactive environment');
+  }
+  logStep('0.3', `Credential handoff capability verified (${hasEnvTokens ? 'Environment Tokens' : (isRehearsal ? 'Rehearsal Mode' : 'Interactive TTY')})`);
+
+  // Initialize deployment state and attempt-bound backup environment
   const attemptId = `deploy_${Date.now()}`;
+  const envFile = path.join(serverDir, 'active_backup_path.env');
+  fs.writeFileSync(envFile, `ATTEMPT_ID=${attemptId}\nBACKUP_FILE=\nBACKUP_VALIDATED=false\n`);
+
   const stateFilePath = path.join(serverDir, 'active_deployment_state.json');
   const deploymentState = {
     attemptId,
@@ -593,10 +650,39 @@ async function executeRollback(options = {}) {
     logStep('R.1', '⚠️ Explicit post-reopening reconciliation authorized by operator for terminal rollback state.');
   }
 
-  // Fail-closed check: No validated backup recorded for this attempt
+  // Attempt-Aware Early Failure Handling:
+  // If failure occurred before a new backup was created and validated, the live database was NEVER modified!
+  // Restoring an old backup from an unrelated attempt would cause data loss of all intervening data.
+  // We must protect the live database from restore, while safely restoring service availability (Nginx/PM2).
   if (state.backupValidated !== true || !state.backupFile) {
-    logFatal('ABORT ROLLBACK: No validated backup file recorded for this deployment attempt. Failure occurred before validated backup existed. Halting without database restoration to protect original database.');
-    throw new Error('ABORT ROLLBACK: No validated backup file recorded for attempt.');
+    logStep('R.1', '⚠️ Deployment failure occurred before a validated backup existed for this attempt. Live database was NEVER modified.');
+    logStep('R.1', 'Skipping database restore to protect original data. Restoring service states...');
+
+    const servicesFile = path.join(serverDir, 'pre_deployment_services.env');
+    let shouldStartNginx = false;
+    let shouldStartPm2 = false;
+    if (fs.existsSync(servicesFile)) {
+      const sContent = fs.readFileSync(servicesFile, 'utf8');
+      if (sContent.includes('NGINX_STATE=active')) shouldStartNginx = true;
+      if (sContent.includes('PM2_STATE=online')) shouldStartPm2 = true;
+    }
+
+    if (shouldStartPm2) {
+      logStep('R.1.1', 'Restarting PM2 application on existing code...');
+      runCommandStrict(spawner, 'pm2', ['start', 'ecosystem.config.cjs'], { timeout: 15000 }, 'Restart PM2');
+    }
+    if (shouldStartNginx) {
+      logStep('R.1.2', 'Restarting Nginx service...');
+      runCommandStrict(spawner, 'sudo', ['systemctl', 'start', 'nginx'], { timeout: 10000 }, 'Restore Nginx State');
+    }
+
+    state.rollbackCompleted = true;
+    state.rolledBackAt = new Date().toISOString();
+    state.databaseRestored = false;
+    writeStateAtomic(stateFilePath, state);
+
+    logSection('ROLLBACK COMPLETE: SERVICES RESTORED (DATABASE UNTOUCHED)');
+    return { rollbackComplete: true, databaseRestored: false, reason: 'Early failure before backup; services restored without database modification' };
   }
 
   // Attempt/Backup Association Validation:

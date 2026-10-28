@@ -247,10 +247,12 @@ export function createPinnedAgent(pinnedIp) {
   return new Agent({
     connect: {
       lookup: (hostname, opts, cb) => {
-        if (opts && opts.all) {
-          cb(null, [{ address: pinnedIp, family }]);
+        const callback = typeof opts === 'function' ? opts : cb;
+        const options = typeof opts === 'object' ? opts : {};
+        if (options && options.all) {
+          callback(null, [{ address: pinnedIp, family }]);
         } else {
-          cb(null, pinnedIp, family);
+          callback(null, pinnedIp, family);
         }
       }
     }

@@ -226,6 +226,9 @@ function createTrackingSpawner(failureTarget = '') {
     }
 
     if (cmd === process.execPath || cmd === 'node') {
+      if (args[0] === '-e') {
+        return { status: 0, stdout: 'BUNDLE_VERIFIED_OK\n', stderr: '', error: null };
+      }
       return { status: 0, stdout: 'child ok\n', stderr: '', error: null };
     }
 
@@ -783,7 +786,41 @@ async function runTests() {
       threw14d = err.message.includes('Backup association mismatch');
     }
     assert('Vector 14d: Backup file mismatch between state and env fails closed', threw14d);
+    cleanTestEnv();
 
+    // 14e: Rollback when state.backupValidated === false safely restores services without touching database
+    const env14e = setupTestEnv();
+    const tracker14e = createTrackingSpawner();
+    const stateFile14e = path.join(env14e.serverDir, 'active_deployment_state.json');
+    const state14e = JSON.parse(fs.readFileSync(stateFile14e, 'utf8'));
+    state14e.backupValidated = false;
+    state14e.backupFile = null;
+    fs.writeFileSync(stateFile14e, JSON.stringify(state14e));
+    fs.writeFileSync(path.join(env14e.serverDir, 'active_backup_path.env'), `BACKUP_FILE=\nBACKUP_VALIDATED=false\nATTEMPT_ID=${state14e.attemptId}\n`);
+    
+    // Add a live row to database to confirm it is NOT overwritten by any restore
+    const db14e = new Database(env14e.dbPath);
+    db14e.exec('INSERT INTO student_course_enrollments (id) VALUES (999);');
+    db14e.close();
+
+    const rollbackResult14e = await executeRollback({
+      rootDir: env14e.rootDir,
+      databasePath: 'server/bfi_classroom.db',
+      spawner: tracker14e.spawner,
+      isRehearsal: true
+    });
+
+    assert('Vector 14e.1: Rollback returns success and marks databaseRestored: false', rollbackResult14e.rollbackComplete === true && rollbackResult14e.databaseRestored === false);
+    
+    // Check that live database row 999 is preserved and NOT lost
+    const chkDb14e = new Database(env14e.dbPath, { readonly: true });
+    const count14e = chkDb14e.prepare('SELECT count(*) as c FROM student_course_enrollments WHERE id = 999').get().c;
+    chkDb14e.close();
+    assert('Vector 14e.2: Live database table rows preserved without restore when backupValidated === false', count14e === 1);
+
+    // Verify services were restored
+    const executed14e = tracker14e.executed;
+    assert('Vector 14e.3: PM2 and Nginx services restored safely', executed14e.some(c => c.includes('pm2 start')) && executed14e.some(c => c.includes('systemctl start nginx')));
     cleanTestEnv();
   }
 

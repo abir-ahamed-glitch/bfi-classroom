@@ -272,11 +272,37 @@ describe('Security Remediation Suite: SEC-01 through SEC-12', () => {
       );
     });
 
-    test('createPinnedAgent returns an undici Agent for connection pinning', async () => {
+    test('createPinnedAgent connects directly to prevalidated IP while preserving Host header', async () => {
+      const http = await import('http');
+      const { fetch } = await import('undici');
       const { createPinnedAgent } = await import('../server/utils/ssrf-filter.js');
-      const agent = createPinnedAgent('8.8.8.8');
-      assert.ok(agent, 'Agent must be created');
-      assert.ok(typeof agent.dispatch === 'function', 'Agent must implement undici dispatch');
+
+      let receivedHost = null;
+      let connectedIp = null;
+
+      const server = http.createServer((req, res) => {
+        receivedHost = req.headers.host;
+        connectedIp = req.socket.localAddress;
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ status: 'ok', destination: connectedIp, host: receivedHost }));
+      });
+
+      await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+      const port = server.address().port;
+      const pinnedAgent = createPinnedAgent('127.0.0.1');
+
+      try {
+        const response = await fetch(`http://intended-domain.example.com:${port}/probe`, {
+          dispatcher: pinnedAgent
+        });
+        assert.strictEqual(response.status, 200, 'Pinned fetch must succeed over loopback probe');
+        const data = await response.json();
+        assert.strictEqual(data.destination, '127.0.0.1', 'Destination socket must connect to pinned IP');
+        assert.strictEqual(receivedHost, `intended-domain.example.com:${port}`, 'Host header must preserve intended domain');
+      } finally {
+        pinnedAgent.destroy();
+        await new Promise(resolve => server.close(resolve));
+      }
     });
 
     test('Live Route: GET /api/link-preview rejects loopback, expanded IPv6, and cloud metadata targets with 400', async () => {
@@ -314,11 +340,47 @@ describe('Security Remediation Suite: SEC-01 through SEC-12', () => {
       assert.strictEqual(res.status, 400, 'Aliased route must return 400 for loopback targets');
     });
 
-    test('createPinnedAgent pins lookup directly to validated IP preventing DNS rebinding', async () => {
-      const { createPinnedAgent } = await import('../server/utils/ssrf-filter.js');
-      const pinnedAgent = createPinnedAgent('93.184.216.34');
-      assert.ok(pinnedAgent, 'Agent must be instantiated');
-      pinnedAgent.destroy();
+    test('createPinnedAgent prevents DNS rebinding: subsequent rebind cannot redirect pinned agent connection internally', async () => {
+      const http = await import('http');
+      const { fetch } = await import('undici');
+      const { createPinnedAgent, validateSafePublicUrl, UnsafeTargetError } = await import('../server/utils/ssrf-filter.js');
+
+      let internalHit = false;
+      const internalServer = http.createServer((req, res) => {
+        internalHit = true;
+        res.writeHead(200);
+        res.end('internal secret');
+      });
+
+      await new Promise(resolve => internalServer.listen(0, '127.0.0.1', resolve));
+      const internalPort = internalServer.address().port;
+
+      // An agent pinned to 192.0.2.1 will strictly connect to 192.0.2.1 and will never connect to 127.0.0.1
+      // even when asked to fetch a rebind-attacker URL on internalPort
+      const pinnedPublicAgent = createPinnedAgent('192.0.2.1');
+
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 300);
+        await fetch(`http://rebind-attacker.example.com:${internalPort}/steal`, {
+          dispatcher: pinnedPublicAgent,
+          signal: controller.signal
+        }).catch(() => {
+          // Expected connection failure/timeout on 192.0.2.1
+        });
+        clearTimeout(timeout);
+
+        assert.strictEqual(internalHit, false, 'Internal service on 127.0.0.1 must NEVER be reached via pinned agent');
+      } finally {
+        pinnedPublicAgent.destroy();
+        await new Promise(resolve => internalServer.close(resolve));
+      }
+
+      // Upfront URL validation rejects private/loopback destinations
+      await assert.rejects(
+        () => validateSafePublicUrl(`http://127.0.0.1:${internalPort}/secret`),
+        /forbidden|restricted|private/i
+      );
     });
 
     test('readBoundedStream enforces byte limits and cancels stream reader on overflow', async () => {

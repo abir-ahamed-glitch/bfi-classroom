@@ -246,6 +246,21 @@ function createServiceAdapter(options = {}) {
       if (args[0] === 'rev-parse' && args[1] === 'HEAD') {
         return { status: 0, stdout: '0c71163495e58a51f1709272ec55d99a31251ec3\n', stderr: '', error: null };
       }
+      if (args[0] === 'rev-parse') {
+        return { status: 0, stdout: '0c71163495e58a51f1709272ec55d99a31251ec3\n', stderr: '', error: null };
+      }
+      if (args[0] === 'show') {
+        const targetSpec = args[1] || '';
+        const colonIdx = targetSpec.indexOf(':');
+        if (colonIdx !== -1) {
+          const relPath = targetSpec.slice(colonIdx + 1);
+          const fullPath = path.resolve(__dirname, '..', relPath);
+          if (fs.existsSync(fullPath)) {
+            return { status: 0, stdout: fs.readFileSync(fullPath, 'utf8'), stderr: '', error: null };
+          }
+        }
+        return { status: 0, stdout: '', stderr: '', error: null };
+      }
       if (args[0] === 'checkout') {
         return { status: 0, stdout: `Switched to branch '${args[1]}'\n`, stderr: '', error: null };
       }
@@ -366,29 +381,23 @@ async function runRehearsals() {
 
       if (!deployFailed) throw new Error('Deployment should have failed on stop Nginx failure');
 
-      // Assert active_backup_path.env does not exist
+      // Assert active_backup_path.env exists and marks BACKUP_VALIDATED=false
       const activeBackupPath = path.join(env.rootDir, 'server', 'active_backup_path.env');
-      if (fs.existsSync(activeBackupPath)) throw new Error('active_backup_path.env should not exist!');
+      if (!fs.existsSync(activeBackupPath)) throw new Error('active_backup_path.env was not initialized in Phase 0!');
+      const envContent = fs.readFileSync(activeBackupPath, 'utf8');
+      if (!envContent.includes('BACKUP_VALIDATED=false')) throw new Error('active_backup_path.env should have BACKUP_VALIDATED=false!');
 
-      // Attempt rollback and verify it safely halts without restore
-      let rollbackSafelyHalted = false;
-      try {
-        await executeRollback({
-          rootDir: env.rootDir,
-          databasePath: 'server/bfi_classroom.db',
-          spawner: service.adapter,
-          isRehearsal: true
-        });
-      } catch (rErr) {
-        if (rErr.message.includes('No active backup file recorded') || rErr.message.includes('No validated backup file recorded')) {
-          rollbackSafelyHalted = true;
-          console.log(`   [CAUGHT EXPECTED ROLLBACK ABORT] ${rErr.message}`);
-        } else {
-          throw rErr;
-        }
+      // Attempt rollback and verify attempt-aware handling safely restores services without restore
+      const rollbackRes = await executeRollback({
+        rootDir: env.rootDir,
+        databasePath: 'server/bfi_classroom.db',
+        spawner: service.adapter,
+        isRehearsal: true
+      });
+
+      if (rollbackRes.rollbackComplete !== true || rollbackRes.databaseRestored !== false) {
+        throw new Error('Rollback should safely complete with databaseRestored=false on early failure!');
       }
-
-      if (!rollbackSafelyHalted) throw new Error('Rollback did not halt on missing backup');
 
       // Verify original database untouched
       const db = new Database(env.dbPath, { readonly: true });
@@ -396,7 +405,7 @@ async function runRehearsals() {
       db.close();
       if (enrollments !== 3) throw new Error('Original database was altered!');
 
-      console.log('✅ SCENARIO 2 PASSED: Verified no restore attempted without validated backup.\n');
+      console.log('✅ SCENARIO 2 PASSED: Verified attempt-aware rollback safely restored services without touching database.\n');
       passedScenarios++;
     } finally {
       cleanDisposableEnvironment();
