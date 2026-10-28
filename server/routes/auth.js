@@ -493,15 +493,21 @@ router.post('/login', authLimiter, sanitizeInput, async (req, res) => {
     const query = `
       SELECT * FROM users 
       WHERE (email = ? COLLATE NOCASE OR username = ? COLLATE NOCASE) 
-      AND is_active = 1
       AND deleted_at IS NULL
     `;
       
     const strippedUsername = username.toLowerCase().startsWith('admin@') ? username.slice(6) : username;
     const user = db.prepare(query.replace('username = ? COLLATE NOCASE', 'username = ? COLLATE NOCASE OR username = ? COLLATE NOCASE')).get(username, username, strippedUsername);
 
-    if (!user) {
+    if (!user || user.archived_at !== null || user.is_active !== 1) {
       return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    if (user.password_reset_pending === 1) {
+      return res.status(403).json({ 
+        error: 'A password reset has been initiated for this account. You must set a new password using your reset link before logging in.', 
+        code: 'PASSWORD_RESET_PENDING' 
+      });
     }
 
     const isValidPassword = bcrypt.compareSync(password, user.password_hash);
@@ -622,8 +628,15 @@ router.post('/mfa-verify', authLimiter, sanitizeInput, (req, res) => {
       return res.status(404).json({ error: 'User not found.' });
     }
 
-    if (user.is_active !== 1) {
+    if (user.is_active !== 1 || user.archived_at !== null) {
       return res.status(401).json({ error: 'MFA challenge expired or invalidated. Account inactive or revoked.' });
+    }
+
+    if (user.password_reset_pending === 1) {
+      return res.status(403).json({ 
+        error: 'Password reset pending for this account.', 
+        code: 'PASSWORD_RESET_PENDING' 
+      });
     }
 
     // Security version check on challenge: reject if user's token_version changed (e.g. deactivation, password reset, recovery)
@@ -802,10 +815,18 @@ router.post('/refresh', (req, res) => {
       return res.status(401).json({ error: 'Invalid refresh session' });
     }
 
-    const user = db.prepare('SELECT * FROM users WHERE id = ? AND is_active = 1 AND deleted_at IS NULL').get(decoded.id);
+    const user = db.prepare('SELECT * FROM users WHERE id = ? AND is_active = 1 AND deleted_at IS NULL AND archived_at IS NULL').get(decoded.id);
     if (!user) {
       res.clearCookie(REFRESH_COOKIE_NAME, { path: '/' });
       return res.status(401).json({ error: 'User not found' });
+    }
+
+    if (user.password_reset_pending === 1) {
+      res.clearCookie(REFRESH_COOKIE_NAME, { path: '/' });
+      return res.status(403).json({ 
+        error: 'Password reset pending for this account.', 
+        code: 'PASSWORD_RESET_PENDING' 
+      });
     }
 
     // Token version check on refresh

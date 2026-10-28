@@ -507,9 +507,13 @@ io.use((socket, next) => {
       return next(new Error('Access token required. Invalid token purpose.'));
     }
 
-    const user = db.prepare('SELECT id, username, role, is_active, deleted_at, token_version FROM users WHERE id = ?').get(decoded.id);
-    if (!user || user.is_active !== 1 || user.deleted_at !== null) {
+    const user = db.prepare('SELECT id, username, role, is_active, deleted_at, archived_at, password_reset_pending, token_version FROM users WHERE id = ?').get(decoded.id);
+    if (!user || user.is_active !== 1 || user.deleted_at !== null || user.archived_at !== null) {
       return next(new Error('Account inactive or revoked'));
+    }
+
+    if (user.password_reset_pending === 1) {
+      return next(new Error('Account password reset pending'));
     }
 
     if (user.role === 'admin') {

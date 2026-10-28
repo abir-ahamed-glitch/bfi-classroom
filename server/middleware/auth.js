@@ -63,12 +63,23 @@ export function authenticateToken(req, res, next) {
 
     // Resolve current authorization state directly from database
     const user = db.prepare(`
-      SELECT id, username, email, role, is_active, deleted_at, is_super_admin, token_version 
+      SELECT id, username, email, role, is_active, deleted_at, archived_at, password_reset_pending, is_super_admin, token_version 
       FROM users 
       WHERE id = ?
     `).get(decoded.id);
 
-    if (!user || user.is_active !== 1 || user.deleted_at !== null) {
+    if (!user || user.deleted_at !== null || user.archived_at !== null) {
+      return res.status(401).json({ error: 'Account inactive, archived, or not found' });
+    }
+
+    if (user.password_reset_pending === 1) {
+      return res.status(403).json({ 
+        error: 'Password reset pending for this account. You must set a new password before accessing the system.', 
+        code: 'PASSWORD_RESET_PENDING' 
+      });
+    }
+
+    if (user.is_active !== 1) {
       return res.status(401).json({ error: 'Account inactive or not found' });
     }
 
