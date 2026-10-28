@@ -1,6 +1,6 @@
 # Architectural Design Specification: Admin Archiving, Accountability Ledger & Super Admin-Initiated Password Reset
 
-**Document Status:** Revised for User Approval (v3)  
+**Document Status:** Revised for User Approval (v4)  
 **Date:** 2026-10-28  
 **Workspace:** `E:\Antigravity\Project 2 - BFI Classroom\.worktrees\super-admin-integration`  
 **Target Branch:** `integration/super-admin-candidate`  
@@ -91,7 +91,7 @@ export function validatePassword(password) {
 
 ## 3. Database Schema Extensions & Migration Specification
 
-A new migration `server/db/migrations/20261028_admin_archiving_and_reset.cjs` will be executed within an atomic SQLite transaction, tracked in `app_migrations`.
+A new migration `server/db/migrations/20261028_admin_archiving_and_reset.cjs` will be executed within an atomic SQLite transaction and registered in the canonical runner `scripts/run_migrations.cjs`.
 
 ### 3.1 Alterations to `users` Table
 ```sql
@@ -139,41 +139,65 @@ CREATE INDEX IF NOT EXISTS idx_email_verification_lookup ON email_verification_c
 ```
 
 ### 3.3 Transactional Migration of `password_reset_tokens`
-*Baseline Inspection:* The existing table `password_reset_tokens` has columns `(id, user_id, token_hash, expires_at, created_at)` with `user_id UNIQUE`. It lacks `purpose`, `token_version`, and `created_by_admin_id`. `CREATE TABLE IF NOT EXISTS` will **not** alter an existing table.
+*Source-Code Inspection Note:* The existing table `password_reset_tokens` was inspected from source code definitions in `server/db/database.js:452-459` and `server/routes/auth.js:1175,1288`:
+`CREATE TABLE IF NOT EXISTS password_reset_tokens (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER UNIQUE NOT NULL, token_hash TEXT NOT NULL, expires_at TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')));`.
+It lacks `purpose`, `token_version`, and `created_by_admin_id`. Its unique constraint is `UNIQUE(user_id)`. The live schema will be directly verified on an isolated database during migration testing.
 
 *Transactional Migration Pattern:*
-1. Inspect table info with `PRAGMA table_info(password_reset_tokens)`.
-2. If `token_version` column is absent:
-   ```sql
-   PRAGMA foreign_keys = OFF;
-   BEGIN TRANSACTION;
+```javascript
+const fkStatus = db.prepare('PRAGMA foreign_keys').get();
+const wasFkOn = Object.values(fkStatus)[0] === 1;
 
-   ALTER TABLE password_reset_tokens RENAME TO _password_reset_tokens_old;
+try {
+  db.pragma('foreign_keys = OFF');
+  const tx = db.transaction(() => {
+    // 1. Rename existing table
+    db.prepare(`ALTER TABLE password_reset_tokens RENAME TO _password_reset_tokens_old`).run();
 
-   CREATE TABLE password_reset_tokens (
-     id INTEGER PRIMARY KEY AUTOINCREMENT,
-     user_id INTEGER NOT NULL,
-     token_hash TEXT NOT NULL,
-     purpose TEXT NOT NULL DEFAULT 'admin_password_reset' CHECK(purpose IN ('admin_password_reset', 'user_recovery')),
-     token_version INTEGER NOT NULL,
-     expires_at TEXT NOT NULL,
-     created_at TEXT DEFAULT (datetime('now')),
-     created_by_admin_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
-     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-     UNIQUE(user_id, purpose)
-   );
+    // 2. Create updated table supporting purpose separation and version binding
+    db.prepare(`
+      CREATE TABLE password_reset_tokens (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        token_hash TEXT NOT NULL,
+        purpose TEXT NOT NULL DEFAULT 'user_recovery' CHECK(purpose IN ('user_recovery', 'admin_self_recovery', 'admin_password_reset')),
+        token_version INTEGER NOT NULL DEFAULT 1,
+        expires_at TEXT NOT NULL,
+        created_at TEXT DEFAULT (datetime('now')),
+        created_by_admin_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        UNIQUE(user_id, purpose)
+      )
+    `).run();
 
-   -- Safely invalidate legacy reset links (they lack token_version and purpose)
-   DROP TABLE _password_reset_tokens_old;
+    // 3. Drop old table, safely invalidating legacy reset links
+    db.prepare(`DROP TABLE _password_reset_tokens_old`).run();
 
-   CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_lookup ON password_reset_tokens(user_id, token_hash, purpose);
-   CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_expires ON password_reset_tokens(expires_at);
+    // 4. Create indexes
+    db.prepare(`CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_lookup ON password_reset_tokens(user_id, token_hash, purpose)`).run();
+    db.prepare(`CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_expires ON password_reset_tokens(expires_at)`).run();
 
-   COMMIT;
-   PRAGMA foreign_keys = ON;
-   ```
-3. Documented Consequence: Any unconsumed reset links generated prior to migration are safely invalidated.
-4. Idempotency: Running the migration multiple times checks `app_migrations` and skips if already applied.
+    // 5. Record migration in app_migrations
+    db.prepare(`INSERT INTO app_migrations (name) VALUES ('20261028_admin_archiving_and_reset')`).run();
+  });
+  tx();
+} finally {
+  if (wasFkOn) {
+    db.pragma('foreign_keys = ON');
+  }
+}
+```
+*Documented Consequence:* Any unconsumed reset links generated prior to migration are safely invalidated.
+*Preservation of All Three Recovery Flows:*
+1. **Flow 1: Student / Ordinary User Recovery** (`/forgot-password` & `/reset-password/:id/:token`):
+   - Inserts with `purpose = 'user_recovery'`, `token_version = user.token_version || 1`, 15-minute expiry.
+   - Consumes with `purpose = 'user_recovery'`.
+2. **Flow 2: Admin Self-Service Recovery** (`/admin-forgot-password` & `/admin-reset-password/:id/:token`):
+   - Inserts with `purpose = 'admin_self_recovery'`, `token_version = user.token_version || 1`, 15-minute expiry.
+   - Consumes with `purpose = 'admin_self_recovery'`.
+3. **Flow 3: Super Admin-Initiated Reset** (`/reset-password/email` & `/reset-password/direct-link`):
+   - Inserts with `purpose = 'admin_password_reset'`, `token_version = new_token_version`, 30-minute expiry, `created_by_admin_id = superAdmin.id`.
+   - Consumes via `/api/admin/reset-password/complete`.
 
 ---
 
@@ -182,17 +206,17 @@ CREATE INDEX IF NOT EXISTS idx_email_verification_lookup ON email_verification_c
 ### 4.1 State Definitions
 1. **Active Admin:** `role = 'admin'`, `is_active = 1`, `archived_at IS NULL`, `password_reset_pending = 0`. Full administrative access.
 2. **Inactive (Deactivated) Admin:** `role = 'admin'`, `is_active = 0`, `archived_at IS NULL`, `password_reset_pending = 0`. Temporarily blocked. Retains permissions and position in current administrator list.
-3. **Archived Admin:** `role = 'admin'`, `archived_at IS NOT NULL`. Mark of former administrator. Excluded from current administrator lists, all credentials revoked, zero system access. Cannot be activated directly.
-4. **Password Reset Pending:** `password_reset_pending = 1` (on Active or Inactive admin). All existing sessions and tokens revoked; cannot log in, refresh, or connect sockets until password replacement is completed.
+3. **Archived Admin:** `role = 'admin'`, `archived_at IS NOT NULL`. Mark of former administrator. Excluded from current administrator lists, all credentials revoked, zero system access. Cannot be activated directly. `password_reset_pending` is 0.
+4. **Password Reset Pending:** `password_reset_pending = 1` (on Active or Inactive admin, `archived_at IS NULL`). All existing sessions and tokens revoked; cannot log in, refresh, or connect sockets until password replacement is completed.
 
-### 4.2 Comprehensive Access Matrix
+### 4.2 Comprehensive Access & Error Matrix
 
-| Account State | Access Token API | Refresh Token | Password Login | MFA Verification | Socket Handshake | Can Be Activated? |
+| Account State | Access Token API | Refresh Token | Password Login | MFA Verification | Socket Handshake | Status Activation (`/status`) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Active** | Allowed | Allowed | Allowed | Allowed | Allowed | N/A (Already 1) |
-| **Inactive** | Denied (401) | Denied (401) | Denied (401) | Denied (401) | Denied (Error) | Yes (Super Admin) |
-| **Archived** | Denied (401) | Denied (401) | Denied (401) | Denied (401) | Denied (Error) | **Blocked (400)** |
-| **Reset Pending** | **Denied (403)** | **Denied (403)** | **Denied (403)** | **Denied (403)** | **Denied (Error)** | Preserved |
+| **Active** | 200 OK | 200 OK | 200 OK | 200 OK | Connected | N/A |
+| **Inactive** | **401** `Account inactive` | **401** `User not found` | **401** `Invalid credentials` | **401** `Account inactive` | **Error** `inactive` | **Allowed** |
+| **Archived** | **401** `Account inactive, archived, or not found` | **401** `User not found` | **401** `Invalid credentials` | **401** `Account inactive or revoked` | **Error** `inactive or revoked` | **400** `ACCOUNT_ARCHIVED` |
+| **Reset Pending** | **403** `PASSWORD_RESET_PENDING` | **403** `PASSWORD_RESET_PENDING` | **403** `PASSWORD_RESET_PENDING` | **403** `PASSWORD_RESET_PENDING` | **Error** `reset pending` | Preserved |
 
 ### 4.3 Enforcement Interceptors
 
@@ -218,15 +242,16 @@ CREATE INDEX IF NOT EXISTS idx_email_verification_lookup ON email_verification_c
    - If `user.password_reset_pending === 1`, reject with HTTP 403 `PASSWORD_RESET_PENDING`.
 
 3. **`/api/auth/mfa-verify` (`server/routes/auth.js`):**
-   - Check `user.archived_at === null` and `user.password_reset_pending === 0`.
-   - If reset pending, reject with HTTP 403 `PASSWORD_RESET_PENDING`.
+   - Check `user.archived_at === null`. If archived or inactive, reject with HTTP 401.
+   - If `user.password_reset_pending === 1`, reject with HTTP 403 `PASSWORD_RESET_PENDING`.
 
 4. **`/api/auth/refresh` (`server/routes/auth.js`):**
-   - If `user.archived_at !== null` or `user.password_reset_pending === 1`, clear refresh cookie and reject with HTTP 403.
+   - If `user.archived_at !== null` or inactive, clear cookie and reject with HTTP 401.
+   - If `user.password_reset_pending === 1`, clear refresh cookie and reject with HTTP 403.
 
 5. **Socket Handshake (`server/server.js`):**
    - Query checks `archived_at IS NULL` and `password_reset_pending = 0`.
-   - Emits `session_revoked` and disconnects immediately if violated.
+   - Disconnects immediately with `session_revoked`.
 
 ---
 
@@ -351,15 +376,21 @@ If `changes === 0`: Check if user is archived. If `archived_at IS NOT NULL`, ret
   ```
 
 ### 6.2 Token-Leak Prevention & Fragment-Based URL Architecture
-- **Vulnerability in URL Paths:** Passing tokens in URL paths (`/admin/reset-password/:id/:token`) exposes them to reverse proxy, Cloudflare, and Nginx access logs.
+- **Vulnerability in URL Paths:** Passing tokens in URL paths exposes them to reverse proxy, Cloudflare, and Nginx access logs.
 - **Concrete Fix: URL Fragment (Hash) Transport:**
   Reset URLs are generated as:
   ```
   ${process.env.APP_BASE_URL}/admin/reset-password#userId=${target.id}&token=${rawToken}
   ```
-- **Browser Client Behavior:**
-  1. The browser navigates to `/admin/reset-password`. Because fragments (`#...`) are never transmitted in HTTP requests, the raw token is **never** sent to the web server, reverse proxy, or logged in access logs.
-  2. The client React component reads the fragment parameters:
+- **Router Mounting in `src/App.jsx`:**
+  Mount `/admin/reset-password` without session-locking wrappers:
+  ```jsx
+  <Route path="/admin/reset-password" element={<AdminResetPassword />} />
+  ```
+  Respects application `basename={routerBase}` and works directly while logged out.
+- **Browser Client Behavior (`src/pages/AdminResetPassword.jsx`):**
+  1. The browser navigates to `/admin/reset-password`. Because fragments (`#...`) are never transmitted in HTTP requests, the raw token is **never** sent to the web server or reverse proxy.
+  2. The client component reads fragment parameters:
      ```javascript
      const hashParams = new URLSearchParams(window.location.hash.slice(1));
      const userId = hashParams.get('userId');
@@ -513,59 +544,3 @@ In `src/pages/admin/AdminManagement.jsx`:
    - Requires Reason and Sudo Password.
    - Passes `expected_account_version` internally.
    - Out-of-Band Link modal provides single-view copy button with clear warning and timer.
-
----
-
-## 9. Comprehensive Testing & Verification Plan
-
-### 9.1 Test Isolation & Safety
-- **Strict Guard:** All tests run exclusively against disposable, isolated SQLite databases (`tests/test-db-isolation.js`).
-- **Zero Production Modification:** `server/bfi_classroom.db` is never touched by tests.
-
-### 9.2 Automated Test Scenarios (`tests/admin-archiving-and-reset.spec.js`)
-
-1. **Role & Privilege Enforcement:**
-   - Ordinary admins or instructors attempting archive, restore, or reset receive HTTP 403.
-   - Attempting to archive, deactivate, or peer-reset Super Admin ID 1 receives HTTP 403.
-
-2. **Access Blocking During Password Reset:**
-   - Reset initiated -> `password_reset_pending = 1`.
-   - Verify `authenticateToken`, `/api/auth/login`, `/api/auth/mfa-verify`, `/api/auth/refresh`, and socket connection all reject with HTTP 403.
-   - Successful password replacement clears `password_reset_pending = 0`.
-   - Inactive account remains inactive after password reset.
-
-3. **Fresh Link Password Reset & Token Version Matching:**
-   - Issue a reset link -> verify `users.token_version` incremented to V+1 and `token.token_version` stored as V+1.
-   - Execute password replacement with the freshly issued link -> verify HTTP 200 success and password updated.
-
-4. **Mandatory Concurrency Protection (`account_version`):**
-   - Mutation requests missing `expected_account_version` receive HTTP 400.
-   - Stale version submissions receive HTTP 409 `CONCURRENCY_CONFLICT`.
-   - Cycle test: Admin archived -> restored -> stale archive request with old version is rejected.
-
-5. **Token Lifecycle, Expiry & Fragment Security:**
-   - Verify token expires after 30 minutes; expired token returns HTTP 400.
-   - Initiate reset twice -> verify older token is destroyed and cannot be used.
-   - Global invalidation: User changes password via profile -> outstanding reset token is deleted.
-   - Race condition test: Concurrent token submissions result in exactly 1 success and 1 HTTP 400 `TOKEN_ALREADY_USED`.
-
-6. **Email Ownership & Address Binding:**
-   - Attempting email reset on unverified address receives HTTP 400 `EMAIL_NOT_VERIFIED`.
-   - Changing administrator email address clears verification and invalidates pending tokens.
-   - Mock SMTP failure -> recorded as `admin.mail_submission_failed` and returns HTTP 502 (never recorded as success).
-   - Direct link generation requires explicit authorization and logs `admin.direct_reset_link_generated`.
-
-7. **Database Migration & Existing Upgrades:**
-   - Migration applies clean upgrade on existing SQLite database with legacy `password_reset_tokens`.
-   - Verify legacy links are invalidated and modern schema with `token_version` and `purpose` is created.
-   - Verify rerun of migration is idempotent.
-
-8. **Audit-Write Rollback Across All Operations:**
-   - Mock audit failure during `/archive` -> transaction rolls back; admin remains unarchived.
-   - Mock audit failure during `/restore` -> transaction rolls back; admin remains archived.
-   - Mock audit failure during `/reset-password` -> transaction rolls back; reset pending not set.
-   - Mock audit failure during password replacement -> transaction rolls back; old password remains.
-
-9. **CSV Formula Injection:**
-   - Export with values `=cmd|' /C calc'!A0`, `   +SUM(1+1)`, `\t@danger`, `"  -2+3"`.
-   - Verify all formula indicators are neutralized with `'` prefix and RFC 4180 quotes.
