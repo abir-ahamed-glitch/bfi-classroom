@@ -113,7 +113,7 @@ test.describe('Task 1: Migration & MFA Data Preservation (20261029_universal_mfa
     assert.strictEqual(secondResult.reason, 'Already applied');
 
     db.close();
-    try { fs.unlinkSync(TEST_DB_PATH); } catch {}
+    try { fs.unlinkSync(TEST_DB_PATH); } catch { /* ignore */ }
   });
 
   test('canonical migration runner applies all migrations cleanly with new assertions', async () => {
@@ -185,7 +185,7 @@ test.describe('Task 1: Migration & MFA Data Preservation (20261029_universal_mfa
     assert.ok(userMfaExists, 'user_mfa_recovery_codes table must exist');
 
     verifyDb.close();
-    try { fs.unlinkSync(fullTestDb); } catch {}
+    try { fs.unlinkSync(fullTestDb); } catch { /* ignore */ }
   });
 });
 
@@ -280,8 +280,8 @@ test.describe('Task 2: Action-Bound Step-Up Verification Helper (server/utils/ac
   });
 
   test.afterEach(() => {
-    try { db.close(); } catch {}
-    try { fs.unlinkSync(testDbPath); } catch {}
+    try { db.close(); } catch { /* ignore */ }
+    try { fs.unlinkSync(testDbPath); } catch { /* ignore */ }
   });
 
   test('issues action-bound challenge and verifies with valid TOTP code', async () => {

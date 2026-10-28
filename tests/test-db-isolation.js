@@ -187,8 +187,9 @@ export async function setupTestRouteProxy(page, testBaseUrl = getTestApiUrl()) {
       const response = await route.fetch({ url: targetUrl });
       await route.fulfill({ response });
     } catch (err) {
-      console.error(`[TestRouteProxy] Failed to forward ${originalUrl} -> ${targetUrl}:`, err);
-      route.abort();
+      try {
+        await route.abort();
+      } catch { /* ignore */ }
     }
   });
 }

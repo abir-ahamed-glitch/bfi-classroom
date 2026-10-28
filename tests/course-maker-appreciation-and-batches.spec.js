@@ -46,10 +46,23 @@ test.beforeAll(async () => {
   await initIsolatedTestDatabase(DB_PATH);
   db = new Database(DB_PATH);
   assertIsolatedTestDatabase(db.name || DB_PATH);
-  adminUser = db.prepare("SELECT * FROM users WHERE role = 'admin' LIMIT 1").get();
+  adminUser = db.prepare("SELECT * FROM users WHERE role = 'admin' ORDER BY id ASC LIMIT 1").get();
+  const insertSession = db.prepare(`
+    INSERT INTO sessions (user_id, token_hash, ip_address, user_agent, expires_at, created_at, last_activity, sudo_verified_at)
+    VALUES (?, 'test_session_hash', '127.0.0.1', 'playwright_test', datetime('now', '+1 day'), datetime('now'), datetime('now'), datetime('now'))
+  `).run(adminUser.id);
+  const adminSessionId = insertSession.lastInsertRowid;
 
   adminToken = jwt.sign(
-    { id: adminUser.id, username: adminUser.username, role: adminUser.role, name: `${adminUser.first_name} ${adminUser.last_name}` },
+    { 
+      id: adminUser.id, 
+      username: adminUser.username, 
+      role: adminUser.role, 
+      name: `${adminUser.first_name} ${adminUser.last_name}`,
+      type: 'access',
+      sessionId: adminSessionId,
+      token_version: adminUser.token_version || 1
+    },
     JWT_SECRET,
     { expiresIn: '1d' }
   );
@@ -489,7 +502,7 @@ test.describe('Course Maker: Appreciation Course & Multi-Batch Isolation', () =>
 
     // Check certificate route: fee is unpaid, certificate must be locked
     const certUnpaidRes = await request.get(`${getTestApiUrl()}/api/certification/my-certificates`, {
-      headers: { Authorization: `Bearer ${jwt.sign({ id: student1Id, username: 'apptest_student_1', role: 'student' }, JWT_SECRET, { expiresIn: '1d' })}` }
+      headers: { Authorization: `Bearer ${jwt.sign({ id: student1Id, username: 'apptest_student_1', role: 'student', type: 'access' }, JWT_SECRET, { expiresIn: '1d' })}` }
     });
     expect(certUnpaidRes.status()).toBe(200);
     const certUnpaidData = await certUnpaidRes.json();
@@ -510,7 +523,7 @@ test.describe('Course Maker: Appreciation Course & Multi-Batch Isolation', () =>
 
     // Re-check certificate route: now unlocked!
     const certPaidRes = await request.get(`${getTestApiUrl()}/api/certification/my-certificates`, {
-      headers: { Authorization: `Bearer ${jwt.sign({ id: student1Id, username: 'apptest_student_1', role: 'student' }, JWT_SECRET, { expiresIn: '1d' })}` }
+      headers: { Authorization: `Bearer ${jwt.sign({ id: student1Id, username: 'apptest_student_1', role: 'student', type: 'access' }, JWT_SECRET, { expiresIn: '1d' })}` }
     });
     expect(certPaidRes.status()).toBe(200);
     const certPaidData = await certPaidRes.json();

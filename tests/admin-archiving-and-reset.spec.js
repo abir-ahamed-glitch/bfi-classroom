@@ -265,7 +265,6 @@ test.describe('Task 1: Database Migration & Schema Upgrade', () => {
     assert.strictEqual(rerunRes.applied, false, 'Migration rerun must be idempotent');
 
     db.close();
-    try { serverDb.close(); } catch {}
   });
 
   test('scripts/run_migrations.cjs executes all migrations and preserves business records', async () => {

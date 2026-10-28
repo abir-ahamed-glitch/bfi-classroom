@@ -5,15 +5,21 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import jwt from 'jsonwebtoken';
 import dotenv from 'dotenv';
+import { startTestServer } from './test-db-isolation.js';
 
 dotenv.config();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // ── Config ────────────────────────────────────────────────────────────────────
-const API_BASE = 'http://localhost:3001';
+const TEST_PORT = process.env.TEST_PORT || '3099';
+const API_BASE = `http://127.0.0.1:${TEST_PORT}`;
 const UPLOAD_DIR = path.resolve(__dirname, '../uploads/course-materials');
-const DB_PATH = path.resolve(__dirname, '../server/bfi_classroom.db');
+const DB_PATH = path.resolve(__dirname, '../server/test_isolated_bfi.db');
+
+if (!fs.existsSync(UPLOAD_DIR)) {
+  fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+}
 const JWT_SECRET = process.env.JWT_SECRET;
 
 // ── Token helpers (same pattern as all other test files) ─────────────────────
@@ -24,8 +30,27 @@ function getToken(role, preferredUsername) {
     ? _db.prepare('SELECT * FROM users WHERE username = ? AND is_active = 1').get(preferredUsername)
     : _db.prepare('SELECT * FROM users WHERE role = ? AND is_active = 1 LIMIT 1').get(role);
   if (!user) throw new Error(`No active user found for role: ${role}`);
+
+  let sessionId = undefined;
+  if (user.role === 'admin') {
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+    const insert = _db.prepare(`
+      INSERT INTO sessions (user_id, token_hash, ip_address, user_agent, expires_at, created_at, last_activity, sudo_verified_at)
+      VALUES (?, 'test_session_hash', '127.0.0.1', 'playwright_test', ?, datetime('now'), datetime('now'), datetime('now'))
+    `).run(user.id, expiresAt);
+    sessionId = insert.lastInsertRowid;
+  }
+
   return jwt.sign(
-    { id: user.id, username: user.username, role: user.role },
+    { 
+      id: user.id, 
+      username: user.username, 
+      role: user.role, 
+      is_super_admin: user.is_super_admin || 0,
+      sessionId, 
+      type: 'access', 
+      token_version: user.token_version || 1 
+    },
     JWT_SECRET,
     { expiresIn: '7d' }
   );
@@ -34,19 +59,23 @@ function getToken(role, preferredUsername) {
 
 // Student whose batch_number we know from DB
 let STUDENT_USER_ID = null;
+let STUDENT_USERNAME = null;
 let STUDENT_BATCH = null;
+let STUDENT_COURSE = 'Cinematography';
 
 // Track inserted material IDs and disk files for cleanup
 const createdMaterialIds = [];
 const createdFiles = [];
 
 test.beforeAll(async () => {
+  await startTestServer();
   // Pick a real student from the DB so we can test student-view filtering
   const student = _db
     .prepare(
-      `SELECT u.id, sp.batch_number
+      `SELECT u.id, u.username, sp.batch_number, sce.course_name
        FROM users u
        JOIN student_profiles sp ON sp.user_id = u.id
+       LEFT JOIN student_course_enrollments sce ON sce.user_id = u.id
        WHERE u.role = 'student' AND sp.batch_number IS NOT NULL
        LIMIT 1`
     )
@@ -54,7 +83,11 @@ test.beforeAll(async () => {
 
   if (student) {
     STUDENT_USER_ID = student.id;
+    STUDENT_USERNAME = student.username;
     STUDENT_BATCH = student.batch_number;
+    if (student.course_name) {
+      STUDENT_COURSE = student.course_name;
+    }
   }
 });
 
@@ -192,7 +225,7 @@ test('Student: sees batch-specific material via GET /api/courses/', async () => 
   }
 
   const adminToken = getToken('admin');
-  const studentToken = getToken('student');
+  const studentToken = getToken('student', STUDENT_USERNAME);
   const ctx = await request.newContext({ baseURL: API_BASE });
 
   // Upload a material targeted at the student's batch
@@ -201,7 +234,7 @@ test('Student: sees batch-specific material via GET /api/courses/', async () => 
     multipart: {
       title: `Playwright Batch ${STUDENT_BATCH} Material`,
       description: 'Student view test',
-      course_name: 'Cinematography',
+      course_name: STUDENT_COURSE,
       batch_number: STUDENT_BATCH,
       is_downloadable: 'true',
       file_type_override: 'pdf',

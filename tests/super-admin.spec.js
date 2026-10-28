@@ -39,7 +39,7 @@ let studentToken;
 const SUPER_ADMIN_ID = 1;
 const ORDINARY_ADMIN_ID = 99981;
 const TEST_STUDENT_ID = 99982;
-const TEST_PASSWORD = 'Password123!';
+const TEST_PASSWORD = 'ComplexP@ssw0rd2026!';
 
 /**
  * Creates an authentic administrative session in the database and signs a compliant access token.
@@ -167,7 +167,16 @@ test.afterAll(async () => {
 
 test.describe('Super Admin Architecture & Role Governance Suite', () => {
 
+  test.beforeEach(async () => {
+    // Ensure SUPER_ADMIN_ID has active session and MFA enrolled for governance operations
+    const { encryptSecret } = await import('../server/utils/totp.js');
+    const encSecret = encryptSecret('JBSWY3DPEHPK3PXP', JWT_SECRET);
+    db.prepare("UPDATE users SET is_active = 1, is_super_admin = 1, role = 'admin', two_factor_enabled = 1, two_factor_secret = ? WHERE id = ?").run(encSecret, SUPER_ADMIN_ID);
+  });
+
   test('1. Super Admin Login & Permission Recognition', async ({ request }) => {
+    // Test 1 specifically tests direct login during transition before MFA is enrolled
+    db.prepare("UPDATE users SET two_factor_enabled = 0, two_factor_secret = NULL WHERE id = 1").run();
     // Authenticate via login endpoint
     const res = await request.post(`${API_BASE}/api/auth/login`, {
       data: {
@@ -3036,9 +3045,10 @@ test.describe('Super Admin Architecture & Role Governance Suite', () => {
     db.prepare('DELETE FROM users WHERE id = ?').run(adminId);
   });
   test('51. Real Browser Workflow: Factor Replacement Lifecycle in AdminManagement.jsx', async ({ page, request }) => {
-    // 1. Setup Super Admin (User ID 1) with active MFA and recovery codes
+    // 1. Setup Super Admin (User ID 1) with clean starting state
     db.prepare('DELETE FROM admin_mfa_recovery_codes WHERE user_id = ?').run(SUPER_ADMIN_ID);
     db.prepare('DELETE FROM sessions WHERE user_id = ?').run(SUPER_ADMIN_ID);
+    db.prepare('UPDATE users SET two_factor_secret = NULL, pending_two_factor_secret = NULL, two_factor_enabled = 0 WHERE id = ?').run(SUPER_ADMIN_ID);
 
     const { token: primaryToken } = issueAdminSessionToken(SUPER_ADMIN_ID);
     const { token: secondaryToken } = issueAdminSessionToken(SUPER_ADMIN_ID);
@@ -5374,6 +5384,11 @@ test.describe('Phase 3: Admin Archiving, Accountability & Super Admin Password R
   const TARGET_EMAIL = 'archivetarget@bfibd.org';
 
   test.beforeEach(async () => {
+    // Ensure SUPER_ADMIN_ID has active session and MFA enrolled for governance actions
+    const { encryptSecret } = await import('../server/utils/totp.js');
+    const encSecret = encryptSecret('JBSWY3DPEHPK3PXP', JWT_SECRET);
+    db.prepare("UPDATE users SET is_active = 1, is_super_admin = 1, role = 'admin', two_factor_enabled = 1, two_factor_secret = ? WHERE id = ?").run(encSecret, SUPER_ADMIN_ID);
+
     // Ensure TARGET_ADMIN exists in clean state
     const passwordHash = bcrypt.hashSync(TEST_PASSWORD, 10);
     db.prepare(`
@@ -5394,7 +5409,7 @@ test.describe('Phase 3: Admin Archiving, Accountability & Super Admin Password R
       db.prepare('DELETE FROM password_reset_tokens WHERE user_id = ?').run(TARGET_ADMIN_ID);
       db.prepare('DELETE FROM sessions WHERE user_id = ?').run(TARGET_ADMIN_ID);
       db.prepare('DELETE FROM users WHERE id = ?').run(TARGET_ADMIN_ID);
-    } catch {}
+    } catch { /* ignore */ }
   });
 
   test('30. Browser Interaction: Sub-view Switching, Archive Flow, and Inactive Restoration', async ({ page }) => {
