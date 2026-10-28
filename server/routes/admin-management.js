@@ -1398,6 +1398,10 @@ router.patch('/administrators/:id/status', authenticateToken, requireSuperAdmin,
   try {
     const targetId = Number(req.params.id);
     const { is_active, expected_account_version } = req.body;
+    if (targetId === 1) {
+      recordFailedAuditLog(req.user.id, targetId, 'update_status', 'Attempted to deactivate Super Admin account', req.ip);
+      return res.status(403).json({ error: 'Cannot deactivate the founding Super Administrator account.', code: 'FOUNDING_OWNER_PROTECTED' });
+    }
 
     if (is_active !== 0 && is_active !== 1) {
       recordFailedAuditLog(req.user.id, targetId, 'update_status', 'Invalid is_active value', req.ip);
@@ -1405,15 +1409,10 @@ router.patch('/administrators/:id/status', authenticateToken, requireSuperAdmin,
     }
 
     if (expected_account_version === undefined || expected_account_version === null || typeof expected_account_version !== 'number') {
-      return res.status(400).json({ 
-        error: 'Expected account version is required for concurrency control.', 
-        code: 'MISSING_ACCOUNT_VERSION' 
+      return res.status(400).json({
+        error: 'Expected account version is required for concurrency control.',
+        code: 'MISSING_ACCOUNT_VERSION'
       });
-    }
-
-    if (targetId === 1) {
-      recordFailedAuditLog(req.user.id, targetId, 'update_status', 'Attempted to deactivate Super Admin account', req.ip);
-      return res.status(403).json({ error: 'Cannot deactivate the founding Super Administrator account.', code: 'FOUNDING_OWNER_PROTECTED' });
     }
 
     const targetUser = db.prepare('SELECT id, username, role, is_active, archived_at, account_version, is_super_admin FROM users WHERE id = ? AND deleted_at IS NULL').get(targetId);

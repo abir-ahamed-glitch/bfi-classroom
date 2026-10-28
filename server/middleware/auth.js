@@ -68,7 +68,11 @@ export function authenticateToken(req, res, next) {
       WHERE id = ?
     `).get(decoded.id);
 
-    if (!user || user.deleted_at !== null || user.archived_at !== null) {
+    if (!user || user.deleted_at !== null) {
+      return res.status(401).json({ error: 'Account inactive or not found' });
+    }
+
+    if (user.archived_at !== null) {
       return res.status(401).json({ error: 'Account inactive, archived, or not found' });
     }
 

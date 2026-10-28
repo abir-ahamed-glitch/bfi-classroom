@@ -1115,7 +1115,7 @@ test.describe('Super Admin Architecture & Role Governance Suite', () => {
     // Super Admin deactivates account
     const deactRes = await request.patch(`${API_BASE}/api/admin/administrators/${restricted.id}/status`, {
       headers: { Authorization: `Bearer ${superAdminToken}` },
-      data: { is_active: 0 }
+      data: { is_active: 0, expected_account_version: 1 }
     });
     expect(deactRes.status()).toBe(200);
 
@@ -1533,9 +1533,10 @@ test.describe('Super Admin Architecture & Role Governance Suite', () => {
     await setupTestRouteProxy(page);
 
     // Trigger an audit log event directly
+    const ordUser = db.prepare('SELECT account_version FROM users WHERE id = ?').get(ORDINARY_ADMIN_ID);
     const auditRes = await request.patch(`${API_BASE}/api/admin/administrators/${ORDINARY_ADMIN_ID}/status`, {
       headers: { Authorization: `Bearer ${superAdminToken}` },
-      data: { is_active: 1 }
+      data: { is_active: 1, expected_account_version: ordUser ? ordUser.account_version : 1 }
     });
     expect(auditRes.status()).toBe(200);
 
@@ -1830,7 +1831,7 @@ test.describe('Super Admin Architecture & Role Governance Suite', () => {
     // 2. Attempt deactivating admin while audit log write fails
     const failRes = await request.patch(`${API_BASE}/api/admin/administrators/${atomicAdminId}/status`, {
       headers: { Authorization: `Bearer ${superAdminToken}` },
-      data: { is_active: 0 }
+      data: { is_active: 0, expected_account_version: 1 }
     });
     expect(failRes.status()).toBe(500);
 
@@ -1844,7 +1845,7 @@ test.describe('Super Admin Architecture & Role Governance Suite', () => {
     // 5. Normal deactivation succeeds and commits both status change and audit log together
     const successRes = await request.patch(`${API_BASE}/api/admin/administrators/${atomicAdminId}/status`, {
       headers: { Authorization: `Bearer ${superAdminToken}` },
-      data: { is_active: 0 }
+      data: { is_active: 0, expected_account_version: 1 }
     });
     expect(successRes.status()).toBe(200);
 
@@ -1889,7 +1890,7 @@ test.describe('Super Admin Architecture & Role Governance Suite', () => {
     // 3. Super Admin deactivates the account
     const deactRes = await request.patch(`${API_BASE}/api/admin/administrators/${reviveAdminId}/status`, {
       headers: { Authorization: `Bearer ${superAdminToken}` },
-      data: { is_active: 0 }
+      data: { is_active: 0, expected_account_version: 1 }
     });
     expect(deactRes.status()).toBe(200);
 
@@ -1902,7 +1903,7 @@ test.describe('Super Admin Architecture & Role Governance Suite', () => {
     // 4. Super Admin REACTIVATES the account
     const reactRes = await request.patch(`${API_BASE}/api/admin/administrators/${reviveAdminId}/status`, {
       headers: { Authorization: `Bearer ${superAdminToken}` },
-      data: { is_active: 1 }
+      data: { is_active: 1, expected_account_version: 2 }
     });
     expect(reactRes.status()).toBe(200);
 
@@ -2608,7 +2609,7 @@ test.describe('Super Admin Architecture & Role Governance Suite', () => {
     // 3. Super Admin deactivates account -> bumps token_version and clears sessions
     const deactRes = await request.patch(`${API_BASE}/api/admin/administrators/${adminId}/status`, {
       headers: { Authorization: `Bearer ${superAdminToken}` },
-      data: { is_active: 0 }
+      data: { is_active: 0, expected_account_version: 1 }
     });
     expect(deactRes.status()).toBe(200);
 

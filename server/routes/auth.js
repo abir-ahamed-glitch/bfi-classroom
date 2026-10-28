@@ -741,18 +741,22 @@ router.post('/mfa-verify', authLimiter, sanitizeInput, (req, res) => {
           throw new Error('TOTP_REPLAY_DETECTED');
         }
       } else if (matchedRecoveryId !== null) {
-        const recovRes = db.prepare(`
-          UPDATE user_mfa_recovery_codes 
-          SET used = 1, used_at = datetime('now') 
+        let recovChanges = 0;
+        const uRes = db.prepare(`
+          UPDATE user_mfa_recovery_codes
+          SET used = 1, used_at = datetime('now')
           WHERE id = ? AND user_id = ? AND used = 0
         `).run(matchedRecoveryId, user.id);
-        db.prepare(`
-          UPDATE admin_mfa_recovery_codes 
-          SET used = 1, used_at = datetime('now') 
-          WHERE id = ? AND user_id = ? AND used = 0
-        `).run(matchedRecoveryId, user.id);
+        recovChanges += uRes.changes;
 
-        if (recovRes.changes === 0) {
+        const aRes = db.prepare(`
+          UPDATE admin_mfa_recovery_codes
+          SET used = 1, used_at = datetime('now')
+          WHERE id = ? AND user_id = ? AND used = 0
+        `).run(matchedRecoveryId, user.id);
+        recovChanges += aRes.changes;
+
+        if (recovChanges === 0) {
           throw new Error('RECOVERY_CODE_ALREADY_USED');
         }
         db.prepare("UPDATE users SET last_login = datetime('now') WHERE id = ?").run(user.id);
