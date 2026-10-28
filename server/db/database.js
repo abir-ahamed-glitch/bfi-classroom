@@ -14,6 +14,7 @@ const { runAdminPermissionsMigration } = require('./migrations/20261023_admin_pe
 const { runPrivilegedSafeguardsMigration } = require('./migrations/20261024_privileged_safeguards.cjs');
 const { runMfaSingleUseChallengesMigration } = require('./migrations/20261024_mfa_single_use_challenges.cjs');
 const { runAdminAccountabilityMigration } = require('./migrations/20261025_admin_accountability.cjs');
+const { runAdminArchivingAndResetMigration } = require('./migrations/20261028_admin_archiving_and_reset.cjs');
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1500,6 +1501,9 @@ export function initializeDatabase() {
 
     // Run Admin Accountability & Operational Audit Ledger migration
     runAdminAccountabilityMigration(db);
+
+    // Run Admin Archiving, Email Verification & Password Reset migration
+    runAdminArchivingAndResetMigration(db);
 
     console.log('✅ Course Maker tables and columns verified');
   } catch (err) {

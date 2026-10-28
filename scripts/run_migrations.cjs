@@ -33,6 +33,7 @@ const { runAdminPermissionsMigration } = require(path.join(migrationsDir, '20261
 const { runPrivilegedSafeguardsMigration } = require(path.join(migrationsDir, '20261024_privileged_safeguards.cjs'));
 const { runMfaSingleUseChallengesMigration } = require(path.join(migrationsDir, '20261024_mfa_single_use_challenges.cjs'));
 const { runAdminAccountabilityMigration } = require(path.join(migrationsDir, '20261025_admin_accountability.cjs'));
+const { runAdminArchivingAndResetMigration } = require(path.join(migrationsDir, '20261028_admin_archiving_and_reset.cjs'));
 
 const MIGRATIONS = [
   { name: '20261023_super_admin', runner: runSuperAdminMigration },
@@ -40,6 +41,7 @@ const MIGRATIONS = [
   { name: '20261024_privileged_safeguards', runner: runPrivilegedSafeguardsMigration },
   { name: '20261024_mfa_single_use_challenges', runner: runMfaSingleUseChallengesMigration },
   { name: '20261025_admin_accountability', runner: runAdminAccountabilityMigration },
+  { name: '20261028_admin_archiving_and_reset', runner: runAdminArchivingAndResetMigration },
 ];
 
 function resolveDatabasePath() {
@@ -80,7 +82,19 @@ function assertSchemaIntegrity(db) {
     'permissions_version',
     'pending_two_factor_secret',
     'last_totp_timestamp',
-    'created_by_admin_id'
+    'created_by_admin_id',
+    'archived_at',
+    'archived_by_admin_id',
+    'archive_reason',
+    'restored_at',
+    'restored_by_admin_id',
+    'restore_reason',
+    'email_verified_at',
+    'verified_email',
+    'password_reset_pending',
+    'password_reset_requested_at',
+    'password_reset_requested_by',
+    'account_version'
   ];
   for (const col of requiredUserCols) {
     if (!userCols.includes(col)) {
@@ -131,6 +145,20 @@ function assertSchemaIntegrity(db) {
   const challengesExists = db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='mfa_login_challenges'`).get();
   if (!challengesExists) {
     throw new Error('Assertion failed: table mfa_login_challenges does not exist.');
+  }
+
+  // 8B. Verify email_verification_challenges table
+  const emailChallengesExists = db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='email_verification_challenges'`).get();
+  if (!emailChallengesExists) {
+    throw new Error('Assertion failed: table email_verification_challenges does not exist.');
+  }
+
+  // 8C. Verify password_reset_tokens upgraded columns
+  const resetTokenCols = db.prepare(`PRAGMA table_info(password_reset_tokens)`).all().map(c => c.name);
+  for (const col of ['purpose', 'token_version', 'created_by_admin_id']) {
+    if (!resetTokenCols.includes(col)) {
+      throw new Error(`Assertion failed: column password_reset_tokens.${col} does not exist.`);
+    }
   }
 
   // 9. Foreign key check
