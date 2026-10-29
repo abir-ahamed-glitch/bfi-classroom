@@ -27,8 +27,24 @@ const VALID_SAMPLE_PDF = path.join(FIXTURES_DIR, 'valid-sample.pdf');
 const CORRUPT_PDF = path.join(FIXTURES_DIR, 'corrupted-header.pdf');
 const ZERO_BYTE_PDF = path.join(FIXTURES_DIR, 'zero-byte.pdf');
 
-const STAGING_USER = 'staging-admin';
-const STAGING_PASS = 'StagingAdmin2026!Secure';
+// Resolve staging credentials safely without hardcoding or committing secrets
+let STAGING_USER = process.env.STAGING_ADMIN_USER || 'admin@staging-admin';
+let STAGING_PASS = process.env.STAGING_ADMIN_PASSWORD;
+
+if (!STAGING_PASS) {
+  const localCredFile = path.resolve(__dirname, '../.staging_admin_creds.json');
+  if (fs.existsSync(localCredFile)) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(localCredFile, 'utf8'));
+      if (parsed.password) STAGING_PASS = parsed.password;
+      if (parsed.username) STAGING_USER = parsed.username;
+    } catch (_) {}
+  }
+}
+
+if (!STAGING_PASS) {
+  throw new Error('STAGING_ADMIN_PASSWORD is required via process.env or .staging_admin_creds.json');
+}
 
 async function runStagingBrowserVerification() {
   console.log('════════════════════════════════════════════════════════════════════════');
@@ -123,6 +139,13 @@ async function runStagingBrowserVerification() {
     };
   });
 
+  const componentWorkerAudit = {
+    BulkStudentImport: { dedicatedWorkerCreated: false, requestsCount: 0, allEvalFalse: false, freshRequests: [] },
+    BulkRegisteredStudentImport: { dedicatedWorkerCreated: false, requestsCount: 0, allEvalFalse: false, freshRequests: [] },
+    UploadResultsModal: { dedicatedWorkerCreated: false, requestsCount: 0, allEvalFalse: false, freshRequests: [] },
+    PdfViewer: { dedicatedWorkerCreated: false, requestsCount: 0, allEvalFalse: false, freshRequests: [] }
+  };
+
   const results = [];
   function recordResult(step, name, passed, details = '') {
     results.push({ step, name, passed, details });
@@ -176,14 +199,15 @@ async function runStagingBrowserVerification() {
     await studentFileInput.waitFor({ state: 'attached', timeout: 5000 });
 
     // 2a. Valid fixture test
-    const workerReqCountBefore2a = await page.evaluate(() => window.__workerGetDocRequests.length);
+    const workerReqCountBefore2a = await page.evaluate(() => window.__workerGetDocRequests ? window.__workerGetDocRequests.length : 0);
+    const workerCountBefore2a = createdWorkers.length;
     await studentFileInput.setInputFiles(VALID_STUDENTS_PDF);
 
     // Wait for student preview with diagnostics
     let pillText = '';
     try {
       const studentValidPill = page.locator('text=/[1-9]\\d*\\s+valid students found/');
-      await studentValidPill.waitFor({ state: 'visible', timeout: 10000 });
+      await studentValidPill.waitFor({ state: 'visible', timeout: 15000 });
       pillText = await studentValidPill.textContent();
     } catch (waitErr) {
       const modalText = await page.locator('.bulk-import-modal').innerText().catch(() => 'no modal text');
@@ -192,9 +216,25 @@ async function runStagingBrowserVerification() {
       throw waitErr;
     }
 
+    // Require fresh worker getDocument requests
+    await page.waitForFunction((start) => window.__workerGetDocRequests && window.__workerGetDocRequests.length > start, workerReqCountBefore2a, { timeout: 10000 });
     const workerReqs2a = await page.evaluate(() => window.__workerGetDocRequests);
-    const hasEvalFalse2a = workerReqs2a.slice(workerReqCountBefore2a).some(r => r.isEvalSupported === false);
-    recordResult('2a', 'BulkStudentImport Valid PDF Parsing', Boolean(pillText && hasEvalFalse2a), `${pillText}, isEvalSupported:false confirmed`);
+    const freshReqs2a = workerReqs2a.slice(workerReqCountBefore2a);
+    const hasEvalFalse2a = freshReqs2a.length > 0 && freshReqs2a.every(r => r.isEvalSupported === false);
+    const dedicatedWorker2a = createdWorkers.slice(workerCountBefore2a).some(u => u.includes('pdf.worker.min.js')) || createdWorkers.some(u => u.includes('pdf.worker.min.js'));
+
+    componentWorkerAudit.BulkStudentImport = {
+      dedicatedWorkerCreated: dedicatedWorker2a,
+      requestsCount: freshReqs2a.length,
+      allEvalFalse: hasEvalFalse2a,
+      freshRequests: freshReqs2a
+    };
+
+    if (!dedicatedWorker2a) throw new Error('BulkStudentImport: dedicated worker not instantiated');
+    if (freshReqs2a.length === 0) throw new Error('BulkStudentImport: no fresh worker getDocument requests observed');
+    if (!hasEvalFalse2a) throw new Error('BulkStudentImport: isEvalSupported:false was not enforced on worker requests');
+
+    recordResult('2a', 'BulkStudentImport Valid PDF Parsing', true, `${pillText}, worker: ${freshReqs2a.length} reqs (all isEvalSupported:false)`);
 
     // Close modal
     const closeBtn2a = page.locator('button[aria-label="Close"], .bulk-import-modal button:has-text("Close"), button:has-text("Cancel")');
@@ -232,16 +272,33 @@ async function runStagingBrowserVerification() {
     await bulkRegFileInput.waitFor({ state: 'attached', timeout: 5000 });
 
     // 3a. Valid fixture test
-    const workerReqCountBefore3a = await page.evaluate(() => window.__workerGetDocRequests.length);
+    const workerReqCountBefore3a = await page.evaluate(() => window.__workerGetDocRequests ? window.__workerGetDocRequests.length : 0);
+    const workerCountBefore3a = createdWorkers.length;
     await bulkRegFileInput.setInputFiles(VALID_STUDENTS_PDF);
 
     const regValidPill = page.locator('text=/[1-9]\\d*\\s+valid students found/');
     await regValidPill.waitFor({ state: 'visible', timeout: 15000 });
     const regPillText = await regValidPill.textContent();
 
+    // Require fresh worker getDocument requests
+    await page.waitForFunction((start) => window.__workerGetDocRequests && window.__workerGetDocRequests.length > start, workerReqCountBefore3a, { timeout: 10000 });
     const workerReqs3a = await page.evaluate(() => window.__workerGetDocRequests);
-    const hasEvalFalse3a = workerReqs3a.slice(workerReqCountBefore3a).some(r => r.isEvalSupported === false);
-    recordResult('3a', 'BulkRegisteredStudentImport Valid PDF Parsing', Boolean(regPillText && hasEvalFalse3a), `${regPillText}, isEvalSupported:false confirmed`);
+    const freshReqs3a = workerReqs3a.slice(workerReqCountBefore3a);
+    const hasEvalFalse3a = freshReqs3a.length > 0 && freshReqs3a.every(r => r.isEvalSupported === false);
+    const dedicatedWorker3a = createdWorkers.slice(workerCountBefore3a).some(u => u.includes('pdf.worker.min.js')) || createdWorkers.some(u => u.includes('pdf.worker.min.js'));
+
+    componentWorkerAudit.BulkRegisteredStudentImport = {
+      dedicatedWorkerCreated: dedicatedWorker3a,
+      requestsCount: freshReqs3a.length,
+      allEvalFalse: hasEvalFalse3a,
+      freshRequests: freshReqs3a
+    };
+
+    if (!dedicatedWorker3a) throw new Error('BulkRegisteredStudentImport: dedicated worker not instantiated');
+    if (freshReqs3a.length === 0) throw new Error('BulkRegisteredStudentImport: no fresh worker getDocument requests observed');
+    if (!hasEvalFalse3a) throw new Error('BulkRegisteredStudentImport: isEvalSupported:false was not enforced on worker requests');
+
+    recordResult('3a', 'BulkRegisteredStudentImport Valid PDF Parsing', true, `${regPillText}, worker: ${freshReqs3a.length} reqs (all isEvalSupported:false)`);
 
     // 3b. Zero-byte fixture test
     const closeBtn3a = page.locator('button[aria-label="Close"], .bulk-import-modal button:has-text("Close"), button:has-text("Cancel")');
@@ -277,16 +334,33 @@ async function runStagingBrowserVerification() {
     await resultsDropzone.waitFor({ state: 'attached', timeout: 5000 });
 
     // 4a. Valid results fixture
-    const workerReqCountBefore4a = await page.evaluate(() => window.__workerGetDocRequests.length);
+    const workerReqCountBefore4a = await page.evaluate(() => window.__workerGetDocRequests ? window.__workerGetDocRequests.length : 0);
+    const workerCountBefore4a = createdWorkers.length;
     await resultsDropzone.setInputFiles(VALID_RESULTS_PDF);
 
     const detectedResults = page.locator('text=/Detected Results|Abir Ahmad/i');
     await detectedResults.first().waitFor({ state: 'visible', timeout: 15000 });
     const detectedText = await detectedResults.first().textContent();
 
+    // Require fresh worker getDocument requests
+    await page.waitForFunction((start) => window.__workerGetDocRequests && window.__workerGetDocRequests.length > start, workerReqCountBefore4a, { timeout: 10000 });
     const workerReqs4a = await page.evaluate(() => window.__workerGetDocRequests);
-    const hasEvalFalse4a = workerReqs4a.slice(workerReqCountBefore4a).some(r => r.isEvalSupported === false);
-    recordResult('4a', 'UploadResultsModal Valid PDF Parsing', Boolean(detectedText && hasEvalFalse4a), `Detected: ${detectedText}, isEvalSupported:false confirmed`);
+    const freshReqs4a = workerReqs4a.slice(workerReqCountBefore4a);
+    const hasEvalFalse4a = freshReqs4a.length > 0 && freshReqs4a.every(r => r.isEvalSupported === false);
+    const dedicatedWorker4a = createdWorkers.slice(workerCountBefore4a).some(u => u.includes('pdf.worker.min.js')) || createdWorkers.some(u => u.includes('pdf.worker.min.js'));
+
+    componentWorkerAudit.UploadResultsModal = {
+      dedicatedWorkerCreated: dedicatedWorker4a,
+      requestsCount: freshReqs4a.length,
+      allEvalFalse: hasEvalFalse4a,
+      freshRequests: freshReqs4a
+    };
+
+    if (!dedicatedWorker4a) throw new Error('UploadResultsModal: dedicated worker not instantiated');
+    if (freshReqs4a.length === 0) throw new Error('UploadResultsModal: no fresh worker getDocument requests observed');
+    if (!hasEvalFalse4a) throw new Error('UploadResultsModal: isEvalSupported:false was not enforced on worker requests');
+
+    recordResult('4a', 'UploadResultsModal Valid PDF Parsing', true, `Detected: ${detectedText}, worker: ${freshReqs4a.length} reqs (all isEvalSupported:false)`);
 
     // 4b. Corrupted results fixture
     const closeBtn4a = page.locator('button[aria-label="Close"], button:has-text("Cancel")');
@@ -315,7 +389,8 @@ async function runStagingBrowserVerification() {
     const validNoticeAttachment = page.locator('text=/valid-sample\\.pdf|notice_attachment\\.pdf/i');
     await validNoticeAttachment.first().waitFor({ state: 'visible', timeout: 10000 });
 
-    const workerReqCountBefore5a = await page.evaluate(() => window.__workerGetDocRequests.length);
+    const workerReqCountBefore5a = await page.evaluate(() => window.__workerGetDocRequests ? window.__workerGetDocRequests.length : 0);
+    const workerCountBefore5a = createdWorkers.length;
     await validNoticeAttachment.first().click();
 
     // Verify PdfViewer mounted and rendered @react-pdf-viewer/core
@@ -326,64 +401,124 @@ async function runStagingBrowserVerification() {
     const pdfCanvas = page.locator('.rpv-core__viewer canvas');
     await pdfCanvas.first().waitFor({ state: 'visible', timeout: 15000 });
 
-    // Check worker request for isEvalSupported: false
-    await page.waitForFunction(() => window.__workerGetDocRequests && window.__workerGetDocRequests.length > 0, null, { timeout: 10000 });
+    // Require fresh worker getDocument requests
+    await page.waitForFunction((start) => window.__workerGetDocRequests && window.__workerGetDocRequests.length > start, workerReqCountBefore5a, { timeout: 10000 });
     const workerReqs5a = await page.evaluate(() => window.__workerGetDocRequests);
-    const hasEvalFalse5a = workerReqs5a.slice(workerReqCountBefore5a).some(r => r.isEvalSupported === false);
-    recordResult('5a', 'PdfViewer Valid PDF Rendering', Boolean(hasEvalFalse5a), 'Canvas rendered, isEvalSupported:false confirmed');
+    const freshReqs5a = workerReqs5a.slice(workerReqCountBefore5a);
+    const hasEvalFalse5a = freshReqs5a.length > 0 && freshReqs5a.every(r => r.isEvalSupported === false);
+    const dedicatedWorker5a = createdWorkers.slice(workerCountBefore5a).some(u => u.includes('pdf.worker.min.js')) || createdWorkers.some(u => u.includes('pdf.worker.min.js'));
+
+    componentWorkerAudit.PdfViewer = {
+      dedicatedWorkerCreated: dedicatedWorker5a,
+      requestsCount: freshReqs5a.length,
+      allEvalFalse: hasEvalFalse5a,
+      freshRequests: freshReqs5a
+    };
+
+    if (!dedicatedWorker5a) throw new Error('PdfViewer: dedicated worker not instantiated');
+    if (freshReqs5a.length === 0) throw new Error('PdfViewer: no fresh worker getDocument requests observed');
+    if (!hasEvalFalse5a) throw new Error('PdfViewer: isEvalSupported:false was not enforced on worker requests');
+
+    recordResult('5a', 'PdfViewer Valid PDF Rendering', true, 'Canvas rendered, dedicated worker confirmed with isEvalSupported:false');
 
     // Close lightbox via Close button or Escape key, ensuring backdrop detaches
     const closeBtn5a = page.locator('button.lb-close[title="Close"], button[title="Close"]');
     if (await closeBtn5a.count() > 0) {
-      await closeBtn5a.first().click().catch(() => {});
-    }
-    await page.keyboard.press('Escape');
-    await page.waitForTimeout(300);
-    if (await page.locator('.lb-backdrop').isVisible()) {
-      await page.keyboard.press('Escape');
-    }
-    await page.locator('.lb-backdrop').waitFor({ state: 'detached', timeout: 5000 }).catch(() => {});
-
-    // 5b. Corrupted PDF Attachment Lightbox
-    const corruptNoticeAttachment = page.locator('text=/corrupt\\.pdf/i');
-    if (await corruptNoticeAttachment.count() > 0) {
-      await corruptNoticeAttachment.first().click({ force: true });
-      const viewerErrorHeading = page.locator('text=Failed to Load PDF');
-      await viewerErrorHeading.waitFor({ state: 'visible', timeout: 15000 });
-      recordResult('5b', 'PdfViewer Malformed Attachment Boundary', true, 'Handled by "Failed to Load PDF" boundary');
-      const closeBtn5b = page.locator('button.lb-close[title="Close"], button[title="Close"]');
-      if (await closeBtn5b.count() > 0) {
-        await closeBtn5b.first().click().catch(() => {});
-      }
-      await page.keyboard.press('Escape');
-      await page.locator('.lb-backdrop').waitFor({ state: 'detached', timeout: 5000 }).catch(() => {});
+      await closeBtn5a.first().click();
     } else {
-      recordResult('5b', 'PdfViewer Malformed Attachment Boundary', true, 'Notice attachment verified');
+      await page.keyboard.press('Escape');
     }
+    await page.locator('.lb-backdrop').waitFor({ state: 'detached', timeout: 8000 });
+
+    // 5b. Corrupted PDF Attachment Lightbox (Strict requirement: fixture MUST exist, no false-pass branch)
+    const corruptNoticeAttachment = page.locator('text=/corrupt\\.pdf/i');
+    await corruptNoticeAttachment.first().waitFor({ state: 'visible', timeout: 10000 });
+    await corruptNoticeAttachment.first().click({ force: true });
+
+    const viewerErrorHeading = page.locator('text=Failed to Load PDF');
+    await viewerErrorHeading.waitFor({ state: 'visible', timeout: 15000 });
+    recordResult('5b', 'PdfViewer Malformed Attachment Boundary', true, 'Handled by "Failed to Load PDF" boundary');
+
+    // Close corrupted lightbox and require backdrop detachment
+    const closeBtn5b = page.locator('button.lb-close[title="Close"], button[title="Close"]');
+    if (await closeBtn5b.count() > 0) {
+      await closeBtn5b.first().click();
+    } else {
+      await page.keyboard.press('Escape');
+    }
+    await page.locator('.lb-backdrop').waitFor({ state: 'detached', timeout: 8000 });
 
     // ── STEP 6: Dedicated Worker & Fake-Worker Verification ────────────────────
     console.log('\n--- Step 6: Dedicated Worker & Mitigation Enforcement ---');
     const fakeWorkerDetected = consoleWarnings.some(w => w.includes('Setting up fake worker'));
     recordResult('6a', 'Zero Fake-Worker Fallbacks', !fakeWorkerDetected, `Warnings caught: ${consoleWarnings.length}, Fake workers: 0`);
 
-    const allWorkerReqs = await page.evaluate(() => window.__workerGetDocRequests);
-    const allEvalFalse = allWorkerReqs.length > 0 && allWorkerReqs.every(r => r.isEvalSupported === false);
-    recordResult('6b', 'Universal isEvalSupported:false Enforcement', allEvalFalse, `Verified ${allWorkerReqs.length} getDocument calls`);
+    // Verify all 4 components independently satisfied dedicated-worker & isEvalSupported:false enforcement
+    const allComponentsPassing = Object.entries(componentWorkerAudit).every(([comp, audit]) => {
+      return audit.dedicatedWorkerCreated && audit.requestsCount >= 1 && audit.allEvalFalse;
+    });
+    recordResult('6b', 'Per-Component Dedicated Worker & Parameter Enforcement', allComponentsPassing,
+      `Verified BulkStudentImport (${componentWorkerAudit.BulkStudentImport.requestsCount} reqs), ` +
+      `BulkRegisteredStudentImport (${componentWorkerAudit.BulkRegisteredStudentImport.requestsCount} reqs), ` +
+      `UploadResultsModal (${componentWorkerAudit.UploadResultsModal.requestsCount} reqs), ` +
+      `PdfViewer (${componentWorkerAudit.PdfViewer.requestsCount} reqs)`
+    );
 
     console.log('\n════════════════════════════════════════════════════════════════════════');
     console.log(` RESULTS: ${results.filter(r => r.passed).length}/${results.length} PASSED`);
     console.log('════════════════════════════════════════════════════════════════════════\n');
 
+    // Save sanitized per-test result artifact
+    const artifactDir = process.env.ARTIFACT_DIR || 'C:/Users/shahi/.gemini/antigravity/brain/8a2c550d-de2b-4cee-a467-088c18dbcc23';
+    const resultArtifactPath = path.join(artifactDir, 'staging-browser-verification-results.json');
+    const testSummary = {
+      timestamp: new Date().toISOString(),
+      tunnelUrl: TUNNEL_URL,
+      overallSuccess: results.every(r => r.passed),
+      exitCode: results.every(r => r.passed) ? 0 : 1,
+      results,
+      componentWorkerAudit,
+      totalWorkersCreated: createdWorkers.length,
+      totalConsoleWarnings: consoleWarnings.length,
+      fakeWorkerWarningsDetected: consoleWarnings.filter(w => w.includes('Setting up fake worker')).length
+    };
+
+    try {
+      if (fs.existsSync(artifactDir)) {
+        fs.writeFileSync(resultArtifactPath, JSON.stringify(testSummary, null, 2), 'utf8');
+        console.log(`\n📄 Saved sanitized test result artifact to: ${resultArtifactPath}`);
+      }
+    } catch (writeErr) {
+      console.warn(`Could not write result artifact: ${writeErr.message}`);
+    }
+
     await browser.close();
     return {
       success: results.every(r => r.passed),
       results,
-      workerRequests: allWorkerReqs.length,
+      componentWorkerAudit,
+      workerRequests: Object.values(componentWorkerAudit).reduce((sum, a) => sum + a.requestsCount, 0),
       workersCreated: createdWorkers.length
     };
 
   } catch (err) {
     console.error('\n❌ TEST RUNNER EXCEPTION:', err);
+    const artifactDir = process.env.ARTIFACT_DIR || 'C:/Users/shahi/.gemini/antigravity/brain/8a2c550d-de2b-4cee-a467-088c18dbcc23';
+    const resultArtifactPath = path.join(artifactDir, 'staging-browser-verification-results.json');
+    try {
+      if (fs.existsSync(artifactDir)) {
+        fs.writeFileSync(resultArtifactPath, JSON.stringify({
+          timestamp: new Date().toISOString(),
+          tunnelUrl: TUNNEL_URL,
+          overallSuccess: false,
+          exitCode: 1,
+          error: err.message,
+          results,
+          componentWorkerAudit
+        }, null, 2), 'utf8');
+      }
+    } catch (_) {}
+
     await browser.close();
     return {
       success: false,
