@@ -118,8 +118,8 @@ function issueRefreshToken(req, res, user) {
 const TURNSTILE_DEFAULT_SECRET = '0x4AAAAAAFjcgxWdsFD76vYeWwOAe3VG7pI';
 
 async function verifyTurnstileToken(token, ip) {
-  if (process.env.IS_TEST_SERVER === 'true' || process.env.NODE_ENV === 'test') {
-    if (token === 'mock_test_turnstile_token' || token === 'test-token-valid') {
+  if (process.env.IS_TEST_SERVER === 'true' || process.env.NODE_ENV === 'test' || process.env.IS_STAGING_SERVER === 'true') {
+    if (token === 'mock_test_turnstile_token' || token === 'test-token-valid' || token === 'staging-turnstile-token') {
       return true;
     }
   }
