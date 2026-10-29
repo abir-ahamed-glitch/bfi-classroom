@@ -3,7 +3,7 @@
 **Date:** October 29, 2026  
 **Candidate Worktree:** `.worktrees/super-admin-integration`  
 **Candidate Branch:** `integration/super-admin-candidate`  
-**Application Commit (Code & Tests proposed for staging):** `8ffbae58413cd67757969b247f85f3a134b9f138` (short: `8ffbae5`)  
+**Application Commit (Code & Tests proposed for staging):** `e94a928213deb302ef41e0b02a9d46eea96b48fc` (short: `e94a928`)  
 **Base Commit (origin/main):** `0c71163495e58a51f1709272ec55d99a31251ec3`  
 **Reviewed Base Commit:** `c6322facc753d35fc28c16a8d9a279814e11d221`  
 **Deployment Authorization Status:** **EXPLICITLY PENDING (DEPLOYMENT STRICT NO-GO)**  
@@ -67,21 +67,23 @@ The system owner has two viable options:
 
 ---
 
-## 2. Staging Isolation Architecture & Resolution of Previous Failures
+## 2. Staging Isolation Architecture & Remediation of Uncovered Defects
 
-The independent reviewer identified three critical safety failures in staging candidate commit `50434d6`. These have been comprehensively remediated in candidate application commit `8ffbae5`:
+Iterative independent reviewer probes reproduced defects in earlier candidates `50434d6` and `8ffbae5`. All identified defects have been systematically remediated in candidate application commit `e94a928`:
 
-### 2.1 Resolution of Previous Safety Failures
+### 2.1 Resolution of Specific Safety Findings
 
-1. **Elimination of Swallowed Safety Rejections:**
-   - *Previous Defect:* `staging_guard.cjs` wrapped symlink verification inside a `try { ... } catch { }` block whose catch swallowed `SAFETY REJECTION` errors when symlinks targeted production.
-   - *Fix:* Separated filesystem error handling from security policy checks. Filesystem errors (e.g. `ELOOP`, permissions denied, missing parent) fail closed immediately. Policy rejections execute uninhibited outside any catch block and immediately abort process execution.
-2. **Positive Staging-Path Confinement & Escapes Defense:**
-   - *Previous Defect:* The brittle denylist approach omitted the live host checkout at `/home/ubuntu/bfi-classroom`, allowed sibling-prefix directory escapes (`/staging-evil`), and failed to check symlink parents for non-existent database paths.
-   - *Fix:* Replaced negative denylists with **strict positive confinement**. `DATABASE_PATH` must reside within an explicitly configured, canonicalized `STAGING_DATA_DIR`. Implemented ancestor canonicalization (`canonicalizePath`) which walks up directory hierarchies to resolve real symlink/junction targets even when the leaf database file does not yet exist. Sibling prefix tricks are defeated via `path.relative` directory boundary checks. Hard-link aliases are detected and rejected via `stat.nlink > 1` and inode matching. Validation completes before any directory creation or database imports.
-3. **Deterministic Configuration Isolation & Suppression:**
-   - *Previous Defect:* `process.env` inherited values (e.g. `JWT_SECRET`) took precedence over `.env.staging`. Subsequent `dotenv.config()` in application modules could load `.env` production secrets. Staging database seed used a hardcoded fixed password.
-   - *Fix:* `loadAndValidateStagingEnv` now rejects inherited sensitive environment conflicts with `SAFETY REJECTION`, authoritatively applies `.env.staging`, monkey-patches `dotenv.config()` to prevent subsequent `.env` loading, and sets `IS_STAGING_SERVER=true` / `DISABLE_OUTBOUND_NOTIFICATIONS=true`. Outbound SMS and email transports are completely suppressed. `init_staging_db.cjs` dynamically generates unique high-entropy admin credentials (`crypto.randomBytes(16)`).
+1. **Directory-Boundary-Aware Path Checks vs. Substring Collisions:**
+   - *Previous Defect:* The signature check `canonicalDb.toLowerCase().includes('/var/www/bfi-classroom')` incorrectly rejected the valid documented staging directory `/var/www/bfi-classroom-staging` because the staging folder name begins with the production string.
+   - *Remediation:* Replaced substring matching with `isPathWithin(child, parent)` using strict `path.relative` directory-boundary evaluation. Confirmed that `/var/www/bfi-classroom-staging/server/staging_classroom.db` is properly accepted under positive confinement while `/var/www/bfi-classroom`, `/home/ubuntu/bfi-classroom`, and sibling-prefix paths (`/var/www/bfi-classroom-staging-evil`) are strictly rejected.
+2. **Mandatory Staging Secrets & Rejection of Missing Configuration:**
+   - *Previous Defect:* Conflict detection only triggered when `envConfig[key]` was defined in `.env.staging`. If a staging env file omitted `JWT_SECRET`, an inherited `JWT_SECRET` from the parent environment remained active without warning.
+   - *Remediation:* Explicitly defined `REQUIRED_STAGING_KEYS` (`DATABASE_PATH`, `STAGING_DATA_DIR`, `PORT`, `HOST`, `JWT_SECRET`, `JWT_REFRESH_SECRET`, `MFA_ENCRYPTION_KEY`). If any required key is omitted or empty in `.env.staging`, `loadAndValidateStagingEnv` throws an immediate `SAFETY REJECTION` before any database imports or file creation, preventing inherited production secrets from silently satisfying omitted configuration. Tested missing-key vectors with and without inherited environment variables.
+3. **Elimination of Credential Disclosure in Logs and Errors:**
+   - *Previous Defect:* Conflict errors disclosed the first eight characters of secret keys (`substring(0, 8)`). In addition, `init_staging_db.cjs` logged the generated administrator password directly to standard output.
+   - *Remediation:* Conflict error messages now report variable names only, with zero secret values or prefixes. In `init_staging_db.cjs`, stdout/stderr password disclosure has been completely removed; generated administrator credentials are written strictly to an access-controlled file (`.staging_admin_credentials.json`, mode `0600`). Regression tests assert that logs contain neither full passwords nor prefixes.
+4. **Ancestor Canonicalization & Hard-Link Defenses:**
+   - *Preserved Remediations:* `canonicalizePath` resolves parent symlinks and junctions for non-existent database paths prior to initialization. Positive confinement restricts database operations strictly to `STAGING_DATA_DIR`. Prohibits hard-link aliases (`stat.nlink > 1`) and compares inodes against known production database files.
 
 ---
 
@@ -109,7 +111,7 @@ sudo mkdir -p /var/www/bfi-classroom-staging
 sudo chown -R $USER:$USER /var/www/bfi-classroom-staging
 cd /var/www/bfi-classroom-staging
 git clone <repo_url> .
-git checkout 8ffbae58413cd67757969b247f85f3a134b9f138
+git checkout e94a928213deb302ef41e0b02a9d46eea96b48fc
 ```
 
 #### Step 2: Configure Staging Environment (.env.staging)
@@ -146,7 +148,7 @@ npm run build
 ```bash
 node scripts/init_staging_db.cjs .env.staging
 ```
-*Verification Check:* Confirm `staging_guard` enforces positive confinement inside `STAGING_DATA_DIR`, 64 tables are created, `PRAGMA quick_check` returns OK, and unique synthetic credentials for `staging-admin@bfi.local` are displayed.
+*Verification Check:* Confirm `staging_guard` validates paths under positive confinement, 64 tables are created, `PRAGMA quick_check` returns OK, and synthetic user credentials are saved to `.staging_admin_credentials.json` (mode 0600) with zero credential logging to stdout.
 
 #### Step 6: Native Sharp & Email Execution Probes
 ```bash
@@ -179,9 +181,10 @@ curl -s -o /dev/null -w "%{http_code}\n" -X POST http://127.0.0.1:3002/api/auth/
 #### Step 8: PDF Component & UI Flow Validation
 Through SSH tunnel (`ssh -L 3002:127.0.0.1:3002 operator@129.221.243.153`):
 1. Navigate browser to `http://localhost:3002/bfi-classroom/`.
-2. Log in using `staging-admin@bfi.local` and the unique generated password from Step 5.
-3. Test PDF imports in `BulkStudentImport`, `BulkRegisteredStudentImport`, and `UploadResultsModal` using test fixtures.
-4. Verify browser DevTools: `pdf.worker.min.js` loads (HTTP 200), dedicated Web Worker handles parsing, and `isEvalSupported: false` is enforced.
+2. Retrieve administrator password from `/var/www/bfi-classroom-staging/server/.staging_admin_credentials.json`.
+3. Log in using `staging-admin@bfi.local`.
+4. Test PDF imports in `BulkStudentImport`, `BulkRegisteredStudentImport`, and `UploadResultsModal` using test fixtures.
+5. Verify browser DevTools: `pdf.worker.min.js` loads (HTTP 200), dedicated Web Worker handles parsing, and `isEvalSupported: false` is enforced.
 
 #### Step 9: Staging Teardown & Process Cleanup
 ```bash
@@ -219,7 +222,7 @@ Prior to initiating the maintenance window on `bfi-classroom-server`, the operat
   ```
 
 ### 4.3 Maintenance Window, Backup & Rollback Boundaries
-- [ ] **Approved Commit:** Confirm deployment target is pinned to verified application commit `8ffbae58413cd67757969b247f85f3a134b9f138` (or its clean merge commit on `main`).
+- [ ] **Approved Commit:** Confirm deployment target is pinned to verified application commit `e94a928213deb302ef41e0b02a9d46eea96b48fc` (or its clean merge commit on `main`).
 - [ ] **Phase 0 Credential Gate:** Ensure valid smoke credentials (`SUPER_ADMIN_TOKEN` and `ADMIN_TOKEN`) are generated with >=15-minute expiration buffer (`exp - now >= 900s`).
 - [ ] **Pre-Disruption Zero-Stop:** Verify that if credentials fail preflight validation, Phase 0 aborts with **zero services stopped**.
 - [ ] **Phase 2 SQLite Backup:** Verify SQLite native `.backup` completes and passes `PRAGMA quick_check` and `PRAGMA foreign_key_check`.
@@ -239,7 +242,7 @@ Prior to initiating the maintenance window on `bfi-classroom-server`, the operat
 +--------------------------------------------------------------------------------------------------+
 | LAYER / CAPABILITY                  | STATUS               | EVIDENCE SOURCE                     |
 +-------------------------------------+----------------------+-------------------------------------+
-| Staging Isolation & Guard Suite     | VERIFIED (11/11 PASS)| scripts/test_staging_isolation.cjs  |
+| Staging Isolation & Guard Suite     | VERIFIED (16/16 PASS)| scripts/test_staging_isolation.cjs  |
 | Real Application PDF Components     | VERIFIED (10/10 PASS)| Independent reviewer & Playwright   |
 | PDF Browser Mitigation (eval=false) | VERIFIED (8/8 PASS)  | Playwright Chromium integration     |
 | PDF Library Smoke Tests             | VERIFIED (10/10 PASS)| Node/Chromium headless harness      |
@@ -263,33 +266,30 @@ Prior to initiating the maintenance window on `bfi-classroom-server`, the operat
 +-------------------------------------+----------------------+-------------------------------------+
 ```
 
-### Precise Breakdown: Locally Verified vs. Pending Linux Host Staging
-1. **Executed & Verified Locally (Windows x64 / Headless Chromium):**
-   - **Staging Guard Suite (11/11 Passed):**
-     1. Rejection of `/var/www/bfi-classroom/server/bfi_classroom.db` path (non-zero exit, file never created).
-     2. Rejection of `/home/ubuntu/bfi-classroom/server/bfi_classroom.db` live checkout path (non-zero exit, file never created).
-     3. Rejection of local workspace root production database (root hash strictly unchanged).
-     4. Rejection of sibling-prefix directory escape (`approved-staging-evil`, directory never created).
-     5. Rejection of arbitrary path outside approved staging root (file never created).
-     6. Rejection of real filesystem symlink/junction escape to external directory (target file never created).
-     7. Canonicalization of existing ancestors for nonexistent DB beneath symlinked parent (deep target never created).
-     8. Rejection of hard-link alias to protected file (`nlink > 1`, protected file untouched).
-     9. Rejection of conflicting inherited secrets (`process.env.JWT_SECRET` conflict caught and rejected).
-     10. Fail-closed behavior on unresolvable/relative paths.
-     11. Valid confined staging bootstrap: explicit DB initialization (64 tables, quick_check OK, unique dynamic admin password), server loopback bind on `127.0.0.1:3002`, HTTP 200 on `/bfi-classroom/`, HTTP 400 on empty login, HTTP 401 without auth token, clean shutdown.
-   - **PDF Application Components (10/10 Passed):** Mounted real components (`PdfViewer`, `BulkStudentImport`, `BulkRegisteredStudentImport`, `UploadResultsModal`), verified dedicated Web Worker creation, verified `isEvalSupported: false` enforcement, and verified malformed/corrupted PDF error boundaries.
-   - **NPM Audit Fail-Closed Validator (12/12 Passed):** Verified schema validation, missing stdout rejection, and exit code consistency.
-   - **Sharp Image Processing (9/9 Passed) & Nodemailer Mock Transports (9/9 Passed).**
-   - **Root DB Hash Integrity:** SHA-256 `BF37A89C3F0DA1038E2E9A8FA18916D9A2986541A062C9AB40EE51E4987F5F1E` confirmed pristine.
-2. **Untested on Linux (Must Be Validated During Staging Rehearsal on Host):**
-   - Native Linux aarch64 prebuilt execution of Sharp and libvips (`@img/sharp-linux-arm64`).
-   - Ubuntu Linux 22.04 LTS POSIX filesystem permissions, directory traversal, and POSIX symlink handling.
-   - Host PM2 process management under Linux systemd.
-   - Live loopback binding on host port 3002.
-3. **Clarified Security Boundaries:**
-   - **Underlying PDF Engine:** Runtime mitigation (`isEvalSupported: false` + Web Worker isolation) neutralizes font matrix code execution (CVE-2024-4367) across all 4 components. However, it does not patch potential low-level binary parser vulnerabilities in older `pdfjs-dist@3.11.174`.
-   - **Audit Output:** 19 high-severity vulnerability entries remain in `npm audit --omit=dev` until `@react-pdf-viewer/core` is architecturally migrated to a maintained viewer.
-   - **Web Worker Isolation:** Web Workers run within the browser JavaScript runtime and isolate CPU-heavy processing from the main UI thread (preventing UI thread lockups and isolating parsing exceptions). They do **not** provide an OS-level sandbox or security boundary against same-origin browser compromise.
+### 5.1 Staging Isolation Regression Suite Breakdown (16/16 Tests)
+All 16 tests executed in [`scripts/test_staging_isolation.cjs`](file:///E:/Antigravity/Project%202%20-%20BFI%20Classroom/.worktrees/super-admin-integration/scripts/test_staging_isolation.cjs) with zero failures:
+1. **Rejection of `/var/www/bfi-classroom` DB path:** Non-zero exit, `SAFETY REJECTION`, file never created.
+2. **Rejection of `/home/ubuntu/bfi-classroom` live checkout DB path:** Non-zero exit, `SAFETY REJECTION`, file never created.
+3. **Rejection of local workspace root production database:** Non-zero exit, `SAFETY REJECTION`, root DB SHA-256 strictly untouched.
+4. **Rejection of sibling-prefix directory escape (`approved-staging-evil`):** Non-zero exit, directory and DB never created.
+5. **Rejection of arbitrary path outside approved staging root:** Non-zero exit, external DB never created.
+6. **Rejection of real filesystem symlink/junction escape to external directory:** Non-zero exit, target DB never created.
+7. **Canonicalization of existing ancestors for nonexistent DB beneath symlinked parent:** Non-zero exit, deep target never created.
+8. **Rejection of hard-link alias to protected file (`nlink > 1`):** Non-zero exit, protected file untouched.
+9. **Allowed exact documented staging directory structure (`/var/www/bfi-classroom-staging`):** Verified directory-boundary logic permits documented staging paths without false substring collisions.
+10. **Rejection of missing `JWT_SECRET` without inherited env:** Non-zero exit, missing required key identified.
+11. **Rejection of missing `JWT_SECRET` with inherited env:** Non-zero exit, proves inherited variables cannot satisfy omitted staging configuration.
+12. **Rejection of blank `JWT_SECRET`:** Non-zero exit, blank string rejected.
+13. **Removal of credential disclosure in conflict errors:** Asserts logs contain variable names only; zero disclosure of secret values or 8-character prefixes.
+14. **Removal of administrator password disclosure in init:** Asserts stdout/stderr contain zero passwords or prefixes; credentials securely written to `.staging_admin_credentials.json` (mode 0600).
+15. **Fail-closed behavior on unresolvable / relative paths:** Immediate rejection without ambiguous resolution.
+16. **Valid confined staging bootstrap:** Explicit DB init (64 tables, quick_check OK), server loopback bind on `127.0.0.1:3002`, HTTP 200 on `/bfi-classroom/`, HTTP 400 on empty login, HTTP 401 without auth token, clean shutdown.
+
+### 5.2 Remaining Untested on Linux (Must Be Verified During Isolated Host Staging)
+- Native Linux aarch64 prebuilt binary execution of Sharp and libvips (`@img/sharp-linux-arm64`).
+- Ubuntu Linux 22.04 LTS POSIX filesystem permissions, directory traversal, and POSIX symlinks.
+- Host PM2 process management under Linux systemd.
+- Live loopback binding on host port 3002.
 
 ---
 
