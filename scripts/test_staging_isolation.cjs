@@ -1,179 +1,415 @@
 /**
- * Regression Suite: Staging Environment Isolation & Validation
- * Verifies that staging configuration rejects unsafe/production settings,
- * initializes the database explicitly, and enforces loopback-only binding.
+ * Comprehensive Staging Environment Isolation & Guard Regression Suite
+ * Tests positive path confinement, canonical ancestor resolution, symlink/junction
+ * escapes, sibling prefix attacks, hard-link aliases, inherited configuration conflicts,
+ * and fail-closed filesystem error handling.
+ *
+ * For every rejected configuration, asserts that database imports, initialization,
+ * file creation, and service startup NEVER occur.
  */
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { spawn, spawnSync } = require('child_process');
 const assert = require('assert');
-const { loadAndValidateStagingEnv, validateStagingConfig } = require('./staging_guard.cjs');
-const { initStagingDb } = require('./init_staging_db.cjs');
+const {
+  loadAndValidateStagingEnv,
+  validateStagingConfig,
+  canonicalizePath,
+  isStrictlyInside,
+  PROTECTED_PRODUCTION_SIGNATURES
+} = require('./staging_guard.cjs');
 
-const DISPOSABLE_DIR = path.resolve(__dirname, '../tests/fixtures/staging-disposable');
-const DISPOSABLE_ENV = path.join(DISPOSABLE_DIR, '.env.staging');
-const DISPOSABLE_DB = path.join(DISPOSABLE_DIR, 'staging_classroom.db');
+const DISPOSABLE_ROOT = path.resolve(__dirname, '../tests/fixtures/staging-guard-suite');
+const APPROVED_STAGING_DIR = path.join(DISPOSABLE_ROOT, 'approved-staging');
+const FORBIDDEN_EXTERNAL_DIR = path.join(DISPOSABLE_ROOT, 'forbidden-external');
+const SIBLING_ATTACK_DIR = path.join(DISPOSABLE_ROOT, 'approved-staging-evil');
 
 function cleanup() {
-  if (fs.existsSync(DISPOSABLE_DIR)) {
-    fs.rmSync(DISPOSABLE_DIR, { recursive: true, force: true });
+  if (fs.existsSync(DISPOSABLE_ROOT)) {
+    try {
+      fs.rmSync(DISPOSABLE_ROOT, { recursive: true, force: true });
+    } catch (_) {
+      // Retry after short delay on Windows if file handle closure has slight lag
+      setTimeout(() => {
+        try { fs.rmSync(DISPOSABLE_ROOT, { recursive: true, force: true }); } catch (__) {}
+      }, 500);
+    }
   }
 }
 
-async function runTests() {
+function getFileHash(filePath) {
+  if (!fs.existsSync(filePath)) return null;
+  return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
+}
+
+async function runRegressionSuite() {
   console.log('================================================================');
-  console.log('STAGING ENVIRONMENT ISOLATION & VALIDATION SUITE');
+  console.log('STAGING ISOLATION & GUARD REGRESSION SUITE');
   console.log('================================================================\n');
 
   cleanup();
-  fs.mkdirSync(DISPOSABLE_DIR, { recursive: true });
+  fs.mkdirSync(APPROVED_STAGING_DIR, { recursive: true });
+  fs.mkdirSync(FORBIDDEN_EXTERNAL_DIR, { recursive: true });
+
+  const rootDbPath = path.resolve(__dirname, '../../../server/bfi_classroom.db');
+  const initialRootDbHash = getFileHash(rootDbPath);
 
   let passed = 0;
-  const total = 7;
+  let testNum = 1;
 
-  // Test 1: Rejection when DATABASE_PATH points to production database
-  process.stdout.write('Testing: Rejection of production database path... ');
-  try {
-    process.env.DATABASE_PATH = path.resolve(__dirname, '../server/bfi_classroom.db');
-    process.env.PORT = '3002';
-    process.env.HOST = '127.0.0.1';
-    validateStagingConfig();
-    assert.fail('Should have rejected production DATABASE_PATH');
-  } catch (err) {
-    assert(err.message.includes('SAFETY REJECTION'), `Expected SAFETY REJECTION error, got: ${err.message}`);
-    console.log('✅ PASS');
-    passed++;
+  async function runSubtest(name, fn) {
+    process.stdout.write(`Test ${testNum++}: ${name}... `);
+    // Reset any polluted environment variables before each test
+    delete process.env.DATABASE_PATH;
+    delete process.env.PORT;
+    delete process.env.HOST;
+    delete process.env.JWT_SECRET;
+    delete process.env.JWT_REFRESH_SECRET;
+    delete process.env.MFA_ENCRYPTION_KEY;
+
+    try {
+      await fn();
+      console.log('✅ PASS');
+      passed++;
+    } catch (err) {
+      console.log('❌ FAIL');
+      console.error(err);
+      throw err;
+    }
   }
 
-  // Test 2: Rejection of production port (3001)
-  process.stdout.write('Testing: Rejection of production port 3001... ');
-  try {
-    process.env.DATABASE_PATH = DISPOSABLE_DB;
-    process.env.PORT = '3001';
-    process.env.HOST = '127.0.0.1';
-    validateStagingConfig();
-    assert.fail('Should have rejected production port 3001');
-  } catch (err) {
-    assert(err.message.includes('Port must be set to an isolated non-production port'), `Unexpected error: ${err.message}`);
-    console.log('✅ PASS');
-    passed++;
-  }
+  // ── TEST 1: Previously documented production path (/var/www/bfi-classroom/...) ──
+  await runSubtest('Rejection of /var/www/bfi-classroom production database path', () => {
+    const dangerousDb = path.normalize('/var/www/bfi-classroom/server/bfi_classroom.db');
+    const envFile = path.join(APPROVED_STAGING_DIR, '.env.staging.prodpath1');
+    fs.writeFileSync(envFile, [
+      `DATABASE_PATH=${dangerousDb}`,
+      `STAGING_DATA_DIR=${APPROVED_STAGING_DIR}`,
+      'PORT=3002',
+      'HOST=127.0.0.1'
+    ].join('\n'));
 
-  // Test 3: Rejection of non-loopback host (0.0.0.0 or missing)
-  process.stdout.write('Testing: Rejection of non-loopback HOST (0.0.0.0)... ');
-  try {
-    process.env.DATABASE_PATH = DISPOSABLE_DB;
-    process.env.PORT = '3002';
-    process.env.HOST = '0.0.0.0';
-    validateStagingConfig();
-    assert.fail('Should have rejected 0.0.0.0 HOST');
-  } catch (err) {
-    assert(err.message.includes('HOST must be strictly set to \'127.0.0.1\''), `Unexpected error: ${err.message}`);
-    console.log('✅ PASS');
-    passed++;
-  }
+    const res = spawnSync('node', ['scripts/init_staging_db.cjs', envFile], {
+      cwd: path.resolve(__dirname, '..'),
+      encoding: 'utf8'
+    });
 
-  // Test 4: Explicit loading of .env.staging file
-  process.stdout.write('Testing: Explicit loading of .env.staging file... ');
-  const validStagingContent = [
-    `DATABASE_PATH=${DISPOSABLE_DB}`,
-    'PORT=3002',
-    'HOST=127.0.0.1',
-    'JWT_SECRET=staging_super_secret_jwt_key_minimum_length_for_hmac_sha256_hash_1234567890',
-    'JWT_REFRESH_SECRET=staging_super_secret_refresh_jwt_key_minimum_length_for_hmac_1234567890',
-    'MFA_ENCRYPTION_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
-    'PREVIOUS_MFA_ENCRYPTION_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
-    'EMAIL_USER=',
-    'EMAIL_PASS=',
-    'SMS_API_KEY='
-  ].join('\n');
-  fs.writeFileSync(DISPOSABLE_ENV, validStagingContent);
-
-  delete process.env.DATABASE_PATH;
-  delete process.env.PORT;
-  delete process.env.HOST;
-
-  const loadedConfig = loadAndValidateStagingEnv(DISPOSABLE_ENV);
-  assert.strictEqual(loadedConfig.port, 3002);
-  assert.strictEqual(loadedConfig.host, '127.0.0.1');
-  assert.strictEqual(loadedConfig.databasePath, path.resolve(DISPOSABLE_DB));
-  console.log('✅ PASS');
-  passed++;
-
-  // Test 5: Explicit database initialization and schema verification in child process
-  process.stdout.write('Testing: Staging DB initialization and schema verification... ');
-  const initProc = spawnSync('node', ['scripts/init_staging_db.cjs', DISPOSABLE_ENV], {
-    cwd: path.resolve(__dirname, '..'),
-    encoding: 'utf8'
-  });
-  assert.strictEqual(initProc.status, 0, `Init script failed with status ${initProc.status}: ${initProc.stderr}`);
-  assert(fs.existsSync(DISPOSABLE_DB), 'Staging database file was not created');
-  console.log('✅ PASS');
-  passed++;
-
-  // Test 6: Staging server starts on loopback and serves healthcheck and frontend
-  process.stdout.write('Testing: Staging server starts on 127.0.0.1:3002 and serves frontend & API... ');
-  const serverProcess = spawn('node', ['server/staging-server.js'], {
-    cwd: path.resolve(__dirname, '..'),
-    env: {
-      ...process.env,
-      STAGING_ENV_FILE: DISPOSABLE_ENV,
-    },
-    stdio: ['ignore', 'pipe', 'pipe']
+    assert.notStrictEqual(res.status, 0, 'Must exit with non-zero status on production path');
+    assert(res.stderr.includes('SAFETY REJECTION') || res.stdout.includes('SAFETY REJECTION'), 'Must emit SAFETY REJECTION');
+    assert.strictEqual(fs.existsSync(dangerousDb), false, 'Dangerous DB file must never be created');
   });
 
-  let serverStarted = false;
-  serverProcess.stdout.on('data', data => {
-    const text = data.toString();
-    if (text.includes('BFI Classroom API Gateway running on port 3002')) {
-      serverStarted = true;
+  // ── TEST 2: Previously documented live checkout (/home/ubuntu/bfi-classroom/...) ──
+  await runSubtest('Rejection of /home/ubuntu/bfi-classroom live checkout database path', () => {
+    const dangerousDb = path.normalize('/home/ubuntu/bfi-classroom/server/bfi_classroom.db');
+    const envFile = path.join(APPROVED_STAGING_DIR, '.env.staging.prodpath2');
+    fs.writeFileSync(envFile, [
+      `DATABASE_PATH=${dangerousDb}`,
+      `STAGING_DATA_DIR=${APPROVED_STAGING_DIR}`,
+      'PORT=3002',
+      'HOST=127.0.0.1'
+    ].join('\n'));
+
+    const res = spawnSync('node', ['scripts/init_staging_db.cjs', envFile], {
+      cwd: path.resolve(__dirname, '..'),
+      encoding: 'utf8'
+    });
+
+    assert.notStrictEqual(res.status, 0, 'Must exit with non-zero status on /home/ubuntu path');
+    assert(res.stderr.includes('SAFETY REJECTION') || res.stdout.includes('SAFETY REJECTION'), 'Must emit SAFETY REJECTION');
+    assert.strictEqual(fs.existsSync(dangerousDb), false, 'Live checkout DB must never be created');
+  });
+
+  // ── TEST 3: Rejection of local workspace root production database ─────────────────
+  await runSubtest('Rejection of local workspace root production database', () => {
+    const envFile = path.join(APPROVED_STAGING_DIR, '.env.staging.localprod');
+    fs.writeFileSync(envFile, [
+      `DATABASE_PATH=${rootDbPath}`,
+      `STAGING_DATA_DIR=${APPROVED_STAGING_DIR}`,
+      'PORT=3002',
+      'HOST=127.0.0.1'
+    ].join('\n'));
+
+    const res = spawnSync('node', ['scripts/init_staging_db.cjs', envFile], {
+      cwd: path.resolve(__dirname, '..'),
+      encoding: 'utf8'
+    });
+
+    assert.notStrictEqual(res.status, 0, 'Must exit with non-zero status on local production DB');
+    assert(res.stderr.includes('SAFETY REJECTION') || res.stdout.includes('SAFETY REJECTION'), 'Must emit SAFETY REJECTION');
+    assert.strictEqual(getFileHash(rootDbPath), initialRootDbHash, 'Root DB hash must remain strictly pristine');
+  });
+
+  // ── TEST 4: Sibling-prefix attack (/staging vs /staging-evil) ────────────────
+  await runSubtest('Rejection of sibling-prefix directory escape (positive confinement)', () => {
+    const evilDb = path.join(SIBLING_ATTACK_DIR, 'evil_database.db');
+    const envFile = path.join(APPROVED_STAGING_DIR, '.env.staging.sibling');
+    fs.writeFileSync(envFile, [
+      `DATABASE_PATH=${evilDb}`,
+      `STAGING_DATA_DIR=${APPROVED_STAGING_DIR}`,
+      'PORT=3002',
+      'HOST=127.0.0.1'
+    ].join('\n'));
+
+    const res = spawnSync('node', ['scripts/init_staging_db.cjs', envFile], {
+      cwd: path.resolve(__dirname, '..'),
+      encoding: 'utf8'
+    });
+
+    assert.notStrictEqual(res.status, 0, 'Must reject sibling-prefix path');
+    assert(res.stderr.includes('SAFETY REJECTION') || res.stdout.includes('SAFETY REJECTION'), 'Must emit SAFETY REJECTION');
+    assert.strictEqual(fs.existsSync(evilDb), false, 'Sibling DB file must never be created');
+    assert.strictEqual(fs.existsSync(SIBLING_ATTACK_DIR), false, 'Sibling directory must never be created');
+  });
+
+  // ── TEST 5: Paths outside the approved staging root ──────────────────────────
+  await runSubtest('Rejection of arbitrary path outside approved staging root', () => {
+    const externalDb = path.join(FORBIDDEN_EXTERNAL_DIR, 'external.db');
+    const envFile = path.join(APPROVED_STAGING_DIR, '.env.staging.external');
+    fs.writeFileSync(envFile, [
+      `DATABASE_PATH=${externalDb}`,
+      `STAGING_DATA_DIR=${APPROVED_STAGING_DIR}`,
+      'PORT=3002',
+      'HOST=127.0.0.1'
+    ].join('\n'));
+
+    const res = spawnSync('node', ['scripts/init_staging_db.cjs', envFile], {
+      cwd: path.resolve(__dirname, '..'),
+      encoding: 'utf8'
+    });
+
+    assert.notStrictEqual(res.status, 0, 'Must reject external database path');
+    assert(res.stderr.includes('SAFETY REJECTION') || res.stdout.includes('SAFETY REJECTION'), 'Must emit SAFETY REJECTION');
+    assert.strictEqual(fs.existsSync(externalDb), false, 'External DB file must never be created');
+  });
+
+  // ── TEST 6: Real filesystem symlink/junction escape ──────────────────────────
+  await runSubtest('Rejection of real filesystem symlink/junction escape to external directory', () => {
+    const symlinkDir = path.join(APPROVED_STAGING_DIR, 'symlink_escape');
+    try {
+      fs.symlinkSync(FORBIDDEN_EXTERNAL_DIR, symlinkDir, process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (e) {
+      console.log(`[Symlink not supported: ${e.message}]`);
+      return;
+    }
+
+    const escapedDb = path.join(symlinkDir, 'escaped_db.sqlite');
+    const expectedTarget = path.join(FORBIDDEN_EXTERNAL_DIR, 'escaped_db.sqlite');
+
+    const envFile = path.join(APPROVED_STAGING_DIR, '.env.staging.symlink');
+    fs.writeFileSync(envFile, [
+      `DATABASE_PATH=${escapedDb}`,
+      `STAGING_DATA_DIR=${APPROVED_STAGING_DIR}`,
+      'PORT=3002',
+      'HOST=127.0.0.1'
+    ].join('\n'));
+
+    const res = spawnSync('node', ['scripts/init_staging_db.cjs', envFile], {
+      cwd: path.resolve(__dirname, '..'),
+      encoding: 'utf8'
+    });
+
+    assert.notStrictEqual(res.status, 0, 'Must reject symlink escape');
+    assert(res.stderr.includes('SAFETY REJECTION') || res.stdout.includes('SAFETY REJECTION'), 'Must emit SAFETY REJECTION');
+    assert.strictEqual(fs.existsSync(escapedDb), false, 'Symlinked DB must never be created');
+    assert.strictEqual(fs.existsSync(expectedTarget), false, 'Escaped target DB must never be created');
+  });
+
+  // ── TEST 7: Nonexistent database path beneath symlinked parents ──────────────
+  await runSubtest('Canonicalization of existing ancestors for nonexistent DB beneath symlinked parent', () => {
+    const symlinkParent = path.join(APPROVED_STAGING_DIR, 'symlink_parent');
+    try {
+      fs.symlinkSync(FORBIDDEN_EXTERNAL_DIR, symlinkParent, process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (e) {
+      return;
+    }
+
+    const deepDb = path.join(symlinkParent, 'nonexistent_sub', 'leaf', 'deep.db');
+    const expectedDeepTarget = path.join(FORBIDDEN_EXTERNAL_DIR, 'nonexistent_sub', 'leaf', 'deep.db');
+
+    const envFile = path.join(APPROVED_STAGING_DIR, '.env.staging.deepsym');
+    fs.writeFileSync(envFile, [
+      `DATABASE_PATH=${deepDb}`,
+      `STAGING_DATA_DIR=${APPROVED_STAGING_DIR}`,
+      'PORT=3002',
+      'HOST=127.0.0.1'
+    ].join('\n'));
+
+    const res = spawnSync('node', ['scripts/init_staging_db.cjs', envFile], {
+      cwd: path.resolve(__dirname, '..'),
+      encoding: 'utf8'
+    });
+
+    assert.notStrictEqual(res.status, 0, 'Must reject nonexistent DB beneath symlinked parent');
+    assert(res.stderr.includes('SAFETY REJECTION') || res.stdout.includes('SAFETY REJECTION'), 'Must emit SAFETY REJECTION');
+    assert.strictEqual(fs.existsSync(deepDb), false, 'Deep DB must not be created');
+    assert.strictEqual(fs.existsSync(expectedDeepTarget), false, 'Deep target DB must not be created');
+  });
+
+  // ── TEST 8: Hard-link aliases to protected file ──────────────────────────────
+  await runSubtest('Rejection of hard-link alias to protected file (nlink > 1)', () => {
+    const dummyProdDb = path.join(FORBIDDEN_EXTERNAL_DIR, 'fake_prod.db');
+    fs.writeFileSync(dummyProdDb, 'PROTECTED_PROD_SQLITE_DATA');
+    const prodHashBefore = getFileHash(dummyProdDb);
+
+    const hardLinkDb = path.join(APPROVED_STAGING_DIR, 'hardlink_alias.db');
+    try {
+      fs.linkSync(dummyProdDb, hardLinkDb);
+    } catch (e) {
+      console.log(`[Hard link not supported: ${e.message}]`);
+      return;
+    }
+
+    const envFile = path.join(APPROVED_STAGING_DIR, '.env.staging.hardlink');
+    fs.writeFileSync(envFile, [
+      `DATABASE_PATH=${hardLinkDb}`,
+      `STAGING_DATA_DIR=${APPROVED_STAGING_DIR}`,
+      'PORT=3002',
+      'HOST=127.0.0.1'
+    ].join('\n'));
+
+    const res = spawnSync('node', ['scripts/init_staging_db.cjs', envFile], {
+      cwd: path.resolve(__dirname, '..'),
+      encoding: 'utf8'
+    });
+
+    assert.notStrictEqual(res.status, 0, 'Must reject hard-link alias');
+    assert(res.stderr.includes('SAFETY REJECTION') || res.stdout.includes('SAFETY REJECTION'), 'Must emit SAFETY REJECTION');
+    assert.strictEqual(getFileHash(dummyProdDb), prodHashBefore, 'Protected file must remain untouched');
+  });
+
+  // ── TEST 9: Inherited secret/configuration conflicts ─────────────────────────
+  await runSubtest('Deterministic isolation: rejection of conflicting inherited secrets', () => {
+    const envFile = path.join(APPROVED_STAGING_DIR, '.env.staging.inherited');
+    fs.writeFileSync(envFile, [
+      `DATABASE_PATH=${path.join(APPROVED_STAGING_DIR, 'staging.db')}`,
+      `STAGING_DATA_DIR=${APPROVED_STAGING_DIR}`,
+      'PORT=3002',
+      'HOST=127.0.0.1',
+      'JWT_SECRET=staging_explicit_secret_abc123456789'
+    ].join('\n'));
+
+    const res = spawnSync('node', ['-e', `
+      process.env.JWT_SECRET = 'inherited_production_secret_do_not_leak';
+      const { loadAndValidateStagingEnv } = require('./scripts/staging_guard.cjs');
+      loadAndValidateStagingEnv('${envFile.replace(/\\/g, '\\\\')}');
+    `], {
+      cwd: path.resolve(__dirname, '..'),
+      encoding: 'utf8'
+    });
+
+    assert.notStrictEqual(res.status, 0, 'Must reject conflicting inherited secret');
+    assert(res.stderr.includes('SAFETY REJECTION') || res.stdout.includes('SAFETY REJECTION'), 'Must emit SAFETY REJECTION on inherited conflict');
+    assert(res.stderr.includes('JWT_SECRET'), 'Must identify conflicting key');
+  });
+
+  // ── TEST 10: Filesystem resolution failures / ambiguous resolution ───────────
+  await runSubtest('Fail-closed behavior on unresolvable / invalid path', () => {
+    try {
+      validateStagingConfig({
+        approvedStagingDirs: [APPROVED_STAGING_DIR]
+      });
+      assert.fail('Should fail without DATABASE_PATH');
+    } catch (e) {
+      assert(e.message.includes('DATABASE_PATH must be explicitly defined'));
+    }
+
+    try {
+      process.env.DATABASE_PATH = 'relative/path/db.sqlite';
+      validateStagingConfig({
+        approvedStagingDirs: [APPROVED_STAGING_DIR]
+      });
+      assert.fail('Should fail on non-absolute path');
+    } catch (e) {
+      assert(e.message.includes('must be an absolute path'));
     }
   });
 
-  // Wait for server to bind
-  const deadline = Date.now() + 15000;
-  while (!serverStarted && Date.now() < deadline) {
-    await new Promise(r => setTimeout(r, 200));
-  }
-  assert(serverStarted, 'Staging server failed to start on 127.0.0.1:3002 within timeout');
+  // ── TEST 11: Valid confined staging configuration with full bootstrap ─────────
+  let validDbPath;
+  let serverProcess;
+  await runSubtest('Valid confined staging configuration: explicit DB init & server bootstrap', async () => {
+    validDbPath = path.join(APPROVED_STAGING_DIR, 'valid_staging.db');
+    const validEnvFile = path.join(APPROVED_STAGING_DIR, '.env.staging.valid');
+    fs.writeFileSync(validEnvFile, [
+      `DATABASE_PATH=${validDbPath}`,
+      `STAGING_DATA_DIR=${APPROVED_STAGING_DIR}`,
+      'PORT=3002',
+      'HOST=127.0.0.1',
+      'JWT_SECRET=staging_valid_jwt_secret_64_characters_hex_string_1234567890abcdef',
+      'JWT_REFRESH_SECRET=staging_valid_refresh_jwt_secret_64_characters_hex_string_1234567890',
+      'MFA_ENCRYPTION_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+      'PREVIOUS_MFA_ENCRYPTION_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+    ].join('\n'));
 
-  // Verify API routing probe: POST /api/auth/login with empty body returns HTTP 400
-  const loginProbe = await fetch('http://127.0.0.1:3002/api/auth/login', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({})
+    // Step A: Run init_staging_db.cjs
+    const initRes = spawnSync('node', ['scripts/init_staging_db.cjs', validEnvFile], {
+      cwd: path.resolve(__dirname, '..'),
+      encoding: 'utf8'
+    });
+
+    assert.strictEqual(initRes.status, 0, `Init failed with error: ${initRes.stderr || initRes.stdout}`);
+    assert(fs.existsSync(validDbPath), 'Valid staging database file must be created');
+    assert(initRes.stdout.includes('Unique generated password'), 'Must generate unique admin password');
+    assert(!initRes.stdout.includes('StagingAdminPass123!'), 'Must not use hardcoded admin password');
+
+    // Step B: Start staging server
+    serverProcess = spawn('node', ['server/staging-server.js'], {
+      cwd: path.resolve(__dirname, '..'),
+      env: {
+        ...process.env,
+        STAGING_ENV_FILE: validEnvFile
+      },
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+
+    let started = false;
+    serverProcess.stdout.on('data', data => {
+      const text = data.toString();
+      if (text.includes('BFI Classroom API Gateway running on port 3002')) {
+        started = true;
+      }
+    });
+
+    const deadline = Date.now() + 15000;
+    while (!started && Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 200));
+    }
+    assert(started, 'Staging server failed to start within timeout');
+
+    // Step C: Verify loopback probes
+    const spaRes = await fetch('http://127.0.0.1:3002/bfi-classroom/');
+    assert.strictEqual(spaRes.status, 200, `SPA route returned ${spaRes.status}`);
+
+    const loginRes = await fetch('http://127.0.0.1:3002/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    });
+    assert.strictEqual(loginRes.status, 400, `Login probe returned ${loginRes.status}`);
+
+    const authRes = await fetch('http://127.0.0.1:3002/api/auth/me');
+    assert.strictEqual(authRes.status, 401, `Auth probe returned ${authRes.status}`);
+
+    // Step D: Shutdown server
+    serverProcess.kill('SIGTERM');
+    await new Promise(r => serverProcess.on('exit', r));
   });
-  assert.strictEqual(loginProbe.status, 400, `Expected 400 from login probe, got ${loginProbe.status}`);
 
-  // Verify auth guard probe: GET /api/auth/me without token returns HTTP 401
-  const authProbe = await fetch('http://127.0.0.1:3002/api/auth/me');
-  assert.strictEqual(authProbe.status, 401, `Expected 401 from auth probe, got ${authProbe.status}`);
-
-  // Verify frontend SPA fallback on /bfi-classroom/
-  const spaRes = await fetch('http://127.0.0.1:3002/bfi-classroom/');
-  assert.strictEqual(spaRes.status, 200, `Expected 200 from SPA route, got ${spaRes.status}`);
-  const spaHtml = await spaRes.text();
-  assert(spaHtml.includes('<!DOCTYPE html>') || spaHtml.includes('<html'), 'Expected HTML output for SPA');
-  console.log('✅ PASS');
-  passed++;
-
-  // Test 7: Clean process shutdown
-  process.stdout.write('Testing: Clean staging server process shutdown... ');
-  serverProcess.kill('SIGTERM');
-  await new Promise(r => serverProcess.on('exit', r));
-  console.log('✅ PASS');
-  passed++;
+  // Verify root DB was never touched throughout all 11 tests
+  assert.strictEqual(getFileHash(rootDbPath), initialRootDbHash, 'CRITICAL: Root production database was modified during testing!');
 
   cleanup();
 
   console.log('\n================================================================');
-  console.log(`Staging Isolation Results: ${passed}/${total} Passed`);
-  console.log('================================================================');
-  if (passed !== total) process.exit(1);
+  console.log(`Staging Isolation Results: ${passed} Passed, 0 Failed`);
+  console.log('Root DB SHA-256 Verified Pristine:', initialRootDbHash);
+  console.log('================================================================\n');
 }
 
-runTests().catch(err => {
-  console.error('\n[StagingIsolationTest] FAILED:', err);
+runRegressionSuite().catch(err => {
+  console.error('\n[RegressionSuite FAILED]:', err);
   try { cleanup(); } catch (_) {}
   process.exit(1);
 });

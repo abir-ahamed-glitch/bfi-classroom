@@ -3132,6 +3132,10 @@ router.delete('/custom-subjects/:id', authenticateToken, requireRole('admin'), r
 });
 
 export function startSmsScheduler() {
+  if (process.env.IS_STAGING_SERVER === 'true' || process.env.DISABLE_OUTBOUND_NOTIFICATIONS === 'true') {
+    console.log('[SMS Scheduler] Staging environment active: outbound SMS background scheduler suppressed.');
+    return;
+  }
   // Check every 10 seconds for scheduled SMS that are due to be sent
   setInterval(async () => {
     try {

@@ -8,6 +8,9 @@ dotenv.config();
  * Hard-coded fallbacks have been permanently removed.
  */
 export function getTransporter() {
+  if (process.env.IS_STAGING_SERVER === 'true' || process.env.DISABLE_OUTBOUND_NOTIFICATIONS === 'true') {
+    return null;
+  }
   const user = process.env.EMAIL_USER?.trim();
   const pass = process.env.EMAIL_PASS?.replace(/\s+/g, '');
 

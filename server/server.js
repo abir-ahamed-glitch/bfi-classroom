@@ -16,7 +16,9 @@ import jwt from 'jsonwebtoken';
 import { validateSafePublicUrl, isPrivateIP, createPinnedAgent, readBoundedStream, PayloadTooLargeError } from './utils/ssrf-filter.js';
 
 // Setup env
-dotenv.config();
+if (process.env.IS_STAGING_SERVER !== 'true') {
+  dotenv.config();
+}
 
 // Process crash guards — prevent unhandled rejections from terminating the server process
 process.on('unhandledRejection', (reason, promise) => {
