@@ -200,6 +200,14 @@ async function main() {
     await agent.destroy();
   });
 
+  // 10. jsdom + undici internal dispatcher compatibility
+  await runTest('jsdom: initializes JSDOM instance without undici wrap-handler regression', () => {
+    const { JSDOM } = require('jsdom');
+    const dom = new JSDOM('<!DOCTYPE html><html><body><div id="test">BFI Classroom</div></body></html>');
+    assert.strictEqual(dom.window.document.getElementById('test').textContent, 'BFI Classroom');
+    dom.window.close();
+  });
+
   console.log(`\n================================================================`);
   console.log(`Transitive Overrides Results: ${passedTests}/${totalTests} Passed`);
   console.log(`================================================================`);
