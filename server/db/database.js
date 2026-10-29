@@ -1,3 +1,4 @@
+import '../bootstrap.js';
 import Database from 'better-sqlite3';
 import path from 'path';
 import crypto from 'crypto';

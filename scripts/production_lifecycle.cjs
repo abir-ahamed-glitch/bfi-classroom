@@ -903,6 +903,20 @@ async function executeDeployment(options = {}) {
     deploymentState.mfaRotated = true;
     writeStateAtomic(stateFilePath, deploymentState);
 
+    const triggerAbruptCheckpoint = (cp) => {
+      const activeCp = options.abruptCrashCheckpoint || process.env.TEST_ABRUPT_CRASH_CHECKPOINT;
+      if (activeCp === cp) {
+        console.error(`[ABRUPT CRASH HOOK] Process abruptly terminated at checkpoint: ${cp}`);
+        if (process.platform === 'win32') {
+          process.exit(137);
+        } else {
+          process.kill(process.pid, 'SIGKILL');
+        }
+      }
+    };
+
+    triggerAbruptCheckpoint('after_db_rotation');
+
     // 4.2.3 Audit decryptability under new key
     logStep('4.2.3', 'Auditing database decryptability under new key configuration...');
     const auditResult = auditDecryptability(dbPath, {
@@ -924,6 +938,8 @@ async function executeDeployment(options = {}) {
       // Persist update-intent BEFORE touching disk so crash recovery knows modification began
       deploymentState.configUpdateIntent = true;
       writeStateAtomic(stateFilePath, deploymentState);
+
+      triggerAbruptCheckpoint('before_env_replace');
 
       if (typeof options.onCrashBeforeEnvReplace === 'function') {
         options.onCrashBeforeEnvReplace({ dbPath, envPath, deploymentState });
@@ -994,6 +1010,8 @@ async function executeDeployment(options = {}) {
         process.env.JWT_REFRESH_SECRET = newRef;
       }
 
+      triggerAbruptCheckpoint('after_env_replace_before_state');
+
       if (typeof options.onCrashAfterEnvReplaceBeforeState === 'function') {
         options.onCrashAfterEnvReplaceBeforeState({ dbPath, envPath, deploymentState });
       }
@@ -1001,6 +1019,7 @@ async function executeDeployment(options = {}) {
       deploymentState.configUpdated = true;
       deploymentState.configUpdateIntent = false;
       writeStateAtomic(stateFilePath, deploymentState);
+      triggerAbruptCheckpoint('after_config_update');
       logStep('4.2.4', '✅ Configuration updated atomically and synced to disk (chmod 600).');
     }
 
@@ -1640,6 +1659,7 @@ function parseLifecycleArgs(args = process.argv.slice(2)) {
   const rootDirArg = getFlagValue('--root-dir');
   const dbPathArg = getFlagValue('--database-path');
   const envPathArg = getFlagValue('--env-path');
+  const abruptCrashArg = getFlagValue('--test-abrupt-crash') || process.env.TEST_ABRUPT_CRASH_CHECKPOINT;
 
   return {
     action,
@@ -1650,7 +1670,8 @@ function parseLifecycleArgs(args = process.argv.slice(2)) {
     preDeploymentRevision: prevRevArg,
     rootDir: rootDirArg,
     databasePath: dbPathArg,
-    envPath: envPathArg
+    envPath: envPathArg,
+    abruptCrashCheckpoint: abruptCrashArg
   };
 }
 
@@ -1666,7 +1687,8 @@ if (require.main === module) {
       databasePath: parsed.databasePath,
       envPath: parsed.envPath,
       rotateMfa: parsed.rotateMfa,
-      isRehearsal: parsed.isRehearsal
+      isRehearsal: parsed.isRehearsal,
+      abruptCrashCheckpoint: parsed.abruptCrashCheckpoint
     }).then(() => process.exit(0)).catch((err) => {
       console.error(`\n❌ [DEPLOYMENT HALTED] ${err.message}`);
       process.exit(1);
