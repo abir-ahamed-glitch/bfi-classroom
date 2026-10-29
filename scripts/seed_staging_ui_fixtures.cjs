@@ -21,15 +21,18 @@ db.prepare(`
 `).run();
 
 // 3. Announcements
-db.prepare(`
-  INSERT OR REPLACE INTO announcements (id, admin_id, title, content, priority, target_course, image_url, created_at)
-  VALUES (1, 1, 'Staging PDF Notice', 'Synthetic announcement for testing real application PDF viewing.', 'normal', 'All', 'valid-sample.pdf', datetime('now'))
-`).run();
+const validAttachment = JSON.stringify([{ name: 'valid-sample.pdf', type: 'application/pdf', url: 'valid-sample.pdf' }]);
+const corruptAttachment = JSON.stringify([{ name: 'corrupt.pdf', type: 'application/pdf', url: 'corrupt.pdf' }]);
 
 db.prepare(`
   INSERT OR REPLACE INTO announcements (id, admin_id, title, content, priority, target_course, image_url, created_at)
-  VALUES (2, 1, 'Staging Corrupted PDF Notice', 'Synthetic announcement for testing error handling.', 'normal', 'All', 'corrupt.pdf', datetime('now'))
-`).run();
+  VALUES (1, 1, 'Staging PDF Notice', 'Synthetic announcement for testing real application PDF viewing.', 'normal', 'All', ?, datetime('now'))
+`).run(validAttachment);
+
+db.prepare(`
+  INSERT OR REPLACE INTO announcements (id, admin_id, title, content, priority, target_course, image_url, created_at)
+  VALUES (2, 1, 'Staging Corrupted PDF Notice', 'Synthetic announcement for testing error handling.', 'normal', 'All', ?, datetime('now'))
+`).run(corruptAttachment);
 
 // 4. Update staging admin credentials
 const testPass = 'StagingAdmin2026!Secure';

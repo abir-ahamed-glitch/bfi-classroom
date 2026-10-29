@@ -310,11 +310,11 @@ async function runStagingBrowserVerification() {
     await page.goto(`${TUNNEL_URL}/notices`, { waitUntil: 'networkidle' });
 
     // 5a. Valid PDF Attachment Lightbox
-    const validNoticeAttachment = page.locator('text=valid-sample.pdf');
-    await validNoticeAttachment.waitFor({ state: 'visible', timeout: 10000 });
+    const validNoticeAttachment = page.locator('text=/valid-sample\\.pdf|notice_attachment\\.pdf/i');
+    await validNoticeAttachment.first().waitFor({ state: 'visible', timeout: 10000 });
 
     const workerReqCountBefore5a = await page.evaluate(() => window.__workerGetDocRequests.length);
-    await validNoticeAttachment.click();
+    await validNoticeAttachment.first().click();
 
     // Verify PdfViewer mounted and rendered @react-pdf-viewer/core
     const viewerContainer = page.locator('.rpv-core__viewer, [data-testid="core__viewer"]');
@@ -336,9 +336,9 @@ async function runStagingBrowserVerification() {
     await page.waitForTimeout(500);
 
     // 5b. Corrupted PDF Attachment Lightbox
-    const corruptNoticeAttachment = page.locator('text=corrupt.pdf');
+    const corruptNoticeAttachment = page.locator('text=/corrupt\\.pdf/i');
     if (await corruptNoticeAttachment.count() > 0) {
-      await corruptNoticeAttachment.click();
+      await corruptNoticeAttachment.first().click();
       const viewerErrorHeading = page.locator('text=Failed to Load PDF');
       await viewerErrorHeading.waitFor({ state: 'visible', timeout: 10000 });
       recordResult('5b', 'PdfViewer Malformed Attachment Boundary', true, 'Handled by "Failed to Load PDF" boundary');
