@@ -26,8 +26,16 @@ const Database = require('better-sqlite3');
 const crypto = require('crypto');
 
 function deriveKey(secretSource) {
-  if (!secretSource) {
+  if (!secretSource || (typeof secretSource === 'string' && secretSource.length === 0)) {
     throw new Error('Cannot derive encryption key from empty or undefined secret source.');
+  }
+  if (typeof secretSource === 'string') {
+    if (secretSource.trim().length === 0) {
+      throw new Error('Ambiguous encryption key: secret source is whitespace-only.');
+    }
+    if (secretSource !== secretSource.trim()) {
+      throw new Error('Ambiguous encryption key: secret source contains leading or trailing whitespace. Silently normalizing keys used for encryption is prohibited.');
+    }
   }
   return crypto.createHash('sha256').update(secretSource).digest();
 }
@@ -54,33 +62,77 @@ function encrypt(plainSecret, key) {
   return `${iv.toString('hex')}:${authTag}:${encrypted}`;
 }
 
+const SECURITY_KEY_NAMES = new Set([
+  'MFA_ENCRYPTION_KEY',
+  'PREVIOUS_MFA_ENCRYPTION_KEY',
+  'JWT_SECRET',
+  'PREVIOUS_JWT_SECRET',
+  'JWT_REFRESH_SECRET'
+]);
+
 /**
- * Parses simple KEY=VALUE configuration from a .env file.
+ * Parses simple KEY=VALUE configuration from a .env file with strict ambiguity defenses.
  */
 function parseDotEnvFile(filePath) {
   if (!fs.existsSync(filePath)) return {};
+  if (fs.lstatSync(filePath).isSymbolicLink()) {
+    throw new Error(`Symlink detected for configuration file: ${filePath}`);
+  }
   const content = fs.readFileSync(filePath, 'utf8');
   const result = {};
   const lines = content.split(/\r?\n/);
-  for (const line of lines) {
-    const trimmed = line.trim();
+  for (let lineNum = 1; lineNum <= lines.length; lineNum++) {
+    const rawLine = lines[lineNum - 1];
+    const trimmed = rawLine.trim();
     if (!trimmed || trimmed.startsWith('#')) continue;
-    const eqIdx = trimmed.indexOf('=');
+    const eqIdx = rawLine.indexOf('=');
     if (eqIdx === -1) continue;
-    const key = trimmed.slice(0, eqIdx).trim();
-    let val = trimmed.slice(eqIdx + 1).trim();
-    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
-      val = val.slice(1, -1);
+    const key = rawLine.slice(0, eqIdx).trim();
+    const rawVal = rawLine.slice(eqIdx + 1);
+    const isSecurityKey = SECURITY_KEY_NAMES.has(key);
+
+    let val;
+    const trimmedVal = rawVal.trim();
+    const isQuoted = (trimmedVal.startsWith('"') && trimmedVal.endsWith('"')) || (trimmedVal.startsWith("'") && trimmedVal.endsWith("'"));
+
+    if (isSecurityKey && rawVal.length > 0 && rawVal.trim().length === 0) {
+      throw new Error(`Ambiguous configuration: ${key} on line ${lineNum} of ${path.basename(filePath)} is whitespace-only.`);
     }
+
+    if (isQuoted) {
+      val = trimmedVal.slice(1, -1);
+    } else {
+      if (isSecurityKey && rawVal !== trimmedVal) {
+        throw new Error(`Ambiguous configuration: ${key} on line ${lineNum} of ${path.basename(filePath)} contains unquoted leading or trailing whitespace. Silently trimming keys used for encryption is prohibited.`);
+      }
+      val = trimmedVal;
+    }
+
     result[key] = val;
   }
   return result;
 }
 
 /**
+ * Validates a candidate secret string from an in-memory object (process.env or options).
+ */
+function validateSecretEnv(keyName, val) {
+  if (val === undefined || val === null) return '';
+  const str = String(val);
+  if (str.length === 0) return '';
+  if (str.trim().length === 0) {
+    throw new Error(`Ambiguous configuration: ${keyName} is whitespace-only.`);
+  }
+  if (str !== str.trim()) {
+    throw new Error(`Ambiguous configuration: ${keyName} in environment contains leading or trailing whitespace. Silently normalizing keys used for encryption is prohibited.`);
+  }
+  return str;
+}
+
+/**
  * Determines the effective active MFA encryption secret source adhering to runtime code semantics:
- * MFA_ENCRYPTION_KEY if set and non-empty (after trim); otherwise fallback to JWT_SECRET.
- * Respects runtime environment precedence and fails closed if neither is non-empty.
+ * MFA_ENCRYPTION_KEY if set and non-empty; otherwise fallback to JWT_SECRET.
+ * Rejects ambiguous values (whitespace-only, unquoted whitespace, conflicting env vs .env).
  */
 function determineActiveMfaSecretSource(envObj = process.env, dotEnvPath = null) {
   let fileConfig = {};
@@ -88,27 +140,29 @@ function determineActiveMfaSecretSource(envObj = process.env, dotEnvPath = null)
     fileConfig = parseDotEnvFile(dotEnvPath);
   }
 
-  // Precedence: explicit process.env / envObj override if set, otherwise fileConfig
-  let mfaVal = '';
-  if (envObj && envObj.MFA_ENCRYPTION_KEY !== undefined) {
-    mfaVal = String(envObj.MFA_ENCRYPTION_KEY).trim();
-  } else if (fileConfig.MFA_ENCRYPTION_KEY !== undefined) {
-    mfaVal = String(fileConfig.MFA_ENCRYPTION_KEY).trim();
+  const envMfa = validateSecretEnv('MFA_ENCRYPTION_KEY', envObj ? envObj.MFA_ENCRYPTION_KEY : undefined);
+  const fileMfa = fileConfig.MFA_ENCRYPTION_KEY || '';
+
+  // Reject conflicting non-empty definitions between runtime env and .env file
+  if (envMfa && fileMfa && envMfa !== fileMfa) {
+    throw new Error('Ambiguous configuration: conflicting values for MFA_ENCRYPTION_KEY between environment and .env file.');
   }
 
-  if (mfaVal.length > 0) {
-    return { sourceName: 'MFA_ENCRYPTION_KEY', value: mfaVal };
+  const effectiveMfa = envMfa || fileMfa;
+  if (effectiveMfa.length > 0) {
+    return { sourceName: 'MFA_ENCRYPTION_KEY', value: effectiveMfa };
   }
 
-  let jwtVal = '';
-  if (envObj && envObj.JWT_SECRET !== undefined) {
-    jwtVal = String(envObj.JWT_SECRET).trim();
-  } else if (fileConfig.JWT_SECRET !== undefined) {
-    jwtVal = String(fileConfig.JWT_SECRET).trim();
+  const envJwt = validateSecretEnv('JWT_SECRET', envObj ? envObj.JWT_SECRET : undefined);
+  const fileJwt = fileConfig.JWT_SECRET || '';
+
+  if (envJwt && fileJwt && envJwt !== fileJwt) {
+    throw new Error('Ambiguous configuration: conflicting values for JWT_SECRET between environment and .env file.');
   }
 
-  if (jwtVal.length > 0) {
-    return { sourceName: 'JWT_SECRET', value: jwtVal };
+  const effectiveJwt = envJwt || fileJwt;
+  if (effectiveJwt.length > 0) {
+    return { sourceName: 'JWT_SECRET', value: effectiveJwt };
   }
 
   throw new Error('Unable to determine active MFA encryption source: neither MFA_ENCRYPTION_KEY nor JWT_SECRET is set to a non-empty value.');
@@ -126,13 +180,13 @@ function auditDecryptability(dbOrPath, options = {}) {
     const previousKeySource = options.previousKeySource || process.env.PREVIOUS_MFA_ENCRYPTION_KEY || process.env.PREVIOUS_JWT_SECRET;
     const requirePrimaryOnly = Boolean(options.requirePrimaryOnly);
 
-    if (!primaryKeySource || !primaryKeySource.trim()) {
+    if (!primaryKeySource) {
       throw new Error('Audit requires a primaryKeySource (or MFA_ENCRYPTION_KEY / JWT_SECRET in environment).');
     }
 
-    const primaryKey = deriveKey(primaryKeySource.trim());
-    const previousKey = (previousKeySource && previousKeySource.trim() && !requirePrimaryOnly)
-      ? deriveKey(previousKeySource.trim())
+    const primaryKey = deriveKey(primaryKeySource);
+    const previousKey = (previousKeySource && !requirePrimaryOnly)
+      ? deriveKey(previousKeySource)
       : null;
 
     const users = db.prepare(`
@@ -209,8 +263,8 @@ function executeRotation(options = {}) {
     throw new Error(`Target database file does not exist: ${dbPath}`);
   }
 
-  const oldKeySource = (options.oldKeySource || process.env.PREVIOUS_MFA_ENCRYPTION_KEY || process.env.PREVIOUS_JWT_SECRET || '').trim();
-  const newKeySource = (options.newKeySource || process.env.MFA_ENCRYPTION_KEY || process.env.JWT_SECRET || '').trim();
+  const oldKeySource = options.oldKeySource || process.env.PREVIOUS_MFA_ENCRYPTION_KEY || process.env.PREVIOUS_JWT_SECRET || '';
+  const newKeySource = options.newKeySource || process.env.MFA_ENCRYPTION_KEY || process.env.JWT_SECRET || '';
   const dryRun = Boolean(options.dryRun);
 
   if (!oldKeySource || !newKeySource) {

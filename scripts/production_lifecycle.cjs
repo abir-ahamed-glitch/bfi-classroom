@@ -71,18 +71,90 @@ function getResolvedSpawner(options = {}) {
   return child_process.spawnSync;
 }
 
-// Atomic state persistence helper
+/**
+ * Creates or updates a confidential file with restrictive 0600 permissions from inception.
+ * Fails closed if the path is a symlink or if permissions cannot be enforced.
+ */
+function writeSecretFileSecure(filePath, content) {
+  const dir = path.dirname(filePath);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  if (fs.existsSync(filePath)) {
+    if (fs.lstatSync(filePath).isSymbolicLink()) {
+      throw new Error(`Symlink detected at secret file path: ${filePath}`);
+    }
+    fs.unlinkSync(filePath);
+  }
+  const fd = fs.openSync(filePath, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY, 0o600);
+  try {
+    fs.writeSync(fd, content, 0, 'utf8');
+  } finally {
+    fs.closeSync(fd);
+  }
+  if (process.platform !== 'win32') {
+    const mode = fs.statSync(filePath).mode & 0o777;
+    if (mode !== 0o600) {
+      fs.chmodSync(filePath, 0o600);
+      const verified = fs.statSync(filePath).mode & 0o777;
+      if (verified !== 0o600) {
+        throw new Error(`Failed to enforce 0600 permissions on ${filePath} (mode: 0${verified.toString(8)})`);
+      }
+    }
+  }
+}
+
+/**
+ * Copies a secret file with restrictive 0600 permissions from inception.
+ * Rejects symlinks on both source and destination paths.
+ */
+function copySecretFileSecure(srcPath, destPath) {
+  if (!fs.existsSync(srcPath)) {
+    throw new Error(`Source secret file does not exist: ${srcPath}`);
+  }
+  if (fs.lstatSync(srcPath).isSymbolicLink()) {
+    throw new Error(`Symlink detected at source secret file path: ${srcPath}`);
+  }
+  const dir = path.dirname(destPath);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  if (fs.existsSync(destPath)) {
+    if (fs.lstatSync(destPath).isSymbolicLink()) {
+      throw new Error(`Symlink detected at destination secret file path: ${destPath}`);
+    }
+    fs.unlinkSync(destPath);
+  }
+  const content = fs.readFileSync(srcPath);
+  const fd = fs.openSync(destPath, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY, 0o600);
+  try {
+    fs.writeSync(fd, content);
+  } finally {
+    fs.closeSync(fd);
+  }
+  if (process.platform !== 'win32') {
+    const mode = fs.statSync(destPath).mode & 0o777;
+    if (mode !== 0o600) {
+      fs.chmodSync(destPath, 0o600);
+      const verified = fs.statSync(destPath).mode & 0o777;
+      if (verified !== 0o600) {
+        throw new Error(`Failed to enforce 0600 permissions on ${destPath} (mode: 0${verified.toString(8)})`);
+      }
+    }
+  }
+}
+
+// Atomic state persistence helper using restrictive permissions from inception
 function writeStateAtomic(filePath, data) {
   const dir = path.dirname(filePath);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  if (fs.existsSync(filePath) && fs.lstatSync(filePath).isSymbolicLink()) {
+    throw new Error(`Symlink detected at state file path: ${filePath}`);
+  }
   const tmpPath = path.join(dir, `.tmp_state_${Date.now()}_${Math.random().toString(36).slice(2)}`);
   const content = JSON.stringify(data, null, 2);
-  fs.writeFileSync(tmpPath, content, 'utf8');
+  writeSecretFileSecure(tmpPath, content);
   try {
     fs.renameSync(tmpPath, filePath);
   } catch (err) {
     if (process.platform === 'win32' && (err.code === 'EPERM' || err.code === 'EBUSY')) {
-      fs.copyFileSync(tmpPath, filePath);
+      copySecretFileSecure(tmpPath, filePath);
       try { fs.unlinkSync(tmpPath); } catch {}
     } else {
       throw err;
@@ -537,12 +609,12 @@ async function executeDeployment(options = {}) {
     logFatal(`Cold-start load verification failed for recovery tools in ${recoveryToolsDir}: ${probeResult.stderr || probeResult.error}`);
     throw new Error('Recovery tool bundle failed cold-start loading verification');
   }
-  logStep('0.3', `Cold-start bundle loading verified for all 6 recovery tools in ${recoveryToolsDir}`);
+  logStep('0.3', `Cold-start bundle loading verified for all 7 recovery tools in ${recoveryToolsDir}`);
 
   // Initialize deployment state and attempt-bound backup environment
   const attemptId = `deploy_${Date.now()}`;
   const envFile = path.join(serverDir, 'active_backup_path.env');
-  fs.writeFileSync(envFile, `ATTEMPT_ID=${attemptId}\nBACKUP_FILE=\nBACKUP_VALIDATED=false\n`);
+  writeSecretFileSecure(envFile, `ATTEMPT_ID=${attemptId}\nBACKUP_FILE=\nBACKUP_VALIDATED=false\n`);
 
   const stateFilePath = path.join(serverDir, 'active_deployment_state.json');
   const deploymentState = {
@@ -553,6 +625,7 @@ async function executeDeployment(options = {}) {
     backupFile: null,
     backupValidated: false,
     envBackupFile: null,
+    configUpdateIntent: false,
     configUpdated: false,
     mfaRotated: false,
     trafficMayReopen: false,
@@ -583,7 +656,7 @@ async function executeDeployment(options = {}) {
     } catch {}
   }
   writeStateAtomic(stateFilePath, deploymentState);
-  fs.writeFileSync(
+  writeSecretFileSecure(
     path.join(serverDir, 'pre_deployment_services.env'),
     `ATTEMPT_ID=${attemptId}\nNGINX_STATE=${deploymentState.nginxInitialState}\nPM2_STATE=${deploymentState.pm2InitialState}\n`
   );
@@ -672,21 +745,39 @@ async function executeDeployment(options = {}) {
   const backupTs = new Date().toISOString().replace(/[-:T.]/g, '').slice(0, 14);
   const backupFile = path.join(backupDir, `bfi_classroom_preflight_${backupTs}.db`);
 
+  // Pre-create backup file with restrictive 0600 permissions from inception and reject symlinks
+  if (fs.existsSync(backupFile)) {
+    if (fs.lstatSync(backupFile).isSymbolicLink()) {
+      throw new Error(`Symlink detected at backup file path: ${backupFile}`);
+    }
+    fs.unlinkSync(backupFile);
+  }
+  const bFd = fs.openSync(backupFile, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY, 0o600);
+  fs.closeSync(bFd);
+  if (process.platform !== 'win32') {
+    const mode = fs.statSync(backupFile).mode & 0o777;
+    if (mode !== 0o600) {
+      fs.chmodSync(backupFile, 0o600);
+      if ((fs.statSync(backupFile).mode & 0o777) !== 0o600) {
+        throw new Error(`Failed to enforce 0600 on backup file ${backupFile}`);
+      }
+    }
+  }
+
   {
     const src = new Database(dbPath, { readonly: true });
     await src.backup(backupFile);
     src.close();
     deploymentState.backupFile = backupFile;
-    logStep('2.3', `Online backup created at: ${backupFile}`);
+    logStep('2.3', `Online backup created at: ${backupFile} (permissions: 600)`);
   }
 
-  // Backup configuration file (.env) if present in rootDir or options.envPath
+  // Backup configuration file (.env) with strict 0600 permissions from inception
   const envPath = options.envPath || path.resolve(rootDir, '.env');
   let envBackupFile = null;
   if (fs.existsSync(envPath)) {
     envBackupFile = path.join(backupDir, `env_preflight_${backupTs}.env`);
-    fs.copyFileSync(envPath, envBackupFile);
-    try { fs.chmodSync(envBackupFile, 0o600); } catch {}
+    copySecretFileSecure(envPath, envBackupFile);
     deploymentState.envBackupFile = envBackupFile;
     logStep('2.3', `Configuration (.env) backed up to: ${envBackupFile} (permissions: 600)`);
   }
@@ -717,7 +808,10 @@ async function executeDeployment(options = {}) {
 
     deploymentState.backupValidated = true;
     writeStateAtomic(stateFilePath, deploymentState);
-    fs.writeFileSync(path.join(serverDir, 'active_backup_path.env'), `BACKUP_FILE=${backupFile}\nBACKUP_VALIDATED=true\nENV_BACKUP_FILE=${envBackupFile || ''}\nATTEMPT_ID=${attemptId}\n`);
+    writeSecretFileSecure(
+      path.join(serverDir, 'active_backup_path.env'),
+      `BACKUP_FILE=${backupFile}\nBACKUP_VALIDATED=true\nENV_BACKUP_FILE=${envBackupFile || ''}\nATTEMPT_ID=${attemptId}\n`
+    );
     logStep('2.4', '✅ Backup file validated: 0 FK violations, quick_check ok, exact baseline match.');
   }
 
@@ -768,12 +862,22 @@ async function executeDeployment(options = {}) {
     // 4.2.1 Resolve historical and target encryption keys (zero credential disclosure)
     logStep('4.2.1', 'Resolving historical and target encryption keys (zero credential disclosure)...');
     const historicalSource = determineActiveMfaSecretSource(process.env, envPath);
-    const oldKeySource = (process.env.PREVIOUS_MFA_ENCRYPTION_KEY || historicalSource.value || '').trim();
-    const newKeySource = (options.newMfaKey || process.env.NEW_MFA_ENCRYPTION_KEY || process.env.MFA_ENCRYPTION_KEY || '').trim();
+    const oldKeySource = process.env.PREVIOUS_MFA_ENCRYPTION_KEY || historicalSource.value || '';
+    const newKeySource = options.newMfaKey || process.env.NEW_MFA_ENCRYPTION_KEY || process.env.MFA_ENCRYPTION_KEY || '';
 
     if (!newKeySource) {
       logFatal('ABORT DEPLOYMENT: MFA rotation requested but NEW_MFA_ENCRYPTION_KEY (or MFA_ENCRYPTION_KEY) is missing or empty.');
       throw new Error('Missing new MFA encryption key for rotation');
+    }
+    if (typeof newKeySource === 'string') {
+      if (newKeySource.trim().length === 0) {
+        logFatal('ABORT DEPLOYMENT: New MFA encryption key is whitespace-only.');
+        throw new Error('Ambiguous new MFA key: whitespace-only');
+      }
+      if (newKeySource !== newKeySource.trim()) {
+        logFatal('ABORT DEPLOYMENT: New MFA encryption key contains leading or trailing whitespace.');
+        throw new Error('Ambiguous new MFA key: contains leading or trailing whitespace');
+      }
     }
     if (oldKeySource === newKeySource) {
       logFatal('ABORT DEPLOYMENT: Historical MFA key and new MFA key are identical. Refusing rotation with identical keys.');
@@ -816,6 +920,15 @@ async function executeDeployment(options = {}) {
     // 4.2.4 Protected configuration update (.env)
     if (fs.existsSync(envPath)) {
       logStep('4.2.4', 'Updating configuration file (.env) atomically with strict 600 permissions...');
+
+      // Persist update-intent BEFORE touching disk so crash recovery knows modification began
+      deploymentState.configUpdateIntent = true;
+      writeStateAtomic(stateFilePath, deploymentState);
+
+      if (typeof options.onCrashBeforeEnvReplace === 'function') {
+        options.onCrashBeforeEnvReplace({ dbPath, envPath, deploymentState });
+      }
+
       const rawEnv = fs.readFileSync(envPath, 'utf8');
       let updatedEnv = rawEnv;
 
@@ -831,24 +944,62 @@ async function executeDeployment(options = {}) {
       updatedEnv = updateEnvKey(updatedEnv, 'MFA_ENCRYPTION_KEY', newKeySource);
       updatedEnv = updateEnvKey(updatedEnv, 'PREVIOUS_MFA_ENCRYPTION_KEY', oldKeySource);
 
+      let newJwt = null;
+      let oldJwt = null;
       if (options.newJwtSecret || process.env.NEW_JWT_SECRET) {
-        const newJwt = (options.newJwtSecret || process.env.NEW_JWT_SECRET).trim();
+        newJwt = (options.newJwtSecret || process.env.NEW_JWT_SECRET);
+        if (newJwt !== newJwt.trim() || newJwt.trim().length === 0) {
+          throw new Error('Ambiguous new JWT secret: whitespace-only or contains leading/trailing whitespace');
+        }
         const mJwt = rawEnv.match(/^JWT_SECRET=(.*)$/m);
-        const oldJwt = process.env.JWT_SECRET || (mJwt ? mJwt[1].trim() : '');
+        oldJwt = process.env.JWT_SECRET || (mJwt ? mJwt[1] : '');
         updatedEnv = updateEnvKey(updatedEnv, 'JWT_SECRET', newJwt);
         if (oldJwt) updatedEnv = updateEnvKey(updatedEnv, 'PREVIOUS_JWT_SECRET', oldJwt);
       }
+      let newRef = null;
       if (options.newRefreshSecret || process.env.NEW_REFRESH_SECRET) {
-        const newRef = (options.newRefreshSecret || process.env.NEW_REFRESH_SECRET).trim();
+        newRef = (options.newRefreshSecret || process.env.NEW_REFRESH_SECRET);
+        if (newRef !== newRef.trim() || newRef.trim().length === 0) {
+          throw new Error('Ambiguous new refresh secret: whitespace-only or contains leading/trailing whitespace');
+        }
         updatedEnv = updateEnvKey(updatedEnv, 'JWT_REFRESH_SECRET', newRef);
       }
 
-      const tmpEnvPath = path.join(path.dirname(envPath), `.env.tmp.${Date.now()}`);
-      fs.writeFileSync(tmpEnvPath, updatedEnv, 'utf8');
-      try { fs.chmodSync(tmpEnvPath, 0o600); } catch {}
-      fs.renameSync(tmpEnvPath, envPath);
+      const tmpEnvPath = path.join(path.dirname(envPath), `.env.tmp.${Date.now()}_${Math.random().toString(36).slice(2)}`);
+      writeSecretFileSecure(tmpEnvPath, updatedEnv);
+
+      if (typeof options.onCrashBeforeEnvRename === 'function') {
+        options.onCrashBeforeEnvRename({ dbPath, envPath, tmpEnvPath, deploymentState });
+      }
+
+      try {
+        fs.renameSync(tmpEnvPath, envPath);
+      } catch (renameErr) {
+        if (process.platform === 'win32' && (renameErr.code === 'EPERM' || renameErr.code === 'EBUSY')) {
+          copySecretFileSecure(tmpEnvPath, envPath);
+          try { fs.unlinkSync(tmpEnvPath); } catch {}
+        } else {
+          throw renameErr;
+        }
+      }
+
+      // Synchronize in-memory runner process.env so any child processes inherit the new configuration
+      process.env.MFA_ENCRYPTION_KEY = newKeySource;
+      process.env.PREVIOUS_MFA_ENCRYPTION_KEY = oldKeySource;
+      if (newJwt) {
+        process.env.JWT_SECRET = newJwt;
+        if (oldJwt) process.env.PREVIOUS_JWT_SECRET = oldJwt;
+      }
+      if (newRef) {
+        process.env.JWT_REFRESH_SECRET = newRef;
+      }
+
+      if (typeof options.onCrashAfterEnvReplaceBeforeState === 'function') {
+        options.onCrashAfterEnvReplaceBeforeState({ dbPath, envPath, deploymentState });
+      }
 
       deploymentState.configUpdated = true;
+      deploymentState.configUpdateIntent = false;
       writeStateAtomic(stateFilePath, deploymentState);
       logStep('4.2.4', '✅ Configuration updated atomically and synced to disk (chmod 600).');
     }
@@ -864,8 +1015,8 @@ async function executeDeployment(options = {}) {
   logStep('5.1', 'Verifying Nginx is STILL stopped before starting application...');
   verifyIsolation({ spawner, allowPm2Online: false });
 
-  logStep('5.2', 'Starting PM2 backend process locally (isolated to 127.0.0.1:3001)...');
-  runCommandStrict(spawner, 'pm2', ['start', 'ecosystem.config.cjs'], { timeout: 15000 }, 'Start PM2');
+  logStep('5.2', 'Starting PM2 backend process locally (isolated to 127.0.0.1:3001, --update-env)...');
+  runCommandStrict(spawner, 'pm2', ['start', 'ecosystem.config.cjs', '--update-env'], { timeout: 15000 }, 'Start PM2');
 
   logStep('5.3', 'Verifying PM2 is online and Nginx remains stopped (--allow-pm2)...');
   verifyIsolation({ spawner, allowPm2Online: true });
@@ -1112,8 +1263,8 @@ async function executeRollback(options = {}) {
     }
 
     if (shouldStartPm2) {
-      logStep('R.1.1', 'Restarting PM2 application on existing code...');
-      runCommandStrict(spawner, 'pm2', ['start', 'ecosystem.config.cjs'], { timeout: 15000 }, 'Restart PM2');
+      logStep('R.1.1', 'Restarting PM2 application on existing code (--update-env)...');
+      runCommandStrict(spawner, 'pm2', ['start', 'ecosystem.config.cjs', '--update-env'], { timeout: 15000 }, 'Restart PM2');
     }
     if (shouldStartNginx) {
       logStep('R.1.2', 'Setting conservative traffic-may-reopen boundary before restoring Nginx service...');
@@ -1219,20 +1370,48 @@ async function executeRollback(options = {}) {
     fs.copyFileSync(backupFile, dbPath);
   }
 
-  // 6.1 Restore pre-deployment configuration (.env) if modified
+  // 6.1 Restore pre-deployment configuration (.env) if modified or if update was intended
   const envPath = options.envPath || path.resolve(rootDir, '.env');
-  if (state.envBackupFile && fs.existsSync(state.envBackupFile)) {
-    if (state.configUpdated === true) {
-      logStep('R.6.1', 'Restoring pre-deployment configuration (.env) from backup...');
-      if (fs.existsSync(envPath)) {
-        fs.renameSync(envPath, path.join(quarantineDir, 'failed.env'));
-      }
-      fs.copyFileSync(state.envBackupFile, envPath);
-      try { fs.chmodSync(envPath, 0o600); } catch {}
-      logStep('R.6.1', '✅ Configuration (.env) restored from backup and quarantine copy retained.');
-    } else {
-      logStep('R.6.1', 'Configuration (.env) was never updated; keeping existing configuration.');
+  const configMayBeModified = state.configUpdated === true || state.configUpdateIntent === true;
+
+  if (configMayBeModified) {
+    if (!state.envBackupFile || !fs.existsSync(state.envBackupFile)) {
+      logFatal('ABORT ROLLBACK: Configuration update was initiated or completed, but envBackupFile is missing or unreadable. Halting without restoration to prevent inconsistent state.');
+      throw new Error('ABORT ROLLBACK: Validated envBackupFile is missing during configuration rollback.');
     }
+
+    logStep('R.6.1', 'Restoring pre-deployment configuration (.env) from backup...');
+    if (fs.existsSync(envPath)) {
+      const quarantinedEnv = path.join(quarantineDir, 'failed.env');
+      try {
+        fs.renameSync(envPath, quarantinedEnv);
+      } catch {
+        copySecretFileSecure(envPath, quarantinedEnv);
+        try { fs.unlinkSync(envPath); } catch {}
+      }
+    }
+    copySecretFileSecure(state.envBackupFile, envPath);
+
+    // Also update in-memory process.env in deployment runner so any child processes use restored configuration
+    const rotateToolPath = fs.existsSync(path.join(rootDir, 'server', '.recovery_tools', 'rotate_mfa_secrets.cjs'))
+      ? path.join(rootDir, 'server', '.recovery_tools', 'rotate_mfa_secrets.cjs')
+      : path.resolve(rootDir, 'scripts/rotate_mfa_secrets.cjs');
+    if (fs.existsSync(rotateToolPath)) {
+      const { parseDotEnvFile } = require(rotateToolPath);
+      const restoredEnvObj = parseDotEnvFile(envPath);
+      if (restoredEnvObj.MFA_ENCRYPTION_KEY) process.env.MFA_ENCRYPTION_KEY = restoredEnvObj.MFA_ENCRYPTION_KEY;
+      else delete process.env.MFA_ENCRYPTION_KEY;
+      if (restoredEnvObj.PREVIOUS_MFA_ENCRYPTION_KEY) process.env.PREVIOUS_MFA_ENCRYPTION_KEY = restoredEnvObj.PREVIOUS_MFA_ENCRYPTION_KEY;
+      else delete process.env.PREVIOUS_MFA_ENCRYPTION_KEY;
+      if (restoredEnvObj.JWT_SECRET) process.env.JWT_SECRET = restoredEnvObj.JWT_SECRET;
+      if (restoredEnvObj.PREVIOUS_JWT_SECRET) process.env.PREVIOUS_JWT_SECRET = restoredEnvObj.PREVIOUS_JWT_SECRET;
+      else delete process.env.PREVIOUS_JWT_SECRET;
+      if (restoredEnvObj.JWT_REFRESH_SECRET) process.env.JWT_REFRESH_SECRET = restoredEnvObj.JWT_REFRESH_SECRET;
+    }
+
+    logStep('R.6.1', '✅ Configuration (.env) restored from backup and quarantine copy retained.');
+  } else {
+    logStep('R.6.1', 'Configuration (.env) was never updated; keeping existing configuration.');
   }
 
   // 7. Verify restored database integrity and baseline invariants
@@ -1283,7 +1462,7 @@ async function executeRollback(options = {}) {
   logStep('R.7', '✅ Restored database verified: 0 FK violations, quick_check ok, exact baseline match.');
 
   // R.7.1 Verify restored configuration compatibility with restored database ciphertext
-  if (state.envBackupFile && state.configUpdated === true && fs.existsSync(envPath)) {
+  if (configMayBeModified && fs.existsSync(envPath)) {
     logStep('R.7.1', 'Verifying restored configuration and database ciphertext compatibility...');
     const rotateToolPath = fs.existsSync(path.join(rootDir, 'server', '.recovery_tools', 'rotate_mfa_secrets.cjs'))
       ? path.join(rootDir, 'server', '.recovery_tools', 'rotate_mfa_secrets.cjs')
@@ -1292,11 +1471,11 @@ async function executeRollback(options = {}) {
       const { determineActiveMfaSecretSource, auditDecryptability } = require(rotateToolPath);
       try {
         const restoredSource = determineActiveMfaSecretSource({}, envPath);
-        auditDecryptability(dbPath, {
+        const auditRes = auditDecryptability(dbPath, {
           primaryKeySource: restoredSource.value,
           requirePrimaryOnly: false
         });
-        logStep('R.7.1', '✅ Restored configuration and database ciphertext verified 100% compatible.');
+        logStep('R.7.1', `✅ Restored configuration and database ciphertext verified 100% compatible (${auditRes.activeSecretsVerified} active, ${auditRes.pendingSecretsVerified} pending).`);
       } catch (compatErr) {
         logFatal(`Restored configuration failed compatibility check with restored database: ${compatErr.message}`);
         throw new Error(`Restored database/configuration compatibility check failed: ${compatErr.message}`);
@@ -1332,8 +1511,8 @@ async function executeRollback(options = {}) {
   runCommandStrict(spawner, 'npm', ['prune', '--omit=dev', '--legacy-peer-deps'], { timeout: 60000, shell: true, cwd: rootDir }, 'Rollback npm prune');
 
   // 9. Restart PM2 on restored revision
-  logStep('R.9', 'Starting PM2 application on restored code...');
-  runCommandStrict(spawner, 'pm2', ['start', 'ecosystem.config.cjs'], { timeout: 15000 }, 'Rollback Start PM2');
+  logStep('R.9', 'Starting PM2 application on restored code (--update-env)...');
+  runCommandStrict(spawner, 'pm2', ['start', 'ecosystem.config.cjs', '--update-env'], { timeout: 15000 }, 'Rollback Start PM2');
 
   // 9.1 Verify PM2 machine-readable health after restart
   logStep('R.9.1', 'Verifying PM2 machine-readable health for bfi-classroom...');

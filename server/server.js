@@ -17,7 +17,7 @@ import { validateSafePublicUrl, isPrivateIP, createPinnedAgent, readBoundedStrea
 
 // Setup env
 if (process.env.IS_STAGING_SERVER !== 'true') {
-  dotenv.config();
+  dotenv.config({ override: true });
 }
 
 // Process crash guards — prevent unhandled rejections from terminating the server process
