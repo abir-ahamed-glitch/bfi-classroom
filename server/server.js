@@ -815,8 +815,12 @@ app.use((err, req, res, _next) => {
 
 startCommunityScheduler(io);
 startAnnouncementScheduler(io);
-httpServer.listen(PORT, () => {
-  console.log(`🚀 BFI Classroom API Gateway running on port ${PORT}`);
+const listenArgs = [PORT];
+if (process.env.HOST) {
+  listenArgs.push(process.env.HOST);
+}
+httpServer.listen(...listenArgs, () => {
+  console.log(`🚀 BFI Classroom API Gateway running on port ${PORT}${process.env.HOST ? ` (bound to ${process.env.HOST})` : ''}`);
 
   // ── Batch Status Automation Scheduler ─────────────────────────────────────
   // Run once on startup (catches any missed transitions while server was down)
