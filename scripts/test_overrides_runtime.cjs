@@ -189,9 +189,17 @@ async function main() {
     assert.strictEqual(sheets[0].getAttribute('name'), 'Students');
   });
 
-  // 9. undici (>=7.30.1) Agent and dispatch
+  // 9. undici (^7.30.1) Agent and dispatch
   await runTest('undici: instantiates custom Agent without TLS regression', async () => {
-    const { Agent } = require('undici');
+    let undiciModule;
+    try {
+      undiciModule = require('undici');
+    } catch {
+      const path = require('path');
+      const jsdomDir = path.dirname(require.resolve('jsdom'));
+      undiciModule = require(require.resolve('undici', { paths: [jsdomDir] }));
+    }
+    const { Agent } = undiciModule;
     const agent = new Agent({
       connect: { timeout: 5000 },
       keepAliveTimeout: 1000
