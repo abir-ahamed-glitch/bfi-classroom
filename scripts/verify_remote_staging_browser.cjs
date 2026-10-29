@@ -247,10 +247,23 @@ async function runStagingBrowserVerification() {
     const studentFileInputCorrupt = page.locator('.bulk-import-modal input[type="file"], input[type="file"][accept*=".pdf"]');
     await studentFileInputCorrupt.setInputFiles(CORRUPT_PDF);
 
-    const studentErrorAlert = page.locator('.bulk-import-modal').locator('text=/Invalid|Failed|error|corrupt/i');
-    await studentErrorAlert.first().waitFor({ state: 'visible', timeout: 10000 });
-    const studentErrorText = await studentErrorAlert.first().textContent();
-    recordResult('2b', 'BulkStudentImport Corrupted PDF Boundary', true, studentErrorText.trim().slice(0, 60));
+    // Scoped selector strictly targeting BulkStudentImport's authentic errorMsg banner
+    const studentErrorBanner = page.locator('.bulk-import-modal .modern-modal-body div:has(svg.lucide-alert-circle) span, .bulk-import-modal div[style*="borderLeft: 4px solid"] span, .bulk-import-modal div[style*="border-left: 4px solid"] span');
+    await studentErrorBanner.first().waitFor({ state: 'visible', timeout: 15000 });
+    const studentErrorText = await studentErrorBanner.first().textContent();
+
+    // Verify it captures actual parser error text, not merely the uploaded filename
+    if (studentErrorText.trim() === 'corrupted-header.pdf' || !studentErrorText.trim()) {
+      throw new Error(`Step 2b captured filename instead of error banner: "${studentErrorText}"`);
+    }
+
+    // Confirm no successful preview or import action remains available
+    const previewCount2b = await page.locator('.bulk-import-modal').locator('text=/[1-9]\\d*\\s+valid students found/').count();
+    const importBtnCount2b = await page.locator('.bulk-import-modal button:has-text("Import")').count();
+    if (previewCount2b > 0) throw new Error('Step 2b: valid student preview is unexpectedly present for corrupted file');
+    if (importBtnCount2b > 0) throw new Error('Step 2b: import button is unexpectedly available for corrupted file');
+
+    recordResult('2b', 'BulkStudentImport Corrupted PDF Boundary', true, studentErrorText.trim());
 
     // Close modal
     const closeBtn2b = page.locator('button[aria-label="Close"], .bulk-import-modal button:has-text("Close"), button:has-text("Cancel")');
@@ -310,10 +323,18 @@ async function runStagingBrowserVerification() {
     const bulkRegFileInputZero = page.locator('.bulk-import-modal input[type="file"], input[type="file"][accept*=".pdf"]');
     await bulkRegFileInputZero.setInputFiles(ZERO_BYTE_PDF);
 
-    const zeroByteAlert = page.locator('.bulk-import-modal').locator('text=/Invalid|Failed|error|corrupt|empty|zero bytes/i');
-    await zeroByteAlert.first().waitFor({ state: 'visible', timeout: 10000 });
-    const zeroByteText = await zeroByteAlert.first().textContent();
-    recordResult('3b', 'BulkRegisteredStudentImport Zero-Byte PDF Boundary', true, zeroByteText.trim().slice(0, 60));
+    // Scoped selector strictly targeting BulkRegisteredStudentImport's authentic errorMsg banner
+    const regZeroErrorBanner = page.locator('.bulk-import-modal .modern-modal-body div:has(svg.lucide-alert-circle) span, .bulk-import-modal div[style*="borderLeft: 4px solid"] span, .bulk-import-modal div[style*="border-left: 4px solid"] span');
+    await regZeroErrorBanner.first().waitFor({ state: 'visible', timeout: 15000 });
+    const zeroByteText = await regZeroErrorBanner.first().textContent();
+
+    // Confirm no successful preview or register action remains available
+    const previewCount3b = await page.locator('.bulk-import-modal').locator('text=/[1-9]\\d*\\s+valid students found/').count();
+    const registerBtnCount3b = await page.locator('.bulk-import-modal button:has-text("Register")').count();
+    if (previewCount3b > 0) throw new Error('Step 3b: valid student preview is unexpectedly present for zero-byte file');
+    if (registerBtnCount3b > 0) throw new Error('Step 3b: register button is unexpectedly available for zero-byte file');
+
+    recordResult('3b', 'BulkRegisteredStudentImport Zero-Byte PDF Boundary', true, zeroByteText.trim());
 
     const closeBtn3b = page.locator('button[aria-label="Close"], .bulk-import-modal button:has-text("Close"), button:has-text("Cancel")');
     if (await closeBtn3b.count() > 0) await closeBtn3b.first().click();
@@ -369,13 +390,28 @@ async function runStagingBrowserVerification() {
 
     await uploadResultsTriggerBtn.click();
     await resultsModalHeader.waitFor({ state: 'visible', timeout: 5000 });
-    const resultsDropzoneCorrupt = page.locator('.modern-modal-body input[type="file"], input[type="file"]');
+    const resultsDropzoneCorrupt = page.locator('.modal-container .modal-body input[type="file"], input[type="file"]');
     await resultsDropzoneCorrupt.setInputFiles(CORRUPT_PDF);
 
-    const resultsErrorAlert = page.locator('text=/Invalid|Failed|error|corrupt/i');
-    await resultsErrorAlert.first().waitFor({ state: 'visible', timeout: 10000 });
-    const resultsErrorText = await resultsErrorAlert.first().textContent();
-    recordResult('4b', 'UploadResultsModal Corrupted PDF Boundary', true, resultsErrorText.trim().slice(0, 60));
+    // Scoped selector strictly targeting UploadResultsModal's authentic errorMsg banner
+    const resultsErrorBanner = page.locator('.modal-container .modal-body div:has(strong:has-text("Upload Error")) p');
+    await resultsErrorBanner.first().waitFor({ state: 'visible', timeout: 15000 });
+    const resultsErrorText = await resultsErrorBanner.first().textContent();
+
+    // Verify it captures actual parser error text, not unrelated background text or filename
+    if (resultsErrorText.trim().includes('Exam Failed') || resultsErrorText.trim() === 'corrupted-header.pdf' || !resultsErrorText.trim()) {
+      throw new Error(`Step 4b captured unrelated background text instead of error banner: "${resultsErrorText}"`);
+    }
+
+    // Confirm no detected results table is shown and upload action is disabled
+    const detectedCount4b = await page.locator('.modal-container').locator('text=/Detected Results/i').count();
+    if (detectedCount4b > 0) throw new Error('Step 4b: detected results preview unexpectedly present for corrupted file');
+
+    const submitBtn4b = page.locator('.modal-footer button:has-text("Upload Results")');
+    const isSubmitDisabled4b = (await submitBtn4b.getAttribute('disabled')) !== null;
+    if (!isSubmitDisabled4b) throw new Error('Step 4b: upload results action is not disabled for corrupted file');
+
+    recordResult('4b', 'UploadResultsModal Corrupted PDF Boundary', true, resultsErrorText.trim());
 
     const closeBtn4b = page.locator('button[aria-label="Close"], button:has-text("Cancel")');
     if (await closeBtn4b.count() > 0) await closeBtn4b.first().click();
