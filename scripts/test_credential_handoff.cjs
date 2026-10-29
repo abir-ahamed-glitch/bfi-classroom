@@ -224,7 +224,7 @@ async function main() {
   process.env.DATABASE_PATH = disposableDbPath;
   process.env.JWT_SECRET = 'test_integration_jwt_secret_1234567890';
   process.env.JWT_REFRESH_SECRET = 'test_integration_refresh_secret_1234567890';
-  process.env.CLOUDFLARE_TURNSTILE_SECRET_KEY = '0x4AAAAAAFjcgxWdsFD76vYeWwOAe3VG7pI'; // standard turnstile secret
+  process.env.CLOUDFLARE_TURNSTILE_SECRET_KEY = 'test_turnstile_secret_key_mock';
   process.env.NODE_ENV = 'production'; // ensure Turnstile is NOT bypassed by test mode!
 
   // Initialize schema and seed accounts

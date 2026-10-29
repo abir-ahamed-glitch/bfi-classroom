@@ -114,18 +114,22 @@ function issueRefreshToken(req, res, user) {
   return insert.lastInsertRowid;
 }
 
-// Cloudflare Turnstile token verifier
-const TURNSTILE_DEFAULT_SECRET = '0x4AAAAAAFjcgxWdsFD76vYeWwOAe3VG7pI';
-
-async function verifyTurnstileToken(token, ip) {
-  if (process.env.IS_TEST_SERVER === 'true' || process.env.NODE_ENV === 'test' || process.env.IS_STAGING_SERVER === 'true') {
-    if (token === 'mock_test_turnstile_token' || token === 'test-token-valid' || token === 'staging-turnstile-token') {
+// Cloudflare Turnstile token verifier (explicitly configured via environment, zero hardcoded fallback secrets)
+async function verifyTurnstileToken(token, ip, isIsolatedStaging = false) {
+  if (process.env.IS_TEST_SERVER === 'true' || process.env.NODE_ENV === 'test') {
+    if (token === 'mock_test_turnstile_token' || token === 'test-token-valid') {
       return true;
     }
   }
-  const secretKey = process.env.CLOUDFLARE_TURNSTILE_SECRET_KEY || process.env.TURNSTILE_SECRET || TURNSTILE_DEFAULT_SECRET;
+  if (isIsolatedStaging) {
+    if (token === 'staging-turnstile-token' || token === 'mock_test_turnstile_token') {
+      return true;
+    }
+  }
+  const secretKey = process.env.CLOUDFLARE_TURNSTILE_SECRET_KEY || process.env.TURNSTILE_SECRET;
   if (!secretKey) {
-    return true;
+    // Fail closed: Missing secret in non-test / non-isolated environments must never verify
+    return false;
   }
   if (!token) {
     return false;
@@ -421,7 +425,29 @@ router.post('/login', authLimiter, sanitizeInput, async (req, res) => {
 
   // Cloudflare Turnstile bot verification
   const isTestServer = process.env.NODE_ENV === 'test' || process.env.IS_TEST_SERVER === 'true';
-  const turnstileSecret = process.env.CLOUDFLARE_TURNSTILE_SECRET_KEY || process.env.TURNSTILE_SECRET || (isTestServer ? null : TURNSTILE_DEFAULT_SECRET);
+  const remoteIp = req.socket?.remoteAddress || '';
+  const isLoopback = remoteIp === '127.0.0.1' || remoteIp === '::1' || remoteIp === '::ffff:127.0.0.1';
+  const hasProxyHeaders = Boolean(
+    req.headers['x-forwarded-for'] ||
+    req.headers['cf-connecting-ip'] ||
+    req.headers['x-real-ip'] ||
+    req.headers['forwarded']
+  );
+  const isIsolatedStaging = process.env.IS_STAGING_SERVER === 'true' &&
+    isLoopback &&
+    !hasProxyHeaders &&
+    (process.env.HOST === '127.0.0.1' || process.env.HOST === 'localhost');
+
+  const turnstileSecret = process.env.CLOUDFLARE_TURNSTILE_SECRET_KEY || process.env.TURNSTILE_SECRET;
+
+  // Safe failure behavior when Turnstile is enforced in production but secret is unconfigured
+  if (!isTestServer && !isIsolatedStaging && !turnstileSecret) {
+    console.error('[SECURITY] Turnstile secret key is unconfigured in production environment.');
+    return res.status(503).json({
+      error: 'Security verification service is unconfigured. Please contact system administrator.',
+      field: 'turnstile'
+    });
+  }
 
   let isTurnstileVerified = false;
 
@@ -429,7 +455,7 @@ router.post('/login', authLimiter, sanitizeInput, async (req, res) => {
   const token = turnstileToken || req.body?.['cf-turnstile-response'];
   if (token) {
     const clientIp = getClientIp(req);
-    const isBotCheckPassed = await verifyTurnstileToken(token, clientIp);
+    const isBotCheckPassed = await verifyTurnstileToken(token, clientIp, isIsolatedStaging);
     if (!isBotCheckPassed) {
       return res.status(403).json({ 
         error: 'Security verification failed. Please complete the Cloudflare security check again.',
@@ -440,17 +466,9 @@ router.post('/login', authLimiter, sanitizeInput, async (req, res) => {
   } else if (isTestServer) {
     isTurnstileVerified = true;
   } else {
-        // 2. Separately reviewed, explicitly authorized maintenance-scoped verification
+    // 2. Separately reviewed, explicitly authorized maintenance-scoped verification
     // Permitted ONLY on direct loopback, WITHOUT proxy headers, during an active pre-exposure deployment window
     // with an unconsumed, unexpired capability bound to this exact deployment attempt
-    const remoteIp = req.socket?.remoteAddress || '';
-    const isLoopback = remoteIp === '127.0.0.1' || remoteIp === '::1' || remoteIp === '::ffff:127.0.0.1';
-    const hasProxyHeaders = Boolean(
-      req.headers['x-forwarded-for'] ||
-      req.headers['cf-connecting-ip'] ||
-      req.headers['x-real-ip'] ||
-      req.headers['forwarded']
-    );
     const reqMaintToken = req.headers['x-bfi-maintenance-token'];
 
     if (isLoopback && !hasProxyHeaders && typeof reqMaintToken === 'string' && reqMaintToken.length >= 32) {
@@ -470,7 +488,7 @@ router.post('/login', authLimiter, sanitizeInput, async (req, res) => {
     }
   }
 
-  if (turnstileSecret && !isTurnstileVerified) {
+  if (!isTestServer && !isTurnstileVerified) {
     return res.status(400).json({ 
       error: 'Security verification required. Please complete the Cloudflare security check.',
       field: 'turnstile'
