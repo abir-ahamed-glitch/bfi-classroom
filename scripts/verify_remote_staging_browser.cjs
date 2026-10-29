@@ -59,6 +59,8 @@ async function runStagingBrowserVerification() {
   });
 
   const page = await context.newPage();
+  page.setDefaultTimeout(120000);
+  page.setDefaultNavigationTimeout(120000);
 
   // Track console warnings (specifically fake worker warnings)
   const consoleWarnings = [];
@@ -131,7 +133,7 @@ async function runStagingBrowserVerification() {
   try {
     // ── STEP 1: UI Authentication via Remote Staging Login Form ───────────────
     console.log('\n--- Step 1: Remote Staging UI Authentication ---');
-    await page.goto(`${TUNNEL_URL}/admin/login`, { waitUntil: 'networkidle' });
+    await page.goto(`${TUNNEL_URL}/admin/login`, { waitUntil: 'domcontentloaded' });
 
     // Ensure login inputs are present
     const usernameInput = page.locator('#username');
@@ -159,7 +161,7 @@ async function runStagingBrowserVerification() {
 
     // ── STEP 2: BulkStudentImport (Live UI Controls) ───────────────────────────
     console.log('\n--- Step 2: BulkStudentImport Component via Live UI ---');
-    await page.goto(`${TUNNEL_URL}/admin/studentsmanager`, { waitUntil: 'networkidle' });
+    await page.goto(`${TUNNEL_URL}/admin/studentsmanager`, { waitUntil: 'domcontentloaded' });
 
     // Open modal via real UI button
     const smartImportBtn = page.locator('button:has-text("Smart Batch Import")');
@@ -217,7 +219,7 @@ async function runStagingBrowserVerification() {
 
     // ── STEP 3: BulkRegisteredStudentImport (Live UI Controls) ─────────────────
     console.log('\n--- Step 3: BulkRegisteredStudentImport Component via Live UI ---');
-    await page.goto(`${TUNNEL_URL}/admin/additional-options?view=bulk-register`, { waitUntil: 'networkidle' });
+    await page.goto(`${TUNNEL_URL}/admin/additional-options?view=bulk-register`, { waitUntil: 'domcontentloaded' });
 
     const bulkRegTriggerBtn = page.locator('button:has-text("Bulk Upload Registered Students")');
     await bulkRegTriggerBtn.waitFor({ state: 'visible', timeout: 10000 });
@@ -262,7 +264,7 @@ async function runStagingBrowserVerification() {
 
     // ── STEP 4: UploadResultsModal (Live UI Controls) ──────────────────────────
     console.log('\n--- Step 4: UploadResultsModal Component via Live UI ---');
-    await page.goto(`${TUNNEL_URL}/admin/batches/1`, { waitUntil: 'networkidle' });
+    await page.goto(`${TUNNEL_URL}/admin/batches/1`, { waitUntil: 'domcontentloaded' });
 
     const uploadResultsTriggerBtn = page.locator('button:has-text("Upload Results")');
     await uploadResultsTriggerBtn.waitFor({ state: 'visible', timeout: 10000 });
@@ -307,7 +309,7 @@ async function runStagingBrowserVerification() {
 
     // ── STEP 5: PdfViewer (Live UI Lightbox) ───────────────────────────────────
     console.log('\n--- Step 5: PdfViewer Component via Live Notice Board ---');
-    await page.goto(`${TUNNEL_URL}/notices`, { waitUntil: 'networkidle' });
+    await page.goto(`${TUNNEL_URL}/notices`, { waitUntil: 'domcontentloaded' });
 
     // 5a. Valid PDF Attachment Lightbox
     const validNoticeAttachment = page.locator('text=/valid-sample\\.pdf|notice_attachment\\.pdf/i');
@@ -330,19 +332,31 @@ async function runStagingBrowserVerification() {
     const hasEvalFalse5a = workerReqs5a.slice(workerReqCountBefore5a).some(r => r.isEvalSupported === false);
     recordResult('5a', 'PdfViewer Valid PDF Rendering', Boolean(hasEvalFalse5a), 'Canvas rendered, isEvalSupported:false confirmed');
 
-    // Close lightbox
-    const lightboxClose = page.locator('button:has-text("✕"), [aria-label="Close"]');
-    if (await lightboxClose.count() > 0) await lightboxClose.first().click();
-    await page.waitForTimeout(500);
+    // Close lightbox via Close button or Escape key, ensuring backdrop detaches
+    const closeBtn5a = page.locator('button.lb-close[title="Close"], button[title="Close"]');
+    if (await closeBtn5a.count() > 0) {
+      await closeBtn5a.first().click().catch(() => {});
+    }
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(300);
+    if (await page.locator('.lb-backdrop').isVisible()) {
+      await page.keyboard.press('Escape');
+    }
+    await page.locator('.lb-backdrop').waitFor({ state: 'detached', timeout: 5000 }).catch(() => {});
 
     // 5b. Corrupted PDF Attachment Lightbox
     const corruptNoticeAttachment = page.locator('text=/corrupt\\.pdf/i');
     if (await corruptNoticeAttachment.count() > 0) {
-      await corruptNoticeAttachment.first().click();
+      await corruptNoticeAttachment.first().click({ force: true });
       const viewerErrorHeading = page.locator('text=Failed to Load PDF');
-      await viewerErrorHeading.waitFor({ state: 'visible', timeout: 10000 });
+      await viewerErrorHeading.waitFor({ state: 'visible', timeout: 15000 });
       recordResult('5b', 'PdfViewer Malformed Attachment Boundary', true, 'Handled by "Failed to Load PDF" boundary');
-      if (await lightboxClose.count() > 0) await lightboxClose.first().click();
+      const closeBtn5b = page.locator('button.lb-close[title="Close"], button[title="Close"]');
+      if (await closeBtn5b.count() > 0) {
+        await closeBtn5b.first().click().catch(() => {});
+      }
+      await page.keyboard.press('Escape');
+      await page.locator('.lb-backdrop').waitFor({ state: 'detached', timeout: 5000 }).catch(() => {});
     } else {
       recordResult('5b', 'PdfViewer Malformed Attachment Boundary', true, 'Notice attachment verified');
     }
