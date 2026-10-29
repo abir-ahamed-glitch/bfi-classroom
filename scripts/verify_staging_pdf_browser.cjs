@@ -2,15 +2,15 @@
 /**
  * scripts/verify_staging_pdf_browser.cjs
  *
- * Direct Browser Verification of Application PDF Components against Staging Server.
+ * STANDALONE BROWSER LIBRARY SMOKE TEST
  *
- * Tests in Real Headless Chromium:
- * 1. BulkStudentImport component: modal open, valid PDF upload, parse preview, malformed error boundary.
- * 2. BulkRegisteredStudentImport component: modal open, valid PDF upload, parse preview, corrupted & zero-byte error handling.
- * 3. UploadResultsModal component: dropzone input, results preview, corrupted fixture error handling.
- * 4. PdfViewer component: real worker loading, PDF render preview, error boundary.
- * 5. Web Worker runtime verification: verifies dedicated Worker instance, no fake worker fallback,
- *    and confirms isEvalSupported: false reaches evaluatorOptions sent to the worker.
+ * NOTE: This script is a standalone library smoke test verifying the underlying PDF.js 3.11.174
+ * engine and worker eval parameters.
+ *
+ * It is NOT application-component integration coverage.
+ * Full component-level integration coverage (exercising real controls in BulkStudentImport,
+ * BulkRegisteredStudentImport, UploadResultsModal, and PdfViewer) is executed via Playwright
+ * in tests/pdf-components-application.spec.js.
  */
 
 const { chromium } = require('playwright');
@@ -31,7 +31,7 @@ let passedTests = 0;
 
 async function runTest(name, fn) {
   totalTests++;
-  process.stdout.write(`Browser Test ${totalTests}: ${name}... `);
+  process.stdout.write(`Library Smoke Test ${totalTests}: ${name}... `);
   try {
     const res = fn();
     if (res && typeof res.then === 'function') {
@@ -48,8 +48,9 @@ async function runTest(name, fn) {
 
 async function main() {
   console.log('================================================================');
-  console.log('APPLICATION PDF COMPONENTS & REAL WORKER BROWSER VERIFICATION');
-  console.log('Target Staging Server:', STAGING_URL);
+  console.log('PDF.JS LIBRARY SMOKE TEST & STATIC BUNDLE VERIFICATION');
+  console.log('Notice: Standalone library test; see tests/pdf-components-application.spec.js');
+  console.log('for application-level component integration verification.');
   console.log('================================================================\n');
 
   // Verify test fixtures exist on disk
