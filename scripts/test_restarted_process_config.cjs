@@ -350,10 +350,10 @@ async function runTest() {
     JWT_REFRESH_SECRET: 'stale_inherited_refresh_sec',
     DOTENV_CONFIG_PATH: envFile,
     DISABLE_OUTBOUND_NOTIFICATIONS: 'true',
-    IS_TEST_SERVER: 'true',
-    NODE_ENV: 'test',
     ALLOW_WINDOWS_DEV_PREFLIGHT: 'true'
   };
+  delete conflictingEnv.IS_TEST_SERVER;
+  delete conflictingEnv.NODE_ENV;
 
   let serverStderr = '';
 

@@ -6,7 +6,7 @@ const __dirname = path.dirname(__filename);
 
 // Enforce isolated disposable test database and test server port
 process.env.DATABASE_PATH = path.resolve(__dirname, 'test_isolated_bfi.db');
-process.env.PORT = process.env.PORT || '3099';
+process.env.PORT = (process.env.PORT && process.env.PORT !== '3001') ? process.env.PORT : '3099';
 process.env.IS_TEST_SERVER = 'true';
 process.env.NODE_ENV = 'test';
 process.env.APP_URL = process.env.APP_URL || process.env.CLIENT_URL || 'http://localhost:5174/bfi-classroom';
