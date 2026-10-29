@@ -26,13 +26,13 @@
     "cors": "^2.8.6",
     "docx": "^9.7.1",
     "docx-preview": "^0.3.7",
-    "dompurify": "^3.3.3",
+    "dompurify": "^3.4.17",
     "dotenv": "^17.3.1",
     "emoji-mart": "^5.6.0",
     "emoji-picker-react": "^4.19.1",
     "exceljs": "^4.4.0",
     "express": "^5.2.1",
-    "express-rate-limit": "^8.3.1",
+    "express-rate-limit": "^8.7.1",
     "fix-webm-duration": "^1.0.6",
     "helmet": "^8.1.0",
     "html2canvas": "^1.4.1",
@@ -41,7 +41,7 @@
     "jspdf": "^4.2.1",
     "lucide-react": "^1.6.0",
     "mammoth": "^1.12.0",
-    "multer": "^2.1.1",
+    "multer": "^2.5.0",
     "nodemailer": "^8.0.7",
     "otplib": "^13.5.0",
     "pdf-parse": "^2.4.5",
@@ -54,11 +54,11 @@
     "react-icons": "^5.6.0",
     "react-is": "^19.2.7",
     "react-quill": "^2.0.0",
-    "react-router-dom": "^7.13.2",
+    "react-router-dom": "^7.18.5",
     "recharts": "^3.8.1",
     "sharp": "^0.33.5",
-    "socket.io": "^4.8.3",
-    "socket.io-client": "^4.8.3",
+    "socket.io": "^4.8.4",
+    "socket.io-client": "^4.8.4",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
     "yet-another-react-lightbox": "^3.32.0"
   },
@@ -74,5 +74,23 @@
     "gh-pages": "^6.3.0",
     "globals": "^17.4.0",
     "vite": "^8.0.1"
+  },
+  "overrides": {
+    "proxy-addr": ">=2.0.8",
+    "body-parser": ">=2.4.0",
+    "qs": ">=6.16.2",
+    "source-map-js": ">=1.2.2",
+    "fflate": ">=0.8.3",
+    "@xmldom/xmldom": ">=0.8.15",
+    "brace-expansion": "^1.1.21",
+    "ip-address": ">=10.7.4",
+    "tar": ">=7.5.10",
+    "undici": ">=7.30.1",
+    "docx": {
+      "nanoid": ">=5.1.16"
+    },
+    "ws": ">=8.21.3",
+    "engine.io": ">=6.6.10",
+    "socket.io-parser": ">=4.2.7"
   }
 }

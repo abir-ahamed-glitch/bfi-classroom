@@ -4,13 +4,18 @@
  *
  * Real Browser Web Worker Regression Test Suite using Playwright Chromium.
  *
+ * Tests the ACTUAL production safeReadSpreadsheetAsync export from dist/assets/,
+ * exercising its real Vite-generated worker URL without duplicating application logic.
+ *
  * Enforces:
- * 1. Real Web Worker execution in genuine browser context (Chromium).
- * 2. Successful parsing of tabular spreadsheet in browser worker thread.
- * 3. Timeout termination: worker.terminate() is called and promise rejects cleanly.
- * 4. Safe failure on worker creation error: NEVER falls back to main-thread execution in browser.
- * 5. Parsing error / boundary rejection cleanly forwarded from worker to main thread.
- * 6. Resource cleanup: termination on success, error, and timeout.
+ * 1. Real Web Worker execution in genuine browser context (Chromium) using production bundle.
+ * 2. Successful parsing of tabular spreadsheet in browser worker thread with complete cleanup.
+ * 3. Oversized sparse-sheet rejection before allocation with actionable message and cleanup.
+ * 4. Timeout termination: worker.terminate() is called and promise rejects cleanly.
+ * 5. Worker constructor failure: NEVER falls back to main-thread execution in browser.
+ * 6. Missing Worker API: NEVER falls back to main-thread execution in browser.
+ * 7. Worker parsing/runtime error: cleanly forwarded to main thread and worker terminated.
+ * 8. Comprehensive worker cleanup: zero orphaned background workers across all execution paths.
  */
 
 const http = require('http');
@@ -40,17 +45,30 @@ async function runTest(name, fn) {
   }
 }
 
-// Locate the bundled worker file in dist/assets
-function getBundledWorkerCode() {
+// Locate freshly built production assets in dist/assets
+function getProductionAssets() {
   const assetsDir = path.resolve(__dirname, '..', 'dist', 'assets');
   if (!fs.existsSync(assetsDir)) {
     throw new Error('dist/assets not found. Run npm run build first.');
   }
+
   const workerFile = fs.readdirSync(assetsDir).find(f => f.startsWith('spreadsheet.worker-') && f.endsWith('.js'));
   if (!workerFile) {
-    throw new Error('Bundled spreadsheet.worker-*.js not found in dist/assets.');
+    throw new Error('Bundled spreadsheet.worker-*.js not found in dist/assets. Run npm run build first.');
   }
-  return fs.readFileSync(path.join(assetsDir, workerFile), 'utf8');
+
+  const safeSpreadsheetFile = fs.readdirSync(assetsDir).find(f => f.startsWith('safeSpreadsheet-') && f.endsWith('.js'));
+  if (!safeSpreadsheetFile) {
+    throw new Error('Bundled safeSpreadsheet-*.js entry not found in dist/assets. Run npm run build first.');
+  }
+
+  return {
+    assetsDir,
+    workerFile,
+    workerCode: fs.readFileSync(path.join(assetsDir, workerFile), 'utf8'),
+    safeSpreadsheetFile,
+    safeSpreadsheetCode: fs.readFileSync(path.join(assetsDir, safeSpreadsheetFile), 'utf8')
+  };
 }
 
 // Create sample workbooks
@@ -79,24 +97,30 @@ function createSparseOversizedWorkbookBuffer() {
 async function main() {
   console.log('================================================================');
   console.log('REAL BROWSER WEB WORKER ISOLATION & PARSER REGRESSION SUITE');
+  console.log('Testing Actual Production safeReadSpreadsheetAsync Export');
   console.log('Browser Engine: Chromium (via Playwright)');
   console.log('================================================================\n');
 
-  const workerCode = getBundledWorkerCode();
+  const { assetsDir, workerFile, workerCode, safeSpreadsheetFile, safeSpreadsheetCode } = getProductionAssets();
   const validBuffer = createValidWorkbookBuffer();
   const sparseOversizedBuffer = createSparseOversizedWorkbookBuffer();
 
-  // Test Harness HTML & Server
-  // Hang worker code for timeout testing
+  console.log(`Using built production worker: dist/assets/${workerFile}`);
+  console.log(`Using built production export: dist/assets/${safeSpreadsheetFile}\n`);
+
+  // Hanging worker code for timeout testing
   const hangWorkerCode = `
     self.onmessage = function() {
-      // Intentionally simulate an infinite loop or hanging operation
       while (true) {}
     };
   `;
 
+  // HTTP server serving production assets and test harness
   const server = http.createServer((req, res) => {
-    if (req.url === '/assets/spreadsheet.worker.js') {
+    const parsedUrl = new URL(req.url, 'http://127.0.0.1');
+    const pathname = parsedUrl.pathname;
+
+    if (pathname === `/bfi-classroom/assets/${workerFile}`) {
       res.writeHead(200, {
         'Content-Type': 'application/javascript; charset=utf-8',
         'Cross-Origin-Embedder-Policy': 'require-corp',
@@ -106,7 +130,15 @@ async function main() {
       return;
     }
 
-    if (req.url === '/assets/hanging.worker.js') {
+    if (pathname === `/bfi-classroom/assets/${safeSpreadsheetFile}`) {
+      res.writeHead(200, {
+        'Content-Type': 'application/javascript; charset=utf-8'
+      });
+      res.end(safeSpreadsheetCode);
+      return;
+    }
+
+    if (pathname === '/assets/hanging.worker.js' || pathname === '/bfi-classroom/assets/hanging.worker.js') {
       res.writeHead(200, {
         'Content-Type': 'application/javascript; charset=utf-8'
       });
@@ -114,78 +146,62 @@ async function main() {
       return;
     }
 
-    // Default HTML page containing browser client implementation of safeReadSpreadsheetAsync
+    // Serve any additional JS chunk from dist/assets if requested
+    if (pathname.startsWith('/bfi-classroom/assets/')) {
+      const chunkName = path.basename(pathname);
+      const chunkPath = path.join(assetsDir, chunkName);
+      if (fs.existsSync(chunkPath) && fs.statSync(chunkPath).isFile()) {
+        res.writeHead(200, { 'Content-Type': 'application/javascript; charset=utf-8' });
+        fs.createReadStream(chunkPath).pipe(res);
+        return;
+      }
+    }
+
+    // Serve HTML harness that dynamically imports the REAL production safeReadSpreadsheetAsync export
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(`
       <!DOCTYPE html>
       <html>
-      <head><meta charset="utf-8"><title>Worker Isolation Test Harness</title></head>
+      <head>
+        <meta charset="utf-8">
+        <title>Real Browser Worker Test Harness</title>
+      </head>
       <body>
-        <h1>Browser Worker Harness</h1>
+        <h1>Browser Worker Production Harness</h1>
         <script>
-          // In-browser client implementation matching src/utils/safeSpreadsheet.js
-          window.safeReadSpreadsheetAsyncInBrowser = function(data, options = {}, workerUrl = '/assets/spreadsheet.worker.js') {
-            const timeoutMs = options.timeoutMs || 10000;
+          // Instrument window.Worker for lifecycle tracking WITHOUT replacing application control logic
+          const OriginalWorker = window.Worker;
+          window.__workerInstances = [];
+          window.__workerConstructorFail = false;
+          window.__useHangingWorker = false;
 
-            if (typeof window !== 'undefined') {
-              if (typeof Worker === 'undefined') {
-                return Promise.reject(new Error('Browser environment does not support Web Workers. Spreadsheet processing halted to prevent main-thread resource exhaustion.'));
-              }
-
-              return new Promise((resolve, reject) => {
-                let worker;
-                let timer;
-
-                try {
-                  worker = new Worker(workerUrl, { type: 'module' });
-                } catch (initErr) {
-                  return reject(new Error('Failed to initialize spreadsheet background worker: ' + (initErr.message || 'Worker construction error') + '. Processing halted to prevent main-thread execution.'));
-                }
-
-                // Expose termination hook for tracking in tests
-                window.__lastWorkerInstance = worker;
-                window.__workerTerminated = false;
-                const originalTerminate = worker.terminate.bind(worker);
-                worker.terminate = function() {
-                  window.__workerTerminated = true;
-                  return originalTerminate();
-                };
-
-                timer = setTimeout(() => {
-                  try {
-                    worker.terminate();
-                  } catch (e) {}
-                  reject(new Error('Spreadsheet processing timed out after ' + Math.round(timeoutMs / 1000) + ' seconds. The file may be corrupt, excessively complex, or contain unbounded data.'));
-                }, timeoutMs);
-
-                worker.onmessage = (event) => {
-                  clearTimeout(timer);
-                  try { worker.terminate(); } catch (e) {}
-                  if (event.data && event.data.success) {
-                    resolve(event.data.result);
-                  } else {
-                    reject(new Error(event.data ? event.data.error : 'Unknown worker parsing error'));
-                  }
-                };
-
-                worker.onerror = (err) => {
-                  clearTimeout(timer);
-                  try { worker.terminate(); } catch (e) {}
-                  reject(new Error('Spreadsheet worker execution error: ' + (err.message || 'Worker failure')));
-                };
-
-                try {
-                  worker.postMessage({ data, options });
-                } catch (postErr) {
-                  clearTimeout(timer);
-                  try { worker.terminate(); } catch (e) {}
-                  reject(new Error('Failed to transmit spreadsheet data to worker: ' + postErr.message));
-                }
-              });
+          window.Worker = function(url, options) {
+            if (window.__workerConstructorFail) {
+              throw new DOMException('The operation is insecure.', 'SecurityError');
             }
-
-            return Promise.reject(new Error('Not a browser environment'));
+            const targetUrl = window.__useHangingWorker ? '/assets/hanging.worker.js' : url;
+            const w = new OriginalWorker(targetUrl, options);
+            w.__terminated = false;
+            const origTerminate = w.terminate.bind(w);
+            w.terminate = function() {
+              w.__terminated = true;
+              return origTerminate();
+            };
+            window.__workerInstances.push(w);
+            window.__lastWorkerInstance = w;
+            return w;
           };
+          window.Worker.prototype = OriginalWorker.prototype;
+          window.OriginalWorker = OriginalWorker;
+        </script>
+        <script type="module">
+          try {
+            const mod = await import('/bfi-classroom/assets/${safeSpreadsheetFile}');
+            window.safeReadSpreadsheetAsync = mod.safeReadSpreadsheetAsync;
+            window.__harnessReady = true;
+          } catch (e) {
+            console.error('Failed to import safeSpreadsheet module:', e.message);
+          }
         </script>
       </body>
       </html>
@@ -194,12 +210,16 @@ async function main() {
 
   await new Promise(r => server.listen(0, '127.0.0.1', r));
   const port = server.address().port;
-  const testUrl = `http://127.0.0.1:${port}`;
+  const testUrl = `http://127.0.0.1:${port}/bfi-classroom/`;
 
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext();
   const page = await context.newPage();
+  page.on('pageerror', err => console.error('BROWSER ERROR:', err.message));
   await page.goto(testUrl);
+
+  // Wait for the ES module to load the actual production export
+  await page.waitForFunction(() => window.__harnessReady === true, { timeout: 10000 });
 
   try {
     // 1. Successful import in real browser worker
@@ -207,10 +227,10 @@ async function main() {
       const dataArray = Array.from(validBuffer);
       const result = await page.evaluate(async (bytes) => {
         const u8 = new Uint8Array(bytes);
-        const res = await window.safeReadSpreadsheetAsyncInBrowser(u8, { maxRows: 100 });
+        const res = await window.safeReadSpreadsheetAsync(u8, { maxRows: 100 });
         return {
           rows: res,
-          workerTerminated: window.__workerTerminated
+          workerTerminated: window.__lastWorkerInstance ? window.__lastWorkerInstance.__terminated : false
         };
       }, dataArray);
 
@@ -223,43 +243,45 @@ async function main() {
     });
 
     // 2. Real browser worker: parsing error (sparse oversized sheet rejected before allocation)
-    await runTest('Real browser worker: sparse oversized sheet rejected with actionable message', async () => {
+    await runTest('Real browser worker: sparse oversized sheet rejected with actionable message and terminated', async () => {
       const dataArray = Array.from(sparseOversizedBuffer);
       const res = await page.evaluate(async (bytes) => {
         const u8 = new Uint8Array(bytes);
         try {
-          await window.safeReadSpreadsheetAsyncInBrowser(u8, { maxCells: 50000, maxRows: 6000 });
+          await window.safeReadSpreadsheetAsync(u8, { maxCells: 50000, maxRows: 6000 });
           return { threw: false };
         } catch (err) {
           return {
             threw: true,
             message: err.message,
-            workerTerminated: window.__workerTerminated
+            workerTerminated: window.__lastWorkerInstance ? window.__lastWorkerInstance.__terminated : false
           };
         }
       }, dataArray);
 
       assert.strictEqual(res.threw, true, 'Worker should have rejected oversized sparse matrix');
       assert.match(res.message, /Spreadsheet range \(A1:CV5001\) spans 500,100 potential cells \(5,001 rows × 100 columns\), exceeding the maximum allowable cell limit of 50,000 cells/);
-      assert.strictEqual(res.workerTerminated, true, 'Worker must be terminated on error');
+      assert.strictEqual(res.workerTerminated, true, 'Worker must be terminated on rejection');
     });
 
     // 3. Real browser worker: timeout termination
     await runTest('Real browser worker: execution timeout calls worker.terminate() and rejects', async () => {
       const res = await page.evaluate(async () => {
+        window.__useHangingWorker = true;
         try {
-          await window.safeReadSpreadsheetAsyncInBrowser(
+          await window.safeReadSpreadsheetAsync(
             new Uint8Array([1, 2, 3]),
-            { timeoutMs: 300 },
-            '/assets/hanging.worker.js' // Worker with infinite loop
+            { timeoutMs: 300 }
           );
           return { threw: false };
         } catch (err) {
           return {
             threw: true,
             message: err.message,
-            workerTerminated: window.__workerTerminated
+            workerTerminated: window.__lastWorkerInstance ? window.__lastWorkerInstance.__terminated : false
           };
+        } finally {
+          window.__useHangingWorker = false;
         }
       });
 
@@ -271,58 +293,83 @@ async function main() {
     // 4. Real browser worker: worker creation failure fails safely (ZERO main-thread fallback)
     await runTest('Real browser worker: constructor failure fails safely without main-thread execution', async () => {
       const res = await page.evaluate(async () => {
-        // Track whether main-thread execution was attempted
-        window.__mainThreadParsingAttempted = false;
-
-        // Mock window.Worker throwing on creation (e.g. CSP or restricted sandbox)
-        const OriginalWorker = window.Worker;
-        window.Worker = function() {
-          throw new DOMException('The operation is insecure.', 'SecurityError');
-        };
+        window.__workerConstructorFail = true;
 
         try {
-          await window.safeReadSpreadsheetAsyncInBrowser(new Uint8Array([1, 2, 3]), {});
+          await window.safeReadSpreadsheetAsync(new Uint8Array([1, 2, 3]), {});
           return { threw: false };
         } catch (err) {
           return {
             threw: true,
-            message: err.message,
-            mainThreadParsingAttempted: window.__mainThreadParsingAttempted
+            message: err.message
           };
         } finally {
-          window.Worker = OriginalWorker;
+          window.__workerConstructorFail = false;
         }
       });
 
       assert.strictEqual(res.threw, true, 'Should reject when Worker construction fails');
       assert.match(res.message, /Failed to initialize spreadsheet background worker: (The operation is insecure\.|.*SecurityError).*Processing halted to prevent main-thread execution/);
-      assert.strictEqual(res.mainThreadParsingAttempted, false, 'Main thread execution must NEVER be attempted in browser');
     });
 
     // 5. Real browser worker: missing Worker environment fails safely
     await runTest('Real browser worker: missing Worker API fails safely without main-thread fallback', async () => {
       const res = await page.evaluate(async () => {
-        window.__mainThreadParsingAttempted = false;
-        const OriginalWorker = window.Worker;
+        const savedWorker = window.Worker;
         delete window.Worker;
 
         try {
-          await window.safeReadSpreadsheetAsyncInBrowser(new Uint8Array([1, 2, 3]), {});
+          await window.safeReadSpreadsheetAsync(new Uint8Array([1, 2, 3]), {});
           return { threw: false };
         } catch (err) {
           return {
             threw: true,
-            message: err.message,
-            mainThreadParsingAttempted: window.__mainThreadParsingAttempted
+            message: err.message
           };
         } finally {
-          window.Worker = OriginalWorker;
+          window.Worker = savedWorker;
         }
       });
 
       assert.strictEqual(res.threw, true, 'Should reject when Worker API is undefined');
       assert.match(res.message, /Browser environment does not support Web Workers\. Spreadsheet processing halted to prevent main-thread resource exhaustion\./);
-      assert.strictEqual(res.mainThreadParsingAttempted, false, 'Main thread execution must NEVER be attempted in browser');
+    });
+
+    // 6. Real browser worker: worker parsing/runtime error rejects cleanly and terminates worker
+    await runTest('Real browser worker: worker parsing error rejects cleanly and terminates worker', async () => {
+      // Pass corrupted binary payload to real worker
+      const corruptBytes = Array.from(new Uint8Array([0x50, 0x4B, 0x03, 0x04, 0x00, 0x00, 0xFF, 0xFF]));
+      const res = await page.evaluate(async (bytes) => {
+        const u8 = new Uint8Array(bytes);
+        try {
+          await window.safeReadSpreadsheetAsync(u8, {});
+          return { threw: false };
+        } catch (err) {
+          return {
+            threw: true,
+            message: err.message,
+            workerTerminated: window.__lastWorkerInstance ? window.__lastWorkerInstance.__terminated : false
+          };
+        }
+      }, corruptBytes);
+
+      assert.strictEqual(res.threw, true, 'Worker should reject invalid spreadsheet binary');
+      assert.ok(res.message.length > 0, 'Error message should not be empty');
+      assert.strictEqual(res.workerTerminated, true, 'Worker must be terminated after parsing failure');
+    });
+
+    // 7. Real browser worker: verified complete resource cleanup across all execution paths
+    await runTest('Real browser worker: verified all worker instances terminated (no orphaned threads)', async () => {
+      const cleanupStatus = await page.evaluate(() => {
+        const instances = window.__workerInstances || [];
+        return {
+          totalCreated: instances.length,
+          allTerminated: instances.length > 0 && instances.every(w => w.__terminated === true)
+        };
+      });
+
+      assert.ok(cleanupStatus.totalCreated >= 4, `Expected at least 4 worker instances created, got ${cleanupStatus.totalCreated}`);
+      assert.strictEqual(cleanupStatus.allTerminated, true, 'All created Worker instances must be terminated');
     });
 
   } finally {

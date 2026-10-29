@@ -19,7 +19,15 @@
  *    `cellFormula: false` ensures formula AST expressions (`cell.f`) are neither parsed nor retained.
  * 6. Secondary Prototype Anomaly Guard: Compares Object.prototype property keys before and after parse.
  * 7. Off-Thread Parsing with Terminable Timeout: safeReadSpreadsheetAsync moves browser parsing to a dedicated
- *    Web Worker with a strict timeout; if parsing hangs, worker.terminate() aborts execution immediately.
+ *    Web Worker with a 10-second wall-clock execution timeout (DEFAULT_TIMEOUT_MS = 10,000ms). If parsing hangs,
+ *    worker.terminate() aborts the thread immediately.
+ *    ACCURACY DISCLOSURE: The timeout bounds *execution wall time* of the worker thread only. It does NOT
+ *    guarantee a hard memory ceiling — rapid memory allocation (e.g. allocating a very large array before the
+ *    timer fires) can still exhaust the renderer process before termination occurs. Additionally, worksheet
+ *    cell and range limits (maxCells, maxRows) are enforced inside the worker after archive decompression,
+ *    not before. The pre-parse archive header check (item 2) provides an early declared-size bound, but
+ *    runtime decompression memory is bounded downstream by the worker timeout and rectangular pre-allocation
+ *    cell limit checks, not by the header inspection alone.
  */
 
 import * as XLSX from 'xlsx';
@@ -338,14 +346,20 @@ export function safeReadSpreadsheet(data, options = {}) {
 
 /**
  * Asynchronously parses spreadsheet data using an isolated terminable Web Worker in browser environments,
- * enforcing a strict execution timeout.
- * 
+ * enforcing an execution wall-clock timeout.
+ *
  * Security Guard: In browser environments, this function NEVER falls back to synchronous main-thread parsing.
  * If Web Workers are unavailable or initialization fails, the operation fails safely with an explicit error.
- * 
+ *
+ * ACCURACY NOTE: The timeout (DEFAULT_TIMEOUT_MS = 10,000ms / 10 seconds) bounds *execution wall time* of
+ * the worker thread only. It does NOT guarantee a hard memory ceiling or prevent every browser crash — rapid
+ * memory allocation can still exhaust the renderer process before the timeout fires. Worksheet output limits
+ * (maxCells, maxRows) apply after archive decompression inside the worker, not before.
+ *
  * @param {Uint8Array|ArrayBuffer|Buffer} data - Binary file data
  * @param {Object} [options] - Parsing options
- * @param {number} [options.timeoutMs=10000] - Hard execution timeout in milliseconds
+ * @param {number} [options.timeoutMs=10000] - Wall-clock execution timeout in milliseconds (bounds worker
+ *   thread time only; does not bound peak memory allocation that occurs before the timeout fires)
  * @returns {Promise<Array<Array<string>>>} Clean 2D array of cell values
  */
 export function safeReadSpreadsheetAsync(data, options = {}) {

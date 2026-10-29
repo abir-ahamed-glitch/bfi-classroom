@@ -85,6 +85,14 @@ export default defineConfig({
       'es-toolkit/compat/isPlainObject': path.resolve(__dirname, './src/compat-shims/isPlainObject.js'),
     },
   },
+  build: {
+    rollupOptions: {
+      input: {
+        main: path.resolve(__dirname, 'index.html'),
+        safeSpreadsheet: path.resolve(__dirname, 'src/utils/safeSpreadsheet.js'),
+      },
+    },
+  },
   optimizeDeps: {
     include: ['recharts', 'es-toolkit'],
   },
