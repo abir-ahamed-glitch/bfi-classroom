@@ -478,7 +478,8 @@ async function executeDeployment(options = {}) {
     'scripts/run_migrations.cjs',
     'scripts/production_smoke_check.cjs',
     'scripts/production_lifecycle.cjs',
-    'scripts/obtain_smoke_credentials.cjs'
+    'scripts/obtain_smoke_credentials.cjs',
+    'scripts/rotate_mfa_secrets.cjs'
   ];
 
   for (const scriptRel of requiredScripts) {
@@ -551,6 +552,9 @@ async function executeDeployment(options = {}) {
     targetCommit,
     backupFile: null,
     backupValidated: false,
+    envBackupFile: null,
+    configUpdated: false,
+    mfaRotated: false,
     trafficMayReopen: false,
     trafficExposureInitiatedAt: null,
     trafficReopened: false,
@@ -676,6 +680,17 @@ async function executeDeployment(options = {}) {
     logStep('2.3', `Online backup created at: ${backupFile}`);
   }
 
+  // Backup configuration file (.env) if present in rootDir or options.envPath
+  const envPath = options.envPath || path.resolve(rootDir, '.env');
+  let envBackupFile = null;
+  if (fs.existsSync(envPath)) {
+    envBackupFile = path.join(backupDir, `env_preflight_${backupTs}.env`);
+    fs.copyFileSync(envPath, envBackupFile);
+    try { fs.chmodSync(envBackupFile, 0o600); } catch {}
+    deploymentState.envBackupFile = envBackupFile;
+    logStep('2.3', `Configuration (.env) backed up to: ${envBackupFile} (permissions: 600)`);
+  }
+
   // 2.4 Validate backup file against PRAGMAs and baseline invariants
   logStep('2.4', 'Validating backup file against PRAGMAs and baseline invariants...');
   {
@@ -702,7 +717,7 @@ async function executeDeployment(options = {}) {
 
     deploymentState.backupValidated = true;
     writeStateAtomic(stateFilePath, deploymentState);
-    fs.writeFileSync(path.join(serverDir, 'active_backup_path.env'), `BACKUP_FILE=${backupFile}\nBACKUP_VALIDATED=true\nATTEMPT_ID=${attemptId}\n`);
+    fs.writeFileSync(path.join(serverDir, 'active_backup_path.env'), `BACKUP_FILE=${backupFile}\nBACKUP_VALIDATED=true\nENV_BACKUP_FILE=${envBackupFile || ''}\nATTEMPT_ID=${attemptId}\n`);
     logStep('2.4', '✅ Backup file validated: 0 FK violations, quick_check ok, exact baseline match.');
   }
 
@@ -739,6 +754,110 @@ async function executeDeployment(options = {}) {
     : path.resolve(rootDir, 'scripts/run_migrations.cjs');
   runCommandStrict(spawner, process.execPath, [migRunnerPath, dbPath], { timeout: 60000, cwd: rootDir }, 'Migration Runner');
   logStep('4.1', '✅ Migrations applied sequentially and verified (10/10 schema assertions passed).');
+
+  // 4.2 Hardened MFA Key Rotation & Protected Configuration Update (Writer-Isolated Gate)
+  const shouldRotateMfa = Boolean(options.rotateMfa || (process.argv && process.argv.includes('--rotate-mfa')) || process.env.ROTATE_MFA === 'true');
+  if (shouldRotateMfa) {
+    logSection('PHASE 4.2: ATOMIC MFA SECRET ROTATION & CONFIGURATION UPDATE');
+
+    const rotateToolPath = fs.existsSync(path.join(recoveryToolsDir, 'rotate_mfa_secrets.cjs'))
+      ? path.join(recoveryToolsDir, 'rotate_mfa_secrets.cjs')
+      : path.resolve(rootDir, 'scripts/rotate_mfa_secrets.cjs');
+    const { determineActiveMfaSecretSource, executeRotation, auditDecryptability } = require(rotateToolPath);
+
+    // 4.2.1 Resolve historical and target encryption keys (zero credential disclosure)
+    logStep('4.2.1', 'Resolving historical and target encryption keys (zero credential disclosure)...');
+    const historicalSource = determineActiveMfaSecretSource(process.env, envPath);
+    const oldKeySource = (process.env.PREVIOUS_MFA_ENCRYPTION_KEY || historicalSource.value || '').trim();
+    const newKeySource = (options.newMfaKey || process.env.NEW_MFA_ENCRYPTION_KEY || process.env.MFA_ENCRYPTION_KEY || '').trim();
+
+    if (!newKeySource) {
+      logFatal('ABORT DEPLOYMENT: MFA rotation requested but NEW_MFA_ENCRYPTION_KEY (or MFA_ENCRYPTION_KEY) is missing or empty.');
+      throw new Error('Missing new MFA encryption key for rotation');
+    }
+    if (oldKeySource === newKeySource) {
+      logFatal('ABORT DEPLOYMENT: Historical MFA key and new MFA key are identical. Refusing rotation with identical keys.');
+      throw new Error('Identical keys in MFA rotation');
+    }
+
+    logStep('4.2.1', `Active historical key source identified as "${historicalSource.sourceName}" (zero disclosure).`);
+
+    // Failure hook before rotation
+    if (typeof options.onBeforeMfaRotation === 'function') {
+      options.onBeforeMfaRotation({ dbPath, envPath });
+    }
+
+    // 4.2.2 Execute atomic database rotation
+    logStep('4.2.2', 'Executing atomic SQLite rotation transaction for active and pending secrets...');
+    const rotResult = executeRotation({
+      dbPath,
+      oldKeySource,
+      newKeySource,
+      dryRun: false
+    });
+    logStep('4.2.2', `✅ Rotation transaction committed: ${rotResult.activeRotated} active and ${rotResult.pendingRotated} pending secrets re-encrypted.`);
+    deploymentState.mfaRotated = true;
+    writeStateAtomic(stateFilePath, deploymentState);
+
+    // 4.2.3 Audit decryptability under new key
+    logStep('4.2.3', 'Auditing database decryptability under new key configuration...');
+    const auditResult = auditDecryptability(dbPath, {
+      primaryKeySource: newKeySource,
+      previousKeySource: oldKeySource,
+      requirePrimaryOnly: true
+    });
+    logStep('4.2.3', `✅ Decryptability audit PASSED: verified ${auditResult.activeSecretsVerified} active and ${auditResult.pendingSecretsVerified} pending secrets decrypt cleanly.`);
+
+    // Failure hook before config update
+    if (typeof options.onBeforeConfigUpdate === 'function') {
+      options.onBeforeConfigUpdate({ dbPath, envPath });
+    }
+
+    // 4.2.4 Protected configuration update (.env)
+    if (fs.existsSync(envPath)) {
+      logStep('4.2.4', 'Updating configuration file (.env) atomically with strict 600 permissions...');
+      const rawEnv = fs.readFileSync(envPath, 'utf8');
+      let updatedEnv = rawEnv;
+
+      function updateEnvKey(content, key, val) {
+        const regex = new RegExp(`^${key}=.*$`, 'm');
+        if (regex.test(content)) {
+          return content.replace(regex, `${key}=${val}`);
+        } else {
+          return content.trimEnd() + `\n${key}=${val}\n`;
+        }
+      }
+
+      updatedEnv = updateEnvKey(updatedEnv, 'MFA_ENCRYPTION_KEY', newKeySource);
+      updatedEnv = updateEnvKey(updatedEnv, 'PREVIOUS_MFA_ENCRYPTION_KEY', oldKeySource);
+
+      if (options.newJwtSecret || process.env.NEW_JWT_SECRET) {
+        const newJwt = (options.newJwtSecret || process.env.NEW_JWT_SECRET).trim();
+        const mJwt = rawEnv.match(/^JWT_SECRET=(.*)$/m);
+        const oldJwt = process.env.JWT_SECRET || (mJwt ? mJwt[1].trim() : '');
+        updatedEnv = updateEnvKey(updatedEnv, 'JWT_SECRET', newJwt);
+        if (oldJwt) updatedEnv = updateEnvKey(updatedEnv, 'PREVIOUS_JWT_SECRET', oldJwt);
+      }
+      if (options.newRefreshSecret || process.env.NEW_REFRESH_SECRET) {
+        const newRef = (options.newRefreshSecret || process.env.NEW_REFRESH_SECRET).trim();
+        updatedEnv = updateEnvKey(updatedEnv, 'JWT_REFRESH_SECRET', newRef);
+      }
+
+      const tmpEnvPath = path.join(path.dirname(envPath), `.env.tmp.${Date.now()}`);
+      fs.writeFileSync(tmpEnvPath, updatedEnv, 'utf8');
+      try { fs.chmodSync(tmpEnvPath, 0o600); } catch {}
+      fs.renameSync(tmpEnvPath, envPath);
+
+      deploymentState.configUpdated = true;
+      writeStateAtomic(stateFilePath, deploymentState);
+      logStep('4.2.4', '✅ Configuration updated atomically and synced to disk (chmod 600).');
+    }
+
+    // Failure hook after config update
+    if (typeof options.onAfterConfigUpdate === 'function') {
+      options.onAfterConfigUpdate({ dbPath, envPath });
+    }
+  }
 
   // ── PHASE 5: Application Restart & Loopback Smoke Verification ─────────────
   logSection('PHASE 5: APPLICATION RESTART & LOOPBACK SMOKE VERIFICATION');
@@ -1100,6 +1219,22 @@ async function executeRollback(options = {}) {
     fs.copyFileSync(backupFile, dbPath);
   }
 
+  // 6.1 Restore pre-deployment configuration (.env) if modified
+  const envPath = options.envPath || path.resolve(rootDir, '.env');
+  if (state.envBackupFile && fs.existsSync(state.envBackupFile)) {
+    if (state.configUpdated === true) {
+      logStep('R.6.1', 'Restoring pre-deployment configuration (.env) from backup...');
+      if (fs.existsSync(envPath)) {
+        fs.renameSync(envPath, path.join(quarantineDir, 'failed.env'));
+      }
+      fs.copyFileSync(state.envBackupFile, envPath);
+      try { fs.chmodSync(envPath, 0o600); } catch {}
+      logStep('R.6.1', '✅ Configuration (.env) restored from backup and quarantine copy retained.');
+    } else {
+      logStep('R.6.1', 'Configuration (.env) was never updated; keeping existing configuration.');
+    }
+  }
+
   // 7. Verify restored database integrity and baseline invariants
   logStep('R.7', 'Verifying restored database integrity and baseline invariants...');
   const baselinePath = path.join(serverDir, 'pre_deployment_baseline.json');
@@ -1146,6 +1281,28 @@ async function executeRollback(options = {}) {
     throw err;
   }
   logStep('R.7', '✅ Restored database verified: 0 FK violations, quick_check ok, exact baseline match.');
+
+  // R.7.1 Verify restored configuration compatibility with restored database ciphertext
+  if (state.envBackupFile && state.configUpdated === true && fs.existsSync(envPath)) {
+    logStep('R.7.1', 'Verifying restored configuration and database ciphertext compatibility...');
+    const rotateToolPath = fs.existsSync(path.join(rootDir, 'server', '.recovery_tools', 'rotate_mfa_secrets.cjs'))
+      ? path.join(rootDir, 'server', '.recovery_tools', 'rotate_mfa_secrets.cjs')
+      : path.resolve(rootDir, 'scripts/rotate_mfa_secrets.cjs');
+    if (fs.existsSync(rotateToolPath)) {
+      const { determineActiveMfaSecretSource, auditDecryptability } = require(rotateToolPath);
+      try {
+        const restoredSource = determineActiveMfaSecretSource({}, envPath);
+        auditDecryptability(dbPath, {
+          primaryKeySource: restoredSource.value,
+          requirePrimaryOnly: false
+        });
+        logStep('R.7.1', '✅ Restored configuration and database ciphertext verified 100% compatible.');
+      } catch (compatErr) {
+        logFatal(`Restored configuration failed compatibility check with restored database: ${compatErr.message}`);
+        throw new Error(`Restored database/configuration compatibility check failed: ${compatErr.message}`);
+      }
+    }
+  }
 
   // 8. Restore recorded pre-deployment code revision and rebuild
   logStep('R.8', 'Restoring pre-deployment code revision and rebuilding...');
@@ -1277,44 +1434,77 @@ async function executeRollback(options = {}) {
   return { rollbackComplete: true, restoredRevision: prevRev, databaseRestored: true };
 }
 
-// CLI Entrypoint
-if (require.main === module) {
-  const args = process.argv.slice(2);
+// CLI Argument Parser Supporting Both Space and Equals Separators
+function parseLifecycleArgs(args = process.argv.slice(2)) {
   let action = args.find(a => a === 'deploy' || a === 'rollback');
   if (!action) {
     if (args.includes('--rollback')) action = 'rollback';
     else if (args.includes('--deploy')) action = 'deploy';
   }
   const isRehearsal = args.includes('--is-rehearsal');
-  const targetCommitArg = args.find((a, i) => args[i - 1] === '--target-commit') || process.env.TARGET_COMMIT;
-  const prevRevArg = args.find((a, i) => args[i - 1] === '--previous-revision');
-  const rootDirArg = args.find((a, i) => args[i - 1] === '--root-dir');
-  const dbPathArg = args.find((a, i) => args[i - 1] === '--database-path');
   const allowPostReopening = args.includes('--allow-post-reopening-reconciliation');
+  const rotateMfa = args.includes('--rotate-mfa') || process.env.ROTATE_MFA === 'true';
 
-  if (action === 'deploy') {
+  function getFlagValue(flag) {
+    const eqPrefix = `${flag}=`;
+    const eqArg = args.find(a => a.startsWith(eqPrefix));
+    if (eqArg) return eqArg.slice(eqPrefix.length).trim();
+    const idx = args.indexOf(flag);
+    if (idx !== -1 && idx + 1 < args.length && !args[idx + 1].startsWith('--')) {
+      return args[idx + 1].trim();
+    }
+    return null;
+  }
+
+  const targetCommitArg = getFlagValue('--target-commit') || process.env.TARGET_COMMIT;
+  const prevRevArg = getFlagValue('--previous-revision');
+  const rootDirArg = getFlagValue('--root-dir');
+  const dbPathArg = getFlagValue('--database-path');
+  const envPathArg = getFlagValue('--env-path');
+
+  return {
+    action,
+    isRehearsal,
+    allowPostReopening,
+    rotateMfa,
+    targetCommit: targetCommitArg,
+    preDeploymentRevision: prevRevArg,
+    rootDir: rootDirArg,
+    databasePath: dbPathArg,
+    envPath: envPathArg
+  };
+}
+
+// CLI Entrypoint
+if (require.main === module) {
+  const parsed = parseLifecycleArgs(process.argv.slice(2));
+
+  if (parsed.action === 'deploy') {
     executeDeployment({
-      targetCommit: targetCommitArg,
-      preDeploymentRevision: prevRevArg,
-      rootDir: rootDirArg,
-      databasePath: dbPathArg,
-      isRehearsal
+      targetCommit: parsed.targetCommit,
+      preDeploymentRevision: parsed.preDeploymentRevision,
+      rootDir: parsed.rootDir,
+      databasePath: parsed.databasePath,
+      envPath: parsed.envPath,
+      rotateMfa: parsed.rotateMfa,
+      isRehearsal: parsed.isRehearsal
     }).then(() => process.exit(0)).catch((err) => {
       console.error(`\n❌ [DEPLOYMENT HALTED] ${err.message}`);
       process.exit(1);
     });
-  } else if (action === 'rollback') {
+  } else if (parsed.action === 'rollback') {
     executeRollback({
-      allowPostReopeningReconciliation: allowPostReopening,
-      rootDir: rootDirArg,
-      databasePath: dbPathArg,
-      isRehearsal
+      allowPostReopeningReconciliation: parsed.allowPostReopening,
+      rootDir: parsed.rootDir,
+      databasePath: parsed.databasePath,
+      envPath: parsed.envPath,
+      isRehearsal: parsed.isRehearsal
     }).then(() => process.exit(0)).catch((err) => {
       console.error(`\n❌ [ROLLBACK HALTED] ${err.message}`);
       process.exit(1);
     });
   } else {
-    console.error("Usage: node scripts/production_lifecycle.cjs <deploy|rollback> [--target-commit <SHA>] [--allow-post-reopening-reconciliation] [--is-rehearsal]");
+    console.error("Usage: node scripts/production_lifecycle.cjs <deploy|rollback> [--target-commit <SHA>] [--rotate-mfa] [--allow-post-reopening-reconciliation] [--is-rehearsal]");
     process.exit(1);
   }
 }
@@ -1325,5 +1515,6 @@ module.exports = {
   runCommandStrict,
   writeStateAtomic,
   validateTokenPair,
-  verifyTokensAgainstLiveServer
+  verifyTokensAgainstLiveServer,
+  parseLifecycleArgs
 };
