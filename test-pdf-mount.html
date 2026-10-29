@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>BFI PDF Components Test Mount Harness</title>
+    <link rel="stylesheet" href="/src/index.css" />
+    <style>
+      body {
+        margin: 0;
+        padding: 20px;
+        background-color: #030712;
+        color: #f3f4f6;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      }
+      #harness-status {
+        padding: 8px 16px;
+        margin-bottom: 16px;
+        background: #1f2937;
+        border-radius: 8px;
+        font-size: 14px;
+      }
+      #component-slot {
+        min-height: 400px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="test-root"></div>
+    <script type="module" src="/src/test-pdf-mount.jsx"></script>
+  </body>
+</html>

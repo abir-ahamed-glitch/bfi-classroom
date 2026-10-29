@@ -99,7 +99,7 @@ export default function BulkRegisteredStudentImport({ onImportComplete }) {
     });
   };
 
-  const handleDownloadOldResults = async (id, batchNumber) => {
+  const handleDownloadOldResults = async (id, _batchNumber) => {
     try {
       const res = await fetch(`/api/admin/imports/history/${id}`, {
         headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
@@ -384,7 +384,7 @@ export default function BulkRegisteredStudentImport({ onImportComplete }) {
 
       setPreviewData(mappedData);
     };
-    reader.readAsBinaryString(uploadedFile);
+    reader.readAsArrayBuffer(uploadedFile);
   };
 
   const handleImport = async () => {
@@ -603,7 +603,7 @@ export default function BulkRegisteredStudentImport({ onImportComplete }) {
 
                     <input 
                       type="file" 
-                      accept=".xlsx, .xls, .csv" 
+                      accept=".xlsx, .xls, .csv, .doc, .docx, .pdf" 
                       onChange={handleFileUpload} 
                       style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', opacity: 0, cursor: 'pointer', zIndex: 10 }} 
                       title="Click to upload"
