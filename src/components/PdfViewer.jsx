@@ -119,7 +119,7 @@ export default function PdfViewer({ url, name, containerStyle = {} }) {
       )}
 
       {!loading && !error && resolvedUrl && (
-        <Worker workerUrl={`https://unpkg.com/pdfjs-dist@3.11.174/build/pdf.worker.min.js`}>
+        <Worker workerUrl={`${import.meta.env.BASE_URL || '/bfi-classroom/'}pdf.worker.min.js`}>
           <Viewer
             fileUrl={resolvedUrl}
             plugins={[defaultLayoutPluginInstance]}

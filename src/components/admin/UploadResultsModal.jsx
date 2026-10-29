@@ -6,7 +6,7 @@ import { safeReadSpreadsheetAsync } from '../../utils/safeSpreadsheet';
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf';
 import './BatchFormModal.css';
 
-pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
+pdfjsLib.GlobalWorkerOptions.workerSrc = `${import.meta.env.BASE_URL || '/bfi-classroom/'}pdf.worker.min.js`;
 
 export default function UploadResultsModal({ isOpen, onClose, batchId, onUploadSuccess }) {
   const [file, setFile] = useState(null);

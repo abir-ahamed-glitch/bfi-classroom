@@ -359,8 +359,8 @@ test.describe('Real Application PDF Components & Worker Verification Suite', () 
     // 1. Worker is not disabled (dedicated worker active)
     expect(workerStatus.isWorkerDisabled).toBe(false);
 
-    // 2. Configured deployment asset path matches version 3.11.174
-    expect(workerStatus.configuredWorkerSrc).toContain('3.11.174/pdf.worker.min.js');
+    // 2. Configured deployment asset path matches pdf.worker.min.js
+    expect(workerStatus.configuredWorkerSrc).toMatch(/pdf\.worker\.min\.js/);
 
     // 3. No fake worker warnings logged
     const fakeWorkerWarn = consoleWarnings.some(w => w.includes('Setting up fake worker'));

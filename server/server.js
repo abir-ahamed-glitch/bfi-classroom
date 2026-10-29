@@ -106,14 +106,14 @@ app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
-      scriptSrc: ["'self'", "'unsafe-inline'", "https://static.cloudflareinsights.com", "https://challenges.cloudflare.com"],
+      scriptSrc: ["'self'", "'unsafe-inline'", "https://static.cloudflareinsights.com", "https://challenges.cloudflare.com", "https://cdnjs.cloudflare.com", "https://unpkg.com"],
       styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com", "https://fonts.cdnfonts.com", "https://cdn.jsdelivr.net"],
       fontSrc: ["'self'", "https://fonts.gstatic.com", "https://fonts.cdnfonts.com", "data:"],
       imgSrc: ["'self'", "data:", "blob:", "https://img.youtube.com", "https://i.ytimg.com", "https://*.ytimg.com", "https://*.youtube.com", "https://*.vimeocdn.com", "https://graph.facebook.com", "https://*.dailymotion.com", "https://s1.dmcdn.net", "https://*.fbcdn.net", "https://*.cdninstagram.com"],
       connectSrc: ["'self'", "wss:", "https://*.trycloudflare.com", "https://www.youtube.com", "https://*.youtube.com", "https://*.googlevideo.com", "https://vimeo.com", "https://api.vimeo.com", "https://cloudflareinsights.com", "https://*.cloudflareinsights.com", "https://challenges.cloudflare.com"],
       mediaSrc: ["'self'", "data:", "blob:", "https://*.youtube.com", "https://*.vimeo.com", "https://*.googlevideo.com"],
       frameSrc: ["'self'", "https://*.youtube.com", "https://*.vimeo.com", "https://*.facebook.com", "https://challenges.cloudflare.com"],
-      workerSrc: ["'self'", "blob:"],
+      workerSrc: ["'self'", "blob:", "https://cdnjs.cloudflare.com", "https://unpkg.com"],
     },
   },
 }));

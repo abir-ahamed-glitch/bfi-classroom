@@ -7,7 +7,7 @@ import { UploadCloud, CheckCircle2, FileSpreadsheet, X, AlertCircle, History, Do
 import { getOrdinalSuffix } from '../../utils/formatUtils';
 import { safeReadSpreadsheetAsync } from '../../utils/safeSpreadsheet';
 
-pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
+pdfjsLib.GlobalWorkerOptions.workerSrc = `${import.meta.env.BASE_URL || '/bfi-classroom/'}pdf.worker.min.js`;
 
 export default function BulkRegisteredStudentImport({ onImportComplete }) {
   const [isOpen, setIsOpen] = useState(false);
