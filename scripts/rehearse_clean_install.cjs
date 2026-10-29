@@ -62,16 +62,24 @@ async function main() {
     console.log(`         ✅ Uuid version: ${installedUuid.version}`);
 
     console.log('[Step 4] Running npm audit --omit=dev --json in clean installation...');
-    let auditStdout;
-    try {
-      cp.execSync('npm audit --omit=dev --json', { cwd: tempInstallDir, stdio: 'pipe' });
-    } catch (e) {
-      auditStdout = e.stdout ? e.stdout.toString('utf8') : '';
-    }
+    const { parseAndValidateAuditResult } = require('./audit_validator.cjs');
+    
+    const auditProc = cp.spawnSync('npm', ['audit', '--omit=dev', '--json'], {
+      cwd: tempInstallDir,
+      stdio: 'pipe',
+      shell: true,
+      env: { ...process.env, NODE_ENV: 'development' }
+    });
 
-    const auditData = JSON.parse(auditStdout || '{}');
-    const vulns = Object.keys(auditData.vulnerabilities || {});
-    console.log(`[Step 4] Total remaining production vulnerabilities: ${vulns.length}`);
+    const auditData = parseAndValidateAuditResult({
+      stdout: auditProc.stdout,
+      stderr: auditProc.stderr,
+      status: auditProc.status,
+      error: auditProc.error
+    });
+
+    const vulns = auditData.vulnKeys;
+    console.log(`[Step 4] Audit completed with verified findings: ${vulns.length} vulnerabilities reported (Exit Code: ${auditData.status})`);
 
     // Verify all remaining vulnerabilities belong exclusively to pdfjs-dist and its plugins
     const nonPdfVulns = vulns.filter(v => v !== 'pdfjs-dist' && !v.startsWith('@react-pdf-viewer/'));
