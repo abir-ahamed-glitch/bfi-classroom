@@ -1,7 +1,8 @@
 /**
  * Staging Database Initializer & Schema Validator
  * Explicitly initializes tables, runs migrations, verifies schema integrity,
- * and provisions a synthetic staging administrator with dynamically generated credentials.
+ * and provisions a synthetic staging administrator with dynamically generated credentials
+ * stored securely in a restricted confidential file.
  */
 const fs = require('fs');
 const path = require('path');
@@ -61,6 +62,7 @@ async function initStagingDb(envPath, options = {}) {
 
   // 7. Seed synthetic staging Super Admin with dynamically generated unique credentials
   let adminPassword = process.env.STAGING_ADMIN_PASSWORD;
+  let credentialsFile = null;
   const existingAdmin = db.prepare(`SELECT id, email, is_super_admin FROM users WHERE email = ?`).get('staging-admin@bfi.local');
   if (!existingAdmin) {
     const bcrypt = (await import('bcryptjs')).default;
@@ -73,8 +75,18 @@ async function initStagingDb(envPath, options = {}) {
       VALUES (?, ?, ?, 'admin', 'Staging', 'SuperAdmin', 1, 1)
     `);
     const info = insertAdmin.run('staging-admin', 'staging-admin@bfi.local', passwordHash);
-    console.log(`[StagingInit] Provisioned synthetic Super Admin (ID: ${info.lastInsertRowid}, email: staging-admin@bfi.local)`);
-    console.log(`[StagingInit] Unique generated password: ${adminPassword}`);
+
+    // Provide credentials through an explicitly controlled confidential channel (restricted file)
+    credentialsFile = options.credentialsFile || path.join(targetDir, '.staging_admin_credentials.json');
+    const credentialsPayload = {
+      email: 'staging-admin@bfi.local',
+      password: adminPassword,
+      generatedAt: new Date().toISOString()
+    };
+    fs.writeFileSync(credentialsFile, JSON.stringify(credentialsPayload, null, 2), { mode: 0o600 });
+
+    console.log(`[StagingInit] Provisioned synthetic Super Admin (ID: ${info.lastInsertRowid}, email: staging-admin@bfi.local).`);
+    console.log(`[StagingInit] Credentials written to restricted confidential file: ${credentialsFile}`);
   }
 
   console.log(`[StagingInit] ✅ Staging database successfully initialized with ${tables.length} tables at: ${config.databasePath}`);
@@ -83,7 +95,8 @@ async function initStagingDb(envPath, options = {}) {
     tableCount: tables.length,
     databasePath: config.databasePath,
     adminEmail: 'staging-admin@bfi.local',
-    adminPassword
+    credentialsFile,
+    adminPassword: options.returnCredentials ? adminPassword : '[REDACTED]'
   };
 }
 

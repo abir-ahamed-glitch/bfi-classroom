@@ -33,6 +33,27 @@ function isStrictlyInside(childPath, parentDir) {
 }
 
 /**
+ * Directory-boundary-aware check: returns true if childPath is identical to
+ * or strictly inside parentDir.
+ * Defeats substring collisions like '/var/www/bfi-classroom' matching '/var/www/bfi-classroom-staging'.
+ */
+function isPathWithin(childPath, parentDir) {
+  const normChild = path.normalize(path.resolve(childPath));
+  const normParent = path.normalize(path.resolve(parentDir));
+
+  const isWin = process.platform === 'win32';
+  const cTarget = isWin ? normChild.toLowerCase() : normChild;
+  const pTarget = isWin ? normParent.toLowerCase() : normParent;
+
+  if (cTarget === pTarget) {
+    return true;
+  }
+
+  const rel = path.relative(pTarget, cTarget);
+  return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+}
+
+/**
  * Canonicalizes a path even if the final file or some leaf directories do not yet exist.
  * Walks up to the deepest existing ancestor, canonicalizes it with fs.realpathSync,
  * and reconstructs the canonical path.
@@ -84,15 +105,26 @@ function canonicalizePath(targetPath) {
 }
 
 /**
- * Known protected production paths and signatures that must NEVER be accessed by staging.
+ * Known protected production paths and roots that must NEVER be accessed by staging.
  */
-const PROTECTED_PRODUCTION_SIGNATURES = [
-  '/var/www/bfi-classroom',
-  '/home/ubuntu/bfi-classroom',
-  '\\var\\www\\bfi-classroom',
-  '\\home\\ubuntu\\bfi-classroom',
+const PROTECTED_PRODUCTION_ROOTS = [
+  path.normalize('/var/www/bfi-classroom'),
+  path.normalize('/home/ubuntu/bfi-classroom'),
   path.resolve(__dirname, '../server/bfi_classroom.db'),
   path.resolve(__dirname, '../../../server/bfi_classroom.db')
+];
+
+/**
+ * Required staging keys that must be explicitly present, non-empty, and valid in staging config.
+ */
+const REQUIRED_STAGING_KEYS = [
+  'DATABASE_PATH',
+  'STAGING_DATA_DIR',
+  'PORT',
+  'HOST',
+  'JWT_SECRET',
+  'JWT_REFRESH_SECRET',
+  'MFA_ENCRYPTION_KEY'
 ];
 
 /**
@@ -100,7 +132,7 @@ const PROTECTED_PRODUCTION_SIGNATURES = [
  */
 function validateStagingConfig(options = {}) {
   const dbPath = process.env.DATABASE_PATH;
-  if (!dbPath) {
+  if (!dbPath || dbPath.trim() === '') {
     throw new Error('[StagingGuard] CRITICAL: DATABASE_PATH must be explicitly defined for staging.');
   }
 
@@ -112,26 +144,26 @@ function validateStagingConfig(options = {}) {
   let approvedDirs = [];
   if (Array.isArray(options.approvedStagingDirs) && options.approvedStagingDirs.length > 0) {
     approvedDirs = options.approvedStagingDirs;
-  } else if (process.env.STAGING_DATA_DIR) {
-    approvedDirs = [process.env.STAGING_DATA_DIR];
-  } else if (process.env.STAGING_ROOT_DIR) {
-    approvedDirs = [process.env.STAGING_ROOT_DIR];
+  } else if (process.env.STAGING_DATA_DIR && process.env.STAGING_DATA_DIR.trim() !== '') {
+    approvedDirs = [process.env.STAGING_DATA_DIR.trim()];
+  } else if (process.env.STAGING_ROOT_DIR && process.env.STAGING_ROOT_DIR.trim() !== '') {
+    approvedDirs = [process.env.STAGING_ROOT_DIR.trim()];
   }
 
   if (approvedDirs.length === 0) {
     throw new Error('[StagingGuard] SAFETY REJECTION: No approved staging data directory configured. Set STAGING_DATA_DIR or options.approvedStagingDirs.');
   }
 
-  // Canonicalize all approved staging directories and ensure none point to production
+  // Canonicalize all approved staging directories and ensure none point to production (directory-boundary-aware)
   const canonicalApprovedDirs = approvedDirs.map(dir => {
     if (!path.isAbsolute(dir)) {
       throw new Error(`[StagingGuard] SAFETY REJECTION: Approved staging directory must be an absolute path: '${dir}'.`);
     }
     const { canonicalPath: canonDir } = canonicalizePath(dir);
 
-    // Ensure approved dir is not itself a production directory
-    for (const sig of PROTECTED_PRODUCTION_SIGNATURES) {
-      if (canonDir.toLowerCase() === sig.toLowerCase() || isStrictlyInside(canonDir, sig)) {
+    // Ensure approved dir is not itself within a protected production directory
+    for (const prodRoot of PROTECTED_PRODUCTION_ROOTS) {
+      if (isPathWithin(canonDir, prodRoot)) {
         throw new Error(`[StagingGuard] SAFETY REJECTION: Approved staging directory resolves into protected production path: ${canonDir}`);
       }
     }
@@ -147,14 +179,9 @@ function validateStagingConfig(options = {}) {
     throw new Error(`[StagingGuard] SAFETY REJECTION: DATABASE_PATH (${dbPath} -> ${canonicalDb}) is outside approved staging directories (${canonicalApprovedDirs.join(', ')}).`);
   }
 
-  // 4. Explicit check against protected production signatures
-  for (const sig of PROTECTED_PRODUCTION_SIGNATURES) {
-    if (canonicalDb.toLowerCase() === sig.toLowerCase() ||
-        isStrictlyInside(canonicalDb, sig) ||
-        canonicalDb.toLowerCase().includes('/var/www/bfi-classroom') ||
-        canonicalDb.toLowerCase().includes('/home/ubuntu/bfi-classroom') ||
-        canonicalDb.toLowerCase().includes('\\var\\www\\bfi-classroom') ||
-        canonicalDb.toLowerCase().includes('\\home\\ubuntu\\bfi-classroom')) {
+  // 4. Explicit check against protected production roots (directory-boundary-aware)
+  for (const prodRoot of PROTECTED_PRODUCTION_ROOTS) {
+    if (isPathWithin(canonicalDb, prodRoot)) {
       throw new Error(`[StagingGuard] SAFETY REJECTION: DATABASE_PATH canonicalizes into protected production root: ${canonicalDb}`);
     }
   }
@@ -171,6 +198,7 @@ function validateStagingConfig(options = {}) {
     // Inode check against existing protected production databases
     const knownProdDbPaths = [
       path.resolve(__dirname, '../server/bfi_classroom.db'),
+      path.resolve(__dirname, '../../../server/bfi_classroom.db'),
       '/var/www/bfi-classroom/server/bfi_classroom.db',
       '/home/ubuntu/bfi-classroom/server/bfi_classroom.db'
     ];
@@ -200,6 +228,17 @@ function validateStagingConfig(options = {}) {
     throw new Error(`[StagingGuard] HOST must be strictly set to '127.0.0.1' for loopback isolation (received: '${host || 'undefined'}').`);
   }
 
+  // 8. Secret length & format validation
+  if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32) {
+    throw new Error('[StagingGuard] SAFETY REJECTION: JWT_SECRET must be at least 32 characters in staging.');
+  }
+  if (!process.env.JWT_REFRESH_SECRET || process.env.JWT_REFRESH_SECRET.length < 32) {
+    throw new Error('[StagingGuard] SAFETY REJECTION: JWT_REFRESH_SECRET must be at least 32 characters in staging.');
+  }
+  if (!process.env.MFA_ENCRYPTION_KEY || !/^[0-9a-fA-F]{64}$/.test(process.env.MFA_ENCRYPTION_KEY)) {
+    throw new Error('[StagingGuard] SAFETY REJECTION: MFA_ENCRYPTION_KEY must be a 64-character hex string in staging.');
+  }
+
   return {
     databasePath: canonicalDb,
     originalDatabasePath: dbPath,
@@ -213,7 +252,7 @@ function validateStagingConfig(options = {}) {
 
 /**
  * Loads staging environment variables authoritatively and validates them.
- * Rejects inherited conflicts on sensitive configuration keys.
+ * Rejects missing required settings and conflicting inherited secrets without credential disclosure.
  */
 function loadAndValidateStagingEnv(envFilePath, options = {}) {
   const resolvedEnvPath = path.resolve(envFilePath || process.env.STAGING_ENV_FILE || '.env.staging');
@@ -224,7 +263,15 @@ function loadAndValidateStagingEnv(envFilePath, options = {}) {
 
   const envConfig = dotenv.parse(fs.readFileSync(resolvedEnvPath));
 
-  // Critical keys where inherited process.env conflicts must be rejected
+  // 1. Explicitly require necessary staging secrets and isolation settings in the staging configuration
+  for (const reqKey of REQUIRED_STAGING_KEYS) {
+    const val = envConfig[reqKey];
+    if (val === undefined || typeof val !== 'string' || val.trim() === '') {
+      throw new Error(`[StagingGuard] SAFETY REJECTION: Required staging setting '${reqKey}' is missing or empty in staging configuration.`);
+    }
+  }
+
+  // 2. Reject inherited conflicting environment variables without leaking credentials or prefixes
   const criticalKeys = [
     'DATABASE_PATH',
     'STAGING_DATA_DIR',
@@ -243,23 +290,21 @@ function loadAndValidateStagingEnv(envFilePath, options = {}) {
     for (const key of criticalKeys) {
       if (process.env[key] !== undefined &&
           process.env[key] !== '' &&
-          envConfig[key] !== undefined &&
           process.env[key] !== envConfig[key]) {
         throw new Error(
           `[StagingGuard] SAFETY REJECTION: Inherited environment variable '${key}' conflicts with staging configuration. ` +
-          `Inherited value: '${process.env[key].substring(0, 8)}...', Staging config value: '${envConfig[key].substring(0, 8)}...'. ` +
           `Clear the inherited variable or harmonize before running staging.`
         );
       }
     }
   }
 
-  // Apply staging environment authoritatively into process.env
+  // 3. Apply staging environment authoritatively into process.env
   for (const k in envConfig) {
     process.env[k] = envConfig[k];
   }
 
-  // Enforce staging suppression flags & nullify outbound credentials
+  // 4. Enforce staging suppression flags & nullify outbound credentials
   process.env.IS_STAGING_SERVER = 'true';
   process.env.DISABLE_OUTBOUND_NOTIFICATIONS = 'true';
   process.env.EMAIL_USER = '';
@@ -271,7 +316,7 @@ function loadAndValidateStagingEnv(envFilePath, options = {}) {
   process.env.SLACK_WEBHOOK_URL = '';
   process.env.DISCORD_WEBHOOK_URL = '';
 
-  // Monkey-patch dotenv.config to prevent any subsequent module from loading .env
+  // 5. Monkey-patch dotenv.config to prevent any subsequent module from loading .env
   dotenv.config = function stagingDotenvConfig() {
     return { parsed: {} };
   };
@@ -284,5 +329,7 @@ module.exports = {
   validateStagingConfig,
   canonicalizePath,
   isStrictlyInside,
-  PROTECTED_PRODUCTION_SIGNATURES
+  isPathWithin,
+  PROTECTED_PRODUCTION_ROOTS,
+  REQUIRED_STAGING_KEYS
 };
