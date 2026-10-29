@@ -75,8 +75,8 @@ async function runStagingBrowserVerification() {
   });
 
   const page = await context.newPage();
-  page.setDefaultTimeout(120000);
-  page.setDefaultNavigationTimeout(120000);
+  page.setDefaultTimeout(180000);
+  page.setDefaultNavigationTimeout(180000);
 
   // Track console warnings (specifically fake worker warnings)
   const consoleWarnings = [];
@@ -156,7 +156,17 @@ async function runStagingBrowserVerification() {
   try {
     // ── STEP 1: UI Authentication via Remote Staging Login Form ───────────────
     console.log('\n--- Step 1: Remote Staging UI Authentication ---');
-    await page.goto(`${TUNNEL_URL}/admin/login`, { waitUntil: 'domcontentloaded' });
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        console.log(`  [Connection Attempt ${attempt}] Navigating to ${TUNNEL_URL}/admin/login...`);
+        await page.goto(`${TUNNEL_URL}/admin/login`, { waitUntil: 'domcontentloaded', timeout: 180000 });
+        break;
+      } catch (navErr) {
+        if (attempt === 3) throw navErr;
+        console.warn(`  [Warning Attempt ${attempt}]: ${navErr.message}. Retrying cold connection...`);
+        await page.waitForTimeout(3000);
+      }
+    }
 
     // Ensure login inputs are present
     const usernameInput = page.locator('#username');
