@@ -172,7 +172,7 @@ export default function BulkRegisteredStudentImport({ onImportComplete }) {
             });
           }
         } else if (fileExt === 'pdf') {
-          const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(evt.target.result), isEvalSupported: false });
+          const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(evt.target.result), isEvalSupported: false, enableXfa: false });
           const pdf = await loadingTask.promise;
           for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
             const page = await pdf.getPage(pageNum);
@@ -569,7 +569,7 @@ export default function BulkRegisteredStudentImport({ onImportComplete }) {
               <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: '0.85rem' }}>Upload registered students effortlessly to build your applicant database.</p>
               
               {errorMsg && (
-                <div style={{
+                <div className="bulk-import-error-banner" style={{
                   background: 'rgba(239, 68, 68, 0.1)',
                   borderLeft: '4px solid #ef4444',
                   color: '#ef4444',
@@ -634,6 +634,30 @@ export default function BulkRegisteredStudentImport({ onImportComplete }) {
                       )}
                     </div>
                   </div>
+                  {previewData.length > 0 && (
+                      <div className="bulk-import-preview-container" style={{ maxHeight: '180px', overflowY: 'auto', border: '1px solid var(--glass-border)', borderRadius: '8px' }}>
+                        <table className="bulk-import-preview-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.82rem', textAlign: 'left' }}>
+                          <thead style={{ background: 'rgba(255,255,255,0.05)', position: 'sticky', top: 0 }}>
+                            <tr>
+                              <th style={{ padding: '0.5rem 0.75rem', borderBottom: '1px solid var(--glass-border)' }}>Name</th>
+                              <th style={{ padding: '0.5rem 0.75rem', borderBottom: '1px solid var(--glass-border)' }}>Email</th>
+                              <th style={{ padding: '0.5rem 0.75rem', borderBottom: '1px solid var(--glass-border)' }}>Mobile</th>
+                              <th style={{ padding: '0.5rem 0.75rem', borderBottom: '1px solid var(--glass-border)' }}>Batch</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {previewData.map((row, idx) => (
+                              <tr key={idx} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                                <td style={{ padding: '0.45rem 0.75rem', fontWeight: 500 }}>{row.name || '—'}</td>
+                                <td style={{ padding: '0.45rem 0.75rem' }}>{row.email || '—'}</td>
+                                <td style={{ padding: '0.45rem 0.75rem' }}>{row.mobile || '—'}</td>
+                                <td style={{ padding: '0.45rem 0.75rem' }}>{row.batch || '—'}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                  )}
                 </div>
               ) : (
                 <div className="animate-slide-up" style={{ textAlign: 'center', padding: '1.5rem 1rem' }}>

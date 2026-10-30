@@ -59,7 +59,7 @@ export default function UploadResultsModal({ isOpen, onClose, batchId, onUploadS
 
       try {
         if (fileExt === 'pdf') {
-          const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(evt.target.result), isEvalSupported: false });
+          const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(evt.target.result), isEvalSupported: false, enableXfa: false });
           const pdf = await loadingTask.promise;
           for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
             const page = await pdf.getPage(pageNum);
@@ -225,7 +225,7 @@ export default function UploadResultsModal({ isOpen, onClose, batchId, onUploadS
         <div className="modal-body" style={{ maxHeight: '70vh', overflowY: 'auto', padding: '1.5rem' }}>
           
           {errorMsg && (
-            <div style={{ padding: '1rem', background: 'rgba(239, 68, 68, 0.1)', color: '#ef4444', borderRadius: '8px', marginBottom: '1.5rem', display: 'flex', alignItems: 'flex-start', gap: '0.75rem' }}>
+            <div className="results-upload-error-banner" style={{ padding: '1rem', background: 'rgba(239, 68, 68, 0.1)', color: '#ef4444', borderRadius: '8px', marginBottom: '1.5rem', display: 'flex', alignItems: 'flex-start', gap: '0.75rem' }}>
               <AlertTriangle size={20} style={{ flexShrink: 0, marginTop: '2px' }} />
               <div>
                 <strong>Upload Error</strong>
