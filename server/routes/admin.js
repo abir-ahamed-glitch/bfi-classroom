@@ -1938,7 +1938,17 @@ router.get('/students/:id/courses/:courseId/defined-progress', authenticateToken
   try {
     if (req.user.role === 'admin' && !isSuperAdmin(req.user)) {
       const hasPerm = db.prepare('SELECT 1 FROM admin_permissions WHERE user_id = ? AND permission = ?').get(req.user.id, 'students:view');
-      if (!hasPerm) return res.status(403).json({ error: "Access denied: missing required permission 'students:view'", requiredPermission: 'students:view' });
+      if (!hasPerm) {
+        recordAuditEventFromReq(req, {
+          action: 'permission_denied',
+          module: 'security',
+          resource: req.originalUrl,
+          outcome: 'denied',
+          details: { requiredPermission: 'students:view', attemptedUrl: req.originalUrl, method: req.method },
+          throwOnError: false
+        });
+        return res.status(403).json({ error: "Access denied: missing required permission 'students:view'", requiredPermission: 'students:view' });
+      }
     }
     const studentId = parseInt(req.params.id, 10);
     const courseId = parseInt(req.params.courseId, 10);
@@ -1969,11 +1979,21 @@ router.get('/students/:id/courses/:courseId/defined-progress', authenticateToken
 });
 
 // Route to update a student's defined course progress (attendance, assignments, exams) atomically
-router.put('/students/:id/courses/:courseId/defined-progress', authenticateToken, requireRole('admin', 'moderator'), async (req, res) => {
+router.put('/students/:id/courses/:courseId/defined-progress', authenticateToken, requireRole('admin', 'moderator'), sanitizeInput, async (req, res) => {
   try {
     if (req.user.role === 'admin' && !isSuperAdmin(req.user)) {
       const hasPerm = db.prepare('SELECT 1 FROM admin_permissions WHERE user_id = ? AND permission = ?').get(req.user.id, 'students:academic_records');
-      if (!hasPerm) return res.status(403).json({ error: "Access denied: missing required permission 'students:academic_records'", requiredPermission: 'students:academic_records' });
+      if (!hasPerm) {
+        recordAuditEventFromReq(req, {
+          action: 'permission_denied',
+          module: 'security',
+          resource: req.originalUrl,
+          outcome: 'denied',
+          details: { requiredPermission: 'students:academic_records', attemptedUrl: req.originalUrl, method: req.method },
+          throwOnError: false
+        });
+        return res.status(403).json({ error: "Access denied: missing required permission 'students:academic_records'", requiredPermission: 'students:academic_records' });
+      }
     }
     const studentId = parseInt(req.params.id, 10);
     const courseId = parseInt(req.params.courseId, 10);
@@ -2203,11 +2223,21 @@ router.put('/students/:id/courses/:courseId/defined-progress', authenticateToken
 });
 
 // Route to admit a student to a specific phase (1–5) of a course
-router.post('/students/:id/courses/:courseId/phases/:phaseNumber/admit', authenticateToken, requireRole('admin', 'moderator'), async (req, res) => {
+router.post('/students/:id/courses/:courseId/phases/:phaseNumber/admit', authenticateToken, requireRole('admin', 'moderator'), sanitizeInput, async (req, res) => {
   try {
     if (req.user.role === 'admin' && !isSuperAdmin(req.user)) {
       const hasPerm = db.prepare('SELECT 1 FROM admin_permissions WHERE user_id = ? AND permission = ?').get(req.user.id, 'students:academic_records');
-      if (!hasPerm) return res.status(403).json({ error: "Access denied: missing required permission 'students:academic_records'", requiredPermission: 'students:academic_records' });
+      if (!hasPerm) {
+        recordAuditEventFromReq(req, {
+          action: 'permission_denied',
+          module: 'security',
+          resource: req.originalUrl,
+          outcome: 'denied',
+          details: { requiredPermission: 'students:academic_records', attemptedUrl: req.originalUrl, method: req.method },
+          throwOnError: false
+        });
+        return res.status(403).json({ error: "Access denied: missing required permission 'students:academic_records'", requiredPermission: 'students:academic_records' });
+      }
     }
     const studentId = parseInt(req.params.id, 10);
     const enrollmentId = parseInt(req.params.courseId, 10);
@@ -2274,11 +2304,21 @@ router.post('/students/:id/courses/:courseId/phases/:phaseNumber/admit', authent
 });
 
 // Route to undo phase admission (unadmit) with strict payment restriction defense
-router.post('/students/:id/courses/:courseId/phases/:phaseNumber/unadmit', authenticateToken, requireRole('admin', 'moderator'), async (req, res) => {
+router.post('/students/:id/courses/:courseId/phases/:phaseNumber/unadmit', authenticateToken, requireRole('admin', 'moderator'), sanitizeInput, async (req, res) => {
   try {
     if (req.user.role === 'admin' && !isSuperAdmin(req.user)) {
       const hasPerm = db.prepare('SELECT 1 FROM admin_permissions WHERE user_id = ? AND permission = ?').get(req.user.id, 'students:academic_records');
-      if (!hasPerm) return res.status(403).json({ error: "Access denied: missing required permission 'students:academic_records'", requiredPermission: 'students:academic_records' });
+      if (!hasPerm) {
+        recordAuditEventFromReq(req, {
+          action: 'permission_denied',
+          module: 'security',
+          resource: req.originalUrl,
+          outcome: 'denied',
+          details: { requiredPermission: 'students:academic_records', attemptedUrl: req.originalUrl, method: req.method },
+          throwOnError: false
+        });
+        return res.status(403).json({ error: "Access denied: missing required permission 'students:academic_records'", requiredPermission: 'students:academic_records' });
+      }
     }
     const studentId = parseInt(req.params.id, 10);
     const enrollmentId = parseInt(req.params.courseId, 10);

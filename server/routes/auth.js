@@ -1325,39 +1325,90 @@ router.post('/reset-password/:id/:token', sanitizeInput, (req, res) => {
 });
 
 // Admin Forgot Password - Request Reset Link (Admin Self-Recovery)
+// Protected against Account Enumeration: Returns uniform generic response for all valid email submissions
 router.post('/admin-forgot-password', authLimiter, sanitizeInput, async (req, res) => {
   const { email } = req.body;
 
-  if (!email) {
+  if (!email || typeof email !== 'string' || !email.trim()) {
     return res.status(400).json({ error: 'Email is required.' });
   }
 
+  const genericResponse = {
+    message: 'If an active administrative account associated with that email exists and is eligible for recovery, a password recovery link has been dispatched to your inbox.'
+  };
+
+  const clientIp = getClientIp(req);
+  const normalizedEmail = email.trim();
+
   try {
-    const user = db.prepare('SELECT * FROM users WHERE email = ? COLLATE NOCASE AND deleted_at IS NULL').get(email);
+    const user = db.prepare('SELECT * FROM users WHERE email = ? COLLATE NOCASE AND deleted_at IS NULL').get(normalizedEmail);
 
     if (!user || user.is_active !== 1 || user.archived_at !== null) {
-      return res.status(404).json({ error: 'We could not find an active account associated with that email address. Please check for typos or contact administration.' });
+      try {
+        recordAuditLog({
+          actorId: user?.id || null,
+          action: 'admin_recovery_requested',
+          module: 'security',
+          resource: '/api/auth/admin-forgot-password',
+          outcome: 'not_found',
+          correlationId: req.correlationId,
+          details: { emailAttempted: normalizedEmail, reason: 'account_not_found_or_inactive' },
+          ipAddress: clientIp,
+          throwOnError: false
+        });
+      } catch {}
+      return res.json(genericResponse);
     }
 
     if (user.role !== 'admin' && user.role !== 'instructor') {
-       return res.status(403).json({ 
-         error: 'This email is associated with a student account. Please use the student recovery panel.',
-         role: 'student'
-       });
+      try {
+        recordAuditLog({
+          actorId: user.id,
+          action: 'admin_recovery_rejected',
+          module: 'security',
+          resource: '/api/auth/admin-forgot-password',
+          outcome: 'denied',
+          correlationId: req.correlationId,
+          details: { emailAttempted: normalizedEmail, reason: 'ineligible_role', role: user.role },
+          ipAddress: clientIp,
+          throwOnError: false
+        });
+      } catch {}
+      return res.json(genericResponse);
     }
 
     if (user.password_reset_pending === 1) {
-      return res.status(403).json({ 
-        error: 'A password reset is currently pending for this administrative account. You must complete the pending reset using your existing link or contact the Super Administrator.', 
-        code: 'PASSWORD_RESET_PENDING' 
-      });
+      try {
+        recordAuditLog({
+          actorId: user.id,
+          action: 'admin_recovery_rejected',
+          module: 'security',
+          resource: '/api/auth/admin-forgot-password',
+          outcome: 'denied',
+          correlationId: req.correlationId,
+          details: { emailAttempted: normalizedEmail, reason: 'password_reset_already_pending' },
+          ipAddress: clientIp,
+          throwOnError: false
+        });
+      } catch {}
+      return res.json(genericResponse);
     }
 
     if (!user.email_verified_at || user.verified_email !== user.email) {
-      return res.status(403).json({ 
-        error: 'Your email address is unverified. For security, administrative self-service password recovery requires a verified recovery email. Please contact the Super Administrator.', 
-        code: 'EMAIL_UNVERIFIED' 
-      });
+      try {
+        recordAuditLog({
+          actorId: user.id,
+          action: 'admin_recovery_rejected',
+          module: 'security',
+          resource: '/api/auth/admin-forgot-password',
+          outcome: 'denied',
+          correlationId: req.correlationId,
+          details: { emailAttempted: normalizedEmail, reason: 'email_unverified' },
+          ipAddress: clientIp,
+          throwOnError: false
+        });
+      } catch {}
+      return res.json(genericResponse);
     }
 
     // Generate a secure reset token (valid for 15 minutes)
@@ -1381,16 +1432,26 @@ router.post('/admin-forgot-password', authLimiter, sanitizeInput, async (req, re
     let baseUrl; try { baseUrl = getValidatedAppUrl(); } catch { baseUrl = 'http://localhost:5174'; }
     const resetLink = `${baseUrl}/admin/reset-password/${user.id}/${resetToken}`;
 
-    const emailSent = await sendPasswordResetEmail(user.email, resetLink, { isSuperAdminInitiated: false });
+    try {
+      recordAuditLog({
+        actorId: user.id,
+        action: 'admin_recovery_dispatched',
+        module: 'security',
+        resource: '/api/auth/admin-forgot-password',
+        outcome: 'success',
+        correlationId: req.correlationId,
+        details: { purpose: 'admin_self_recovery', expiresAt },
+        ipAddress: clientIp,
+        throwOnError: false
+      });
+    } catch {}
 
-    if (emailSent || process.env.NODE_ENV === 'test') {
-      res.json({ message: 'A password recovery link has been dispatched to your administrative email address. Please check your inbox.' });
-    } else {
-      res.status(500).json({ error: 'Failed to send reset email. Please try again later or contact support.' });
-    }
+    await sendPasswordResetEmail(user.email, resetLink, { isSuperAdminInitiated: false });
+
+    return res.json(genericResponse);
   } catch (error) {
     console.error('Admin forgot password error:', error);
-    res.status(500).json({ error: 'Internal server error.' });
+    return res.json(genericResponse);
   }
 });
 

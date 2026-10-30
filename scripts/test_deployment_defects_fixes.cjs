@@ -74,7 +74,12 @@ async function runTests() {
     console.log('\n--- [Test 1.2] Socket Readiness: Delayed Server Startup (Connection Refused -> Ready) ---');
     {
       let srv = null;
-      const targetPort = 49152 + Math.floor(Math.random() * 10000);
+      // Allocate an ephemeral port guaranteed free by OS, then release it for the delayed start
+      const probe = http.createServer();
+      await new Promise(r => probe.listen(0, '127.0.0.1', r));
+      const targetPort = probe.address().port;
+      await new Promise(r => probe.close(r));
+
       const baseUrl = `http://127.0.0.1:${targetPort}`;
 
       setTimeout(() => {
