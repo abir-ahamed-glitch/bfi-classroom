@@ -20,6 +20,15 @@ const __dirname = path.dirname(__filename);
 const router = express.Router();
 const REFRESH_COOKIE_NAME = 'bfi_refresh_token';
 
+// Pluggable dispatcher hook for testing email delivery states without sending real email
+let customEmailDispatcher = null;
+export function setCustomEmailDispatcher(dispatcher) {
+  customEmailDispatcher = dispatcher;
+}
+export function getCustomEmailDispatcher() {
+  return customEmailDispatcher;
+}
+
 function buildUserPayload(user) {
   let profile = null;
   if (user.role === 'student') {
@@ -1432,21 +1441,60 @@ router.post('/admin-forgot-password', authLimiter, sanitizeInput, async (req, re
     let baseUrl; try { baseUrl = getValidatedAppUrl(); } catch { baseUrl = 'http://localhost:5174'; }
     const resetLink = `${baseUrl}/admin/reset-password/${user.id}/${resetToken}`;
 
+    // Execute delivery attempt and determine accurate internal audit status
+    let deliveryStatus = 'attempted';
+    let deliveryOutcome = 'failure';
+    let deliveryError = null;
+
+    try {
+      if (customEmailDispatcher) {
+        const result = await customEmailDispatcher(user.email, resetLink, { isSuperAdminInitiated: false });
+        if (result) {
+          deliveryStatus = 'accepted';
+          deliveryOutcome = 'success';
+        } else {
+          deliveryStatus = 'failed';
+          deliveryOutcome = 'failure';
+          deliveryError = 'dispatcher_returned_false';
+        }
+      } else if (process.env.NODE_ENV === 'test' && !process.env.ENABLE_TEST_EMAIL) {
+        deliveryStatus = 'suppressed';
+        deliveryOutcome = 'success';
+      } else {
+        const sent = await sendPasswordResetEmail(user.email, resetLink, { isSuperAdminInitiated: false });
+        if (sent) {
+          deliveryStatus = 'accepted';
+          deliveryOutcome = 'success';
+        } else {
+          deliveryStatus = 'failed';
+          deliveryOutcome = 'failure';
+          deliveryError = 'smtp_delivery_failed';
+        }
+      }
+    } catch (err) {
+      deliveryStatus = 'failed';
+      deliveryOutcome = 'failure';
+      deliveryError = err?.message || 'dispatch_exception';
+    }
+
     try {
       recordAuditLog({
         actorId: user.id,
         action: 'admin_recovery_dispatched',
         module: 'security',
         resource: '/api/auth/admin-forgot-password',
-        outcome: 'success',
+        outcome: deliveryOutcome,
         correlationId: req.correlationId,
-        details: { purpose: 'admin_self_recovery', expiresAt },
+        details: {
+          purpose: 'admin_self_recovery',
+          deliveryStatus,
+          ...(deliveryError ? { error: deliveryError } : {}),
+          expiresAt
+        },
         ipAddress: clientIp,
         throwOnError: false
       });
     } catch {}
-
-    await sendPasswordResetEmail(user.email, resetLink, { isSuperAdminInitiated: false });
 
     return res.json(genericResponse);
   } catch (error) {
