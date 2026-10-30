@@ -220,6 +220,7 @@ async function runAllTests() {
       CREATE TABLE users (
         id INTEGER PRIMARY KEY,
         username TEXT,
+        two_factor_enabled INTEGER DEFAULT 1,
         two_factor_secret TEXT,
         pending_two_factor_secret TEXT
       );
@@ -235,7 +236,7 @@ async function runAllTests() {
     const pendingEnvelopeNew = JSON.stringify({ secret: encrypt('PLAIN_PENDING_2', keyNew) });
 
     // Insert user with old ciphertext
-    db.prepare("INSERT INTO users VALUES (1, 'u1', ?, ?)").run(encOld1, pendingEnvelopeOld);
+    db.prepare("INSERT INTO users VALUES (1, 'u1', 1, ?, ?)").run(encOld1, pendingEnvelopeOld);
 
     // Audit with keyNew alone -> must FAIL because secret is still encrypted with keyOld
     let audit1Failed = false;

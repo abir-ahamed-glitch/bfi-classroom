@@ -280,6 +280,97 @@ function sendBearerGet(urlStr, token, timeoutMs = 5000) {
   });
 }
 
+// Bounded TCP/HTTP socket readiness check before attempting smoke verification
+function waitForServerReady({ baseUrl = 'http://127.0.0.1:3001', timeoutMs = 30000, intervalMs = 500, probeTimeoutMs = 2000 } = {}) {
+  const parsed = new URL(baseUrl);
+  const transport = parsed.protocol === 'https:' ? https : http;
+  const startTime = Date.now();
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let deadlineTimer = null;
+    let retryTimer = null;
+    let activeReq = null;
+
+    function cleanup() {
+      if (deadlineTimer) {
+        clearTimeout(deadlineTimer);
+        deadlineTimer = null;
+      }
+      if (retryTimer) {
+        clearTimeout(retryTimer);
+        retryTimer = null;
+      }
+      if (activeReq) {
+        try { activeReq.destroy(); } catch {}
+        activeReq = null;
+      }
+    }
+
+    deadlineTimer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(new Error(`Backend server readiness check timed out after ${timeoutMs}ms on ${baseUrl}. Server failed to accept connections.`));
+    }, timeoutMs);
+
+    function scheduleRetry() {
+      if (settled) return;
+      const elapsed = Date.now() - startTime;
+      if (elapsed >= timeoutMs) {
+        settled = true;
+        cleanup();
+        return reject(new Error(`Backend server readiness check timed out after ${timeoutMs}ms on ${baseUrl}. Server failed to accept connections.`));
+      }
+      retryTimer = setTimeout(probe, intervalMs);
+    }
+
+    function probe() {
+      if (settled) return;
+
+      let attemptDone = false;
+      const remainingTime = Math.max(100, timeoutMs - (Date.now() - startTime));
+      const currentProbeTimeout = Math.min(probeTimeoutMs, remainingTime);
+
+      const reqOptions = {
+        method: 'GET',
+        path: parsed.pathname || '/',
+        headers: { Connection: 'close' },
+        timeout: currentProbeTimeout
+      };
+
+      activeReq = transport.request(parsed, reqOptions, (res) => {
+        if (attemptDone || settled) {
+          try { res.resume(); } catch {}
+          return;
+        }
+        attemptDone = true;
+        settled = true;
+        res.resume();
+        cleanup();
+        resolve({ ready: true, status: res.statusCode, elapsedMs: Date.now() - startTime });
+      });
+
+      function onAttemptFailure() {
+        if (attemptDone || settled) return;
+        attemptDone = true;
+        if (activeReq) {
+          try { activeReq.destroy(); } catch {}
+          activeReq = null;
+        }
+        scheduleRetry();
+      }
+
+      activeReq.on('timeout', onAttemptFailure);
+      activeReq.on('error', onAttemptFailure);
+
+      activeReq.end();
+    }
+
+    probe();
+  });
+}
+
 // Authenticated token verification against live server endpoint (GET /api/auth/me)
 // Rejects explicit authentication failures immediately and preserves them even if another request fails.
 // Distinguishes confirmed service downtime (ECONNREFUSED) from ambiguous connection failures (timeout/reset).
@@ -1243,6 +1334,16 @@ async function executeDeployment(options = {}) {
   logStep('5.3', 'Verifying PM2 is online and Nginx remains stopped (--allow-pm2)...');
   verifyIsolation({ spawner, allowPm2Online: true });
 
+  if (!isRehearsal) {
+    logStep('5.3a', 'Waiting for loopback backend on port 3001 to accept connections (bounded readiness check)...');
+    await waitForServerReady({
+      baseUrl: options.baseUrl || 'http://127.0.0.1:3001',
+      timeoutMs: options.readinessTimeoutMs || 30000,
+      intervalMs: 500
+    });
+    logStep('5.3a', '✅ Loopback backend is accepting connections on port 3001.');
+  }
+
   let smokeAuthCleanup = null;
   let saToken = options.superAdminToken || process.env.SUPER_ADMIN_TOKEN || (options.isRehearsal && !options.credentialProvider ? 'mock-rehearsal-sa-token' : '');
   let oaToken = options.adminToken || process.env.ADMIN_TOKEN || (options.isRehearsal && !options.credentialProvider ? 'mock-rehearsal-ord-token' : '');
@@ -1976,5 +2077,6 @@ module.exports = {
   writeStateAtomic,
   validateTokenPair,
   verifyTokensAgainstLiveServer,
+  waitForServerReady,
   parseLifecycleArgs
 };

@@ -190,7 +190,7 @@ function auditDecryptability(dbOrPath, options = {}) {
       : null;
 
     const users = db.prepare(`
-      SELECT id, username, two_factor_secret, pending_two_factor_secret 
+      SELECT id, username, two_factor_enabled, two_factor_secret, pending_two_factor_secret 
       FROM users 
       WHERE two_factor_secret IS NOT NULL OR pending_two_factor_secret IS NOT NULL
     `).all();
@@ -199,6 +199,13 @@ function auditDecryptability(dbOrPath, options = {}) {
     let pendingVerified = 0;
 
     for (const u of users) {
+      const isExplicitlyUnenrolled = (u.two_factor_enabled === 0 || u.two_factor_enabled === false);
+      const isExplicitlyEnrolled = (u.two_factor_enabled === 1 || u.two_factor_enabled === true);
+
+      if (!isExplicitlyUnenrolled && !isExplicitlyEnrolled) {
+        throw new Error(`Ambiguous or invalid two_factor_enabled state (${u.two_factor_enabled}) for user ID ${u.id}. Halting audit.`);
+      }
+
       if (u.two_factor_secret) {
         let decrypted = null;
         try {
@@ -218,10 +225,25 @@ function auditDecryptability(dbOrPath, options = {}) {
 
       if (u.pending_two_factor_secret) {
         let rawPending = u.pending_two_factor_secret;
+        let isJson = false;
+        let parsedEnvelope = null;
         try {
-          const parsed = JSON.parse(rawPending);
-          if (parsed && parsed.secret) rawPending = parsed.secret;
-        } catch {}
+          parsedEnvelope = JSON.parse(rawPending);
+          if (parsedEnvelope && typeof parsedEnvelope === 'object' && parsedEnvelope.secret) {
+            isJson = true;
+            rawPending = parsedEnvelope.secret;
+          }
+        } catch {
+          isJson = false;
+        }
+
+        let isExpired = false;
+        if (isJson && parsedEnvelope && (typeof parsedEnvelope.expiresAt === 'string' || typeof parsedEnvelope.expiresAt === 'number')) {
+          const expMs = new Date(parsedEnvelope.expiresAt).getTime();
+          if (!Number.isNaN(expMs) && expMs < Date.now()) {
+            isExpired = true;
+          }
+        }
 
         let decryptedPending = null;
         try {
@@ -234,6 +256,10 @@ function auditDecryptability(dbOrPath, options = {}) {
           }
         }
         if (!decryptedPending) {
+          if (isExpired && isExplicitlyUnenrolled) {
+            // Expired setup envelope on explicitly unenrolled account does not block decryptability audit
+            continue;
+          }
           throw new Error(`Audit failure: pending secret for user ID ${u.id} could not be decrypted under ${requirePrimaryOnly ? 'primary key' : 'primary or fallback key'}.`);
         }
         pendingVerified++;
@@ -284,7 +310,7 @@ function executeRotation(options = {}) {
 
   try {
     const usersWithMfa = db.prepare(`
-      SELECT id, username, two_factor_secret, pending_two_factor_secret 
+      SELECT id, username, two_factor_enabled, two_factor_secret, pending_two_factor_secret 
       FROM users 
       WHERE two_factor_secret IS NOT NULL OR pending_two_factor_secret IS NOT NULL
     `).all();
@@ -298,6 +324,13 @@ function executeRotation(options = {}) {
       let pendingRotated = 0;
 
       for (const u of usersWithMfa) {
+        const isExplicitlyUnenrolled = (u.two_factor_enabled === 0 || u.two_factor_enabled === false);
+        const isExplicitlyEnrolled = (u.two_factor_enabled === 1 || u.two_factor_enabled === true);
+
+        if (!isExplicitlyUnenrolled && !isExplicitlyEnrolled) {
+          throw new Error(`Ambiguous or invalid two_factor_enabled state (${u.two_factor_enabled}) for user ID ${u.id}. Halting rotation.`);
+        }
+
         // 1. Rotate active secret
         if (u.two_factor_secret) {
           let plaintext;
@@ -334,12 +367,20 @@ function executeRotation(options = {}) {
 
           try {
             parsedEnvelope = JSON.parse(pendingRaw);
-            if (parsedEnvelope && parsedEnvelope.secret) {
+            if (parsedEnvelope && typeof parsedEnvelope === 'object' && parsedEnvelope.secret) {
               isJson = true;
               pendingRaw = parsedEnvelope.secret;
             }
           } catch {
             isJson = false;
+          }
+
+          let isExpired = false;
+          if (isJson && parsedEnvelope && (typeof parsedEnvelope.expiresAt === 'string' || typeof parsedEnvelope.expiresAt === 'number')) {
+            const expMs = new Date(parsedEnvelope.expiresAt).getTime();
+            if (!Number.isNaN(expMs) && expMs < Date.now()) {
+              isExpired = true;
+            }
           }
 
           let pendingPlaintext;
@@ -352,6 +393,15 @@ function executeRotation(options = {}) {
                 pendingPlaintext = null;
               }
             } catch {
+              if (isExpired && isExplicitlyUnenrolled) {
+                // Policy-correct handling: Stale, expired setup envelope for an explicitly unenrolled account.
+                // Safely purge from database so key rotation is not blocked by dead historical setup sessions.
+                if (!dryRun) {
+                  db.prepare('UPDATE users SET pending_two_factor_secret = NULL WHERE id = ?').run(u.id);
+                }
+                pendingPlaintext = null;
+                continue;
+              }
               throw new Error(`Failed to decrypt pending MFA secret for user ID ${u.id}.`);
             }
           }
