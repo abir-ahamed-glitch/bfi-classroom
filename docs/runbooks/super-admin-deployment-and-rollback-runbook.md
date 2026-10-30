@@ -96,8 +96,13 @@ node server/.recovery_tools/production_lifecycle.cjs deploy --target-commit <40-
 [Phase 0] Staging & Provenance Gate
   ├── Step 0.1: Validate smoke credential channel availability (Tokens or Interactive TTY)
   ├── Step 0.1.1: If unattended tokens: verify JWT claims, 15m expiration buffer, and live server GET /api/auth/me
-  ├── Step 0.2: Extract 6 recovery tools from TARGET_COMMIT -> server/.recovery_tools (SHA-256 checked)
-  └── Step 0.3: Cold-start bundle load verification in clean Node process
+  ├── Step 0.2: Extract 7 recovery tools from TARGET_COMMIT -> server/.recovery_tools (SHA-256 checked)
+  ├── Step 0.3: Cold-start bundle load verification in clean Node process
+  └── Step 0.4: Pre-flight working-tree conflict assessment & configuration preservation:
+        ├── Fails closed on Git inspection failure or unapproved modified tracked files
+        ├── Identifies approved reconcilable modifications (.env, package-lock.json)
+        ├── Preserves effective configuration to attempt-bound backup (mode 0600, SHA-256 recorded)
+        └── Leaves active .env and working-tree checkout completely untouched before shutdown
 
 [Phase 1] Maintenance Mode & Writer Lockdown Gate
   ├── Step 1.1: Record pre-maintenance states in server/pre_deployment_services.env (Bound to ATTEMPT_ID)
@@ -109,13 +114,15 @@ node server/.recovery_tools/production_lifecycle.cjs deploy --target-commit <40-
 [Phase 2] Dynamic Health Check & Validated Backup Gate
   ├── Step 2.1: Integrity check on live DB (PRAGMA quick_check, PRAGMA foreign_key_check)
   ├── Step 2.2: Capture table baseline counts -> server/pre_deployment_baseline.json
-  ├── Step 2.3: Generate atomic online backup via better-sqlite3 .backup API
+  ├── Step 2.3: Generate atomic online backup via better-sqlite3 .backup API (mode 0600)
   └── Step 2.4: Verify backup integrity, row counts, and record ATTEMPT_ID in active_backup_path.env
 
 [Phase 3] Pinned Commit Checkout & Build Gate
-  ├── Step 3.1: Record preDeploymentRevision -> server/pre_deployment_revision.txt
-  ├── Step 3.2: git checkout <TARGET_COMMIT> (Enforce exact HEAD match)
-  ├── Step 3.2b: NODE_ENV=development npm ci --legacy-peer-deps (Installs devDependencies for build toolchain)
+  ├── Step 3.0: Reconcile approved tracked files (.env, package-lock.json) to HEAD baseline after verified lockdown
+  ├── Step 3.1: git checkout <TARGET_COMMIT> (Enforce exact HEAD match)
+  ├── Step 3.1b: Restore effective configuration from attempt-bound backup (mode 0600, assert SHA-256 bit-for-bit)
+  ├── Step 3.1c: Assert working-tree cleanliness on target commit (0 modified tracked files)
+  ├── Step 3.2: NODE_ENV=development npm ci --legacy-peer-deps (Installs devDependencies for build toolchain)
   ├── Step 3.3: npm run build (Compiles frontend production bundles into dist/)
   └── Step 3.4: npm prune --omit=dev --legacy-peer-deps (Prunes devDependencies for runtime isolation)
 
@@ -171,6 +178,11 @@ node scripts/production_lifecycle.cjs rollback
    - Restored database integrity and baseline row counts (`pre_deployment_baseline.json`) are verified before starting services.
    - Restores the original Git revision recorded in `pre_deployment_revision.txt`, runs `npm ci --legacy-peer-deps`, `npm run build`, and `npm prune --omit=dev --legacy-peer-deps`.
    - Restarts PM2, verifies loopback HTTP 200, sets `trafficMayReopen = true`, and restarts Nginx.
+5. **Configuration Safeguard & Clashing Elimination (Step R.8):**
+   - Before executing `git checkout <PREV_REV>`, the live configuration `.env` is moved aside to attempt-bound path `server/backups/env_rollback_aside_${ATTEMPT_ID}.env` (mode 0600).
+   - This prevents Git checkout from aborting or silently clobbering `.env` with historical repository templates that previously tracked `.env`.
+   - Immediately following checkout, the compatible configuration is restored from the validated attempt backup `envBackupFile` (or `rollbackEnvAside`), enforcing mode 0600 and asserting a bit-for-bit SHA-256 match against `preReconciliationEnvHash`.
+   - The temporary aside copy is unlinked only after hash verification passes.
 
 ---
 

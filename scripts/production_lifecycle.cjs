@@ -418,6 +418,10 @@ async function executeDeployment(options = {}) {
   const isRehearsal = Boolean(options.isRehearsal || process.argv.includes('--is-rehearsal'));
   const targetCommit = (options.targetCommit || process.env.TARGET_COMMIT || (isRehearsal ? 'd3b330c4abc3bcec8a14806c3105e05ce22bcf0b' : '')).trim();
   const serverDir = path.resolve(rootDir, 'server');
+  const backupDir = path.resolve(serverDir, 'backups');
+  if (!fs.existsSync(backupDir)) fs.mkdirSync(backupDir, { recursive: true });
+  const attemptId = options.attemptId || `deploy_${Date.now()}`;
+  const envPath = options.envPath || path.resolve(rootDir, '.env');
 
   logSection('BFI CLASSROOM CANONICAL PRODUCTION DEPLOYMENT');
   console.log(`Target DB:      ${dbPath}`);
@@ -611,10 +615,77 @@ async function executeDeployment(options = {}) {
   }
   logStep('0.3', `Cold-start bundle loading verified for all 7 recovery tools in ${recoveryToolsDir}`);
 
+  // 0.4 Pre-flight working-tree conflict assessment & configuration preservation
+  // (Fail closed on Git inspection failures and unexpected modifications before service shutdown)
+  logStep('0.4', 'Assessing working-tree state and preserving effective configuration before service shutdown...');
+
+  const reconcilableFiles = [];
+  let preReconciliationEnvHash = null;
+  let envBackupFile = null;
+
+  if (!options.skipGitInspection) {
+    const statusRes = spawner('git', ['status', '--porcelain', '-uno'], { cwd: rootDir, encoding: 'utf8', timeout: 5000, shell: false });
+    if (statusRes.error || statusRes.status !== 0) {
+      const errDetail = statusRes.error ? statusRes.error.message : (statusRes.stderr ? statusRes.stderr.trim() : `exit code ${statusRes.status}`);
+      logFatal(`ABORT DEPLOYMENT: Git status inspection failed before service shutdown (${errDetail}). Halting closed before stopping services.`);
+      throw new Error(`Git status inspection failed: ${errDetail}`);
+    }
+
+    const rawStatus = statusRes.stdout || '';
+    const lines = rawStatus.split(/\r?\n/).filter(l => l.trim().length > 0);
+    const unapprovedConflicts = [];
+    for (const line of lines) {
+      const file = line.slice(3).trim();
+      if (file === '.env' || file === 'package-lock.json') {
+        if (!reconcilableFiles.includes(file)) reconcilableFiles.push(file);
+      } else {
+        unapprovedConflicts.push(file);
+      }
+    }
+
+    if (unapprovedConflicts.length > 0) {
+      logFatal(`ABORT DEPLOYMENT: Unapproved modified tracked files detected in working tree before service shutdown: ${unapprovedConflicts.join(', ')}. Resolve or stash working tree conflicts before deployment.`);
+      throw new Error(`Unapproved working tree conflicts: ${unapprovedConflicts.join(', ')}`);
+    }
+
+    if (reconcilableFiles.length > 0) {
+      logStep('0.4', `Reconcilable tracked modifications detected: ${reconcilableFiles.join(', ')}. Working tree will be reconciled during Phase 3 after service lockdown.`);
+    }
+  }
+
+  // Preserve actual effective configuration using protected, attempt-bound backup
+  // CRITICAL INVARIANT: Leave the active .env and working tree checkout untouched before shutdown!
+  if (fs.existsSync(envPath)) {
+    const envContent = fs.readFileSync(envPath);
+    preReconciliationEnvHash = crypto.createHash('sha256').update(envContent).digest('hex');
+    envBackupFile = path.join(backupDir, `env_pre_reconciliation_${attemptId}.env`);
+    writeSecretFileSecure(envBackupFile, envContent);
+
+    // Verify written backup SHA-256 matches
+    const diskHash = crypto.createHash('sha256').update(fs.readFileSync(envBackupFile)).digest('hex');
+    if (diskHash !== preReconciliationEnvHash) {
+      logFatal(`Hash verification mismatch for attempt-bound configuration backup ${envBackupFile}`);
+      throw new Error('Configuration backup hash mismatch');
+    }
+
+    // If package-lock.json is modified, also preserve an attempt-bound drift copy for auditability
+    if (reconcilableFiles.includes('package-lock.json')) {
+      const lockPath = path.join(rootDir, 'package-lock.json');
+      if (fs.existsSync(lockPath)) {
+        const lockBackupFile = path.join(backupDir, `package_lock_pre_reconciliation_${attemptId}.json`);
+        writeSecretFileSecure(lockBackupFile, fs.readFileSync(lockPath));
+      }
+    }
+
+    logStep('0.4', `✅ Effective configuration preserved to attempt-bound backup: ${envBackupFile} (SHA-256: ${preReconciliationEnvHash.slice(0, 16)}..., mode: 0600)`);
+  }
+
   // Initialize deployment state and attempt-bound backup environment
-  const attemptId = `deploy_${Date.now()}`;
   const envFile = path.join(serverDir, 'active_backup_path.env');
-  writeSecretFileSecure(envFile, `ATTEMPT_ID=${attemptId}\nBACKUP_FILE=\nBACKUP_VALIDATED=false\n`);
+  writeSecretFileSecure(
+    envFile,
+    `ATTEMPT_ID=${attemptId}\nBACKUP_FILE=\nBACKUP_VALIDATED=false\nENV_BACKUP_FILE=${envBackupFile || ''}\nENV_BACKUP_HASH=${preReconciliationEnvHash || ''}\n`
+  );
 
   const stateFilePath = path.join(serverDir, 'active_deployment_state.json');
   const deploymentState = {
@@ -624,7 +695,9 @@ async function executeDeployment(options = {}) {
     targetCommit,
     backupFile: null,
     backupValidated: false,
-    envBackupFile: null,
+    envBackupFile,
+    preReconciliationEnvHash,
+    reconcilableFiles,
     configUpdateIntent: false,
     configUpdated: false,
     mfaRotated: false,
@@ -740,7 +813,6 @@ async function executeDeployment(options = {}) {
 
   // 2.3 Create persistent online backup
   logStep('2.3', 'Creating persistent online SQLite backup...');
-  const backupDir = path.resolve(serverDir, 'backups');
   if (!fs.existsSync(backupDir)) fs.mkdirSync(backupDir, { recursive: true });
   const backupTs = new Date().toISOString().replace(/[-:T.]/g, '').slice(0, 14);
   const backupFile = path.join(backupDir, `bfi_classroom_preflight_${backupTs}.db`);
@@ -772,13 +844,14 @@ async function executeDeployment(options = {}) {
     logStep('2.3', `Online backup created at: ${backupFile} (permissions: 600)`);
   }
 
-  // Backup configuration file (.env) with strict 0600 permissions from inception
-  const envPath = options.envPath || path.resolve(rootDir, '.env');
-  let envBackupFile = null;
-  if (fs.existsSync(envPath)) {
-    envBackupFile = path.join(backupDir, `env_preflight_${backupTs}.env`);
-    copySecretFileSecure(envPath, envBackupFile);
+  // Ensure attempt-bound backup is recorded if not already done in Phase 0
+  if (fs.existsSync(envPath) && !envBackupFile) {
+    const envContent = fs.readFileSync(envPath);
+    preReconciliationEnvHash = crypto.createHash('sha256').update(envContent).digest('hex');
+    envBackupFile = path.join(backupDir, `env_pre_reconciliation_${attemptId}.env`);
+    writeSecretFileSecure(envBackupFile, envContent);
     deploymentState.envBackupFile = envBackupFile;
+    deploymentState.preReconciliationEnvHash = preReconciliationEnvHash;
     logStep('2.3', `Configuration (.env) backed up to: ${envBackupFile} (permissions: 600)`);
   }
 
@@ -810,13 +883,23 @@ async function executeDeployment(options = {}) {
     writeStateAtomic(stateFilePath, deploymentState);
     writeSecretFileSecure(
       path.join(serverDir, 'active_backup_path.env'),
-      `BACKUP_FILE=${backupFile}\nBACKUP_VALIDATED=true\nENV_BACKUP_FILE=${envBackupFile || ''}\nATTEMPT_ID=${attemptId}\n`
+      `BACKUP_FILE=${backupFile}\nBACKUP_VALIDATED=true\nENV_BACKUP_FILE=${envBackupFile || ''}\nENV_BACKUP_HASH=${preReconciliationEnvHash || ''}\nATTEMPT_ID=${attemptId}\n`
     );
     logStep('2.4', '✅ Backup file validated: 0 FK violations, quick_check ok, exact baseline match.');
   }
 
   // ── PHASE 3: Reproducible Code Update & Build Sequence ─────────────────────
   logSection('PHASE 3: REPRODUCIBLE CODE UPDATE & BUILD SEQUENCE');
+
+  // 3.0 Reconcile only approved tracked files before checkout
+  if (reconcilableFiles && reconcilableFiles.length > 0) {
+    logStep('3.0', `Reconciling approved tracked files before target checkout: ${reconcilableFiles.join(', ')}...`);
+    for (const f of reconcilableFiles) {
+      runCommandStrict(spawner, 'git', ['checkout', 'HEAD', '--', f], { timeout: 10000, cwd: rootDir }, `Reconcile ${f}`);
+    }
+    logStep('3.0', '✅ Approved tracked modifications reconciled to HEAD baseline.');
+  }
+
   logStep('3.1', `Checking out pinned release revision: ${targetCommit}...`);
   runCommandStrict(spawner, 'git', ['checkout', targetCommit], { timeout: 30000, cwd: rootDir }, 'Git Checkout Target Commit');
 
@@ -824,6 +907,38 @@ async function executeDeployment(options = {}) {
   if (!isRehearsal && /^[0-9a-f]{40}$/i.test(targetCommit) && checkedOutRev.stdout.trim().toLowerCase() !== targetCommit.toLowerCase()) {
     logFatal(`Git checkout failed to reach target commit ${targetCommit} (current HEAD: ${checkedOutRev.stdout.trim()})`);
     throw new Error('Git checkout mismatch');
+  }
+
+  // 3.1b Restore effective configuration from attempt-bound backup and assert hash bit-for-bit
+  if (envBackupFile && fs.existsSync(envBackupFile)) {
+    copySecretFileSecure(envBackupFile, envPath);
+    const restoredHash = crypto.createHash('sha256').update(fs.readFileSync(envPath)).digest('hex');
+    if (preReconciliationEnvHash && restoredHash !== preReconciliationEnvHash) {
+      logFatal(`Restored configuration hash mismatch! Expected ${preReconciliationEnvHash}, got ${restoredHash}`);
+      throw new Error(`Restored configuration hash mismatch: ${restoredHash} !== ${preReconciliationEnvHash}`);
+    }
+    if (process.platform !== 'win32') {
+      const mode = fs.statSync(envPath).mode & 0o777;
+      if (mode !== 0o600) {
+        fs.chmodSync(envPath, 0o600);
+      }
+    }
+    logStep('3.1b', `✅ Re-established live configuration (.env) from validated backup after target checkout (SHA-256: ${restoredHash.slice(0, 16)}..., mode: 0600).`);
+  }
+
+  // 3.1c Assert clean working tree (only ignored/untracked files permitted)
+  if (!options.skipGitInspection) {
+    const postStatusRes = spawner('git', ['status', '--porcelain', '-uno'], { cwd: rootDir, encoding: 'utf8', timeout: 5000, shell: false });
+    if (postStatusRes.error || postStatusRes.status !== 0) {
+      logFatal('Git status check failed after target checkout.');
+      throw new Error('Post-checkout git status check failed');
+    }
+    const remainingDirty = (postStatusRes.stdout || '').split(/\r?\n/).filter(l => l.trim().length > 0);
+    if (remainingDirty.length > 0) {
+      logFatal(`Unexpected modified tracked files in working tree after checkout: ${remainingDirty.join(', ')}`);
+      throw new Error(`Dirty working tree after checkout: ${remainingDirty.join(', ')}`);
+    }
+    logStep('3.1c', '✅ Working-tree cleanliness verified on target commit (0 modified tracked files).');
   }
 
   logStep('3.2', 'Installing dependencies including devDependencies (NODE_ENV=development npm ci --legacy-peer-deps)...');
@@ -1317,6 +1432,9 @@ async function executeRollback(options = {}) {
     const envContent = fs.readFileSync(envFile, 'utf8');
     const mFile = envContent.match(/BACKUP_FILE=(.+)/);
     const mAttempt = envContent.match(/ATTEMPT_ID=(.+)/);
+    const mEnvBackup = envContent.match(/ENV_BACKUP_FILE=(.+)/);
+    const mEnvHash = envContent.match(/ENV_BACKUP_HASH=(.+)/);
+
     if (mFile && path.resolve(rootDir, mFile[1].trim()) !== path.resolve(rootDir, state.backupFile)) {
       logFatal(`ABORT ROLLBACK: Backup association conflict! State records "${state.backupFile}" but active_backup_path.env records "${mFile[1].trim()}". Halting without database restoration.`);
       throw new Error('ABORT ROLLBACK: Backup association mismatch between state file and environment.');
@@ -1324,6 +1442,23 @@ async function executeRollback(options = {}) {
     if (mAttempt && mAttempt[1].trim() !== state.attemptId) {
       logFatal(`ABORT ROLLBACK: Deployment attempt mismatch! State attemptId "${state.attemptId}" does not match active_backup_path.env attemptId "${mAttempt[1].trim()}". Halting.`);
       throw new Error('ABORT ROLLBACK: Attempt ID mismatch.');
+    }
+    if (mEnvBackup && state.envBackupFile && path.resolve(rootDir, mEnvBackup[1].trim()) !== path.resolve(rootDir, state.envBackupFile)) {
+      logFatal(`ABORT ROLLBACK: Configuration backup association mismatch! State records "${state.envBackupFile}" but active_backup_path.env records "${mEnvBackup[1].trim()}". Halting.`);
+      throw new Error('ABORT ROLLBACK: Configuration backup association mismatch.');
+    }
+    if (mEnvHash && state.preReconciliationEnvHash && mEnvHash[1].trim() !== state.preReconciliationEnvHash) {
+      logFatal('ABORT ROLLBACK: Pre-reconciliation configuration hash mismatch between state file and active_backup_path.env.');
+      throw new Error('ABORT ROLLBACK: Configuration backup hash mismatch.');
+    }
+  }
+
+  // Reject stale configuration backups not bound to current attemptId
+  if (state.envBackupFile && state.attemptId) {
+    const baseEnvFile = path.basename(state.envBackupFile);
+    if (!baseEnvFile.includes(state.attemptId)) {
+      logFatal(`ABORT ROLLBACK: Stale configuration backup rejected! envBackupFile "${baseEnvFile}" is not bound to current attemptId "${state.attemptId}". Halting.`);
+      throw new Error('ABORT ROLLBACK: Stale configuration backup attempt mismatch.');
     }
   }
 
@@ -1510,8 +1645,44 @@ async function executeRollback(options = {}) {
     throw new Error('Revision file missing');
   }
   const prevRev = fs.readFileSync(revFile, 'utf8').trim();
+
+  // Safeguard live .env before rollback checkout to prevent git from clobbering or aborting on historical revisions that track .env
+  const rollbackAttemptId = state && state.attemptId ? state.attemptId : `rollback_${Date.now()}`;
+  const backupDir = path.resolve(serverDir, 'backups');
+  if (!fs.existsSync(backupDir)) fs.mkdirSync(backupDir, { recursive: true });
+  const rollbackEnvAside = path.join(backupDir, `env_rollback_aside_${rollbackAttemptId}.env`);
+  if (fs.existsSync(envPath)) {
+    copySecretFileSecure(envPath, rollbackEnvAside);
+    try { fs.unlinkSync(envPath); } catch {}
+  }
+
   logStep('R.8', `Checking out original revision: ${prevRev}`);
   runCommandStrict(spawner, 'git', ['checkout', prevRev], { timeout: 30000, cwd: rootDir }, 'Rollback Git Checkout');
+
+  // Restore the preserved compatible configuration immediately after checkout
+  const sourceConfig = (state && state.envBackupFile && fs.existsSync(state.envBackupFile))
+    ? state.envBackupFile
+    : (fs.existsSync(rollbackEnvAside) ? rollbackEnvAside : null);
+
+  if (sourceConfig) {
+    copySecretFileSecure(sourceConfig, envPath);
+    if (process.platform !== 'win32') {
+      const mode = fs.statSync(envPath).mode & 0o777;
+      if (mode !== 0o600) {
+        fs.chmodSync(envPath, 0o600);
+      }
+    }
+    const restoredHash = crypto.createHash('sha256').update(fs.readFileSync(envPath)).digest('hex');
+    if (state && state.preReconciliationEnvHash && restoredHash !== state.preReconciliationEnvHash) {
+      logFatal(`Restored configuration hash mismatch in rollback! Expected ${state.preReconciliationEnvHash}, got ${restoredHash}`);
+      throw new Error(`Restored configuration hash mismatch in rollback: ${restoredHash} !== ${state.preReconciliationEnvHash}`);
+    }
+    logStep('R.8b', `✅ Restored compatible live configuration (.env) after rollback checkout (SHA-256: ${restoredHash.slice(0, 16)}..., mode: 0600).`);
+
+    if (fs.existsSync(rollbackEnvAside)) {
+      try { fs.unlinkSync(rollbackEnvAside); } catch {}
+    }
+  }
 
   const checkoutVerify = runCommandStrict(spawner, 'git', ['rev-parse', 'HEAD'], { timeout: 5000, cwd: rootDir }, 'Verify Restored Checkout');
   if (!isRehearsal && /^[0-9a-f]{40}$/i.test(prevRev) && checkoutVerify.stdout.trim().toLowerCase() !== prevRev.toLowerCase()) {

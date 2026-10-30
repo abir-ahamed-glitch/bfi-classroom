@@ -243,6 +243,9 @@ function createServiceAdapter(options = {}) {
     }
 
     if (cmd === 'git') {
+      if (args[0] === 'status') {
+        return { status: 0, stdout: '', stderr: '', error: null };
+      }
       if (args[0] === 'rev-parse' && args[1] === 'HEAD') {
         return { status: 0, stdout: '0c71163495e58a51f1709272ec55d99a31251ec3\n', stderr: '', error: null };
       }
