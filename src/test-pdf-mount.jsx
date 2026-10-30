@@ -1,14 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import ReactDOM from 'react-dom/client';
 import * as pdfjsLib from 'pdfjs-dist';
-import { pdfjs as reactPdfjs } from 'react-pdf';
 import PdfViewer from './components/PdfViewer.jsx';
 import BulkRegisteredStudentImport from './components/admin/BulkRegisteredStudentImport.jsx';
 import BulkStudentImport from './components/admin/BulkStudentImport.jsx';
 import UploadResultsModal from './components/admin/UploadResultsModal.jsx';
 
 window.__pdfjsLib = pdfjsLib;
-window.__reactPdfjs = reactPdfjs;
+window.__reactPdfjs = pdfjsLib;
 
 function MountHarness() {
   const [componentState, setComponentState] = useState({

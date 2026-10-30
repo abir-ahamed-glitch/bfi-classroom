@@ -45,7 +45,7 @@ startxref
   return Buffer.from(pdf, 'utf8');
 }
 
-test.describe('PDF.js 6.3.289 Browser Migration & Worker Isolation Suite', () => {
+test.describe('PDF.js 6.4.299 Browser Migration & Worker Isolation Suite', () => {
   let pdfJsCode;
   let pdfWorkerCode;
   let validPdfBytes;

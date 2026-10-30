@@ -208,7 +208,7 @@ test.describe('Real Application PDF Components & Worker Verification Suite', () 
     expect(workerState.docRequests.length).toBeGreaterThan(0);
     const lastReq = workerState.docRequests[workerState.docRequests.length - 1];
     expect(lastReq.action).toBe('GetDocRequest');
-    expect(lastReq.apiVersion).toBe('6.3.289');
+    expect(lastReq.apiVersion).toBe('6.4.299');
     expect(lastReq.hasEnableXfaKey).toBe(true);
     expect(lastReq.enableXfa).toBe(false);
     expect(typeof lastReq.evaluatorOptions).toBe('object');
@@ -301,7 +301,7 @@ test.describe('Real Application PDF Components & Worker Verification Suite', () 
 
     expect(workerState.docRequests.length).toBeGreaterThan(0);
     const lastReq = workerState.docRequests[workerState.docRequests.length - 1];
-    expect(lastReq.apiVersion).toBe('6.3.289');
+    expect(lastReq.apiVersion).toBe('6.4.299');
     expect(lastReq.hasEnableXfaKey).toBe(true);
     expect(lastReq.enableXfa).toBe(false);
   });
@@ -383,7 +383,7 @@ test.describe('Real Application PDF Components & Worker Verification Suite', () 
 
     expect(workerState.docRequests.length).toBeGreaterThan(0);
     const lastReq = workerState.docRequests[workerState.docRequests.length - 1];
-    expect(lastReq.apiVersion).toBe('6.3.289');
+    expect(lastReq.apiVersion).toBe('6.4.299');
     expect(lastReq.hasEnableXfaKey).toBe(true);
     expect(lastReq.enableXfa).toBe(false);
   });
@@ -483,7 +483,7 @@ test.describe('Real Application PDF Components & Worker Verification Suite', () 
     expect(lastWorker.url).toMatch(/pdf\.worker\.min\.mjs/);
     expect(lastWorker.messagesReceived).toBeGreaterThan(0);
     const lastReq = workerState.docRequests[workerState.docRequests.length - 1];
-    expect(lastReq.apiVersion).toBe('6.3.289');
+    expect(lastReq.apiVersion).toBe('6.4.299');
     expect(lastReq.hasEnableXfaKey).toBe(true);
     expect(lastReq.enableXfa).toBe(false);
   });
@@ -614,15 +614,24 @@ test.describe('Real Application PDF Components & Worker Verification Suite', () 
     await expect(searchInput).not.toBeAttached();
   });
 
-  test('11. PdfViewer: whole-document print preparation renders all pages and download link is verified', async ({ page }) => {
+  test('11. PdfViewer: whole-document print waits for delayed (>700ms) page rendering completion, retains content until afterprint, and generates multipage print PDF artifact', async ({ page }, testInfo) => {
+    // Wrap PdfViewer inside a realistic restricted modal shell (height: 320px, maxHeight: 320px, overflow: hidden)
+    // to verify print CSS overcomes modal height and overflow clipping
     await page.evaluate(() => {
+      const slot = document.getElementById('component-slot');
+      if (slot) {
+        slot.style.height = '320px';
+        slot.style.maxHeight = '320px';
+        slot.style.overflow = 'hidden';
+      }
       window.__mountComponent('PdfViewer', {
         url: '/bfi-classroom/test-fixtures/multipage-sample.pdf',
-        name: 'multipage-sample.pdf'
+        name: 'multipage-sample.pdf',
+        containerStyle: { height: '100%', maxHeight: '300px' }
       });
     });
 
-    await expect(page.locator('.react-pdf__Page canvas')).toBeVisible({ timeout: 20000 });
+    await expect(page.locator('.react-pdf__Page canvas').first()).toBeVisible({ timeout: 20000 });
 
     // Verify download button has correct attributes
     const downloadLink = page.locator('a[aria-label="Download PDF"]');
@@ -630,26 +639,135 @@ test.describe('Real Application PDF Components & Worker Verification Suite', () 
     await expect(downloadLink).toHaveAttribute('download', 'multipage-sample.pdf');
     await expect(downloadLink).toHaveAttribute('href', /multipage-sample\.pdf/);
 
-    // Mock window.print to prevent browser dialog from pausing headless runner
+    // Deliberately delay printable page rendering by 950ms (> 700ms) and intercept window.print
     await page.evaluate(() => {
+      window.__printPageRenderDelayMs = 950;
+      window.__printClickTime = 0;
+      window.__printCalledTime = 0;
       window.__printCalled = false;
-      window.print = () => { window.__printCalled = true; };
+      window.__printSnapshot = null;
+
+      window.print = () => {
+        window.__printCalled = true;
+        window.__printCalledTime = performance.now();
+        const pages = Array.from(document.querySelectorAll('.pdf-printable-area .pdf-printable-page'));
+        const pageDetails = pages.map((p, idx) => {
+          const c = p.querySelector('canvas');
+          let nonWhitePixels = 0;
+          if (c && c.width > 0 && c.height > 0) {
+            const ctx = c.getContext('2d');
+            const data = ctx.getImageData(0, 0, c.width, c.height).data;
+            for (let i = 0; i < data.length; i += 16) {
+              if (data[i + 3] > 0 && (data[i] < 250 || data[i + 1] < 250 || data[i + 2] < 250)) {
+                nonWhitePixels++;
+              }
+            }
+          }
+          return {
+            pageNumber: idx + 1,
+            renderedAttr: p.getAttribute('data-print-rendered'),
+            canvasWidth: c ? c.width : 0,
+            canvasHeight: c ? c.height : 0,
+            nonWhitePixels
+          };
+        });
+        window.__printSnapshot = {
+          elapsedMs: window.__printCalledTime - window.__printClickTime,
+          pageCount: pages.length,
+          pageDetails
+        };
+      };
     });
 
-    // Trigger Print
+    // Trigger Print and record start timestamp
     const printBtn = page.locator('button[aria-label="Print full document"]');
+    await page.evaluate(() => { window.__printClickTime = performance.now(); });
     await printBtn.click();
 
-    // Verify printable area mounts in DOM with ALL 3 pages
-    const printableArea = page.locator('.pdf-printable-area');
-    await expect(printableArea).toBeAttached({ timeout: 5000 });
-    const printablePages = printableArea.locator('.pdf-printable-page');
-    await expect(printablePages).toHaveCount(3);
+    // At 750ms (past the old 700ms timer, but before the 950ms render delay finishes),
+    // assert that window.print has NOT been called early
+    await page.waitForTimeout(750);
+    const calledEarly = await page.evaluate(() => window.__printCalled);
+    expect(calledEarly).toBe(false);
 
-    // Verify window.print was invoked
-    await page.waitForFunction(() => window.__printCalled === true, null, { timeout: 5000 });
-    const printCalled = await page.evaluate(() => window.__printCalled);
-    expect(printCalled).toBe(true);
+    // Wait for actual rendering completion to invoke window.print()
+    await page.waitForFunction(() => window.__printCalled === true, null, { timeout: 10000 });
+
+    const snapshot = await page.evaluate(() => window.__printSnapshot);
+    expect(snapshot).not.toBeNull();
+    expect(snapshot.elapsedMs).toBeGreaterThanOrEqual(900);
+    expect(snapshot.pageCount).toBe(3);
+    for (const detail of snapshot.pageDetails) {
+      expect(detail.renderedAttr).toBe('true');
+      expect(detail.canvasWidth).toBeGreaterThan(200);
+      expect(detail.canvasHeight).toBeGreaterThan(200);
+      expect(detail.nonWhitePixels).toBeGreaterThan(20);
+    }
+
+    // Verify printable content remains attached while printing is active (before afterprint)
+    await expect(page.locator('.pdf-printable-area .pdf-printable-page')).toHaveCount(3);
+
+    // Generate a real multipage print artifact via Chromium page.pdf() while printable content is active
+    // and inspect its page count and text content using pdfjs
+    const printPdfBuffer = await page.pdf({ format: 'Letter', printBackground: true });
+    const printArtifactPath = testInfo.outputPath('multipage-print-output.pdf');
+    const fsMod = await import('fs');
+    fsMod.writeFileSync(printArtifactPath, printPdfBuffer);
+
+    const parsedPrintArtifact = await page.evaluate(async (pdfBytes) => {
+      const task = window.__pdfjsLib.getDocument({ data: new Uint8Array(pdfBytes), enableXfa: false });
+      const doc = await task.promise;
+      const numPages = doc.numPages;
+      const pageTexts = [];
+      for (let i = 1; i <= numPages; i++) {
+        const p = await doc.getPage(i);
+        const tc = await p.getTextContent();
+        pageTexts.push(tc.items.map(item => item.str).join(' '));
+      }
+      await task.destroy();
+      return { numPages, pageTexts, byteLength: pdfBytes.length };
+    }, Array.from(printPdfBuffer));
+
+    expect(parsedPrintArtifact.byteLength).toBeGreaterThan(1000);
+    expect(parsedPrintArtifact.numPages).toBe(3);
+    expect(parsedPrintArtifact.pageTexts[0]).toContain('Alpha');
+    expect(parsedPrintArtifact.pageTexts[1]).toContain('Beta');
+    expect(parsedPrintArtifact.pageTexts[2]).toContain('Gamma');
+
+    // Dispatch afterprint event and verify printable area cleans up cleanly
+    await page.evaluate(() => {
+      window.__printPageRenderDelayMs = 0;
+      window.dispatchEvent(new Event('afterprint'));
+    });
+    await expect(page.locator('.pdf-printable-area')).not.toBeAttached({ timeout: 5000 });
+
+    // Also test print cancellation and render failure handling
+    await page.evaluate(() => {
+      window.__printCalled = false;
+      window.__printPageRenderDelayMs = 2000;
+    });
+    await printBtn.click();
+    const cancelPrintBtn = page.locator('button[aria-label="Cancel printing"]');
+    await expect(cancelPrintBtn).toBeVisible({ timeout: 3000 });
+    await cancelPrintBtn.click();
+    await expect(page.locator('.pdf-printable-area')).not.toBeAttached();
+    const printCalledAfterCancel = await page.evaluate(() => window.__printCalled);
+    expect(printCalledAfterCancel).toBe(false);
+
+    // Test print render failure handling (blocks window.print and surfaces print error)
+    await page.evaluate(() => {
+      window.__printCalled = false;
+      window.__printPageRenderDelayMs = 50;
+      window.__simulatePrintRenderErrorPage = 2;
+    });
+    await printBtn.click();
+    await expect(page.locator('.pdf-print-status')).toContainText(/Print preparation failed/i, { timeout: 5000 });
+    const printCalledOnFailure = await page.evaluate(() => window.__printCalled);
+    expect(printCalledOnFailure).toBe(false);
+    await page.evaluate(() => {
+      window.__simulatePrintRenderErrorPage = null;
+      window.__printPageRenderDelayMs = 0;
+    });
   });
 
   test('12. PdfViewer: zoom controls, rotation, fit-to-width, and page edge access when zoomed', async ({ page }) => {
@@ -876,15 +994,15 @@ test.describe('Real Application PDF Components & Worker Verification Suite', () 
       if (msg.type() === 'warning') consoleWarnings.push(msg.text());
     });
 
-    // Verify both pdfjsLib (direct) and reactPdfjs (react-pdf) are loaded and aligned at version 6.3.289
+    // Verify both pdfjsLib (direct) and viewer engine are loaded and aligned at version 6.4.299
     const engineMeta = await page.evaluate(() => ({
       directVersion: window.__pdfjsLib.version,
       viewerVersion: window.__reactPdfjs.version,
       directWorkerSrc: window.__pdfjsLib.GlobalWorkerOptions.workerSrc,
       viewerWorkerSrc: window.__reactPdfjs.GlobalWorkerOptions.workerSrc
     }));
-    expect(engineMeta.directVersion).toBe('6.3.289');
-    expect(engineMeta.viewerVersion).toBe('6.3.289');
+    expect(engineMeta.directVersion).toBe('6.4.299');
+    expect(engineMeta.viewerVersion).toBe('6.4.299');
     expect(engineMeta.directWorkerSrc).toMatch(/pdf\.worker\.min\.mjs/);
     expect(engineMeta.viewerWorkerSrc).toMatch(/pdf\.worker\.min\.mjs/);
 
@@ -905,7 +1023,7 @@ test.describe('Real Application PDF Components & Worker Verification Suite', () 
     expect(c1State.workers[0].url).toMatch(/pdf\.worker\.min\.mjs/);
     expect(c1State.workers[0].messagesReceived).toBeGreaterThan(0);
     expect(c1State.reqs.length).toBeGreaterThan(0);
-    expect(c1State.reqs[0].apiVersion).toBe('6.3.289');
+    expect(c1State.reqs[0].apiVersion).toBe('6.4.299');
     expect(c1State.reqs[0].hasEnableXfaKey).toBe(true);
     expect(c1State.reqs[0].enableXfa).toBe(false);
 
@@ -926,7 +1044,7 @@ test.describe('Real Application PDF Components & Worker Verification Suite', () 
     expect(c2State.workers[0].url).toMatch(/pdf\.worker\.min\.mjs/);
     expect(c2State.workers[0].messagesReceived).toBeGreaterThan(0);
     expect(c2State.reqs.length).toBeGreaterThan(0);
-    expect(c2State.reqs[0].apiVersion).toBe('6.3.289');
+    expect(c2State.reqs[0].apiVersion).toBe('6.4.299');
     expect(c2State.reqs[0].hasEnableXfaKey).toBe(true);
     expect(c2State.reqs[0].enableXfa).toBe(false);
 
@@ -946,7 +1064,7 @@ test.describe('Real Application PDF Components & Worker Verification Suite', () 
     expect(c3State.workers[0].url).toMatch(/pdf\.worker\.min\.mjs/);
     expect(c3State.workers[0].messagesReceived).toBeGreaterThan(0);
     expect(c3State.reqs.length).toBeGreaterThan(0);
-    expect(c3State.reqs[0].apiVersion).toBe('6.3.289');
+    expect(c3State.reqs[0].apiVersion).toBe('6.4.299');
     expect(c3State.reqs[0].hasEnableXfaKey).toBe(true);
     expect(c3State.reqs[0].enableXfa).toBe(false);
 
@@ -969,7 +1087,7 @@ test.describe('Real Application PDF Components & Worker Verification Suite', () 
     expect(c4State.workers[0].url).toMatch(/pdf\.worker\.min\.mjs/);
     expect(c4State.workers[0].messagesReceived).toBeGreaterThan(0);
     expect(c4State.reqs.length).toBeGreaterThan(0);
-    expect(c4State.reqs[0].apiVersion).toBe('6.3.289');
+    expect(c4State.reqs[0].apiVersion).toBe('6.4.299');
     expect(c4State.reqs[0].hasEnableXfaKey).toBe(true);
     expect(c4State.reqs[0].enableXfa).toBe(false);
 
@@ -994,6 +1112,83 @@ test.describe('Real Application PDF Components & Worker Verification Suite', () 
     // No fake worker warnings logged across any consumer
     const fakeWorkerWarn = consoleWarnings.some(w => w.includes('Setting up fake worker'));
     expect(fakeWorkerWarn).toBe(false);
+  });
+
+  test('17. PdfViewer: literal PDF text preservation (<script>, &amp;, angle brackets), regex metacharacter search, and external/internal link annotations', async ({ page }) => {
+    await page.evaluate(() => {
+      window.__scriptExecutedFromPdfText = false;
+      window.__mountComponent('PdfViewer', {
+        url: '/bfi-classroom/test-fixtures/special-chars-links.pdf',
+        name: 'special-chars-links.pdf'
+      });
+    });
+
+    await expect(page.locator('.react-pdf__Page canvas').first()).toBeVisible({ timeout: 20000 });
+    const textLayer = page.locator('.react-pdf__Page__textContent');
+    await expect(textLayer).toBeVisible();
+
+    // 1. Verify literal angle brackets, HTML-looking tags, and ampersands are preserved as literal text
+    // and never parsed into actual <script> or <b> DOM elements
+    await expect(textLayer).toContainText('Literal Brackets: <script>alert(1)</script> & <b>BoldTag</b> & 100 > 50 < 200');
+    await expect(textLayer).toContainText('Regex Metachars: C++ [v1.2] (beta) $100.00 ^start*end? {a|b} \\path\\file');
+
+    const domSafetyCheck = await page.evaluate(() => {
+      const tl = document.querySelector('.react-pdf__Page__textContent');
+      return {
+        scriptElementsCount: tl ? tl.querySelectorAll('script').length : -1,
+        boldElementsCount: tl ? tl.querySelectorAll('b').length : -1,
+        scriptExecuted: window.__scriptExecutedFromPdfText
+      };
+    });
+    expect(domSafetyCheck.scriptElementsCount).toBe(0);
+    expect(domSafetyCheck.boldElementsCount).toBe(0);
+    expect(domSafetyCheck.scriptExecuted).toBe(false);
+
+    // 2. Open Search bar and search for HTML-looking string "<script>alert(1)</script>"
+    await page.locator('button[aria-label="Toggle in-document search"]').click();
+    const searchInput = page.locator('input[aria-label="Search term input"]');
+    await searchInput.fill('<script>alert(1)</script>');
+
+    const searchCount = page.locator('.pdf-search-count');
+    await expect(searchCount).toContainText('1 of 1 matches');
+
+    // Verify <mark> contains the literal text "<script>alert(1)</script>" without executing or stripping it,
+    // and that surrounding literal text (" & <b>BoldTag</b> & 100 > 50 < 200") remains intact in the span
+    const markTag = textLayer.locator('mark');
+    await expect(markTag).toHaveCount(1);
+    await expect(markTag).toHaveText('<script>alert(1)</script>');
+    await expect(textLayer).toContainText('Literal Brackets: <script>alert(1)</script> & <b>BoldTag</b> & 100 > 50 < 200');
+    expect(await page.evaluate(() => document.querySelectorAll('.react-pdf__Page__textContent script, .react-pdf__Page__textContent b').length)).toBe(0);
+
+    // 3. Search for regex special characters: "[v1.2]" (appears on both Page 1 and Page 2)
+    await searchInput.fill('[v1.2]');
+    await expect(searchCount).toContainText('1 of 2 matches');
+    await expect(textLayer.locator('mark')).toHaveText('[v1.2]');
+
+    // Test other regex metacharacters: "$100.00", "C++", "^start*end?", "{a|b}", "\\path\\file"
+    for (const regexTerm of ['$100.00', 'C++', '(beta)', '^start*end?', '{a|b}', '\\path\\file']) {
+      await searchInput.fill(regexTerm);
+      await expect(textLayer.locator('mark').first()).toHaveText(regexTerm);
+    }
+
+    // 4. Verify AnnotationLayer rendered external link and internal destination link on Page 1
+    const annotLayer = page.locator('.react-pdf__Page__annotations');
+    await expect(annotLayer).toBeVisible();
+    const externalLink = annotLayer.locator('a[href="https://example.com/bfi-docs"]');
+    await expect(externalLink).toBeAttached();
+    await expect(externalLink).toHaveAttribute('target', '_blank');
+    await expect(externalLink).toHaveAttribute('rel', /noopener/);
+
+    // Click internal link annotation to jump to Page 2
+    const internalLink = annotLayer.locator('a[data-internal-link="true"], section.linkAnnotation a').nth(1);
+    await expect(internalLink).toBeAttached();
+    await internalLink.click();
+
+    // Verify viewer jumped to Page 2 and preserved literal HTML-looking text on Page 2
+    const pageInput = page.locator('input[aria-label="Current page number"]');
+    await expect(pageInput).toHaveValue('2');
+    await expect(textLayer).toContainText('Page Two Destination: <div>&amp; raw &lt;tag&gt;</div> [v1.2] $100.00 confirmed');
+    expect(await page.evaluate(() => document.querySelectorAll('.react-pdf__Page__textContent div').length)).toBe(1); // Only endOfContent div
   });
 
 });
