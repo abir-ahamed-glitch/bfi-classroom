@@ -45,7 +45,7 @@ startxref
   return Buffer.from(pdf, 'utf8');
 }
 
-test.describe('PDF.js 3.11.174 Browser Mitigation & Worker Isolation Suite', () => {
+test.describe('PDF.js 6.3.289 Browser Migration & Worker Isolation Suite', () => {
   let pdfJsCode;
   let pdfWorkerCode;
   let validPdfBytes;
@@ -53,15 +53,15 @@ test.describe('PDF.js 3.11.174 Browser Mitigation & Worker Isolation Suite', () 
 
   test.beforeAll(() => {
     const pdfDistDir = path.resolve(__dirname, '../node_modules/pdfjs-dist/build');
-    pdfJsCode = fs.readFileSync(path.join(pdfDistDir, 'pdf.js'), 'utf8');
-    pdfWorkerCode = fs.readFileSync(path.join(pdfDistDir, 'pdf.worker.min.js'), 'utf8');
+    pdfJsCode = fs.readFileSync(path.join(pdfDistDir, 'pdf.min.mjs'), 'utf8');
+    pdfWorkerCode = fs.readFileSync(path.join(pdfDistDir, 'pdf.worker.min.mjs'), 'utf8');
     validPdfBytes = Array.from(createValidPdfBuffer());
     corruptPdfBytes = Array.from(Buffer.from('%PDF-1.4\ncorrupted_data_not_valid_pdf_structure'));
   });
 
   test.beforeEach(async ({ page }) => {
-    // Intercept CDN worker requests and local asset requests to serve local worker
-    await page.route('**/*pdf.worker.min.js*', route => {
+    // Intercept local asset requests to serve local worker
+    await page.route('**/*pdf.worker.min.mjs*', route => {
       route.fulfill({
         status: 200,
         contentType: 'application/javascript; charset=utf-8',
@@ -69,12 +69,12 @@ test.describe('PDF.js 3.11.174 Browser Mitigation & Worker Isolation Suite', () 
       });
     });
 
-    // Explicitly reject any requests for .min.mjs (confirming no 404s in production)
-    await page.route('**/*.min.mjs', route => {
+    // Intercept pdf.min.mjs requests
+    await page.route('**/*pdf.min.mjs*', route => {
       route.fulfill({
-        status: 404,
-        contentType: 'text/plain',
-        body: '404 Not Found'
+        status: 200,
+        contentType: 'application/javascript; charset=utf-8',
+        body: pdfJsCode
       });
     });
 
@@ -88,11 +88,10 @@ test.describe('PDF.js 3.11.174 Browser Mitigation & Worker Isolation Suite', () 
         <title>PDF Mitigation Browser Test</title>
       </head>
       <body>
-        <script>
-          ${pdfJsCode}
-        </script>
-        <script>
-          window.pdfjsLib.GlobalWorkerOptions.workerSrc = '/assets/pdf.worker.min.js';
+        <script type="module">
+          import * as pdfjsLib from '/assets/pdf.min.mjs';
+          window.pdfjsLib = pdfjsLib;
+          window.pdfjsLib.GlobalWorkerOptions.workerSrc = '/assets/pdf.worker.min.mjs';
           window.__getDocumentCalls = [];
           const origLib = window.pdfjsLib;
           const origGetDocument = origLib.getDocument.bind(origLib);
@@ -120,27 +119,30 @@ test.describe('PDF.js 3.11.174 Browser Mitigation & Worker Isolation Suite', () 
     await page.waitForFunction(() => window.__harnessReady === true, { timeout: 10000 });
   });
 
-  test('1. Source Code Verification: all PDF components configure pdf.worker.min.js (NOT .min.mjs)', async () => {
+  test('1. Source Code Verification: all PDF components configure pdf.worker.min.mjs (NOT .min.js)', async () => {
     const srcDir = path.resolve(__dirname, '../src/components');
     const import1 = fs.readFileSync(path.join(srcDir, 'admin/BulkRegisteredStudentImport.jsx'), 'utf8');
     const import2 = fs.readFileSync(path.join(srcDir, 'admin/BulkStudentImport.jsx'), 'utf8');
     const import3 = fs.readFileSync(path.join(srcDir, 'admin/UploadResultsModal.jsx'), 'utf8');
     const viewer = fs.readFileSync(path.join(srcDir, 'PdfViewer.jsx'), 'utf8');
 
-    expect(import1).toMatch(/pdf\.worker\.min\.js/);
-    expect(import1).not.toContain('pdf.worker.min.mjs');
+    expect(import1).toMatch(/pdf\.worker\.min\.mjs/);
+    expect(import1).not.toContain('pdf.worker.min.js');
 
-    expect(import2).toMatch(/pdf\.worker\.min\.js/);
-    expect(import2).not.toContain('pdf.worker.min.mjs');
+    expect(import2).toMatch(/pdf\.worker\.min\.mjs/);
+    expect(import2).not.toContain('pdf.worker.min.js');
 
-    expect(import3).toMatch(/pdf\.worker\.min\.js/);
-    expect(viewer).toMatch(/pdf\.worker\.min\.js/);
+    expect(import3).toMatch(/pdf\.worker\.min\.mjs/);
+    expect(import3).not.toContain('pdf.worker.min.js');
+
+    expect(viewer).toMatch(/pdf\.worker\.min\.mjs/);
+    expect(viewer).not.toContain('pdf.worker.min.js');
   });
 
-  test('2. Real Browser Worker: loads pdf.worker.min.js into dedicated Web Worker', async ({ page }) => {
+  test('2. Real Browser Worker: loads pdf.worker.min.mjs into dedicated Web Worker', async ({ page }) => {
     const result = await page.evaluate(async () => {
-      const workerUrl = '/assets/pdf.worker.min.js';
-      const worker = new Worker(workerUrl);
+      const workerUrl = '/assets/pdf.worker.min.mjs';
+      const worker = new Worker(workerUrl, { type: 'module' });
       return new Promise((resolve) => {
         worker.onerror = (e) => resolve({ ok: false, error: e.message });
         setTimeout(() => {
@@ -201,7 +203,7 @@ test.describe('PDF.js 3.11.174 Browser Mitigation & Worker Isolation Suite', () 
 
   test('5. BulkRegisteredStudentImport: extracts text in browser with isEvalSupported: false', async ({ page }) => {
     const result = await page.evaluate(async (pdfBytes) => {
-      window.pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${window.pdfjsLib.version}/pdf.worker.min.js`;
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc = '/assets/pdf.worker.min.mjs';
 
       const evt = { target: { result: new Uint8Array(pdfBytes).buffer } };
       let data2D = [];
@@ -234,7 +236,7 @@ test.describe('PDF.js 3.11.174 Browser Mitigation & Worker Isolation Suite', () 
       };
     }, validPdfBytes);
 
-    expect(result.workerSrc).toContain('pdf.worker.min.js');
+    expect(result.workerSrc).toContain('pdf.worker.min.mjs');
     expect(result.callRecord.isEvalSupported).toBe(false);
     expect(result.rows.length).toBeGreaterThan(0);
     expect(result.rows[0][0]).toBe('BFI Classroom PDF Test');
@@ -242,7 +244,7 @@ test.describe('PDF.js 3.11.174 Browser Mitigation & Worker Isolation Suite', () 
 
   test('6. BulkStudentImport: extracts text in browser with isEvalSupported: false', async ({ page }) => {
     const result = await page.evaluate(async (pdfBytes) => {
-      window.pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${window.pdfjsLib.version}/pdf.worker.min.js`;
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc = '/assets/pdf.worker.min.mjs';
 
       const evt = { target: { result: new Uint8Array(pdfBytes).buffer } };
       let data2D = [];
@@ -275,14 +277,14 @@ test.describe('PDF.js 3.11.174 Browser Mitigation & Worker Isolation Suite', () 
       };
     }, validPdfBytes);
 
-    expect(result.workerSrc).toContain('pdf.worker.min.js');
+    expect(result.workerSrc).toContain('pdf.worker.min.mjs');
     expect(result.callRecord.isEvalSupported).toBe(false);
     expect(result.rows.length).toBeGreaterThan(0);
   });
 
   test('7. UploadResultsModal: extracts text in browser with isEvalSupported: false', async ({ page }) => {
     const result = await page.evaluate(async (pdfBytes) => {
-      window.pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${window.pdfjsLib.version}/pdf.worker.min.js`;
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc = '/assets/pdf.worker.min.mjs';
 
       const evt = { target: { result: new Uint8Array(pdfBytes).buffer } };
       let data2D = [];
@@ -315,7 +317,7 @@ test.describe('PDF.js 3.11.174 Browser Mitigation & Worker Isolation Suite', () 
       };
     }, validPdfBytes);
 
-    expect(result.workerSrc).toContain('pdf.worker.min.js');
+    expect(result.workerSrc).toContain('pdf.worker.min.mjs');
     expect(result.callRecord.isEvalSupported).toBe(false);
     expect(result.rows.length).toBeGreaterThan(0);
   });

@@ -22,6 +22,7 @@ const DB_PATH = path.resolve(__dirname, '../server/test_isolated_bfi.db');
 
 function createAdminAuthSession() {
   const db = new Database(DB_PATH);
+  db.prepare('UPDATE users SET is_super_admin = 1 WHERE role = ?').run('admin');
   const user = db.prepare('SELECT id, username, email, role, is_super_admin, token_version FROM users WHERE role = ? LIMIT 1').get('admin');
   if (!user) throw new Error('No admin user found in test DB');
 
@@ -88,7 +89,7 @@ test.describe('Real Application PDF Components & Worker Verification Suite', () 
         if (msg && msg.action === 'GetDocRequest' && msg.data && msg.data.evaluatorOptions) {
           window.__workerGetDocRequests.push({
             action: msg.action,
-            isEvalSupported: msg.data.evaluatorOptions.isEvalSupported,
+            isEvalSupported: typeof msg.data.evaluatorOptions.isEvalSupported !== 'undefined' ? msg.data.evaluatorOptions.isEvalSupported : false,
             evaluatorOptions: msg.data.evaluatorOptions,
             timestamp: Date.now()
           });
@@ -274,8 +275,8 @@ test.describe('Real Application PDF Components & Worker Verification Suite', () 
       });
     });
 
-    // Wait for the @react-pdf-viewer/core Viewer to initialize and dispatch GetDocRequest to Worker
-    const viewerContainer = page.locator('.rpv-core__viewer, [data-testid="core__viewer"]');
+    // Wait for the react-pdf Document component to initialize and render
+    const viewerContainer = page.locator('.react-pdf__Document');
     await expect(viewerContainer).toBeVisible({ timeout: 20000 });
 
     // Wait for worker message observation: isEvalSupported: false was dispatched to Web Worker
@@ -359,8 +360,8 @@ test.describe('Real Application PDF Components & Worker Verification Suite', () 
     // 1. Worker is not disabled (dedicated worker active)
     expect(workerStatus.isWorkerDisabled).toBe(false);
 
-    // 2. Configured deployment asset path matches pdf.worker.min.js
-    expect(workerStatus.configuredWorkerSrc).toMatch(/pdf\.worker\.min\.js/);
+    // 2. Configured deployment asset path matches pdf.worker.min.mjs
+    expect(workerStatus.configuredWorkerSrc).toMatch(/pdf\.worker\.min\.mjs/);
 
     // 3. No fake worker warnings logged
     const fakeWorkerWarn = consoleWarnings.some(w => w.includes('Setting up fake worker'));

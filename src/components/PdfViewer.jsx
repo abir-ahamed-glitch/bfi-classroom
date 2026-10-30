@@ -1,16 +1,25 @@
 import React, { useEffect, useState } from 'react';
-import { Worker, Viewer } from '@react-pdf-viewer/core';
-import { defaultLayoutPlugin } from '@react-pdf-viewer/default-layout';
+import { Document, Page, pdfjs } from 'react-pdf';
+import pdfjsWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 
-// Import styles
-import '@react-pdf-viewer/core/lib/styles/index.css';
-import '@react-pdf-viewer/default-layout/lib/styles/index.css';
+// Import react-pdf CSS for text selection and annotation layers
+import 'react-pdf/dist/Page/AnnotationLayer.css';
+import 'react-pdf/dist/Page/TextLayer.css';
+
+// Configure worker — Vite ?url import bundles the matching worker as a same-origin asset
+pdfjs.GlobalWorkerOptions.workerSrc = pdfjsWorkerUrl;
+
+const SCALE_STEP = 0.25;
+const SCALE_MIN = 0.5;
+const SCALE_MAX = 3.0;
 
 export default function PdfViewer({ url, name, containerStyle = {} }) {
   const [resolvedUrl, setResolvedUrl] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const defaultLayoutPluginInstance = defaultLayoutPlugin();
+  const [numPages, setNumPages] = useState(null);
+  const [pageNumber, setPageNumber] = useState(1);
+  const [scale, setScale] = useState(1.0);
 
   useEffect(() => {
     if (!url) return;
@@ -85,6 +94,58 @@ export default function PdfViewer({ url, name, containerStyle = {} }) {
     }
   }, [url]);
 
+  const handleLoadSuccess = ({ numPages: n }) => {
+    setNumPages(n);
+    setPageNumber(1);
+  };
+
+  const handleLoadError = (err) => {
+    console.error('[PdfViewer load error]', err);
+    setError(err.message || 'Failed to load PDF');
+  };
+
+  const prevPage = () => setPageNumber(p => Math.max(1, p - 1));
+  const nextPage = () => setPageNumber(p => Math.min(numPages || 1, p + 1));
+  const zoomOut = () => setScale(s => Math.max(SCALE_MIN, parseFloat((s - SCALE_STEP).toFixed(2))));
+  const zoomIn = () => setScale(s => Math.min(SCALE_MAX, parseFloat((s + SCALE_STEP).toFixed(2))));
+
+  const toolbarStyle = {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: '0.5rem',
+    padding: '0.5rem 1rem',
+    background: 'rgba(0,0,0,0.08)',
+    borderBottom: '1px solid rgba(0,0,0,0.1)',
+    flexShrink: 0,
+    flexWrap: 'wrap',
+  };
+
+  const btnStyle = {
+    padding: '4px 10px',
+    border: '1px solid #ccc',
+    borderRadius: '4px',
+    background: '#fff',
+    cursor: 'pointer',
+    fontSize: '0.85rem',
+    color: '#333',
+    lineHeight: 1.4,
+  };
+
+  const btnDisabledStyle = {
+    ...btnStyle,
+    opacity: 0.4,
+    cursor: 'not-allowed',
+  };
+
+  const labelStyle = {
+    fontSize: '0.85rem',
+    color: '#555',
+    userSelect: 'none',
+    minWidth: '80px',
+    textAlign: 'center',
+  };
+
   return (
     <div
       onClick={e => e.stopPropagation()}
@@ -110,7 +171,7 @@ export default function PdfViewer({ url, name, containerStyle = {} }) {
           Decoding PDF secure payload...
         </div>
       )}
-      
+
       {error && (
         <div style={{ padding: '2rem', textAlign: 'center', color: '#d32f2f' }}>
           <h3 style={{ margin: '0 0 0.5rem 0' }}>Failed to Load PDF</h3>
@@ -119,16 +180,77 @@ export default function PdfViewer({ url, name, containerStyle = {} }) {
       )}
 
       {!loading && !error && resolvedUrl && (
-        <Worker workerUrl={`${import.meta.env.BASE_URL || '/bfi-classroom/'}pdf.worker.min.js`}>
-          <Viewer
-            fileUrl={resolvedUrl}
-            plugins={[defaultLayoutPluginInstance]}
-            transformGetDocumentParams={(params) => ({
-              ...params,
-              isEvalSupported: false,
-            })}
-          />
-        </Worker>
+        <>
+          {/* Toolbar */}
+          <div style={toolbarStyle}>
+            {/* Page navigation */}
+            <button
+              style={pageNumber <= 1 ? btnDisabledStyle : btnStyle}
+              disabled={pageNumber <= 1}
+              onClick={prevPage}
+              aria-label="Previous page"
+            >
+              ‹ Prev
+            </button>
+            <span style={labelStyle}>
+              {pageNumber} / {numPages || '—'}
+            </span>
+            <button
+              style={pageNumber >= (numPages || 1) ? btnDisabledStyle : btnStyle}
+              disabled={pageNumber >= (numPages || 1)}
+              onClick={nextPage}
+              aria-label="Next page"
+            >
+              Next ›
+            </button>
+
+            {/* Zoom controls */}
+            <button
+              style={scale <= SCALE_MIN ? btnDisabledStyle : btnStyle}
+              disabled={scale <= SCALE_MIN}
+              onClick={zoomOut}
+              aria-label="Zoom out"
+            >
+              −
+            </button>
+            <span style={labelStyle}>{Math.round(scale * 100)}%</span>
+            <button
+              style={scale >= SCALE_MAX ? btnDisabledStyle : btnStyle}
+              disabled={scale >= SCALE_MAX}
+              onClick={zoomIn}
+              aria-label="Zoom in"
+            >
+              +
+            </button>
+
+            {/* Download */}
+            <a
+              href={resolvedUrl}
+              download={name || 'document.pdf'}
+              style={{ ...btnStyle, textDecoration: 'none', display: 'inline-block' }}
+              aria-label="Download PDF"
+            >
+              ↓ Download
+            </a>
+          </div>
+
+          {/* PDF viewer — scrollable page area */}
+          <div style={{ flex: 1, overflowY: 'auto', display: 'flex', justifyContent: 'center', padding: '1rem', background: '#e0e0e0' }}>
+            <Document
+              file={resolvedUrl}
+              onLoadSuccess={handleLoadSuccess}
+              onLoadError={handleLoadError}
+              options={{ isEvalSupported: false }}
+            >
+              <Page
+                pageNumber={pageNumber}
+                scale={scale}
+                renderTextLayer={true}
+                renderAnnotationLayer={true}
+              />
+            </Document>
+          </div>
+        </>
       )}
     </div>
   );

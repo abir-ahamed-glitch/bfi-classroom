@@ -3,10 +3,11 @@ import { Upload, X, Check, AlertTriangle, FileText, Loader2 } from 'lucide-react
 import { useDropzone } from 'react-dropzone';
 import * as XLSX from 'xlsx';
 import { safeReadSpreadsheetAsync } from '../../utils/safeSpreadsheet';
-import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf';
+import * as pdfjsLib from 'pdfjs-dist';
+import pdfjsWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import './BatchFormModal.css';
 
-pdfjsLib.GlobalWorkerOptions.workerSrc = `${import.meta.env.BASE_URL || '/bfi-classroom/'}pdf.worker.min.js`;
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorkerUrl;
 
 export default function UploadResultsModal({ isOpen, onClose, batchId, onUploadSuccess }) {
   const [file, setFile] = useState(null);
