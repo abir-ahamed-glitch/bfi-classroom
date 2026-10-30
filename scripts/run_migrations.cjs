@@ -35,6 +35,7 @@ const { runMfaSingleUseChallengesMigration } = require(path.join(migrationsDir, 
 const { runAdminAccountabilityMigration } = require(path.join(migrationsDir, '20261025_admin_accountability.cjs'));
 const { runAdminArchivingAndResetMigration } = require(path.join(migrationsDir, '20261028_admin_archiving_and_reset.cjs'));
 const { runUniversalMfaAndSuperAdminMigration } = require(path.join(migrationsDir, '20261029_universal_mfa_and_super_admin.cjs'));
+const { runSchemaRepairsAndKeyPairMigration } = require(path.join(migrationsDir, '20261030_schema_repairs_and_key_pair.cjs'));
 
 const MIGRATIONS = [
   { name: '20261023_super_admin', runner: runSuperAdminMigration },
@@ -44,6 +45,7 @@ const MIGRATIONS = [
   { name: '20261025_admin_accountability', runner: runAdminAccountabilityMigration },
   { name: '20261028_admin_archiving_and_reset', runner: runAdminArchivingAndResetMigration },
   { name: '20261029_universal_mfa_and_super_admin', runner: runUniversalMfaAndSuperAdminMigration },
+  { name: '20261030_schema_repairs_and_key_pair', runner: runSchemaRepairsAndKeyPairMigration },
 ];
 
 function resolveDatabasePath() {
@@ -63,7 +65,7 @@ function resolveDatabasePath() {
 function assertSchemaIntegrity(db) {
   console.log('[Integrity Check] Validating schema integrity and post-migration assertions...');
 
-  // 1. Verify app_migrations table exists and has all 5 entries
+  // 1. Verify app_migrations table exists and has all entries
   const appMigrationsExists = db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='app_migrations'`).get();
   if (!appMigrationsExists) {
     throw new Error('Assertion failed: table app_migrations does not exist.');
@@ -185,6 +187,18 @@ function assertSchemaIntegrity(db) {
   for (const col of ['id', 'actor_id', 'session_id', 'target_id', 'action', 'challenge_token_hash', 'expires_at', 'consumed', 'consumed_at', 'created_at']) {
     if (!actionBoundCols.includes(col)) {
       throw new Error(`Assertion failed: column action_bound_challenges.${col} does not exist.`);
+    }
+  }
+
+  // 8F. Verify reports table and repaired columns (content_snapshot, screenshot_path)
+  const reportsExists = db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='reports'`).get();
+  if (!reportsExists) {
+    throw new Error('Assertion failed: table reports does not exist.');
+  }
+  const reportCols = db.prepare(`PRAGMA table_info(reports)`).all().map(c => c.name);
+  for (const col of ['content_snapshot', 'screenshot_path']) {
+    if (!reportCols.includes(col)) {
+      throw new Error(`Assertion failed: column reports.${col} does not exist.`);
     }
   }
 

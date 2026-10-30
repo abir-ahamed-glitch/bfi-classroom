@@ -32,13 +32,10 @@ function runUniversalMfaAndSuperAdminMigration(db) {
     db.pragma('foreign_keys = OFF');
 
     const executeMigration = db.transaction(() => {
-      // 1. Ensure users table has pending_two_factor_secret and private_key columns
+      // 1. Ensure users table has pending_two_factor_secret column
       const userColumns = db.prepare(`PRAGMA table_info(users)`).all().map(c => c.name);
       if (!userColumns.includes('pending_two_factor_secret')) {
         db.prepare(`ALTER TABLE users ADD COLUMN pending_two_factor_secret TEXT DEFAULT NULL`).run();
-      }
-      if (!userColumns.includes('private_key')) {
-        db.prepare(`ALTER TABLE users ADD COLUMN private_key TEXT DEFAULT NULL`).run();
       }
 
       // 2. Create user_mfa_recovery_codes table
