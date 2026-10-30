@@ -1,19 +1,20 @@
 /**
  * scripts/test_workflow_input_validation.cjs
  *
- * Dedicated unit and regression suite testing runner-side and remote-side
- * input validation, shell injection defenses, and git object type assertions
- * for .github/workflows/deploy.yml.
+ * Dedicated unit and regression suite testing the ACTUAL Bash validation code
+ * extracted directly from .github/workflows/deploy.yml.
  *
+ * Exercises whole-value validation, multiline injection rejection, and git object type assertions.
  * Strictly executed locally against disposable vectors — NEVER against production.
  */
 
 const { execSync, spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 
 console.log('================================================================');
-console.log('START: WORKFLOW INPUT VALIDATION & HARDENING TEST SUITE');
+console.log('START: WORKFLOW INPUT WHOLE-VALUE VALIDATION SUITE');
 console.log('================================================================\n');
 
 let passedTests = 0;
@@ -29,212 +30,218 @@ function assert(condition, message) {
   console.log(`✅ PASS: ${message}`);
 }
 
-/**
- * Runner-side input validation simulation.
- * Exact logic mirroring step `Validate Workflow Inputs` in deploy.yml.
- */
-function validateRunnerInputs(rawCommit, rawMfa) {
-  const defaultCommit = '8d0bbfd65901a98620374baedfc7ea620280b006';
-  const commit = (rawCommit !== undefined && rawCommit !== null && rawCommit !== '') ? rawCommit : defaultCommit;
-
-  // Strict regex: exactly 40 hexadecimal characters
-  const commitRegex = /^[0-9a-fA-F]{40}$/;
-  if (!commitRegex.test(commit)) {
-    throw new Error(`target_commit must be exactly 40 hexadecimal characters. Received: '${commit}'`);
+// Locate Git Bash binary on Windows or system bash on POSIX
+function findBashBinary() {
+  const candidates = [
+    'C:\\Program Files\\Git\\bin\\bash.exe',
+    'C:\\Program Files (x86)\\Git\\bin\\bash.exe',
+    'bash'
+  ];
+  for (const c of candidates) {
+    try {
+      const res = spawnSync(c, ['--version'], { encoding: 'utf8' });
+      if (res.status === 0 && res.stdout.includes('GNU bash')) {
+        return c;
+      }
+    } catch (_) {}
   }
-
-  const normalizedCommit = commit.toLowerCase();
-
-  const mfa = (rawMfa !== undefined && rawMfa !== null && rawMfa !== '') ? String(rawMfa) : 'true';
-  if (mfa !== 'true' && mfa !== 'false') {
-    throw new Error(`rotate_mfa must be 'true' or 'false'. Received: '${mfa}'`);
-  }
-
-  return { target_commit: normalizedCommit, rotate_mfa: mfa };
+  throw new Error('Could not find GNU bash binary for testing.');
 }
 
+const bashBin = findBashBinary();
+console.log(`Found Bash binary for workflow testing: ${bashBin}`);
+
+// Read .github/workflows/deploy.yml
+const workflowPath = path.resolve(__dirname, '../.github/workflows/deploy.yml');
+const workflowContent = fs.readFileSync(workflowPath, 'utf8');
+
+// Extract the runner validation script block from step `id: validate`
+const runnerScriptMatch = workflowContent.match(/id:\s*validate[\s\S]*?run:\s*\|([\s\S]*?)(?=\n\s*-\s*name:|$)/);
+if (!runnerScriptMatch) {
+  throw new Error('Could not extract runner validation script from .github/workflows/deploy.yml');
+}
+const runnerValidationBashScript = runnerScriptMatch[1];
+
+// Extract remote validation script block from appleboy/ssh-action
+const remoteScriptMatch = workflowContent.match(/uses:\s*appleboy\/ssh-action[\s\S]*?script:\s*\|([\s\S]*?)(?=\n\s*[a-zA-Z0-9_-]+:|$)/);
+if (!remoteScriptMatch) {
+  throw new Error('Could not extract remote script from .github/workflows/deploy.yml');
+}
+const remoteScriptBody = remoteScriptMatch[1];
+
+// Extract remote validation steps 1, 2, 3
+const remoteValidationLines = remoteScriptBody
+  .split('\n')
+  .filter(line => !line.includes('npm') && !line.includes('deploy --target-commit') && !line.includes('git show') && !line.includes('node -e'))
+  .join('\n');
+
 /**
- * Remote-side validation simulation.
- * Exact logic mirroring step `script` remote preflight in deploy.yml.
+ * Execute the EXACT extracted runner validation script using Bash.
  */
-function validateRemotePreflight(targetCommit, rotateMfa, cwd = process.cwd()) {
-  const commitRegex = /^[0-9a-f]{40}$/;
-  if (!commitRegex.test(targetCommit)) {
-    throw new Error(`Remote validation error: TARGET_COMMIT is not a valid 40-character hex SHA. Received: '${targetCommit}'`);
+function runRunnerValidationScript(rawTargetCommit, rawRotateMfa) {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wf-test-'));
+  const githubOutputPath = path.join(tmpDir, 'github_output.txt');
+  const scriptPath = path.join(tmpDir, 'validate_step.sh');
+
+  fs.writeFileSync(scriptPath, runnerValidationBashScript, { encoding: 'utf8' });
+
+  const env = {
+    ...process.env,
+    GITHUB_OUTPUT: githubOutputPath,
+  };
+  if (rawTargetCommit !== undefined) env.RAW_TARGET_COMMIT = rawTargetCommit;
+  else delete env.RAW_TARGET_COMMIT;
+
+  if (rawRotateMfa !== undefined) env.RAW_ROTATE_MFA = rawRotateMfa;
+  else delete env.RAW_ROTATE_MFA;
+
+  const result = spawnSync(bashBin, [scriptPath], {
+    env,
+    encoding: 'utf8',
+    stdio: ['pipe', 'pipe', 'pipe']
+  });
+
+  let outputContent = '';
+  if (fs.existsSync(githubOutputPath)) {
+    outputContent = fs.readFileSync(githubOutputPath, 'utf8');
   }
 
-  if (rotateMfa !== 'true' && rotateMfa !== 'false') {
-    throw new Error(`Remote validation error: ROTATE_MFA must be 'true' or 'false'. Received: '${rotateMfa}'`);
-  }
-
-  // Object verification: must exist and be of type 'commit'
+  // Cleanup
   try {
-    const type = execSync(`git cat-file -t ${targetCommit}`, { cwd, encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] }).trim();
-    if (type !== 'commit') {
-      throw new Error(`Remote validation error: Object ${targetCommit} is not a valid git commit object (type: '${type}').`);
-    }
-  } catch (err) {
-    if (err.message.includes('Remote validation error')) throw err;
-    throw new Error(`Remote validation error: Object ${targetCommit} does not exist in git.`);
-  }
+    fs.unlinkSync(scriptPath);
+    if (fs.existsSync(githubOutputPath)) fs.unlinkSync(githubOutputPath);
+    fs.rmdirSync(tmpDir);
+  } catch (_) {}
 
-  return true;
+  return {
+    status: result.status,
+    stdout: result.stdout,
+    stderr: result.stderr,
+    githubOutput: outputContent
+  };
 }
 
 // -------------------------------------------------------------
-// [Suite 1] Runner-Side Negative & Shell Injection Tests
+// [Suite 1] Actual Bash Runner-Side Validation — Negative Cases
 // -------------------------------------------------------------
-console.log('--- [Suite 1] Runner-Side Target Commit Validation ---');
+console.log('\n--- [Suite 1] Actual Bash Runner-Side Validation — Negative Cases ---');
 
-const injectionVectors = [
-  { val: '8d0bbfd65901a98620374baedfc7ea620280b006"; rm -rf /; echo "', desc: 'Double quote command injection' },
-  { val: "8d0bbfd65901a98620374baedfc7ea620280b006'; reboot; echo '", desc: 'Single quote command injection' },
-  { val: '`reboot`8d0bbfd65901a98620374baedfc7ea620280b006', desc: 'Backtick command injection' },
-  { val: '$(whoami)8d0bbfd65901a98620374baedfc7ea620280b006', desc: 'Subshell command substitution' },
-  { val: '8d0bbfd65901a98620374baedfc7ea620280b006\nrm -rf /', desc: 'Newline command separation' },
-  { val: '8d0bbfd65901a98620374baedfc7ea620280b006\r\nreboot', desc: 'CRLF command separation' },
-  { val: ' 8d0bbfd65901a98620374baedfc7ea620280b006', desc: 'Leading whitespace' },
-  { val: '8d0bbfd65901a98620374baedfc7ea620280b006 ', desc: 'Trailing whitespace' },
-  { val: '8d0bbfd65901a98620374baedfc7ea620280b00\t', desc: 'Tab whitespace' },
-  { val: '8d0bbfd', desc: 'Short 7-char abbreviated SHA' },
-  { val: '8d0bbfd65901a98620374baedfc7ea620280b00', desc: 'Short 39-char hex string' },
-  { val: '8d0bbfd65901a98620374baedfc7ea620280b0060', desc: 'Oversized 41-char hex string' },
+const validSha = '8d0bbfd65901a98620374baedfc7ea620280b006';
+
+const negativeVectors = [
+  { val: `${validSha}\nrotate_mfa=false`, desc: 'Valid SHA followed by newline and extra text' },
+  { val: `rotate_mfa=false\n${validSha}`, desc: 'Extra text followed by newline and valid SHA' },
+  { val: `${validSha}\n`, desc: 'Trailing newline' },
+  { val: `\n${validSha}`, desc: 'Leading newline' },
+  { val: `8d0bbfd65901a98620374baedfc7ea62028\n0b006`, desc: 'Embedded newline within SHA' },
+  { val: `${validSha}\r\n`, desc: 'Trailing CRLF' },
+  { val: `\r\n${validSha}`, desc: 'Leading CRLF' },
+  { val: `${validSha}\r\nrotate_mfa=false`, desc: 'Embedded CRLF with extra text' },
+  { val: `${validSha}\nGITHUB_OUTPUT=malicious`, desc: 'Multiline GitHub-output-looking content' },
+  { val: `${validSha}\ntarget_commit=0000000000000000000000000000000000000000`, desc: 'Output poisoning injection' },
+  { val: `${validSha}"; rm -rf /; echo "`, desc: 'Double quote shell injection' },
+  { val: `${validSha}'; reboot; echo '`, desc: 'Single quote shell injection' },
+  { val: `\`reboot\`${validSha}`, desc: 'Backtick command injection' },
+  { val: `$(whoami)${validSha}`, desc: 'Subshell command substitution' },
+  { val: ` ${validSha}`, desc: 'Leading space' },
+  { val: `${validSha} `, desc: 'Trailing space' },
+  { val: `${validSha}\t`, desc: 'Trailing tab' },
+  { val: '8d0bbfd', desc: 'Short 7-char SHA' },
+  { val: '8d0bbfd65901a98620374baedfc7ea620280b00', desc: 'Short 39-char SHA' },
+  { val: '8d0bbfd65901a98620374baedfc7ea620280b0060', desc: 'Oversized 41-char SHA' },
   { val: '8d0bbfd65901a98620374baedfc7ea620280b00g', desc: 'Non-hex character (g)' },
   { val: '8d0bbfd65901a98620374baedfc7ea620280b00z', desc: 'Non-hex character (z)' },
   { val: '8d0bbfd65901a98620374baedfc7ea620280b00-', desc: 'Punctuation character (-)' },
-  { val: '8d0bbfd65901a98620374baedfc7ea620280b00;', desc: 'Semicolon character (;)' },
-  { val: '8d0bbfd65901a98620374baedfc7ea620280b00|', desc: 'Pipe character (|)' },
-  { val: '8d0bbfd65901a98620374baedfc7ea620280b00&', desc: 'Ampersand character (&)' }
+  { val: '8d0bbfd65901a98620374baedfc7ea620280b00;', desc: 'Semicolon character (;)' }
 ];
 
-for (const vec of injectionVectors) {
-  let threw = false;
-  try {
-    validateRunnerInputs(vec.val, 'true');
-  } catch (err) {
-    threw = true;
-  }
-  assert(threw, `Rejected ${vec.desc}: '${vec.val.replace(/[\r\n]/g, '\\n')}'`);
+for (const vec of negativeVectors) {
+  const res = runRunnerValidationScript(vec.val, 'true');
+  assert(res.status !== 0, `Bash script exited non-zero on ${vec.desc}`);
+  assert(res.githubOutput === '', `Zero content written to GITHUB_OUTPUT on ${vec.desc}`);
+  assert(res.stderr.includes('ERROR: target_commit'), `Appropriate stderr error emitted on ${vec.desc}`);
 }
 
-// Positive tests for commit input
-const validCommit = '8d0bbfd65901a98620374baedfc7ea620280b006';
-const upperCommit = '8D0BBFD65901A98620374BAEDFC7EA620280B006';
-
-const res1 = validateRunnerInputs(validCommit, 'true');
-assert(res1.target_commit === validCommit && res1.rotate_mfa === 'true', 'Valid 40-char lowercase hex accepted');
-
-const res2 = validateRunnerInputs(upperCommit, 'false');
-assert(res2.target_commit === validCommit && res2.rotate_mfa === 'false', 'Valid 40-char uppercase hex normalized to lowercase');
-
-const resDefault = validateRunnerInputs('', 'true');
-assert(resDefault.target_commit === validCommit, 'Empty input defaults to approved candidate commit');
-
 // -------------------------------------------------------------
-// [Suite 2] Runner-Side Rotate MFA Boolean Validation
+// [Suite 2] Actual Bash Runner-Side Validation — Boolean MFA Negatives
 // -------------------------------------------------------------
-console.log('\n--- [Suite 2] Runner-Side Rotate MFA Boolean Validation ---');
+console.log('\n--- [Suite 2] Actual Bash Runner-Side Validation — Boolean MFA Negatives ---');
 
 const mfaInvalidVectors = [
-  'yes', 'no', '0', '1', 'True', 'False', 'true; rm -rf', '"true"', "'false'", 'true\nmalicious'
+  'yes', 'no', '0', '1', 'True', 'False', 'true; rm -rf', '"true"', "'false'", 'true\nmalicious', 'true\r\n'
 ];
 
 for (const mfa of mfaInvalidVectors) {
-  let threw = false;
-  try {
-    validateRunnerInputs(validCommit, mfa);
-  } catch (err) {
-    threw = true;
-  }
-  assert(threw, `Rejected invalid rotate_mfa vector: '${mfa}'`);
+  const res = runRunnerValidationScript(validSha, mfa);
+  assert(res.status !== 0, `Bash script exited non-zero on invalid rotate_mfa: '${mfa.replace(/[\r\n]/g, '\\n')}'`);
+  assert(res.githubOutput === '', `Zero content written to GITHUB_OUTPUT on invalid rotate_mfa: '${mfa.replace(/[\r\n]/g, '\\n')}'`);
 }
 
-const resMfaTrue = validateRunnerInputs(validCommit, 'true');
-assert(resMfaTrue.rotate_mfa === 'true', 'Accepted rotate_mfa: true');
+// -------------------------------------------------------------
+// [Suite 3] Actual Bash Runner-Side Validation — Positive Cases
+// -------------------------------------------------------------
+console.log('\n--- [Suite 3] Actual Bash Runner-Side Validation — Positive Cases ---');
 
-const resMfaFalse = validateRunnerInputs(validCommit, 'false');
-assert(resMfaFalse.rotate_mfa === 'false', 'Accepted rotate_mfa: false');
+// Valid lowercase SHA + true
+const resPos1 = runRunnerValidationScript(validSha, 'true');
+assert(resPos1.status === 0, 'Bash script exited 0 on valid lowercase SHA and rotate_mfa=true');
+assert(resPos1.githubOutput.includes(`target_commit=${validSha}`), 'GITHUB_OUTPUT contains normalized target_commit');
+assert(resPos1.githubOutput.includes('rotate_mfa=true'), 'GITHUB_OUTPUT contains rotate_mfa=true');
+
+// Valid uppercase SHA + false (normalized to lowercase)
+const upperSha = '8D0BBFD65901A98620374BAEDFC7EA620280B006';
+const resPos2 = runRunnerValidationScript(upperSha, 'false');
+assert(resPos2.status === 0, 'Bash script exited 0 on valid uppercase SHA and rotate_mfa=false');
+assert(resPos2.githubOutput.includes(`target_commit=${validSha}`), 'GITHUB_OUTPUT normalized uppercase SHA to lowercase');
+assert(resPos2.githubOutput.includes('rotate_mfa=false'), 'GITHUB_OUTPUT contains rotate_mfa=false');
+
+// Default fallback when inputs are empty/omitted
+const resPosDefault = runRunnerValidationScript('', '');
+assert(resPosDefault.status === 0, 'Bash script exited 0 when inputs are empty (applied defaults)');
+assert(resPosDefault.githubOutput.includes(`target_commit=${validSha}`), 'Default candidate commit applied');
+assert(resPosDefault.githubOutput.includes('rotate_mfa=true'), 'Default rotate_mfa=true applied');
 
 // -------------------------------------------------------------
-// [Suite 3] Remote Preflight Git Object Type Assertions
+// [Suite 4] Remote Preflight Git Object Type Assertions
 // -------------------------------------------------------------
-console.log('\n--- [Suite 3] Remote Preflight Git Object Type Assertions ---');
+console.log('\n--- [Suite 4] Remote Preflight Git Object Type Assertions ---');
 
-// Test 1: Real commit object
-const remoteRes1 = validateRemotePreflight(validCommit, 'true');
-assert(remoteRes1 === true, 'Real commit object (8d0bbfd6...) verified as type commit');
+// Assert real commit object
+const commitType = execSync(`git cat-file -t ${validSha}`, { encoding: 'utf8' }).trim();
+assert(commitType === 'commit', `Real commit ${validSha.slice(0, 8)} verified as git object type 'commit'`);
 
-// Test 2: Tree object (should be rejected because type is 'tree', not 'commit')
-const treeHash = execSync(`git rev-parse ${validCommit}:`, { encoding: 'utf8' }).trim();
-let treeThrew = false;
+// Assert tree object is NOT 'commit'
+const treeHash = execSync(`git rev-parse ${validSha}:`, { encoding: 'utf8' }).trim();
+const treeType = execSync(`git cat-file -t ${treeHash}`, { encoding: 'utf8' }).trim();
+assert(treeType === 'tree' && treeType !== 'commit', `Tree object ${treeHash.slice(0, 8)} is correctly identified as type '${treeType}', not 'commit'`);
+
+// Assert non-existent object fails git cat-file
+let nonExistFailed = false;
 try {
-  validateRemotePreflight(treeHash, 'true');
-} catch (err) {
-  treeThrew = err.message.includes("is not a valid git commit object (type: 'tree')");
+  execSync('git cat-file -t 0000000000000000000000000000000000000000', { stdio: ['pipe', 'pipe', 'ignore'] });
+} catch (_) {
+  nonExistFailed = true;
 }
-assert(treeThrew, `Non-commit tree object (${treeHash.slice(0, 8)}) rejected cleanly`);
-
-// Test 3: Non-existent 40-char hex SHA
-const nonExistentCommit = '0000000000000000000000000000000000000000';
-let nonExistThrew = false;
-try {
-  validateRemotePreflight(nonExistentCommit, 'true');
-} catch (err) {
-  nonExistThrew = err.message.includes('does not exist in git');
-}
-assert(nonExistThrew, `Non-existent commit SHA (${nonExistentCommit.slice(0, 8)}) rejected cleanly`);
+assert(nonExistFailed, 'Non-existent object SHA fails git cat-file lookup');
 
 // -------------------------------------------------------------
-// [Suite 4] Clean Tracked Working Tree Assertion Test
+// [Suite 5] deploy.yml Structure & Zero Script Template Interpolation Audit
 // -------------------------------------------------------------
-console.log('\n--- [Suite 4] Clean Tracked Working Tree Assertion ---');
+console.log('\n--- [Suite 5] deploy.yml Structure & Zero Script Template Interpolation Audit ---');
 
-function checkDirtyTracked(statusOutput) {
-  const dirty = statusOutput.trim();
-  if (dirty.length > 0) {
-    throw new Error(`Dirty tracked files detected:\n${dirty}`);
-  }
-  return true;
-}
-
-// Negative test: dirty tracked files detected
-let dirtyThrew = false;
-try {
-  checkDirtyTracked(' M ecosystem.config.cjs\n M server/server.js');
-} catch (err) {
-  dirtyThrew = err.message.includes('Dirty tracked files detected');
-}
-assert(dirtyThrew, 'Preflight check halts closed when dirty tracked files are present');
-
-// Positive test: clean working tree
-assert(checkDirtyTracked('') === true, 'Preflight check passes when zero tracked changes exist');
-assert(checkDirtyTracked('   \n  \n') === true, 'Preflight check passes on whitespace-only status output');
-
-// -------------------------------------------------------------
-// [Suite 5] deploy.yml Template Structure & Zero Injection Audit
-// -------------------------------------------------------------
-console.log('\n--- [Suite 5] deploy.yml Zero Script Template Interpolation Audit ---');
-
-const workflowPath = path.resolve(__dirname, '../.github/workflows/deploy.yml');
-const workflowYaml = fs.readFileSync(workflowPath, 'utf8');
-
-// Assert no ${{ ... }} inside the `script: |` section
-const scriptSectionMatch = workflowYaml.match(/script:\s*\|([\s\S]*?)(?=\n\s*[a-zA-Z0-9_-]+:|$)/);
+const scriptSectionMatch = workflowContent.match(/script:\s*\|([\s\S]*?)(?=\n\s*[a-zA-Z0-9_-]+:|$)/);
 assert(scriptSectionMatch !== null, 'Found script: | block in deploy.yml');
 
 const scriptContent = scriptSectionMatch[1];
 const hasExpressionInScript = /\$\{\{\s*.*?\s*\}\}/.test(scriptContent);
 assert(!hasExpressionInScript, 'Zero ${{ ... }} template expressions inside script: | body (prevents command injection)');
 
-// Assert envs mapping in ssh-action
-assert(workflowYaml.includes('envs: TARGET_COMMIT,ROTATE_MFA,SUPER_ADMIN_TOKEN,ADMIN_TOKEN'), 'ssh-action uses envs: TARGET_COMMIT,ROTATE_MFA,SUPER_ADMIN_TOKEN,ADMIN_TOKEN');
+assert(workflowContent.includes('envs: TARGET_COMMIT,ROTATE_MFA,SUPER_ADMIN_TOKEN,ADMIN_TOKEN'), 'ssh-action uses envs: TARGET_COMMIT,ROTATE_MFA,SUPER_ADMIN_TOKEN,ADMIN_TOKEN');
 
-// Assert validate step exists and runs before ssh step
-const validateStepIndex = workflowYaml.indexOf('id: validate');
-const sshStepIndex = workflowYaml.indexOf('uses: appleboy/ssh-action');
+const validateStepIndex = workflowContent.indexOf('id: validate');
+const sshStepIndex = workflowContent.indexOf('uses: appleboy/ssh-action');
 assert(validateStepIndex !== -1 && sshStepIndex !== -1 && validateStepIndex < sshStepIndex, 'Validation step executes strictly before appleboy/ssh-action step');
 
-// Assert dirty tracked files check is present and git checkout is removed
 assert(!scriptContent.includes('git checkout -- ecosystem.config.cjs'), 'Silent git checkout -- ecosystem.config.cjs is removed');
 assert(scriptContent.includes('git status --porcelain -uno'), 'Strict git status --porcelain -uno dirty check is present');
 

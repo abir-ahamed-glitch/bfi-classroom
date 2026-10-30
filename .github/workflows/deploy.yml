@@ -11,10 +11,11 @@
 # This workflow is strictly OPERATOR-TRIGGERED via workflow_dispatch.
 # It NEVER executes automatically on push or pull-request merge.
 #
-# INPUT VALIDATION & LEAST PRIVILEGE:
+# WHOLE-VALUE INPUT VALIDATION & LEAST PRIVILEGE:
 # All workflow inputs are validated in an isolated runner step before invoking SSH.
 # Inputs are passed strictly as environment variables (NEVER inline template interpolation).
-# Target commits must be strictly 40 hexadecimal characters.
+# Target commits must be strictly whole-value 40 hexadecimal characters with zero
+# newlines, carriage returns, or whitespace.
 #
 # UNATTENDED CI CREDENTIAL PREREQUISITES:
 # When triggered via workflow_dispatch, smoke credentials must be pre-supplied
@@ -66,24 +67,56 @@ jobs:
           set -e
           echo "=== Step 1: Runner-Side Input Validation ==="
 
-          # Default target commit if omitted
           COMMIT="${RAW_TARGET_COMMIT:-8d0bbfd65901a98620374baedfc7ea620280b006}"
 
-          # Strict validation: Exactly 40 hexadecimal characters
-          if ! echo "$COMMIT" | grep -Eq '^[0-9a-fA-F]{40}$'; then
-            echo "❌ ERROR: target_commit must be exactly 40 hexadecimal characters. Received: '$COMMIT'" >&2
+          # Whole-value check 1: Exact length must be 40 characters
+          if [ "${#COMMIT}" -ne 40 ]; then
+            echo "❌ ERROR: target_commit length is ${#COMMIT}, expected exactly 40 characters." >&2
             exit 1
           fi
+
+          # Whole-value check 2: Native Bash regex match (binds to full string)
+          if ! [[ "$COMMIT" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "❌ ERROR: target_commit must be exactly 40 hexadecimal characters." >&2
+            exit 1
+          fi
+
+          # Whole-value check 3: Strip hex characters; result must be empty
+          NON_HEX="${COMMIT//[0-9a-fA-F]/}"
+          if [ -n "$NON_HEX" ]; then
+            echo "❌ ERROR: target_commit contains non-hex characters." >&2
+            exit 1
+          fi
+
+          # Whole-value check 4: Reject any whitespace, newlines, or carriage returns
+          case "$COMMIT" in
+            *[[:space:]]*|*$'\n'*|*$'\r'*)
+              echo "❌ ERROR: target_commit contains forbidden whitespace or newline characters." >&2
+              exit 1
+              ;;
+          esac
 
           # Normalize to lowercase
           NORMALIZED_COMMIT=$(echo "$COMMIT" | tr '[:upper:]' '[:lower:]')
 
           # Strict validation of rotate_mfa: boolean true or false
           MFA="${RAW_ROTATE_MFA:-true}"
+          if [ "${#MFA}" -ne 4 ] && [ "${#MFA}" -ne 5 ]; then
+            echo "❌ ERROR: rotate_mfa length is invalid. Received: '$MFA'" >&2
+            exit 1
+          fi
+
           if [ "$MFA" != "true" ] && [ "$MFA" != "false" ]; then
             echo "❌ ERROR: rotate_mfa must be 'true' or 'false'. Received: '$MFA'" >&2
             exit 1
           fi
+
+          case "$MFA" in
+            *[[:space:]]*|*$'\n'*|*$'\r'*)
+              echo "❌ ERROR: rotate_mfa contains forbidden whitespace or newline characters." >&2
+              exit 1
+              ;;
+          esac
 
           echo "✅ Runner input validation passed."
           echo "target_commit=$NORMALIZED_COMMIT" >> "$GITHUB_OUTPUT"
@@ -106,16 +139,41 @@ jobs:
             echo "🚀 Starting canonical operator-triggered deployment on Oracle Cloud..."
             cd /home/ubuntu/bfi-classroom
 
-            # === REMOTE VALIDATION STEP 1: Re-validate environment variables ===
-            if ! echo "$TARGET_COMMIT" | grep -Eq '^[0-9a-f]{40}$'; then
-              echo "❌ Remote validation error: TARGET_COMMIT is not a valid 40-character hex SHA." >&2
+            # === REMOTE VALIDATION STEP 1: Whole-value validation of environment variables ===
+            if [ "${#TARGET_COMMIT}" -ne 40 ]; then
+              echo "❌ Remote validation error: TARGET_COMMIT length is ${#TARGET_COMMIT}, expected exactly 40 characters." >&2
               exit 1
             fi
+
+            if ! [[ "$TARGET_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "❌ Remote validation error: TARGET_COMMIT must be exactly 40 lowercase hexadecimal characters." >&2
+              exit 1
+            fi
+
+            NON_HEX="${TARGET_COMMIT//[0-9a-f]/}"
+            if [ -n "$NON_HEX" ]; then
+              echo "❌ Remote validation error: TARGET_COMMIT contains non-hex characters." >&2
+              exit 1
+            fi
+
+            case "$TARGET_COMMIT" in
+              *[[:space:]]*|*$'\n'*|*$'\r'*)
+                echo "❌ Remote validation error: TARGET_COMMIT contains forbidden whitespace or newlines." >&2
+                exit 1
+                ;;
+            esac
 
             if [ "$ROTATE_MFA" != "true" ] && [ "$ROTATE_MFA" != "false" ]; then
               echo "❌ Remote validation error: ROTATE_MFA must be 'true' or 'false'." >&2
               exit 1
             fi
+
+            case "$ROTATE_MFA" in
+              *[[:space:]]*|*$'\n'*|*$'\r'*)
+                echo "❌ Remote validation error: ROTATE_MFA contains forbidden whitespace or newlines." >&2
+                exit 1
+                ;;
+            esac
 
             echo "Validated target commit: $TARGET_COMMIT"
             echo "MFA rotation enabled: $ROTATE_MFA"
