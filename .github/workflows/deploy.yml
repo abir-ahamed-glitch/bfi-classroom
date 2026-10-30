@@ -3,35 +3,48 @@
 # ==============================================================================
 # AUTHORITATIVE STANDARD:
 # The primary, authoritative execution standard for BFI Classroom production
-# deployment is the OPERATOR-DRIVEN INTERACTIVE RUNBOOK documented in:
+# deployment is the OPERATOR-DRIVEN CANONICAL RUNBOOK documented in:
 # docs/runbooks/super-admin-deployment-and-rollback-runbook.md
+# and production-release-approval-checklist.md
 #
-# The interactive workflow enables bounded, confidential credential handoff
-# via obtain_smoke_credentials.cjs over an interactive TTY, ensuring privileged
-# credentials (Super Admin & Ordinary Admin tokens) are never stored in plain text
-# on disk or in CI secrets.
+# AUTOMATED WORKFLOW DISPATCH:
+# This workflow is strictly OPERATOR-TRIGGERED via workflow_dispatch.
+# It NEVER executes automatically on push or pull-request merge.
 #
-# UNATTENDED CI AUTOMATION:
-# When this GitHub Actions workflow is executed unattended, smoke credentials MUST
-# be pre-supplied as repository environment secrets:
+# UNATTENDED CI CREDENTIAL PREREQUISITES:
+# When triggered via workflow_dispatch, smoke credentials must be pre-supplied
+# as repository/environment secrets:
 # - SMOKE_SUPER_ADMIN_TOKEN
 # - SMOKE_ADMIN_TOKEN
 #
 # In Phase 0, production_lifecycle.cjs validates credential handoff capability.
-# If running non-interactively without verified smoke credentials, deployment
-# immediately HALTS CLOSED in Phase 0 *before* stopping Nginx or PM2, preventing
-# service disruption.
+# If running without verified smoke credentials, deployment immediately
+# HALTS CLOSED in Phase 0 *before* stopping Nginx or PM2, preventing service
+# disruption.
 # ==============================================================================
 
 name: Deploy BFI Classroom to Oracle Cloud
 
-on:
-  push:
-    branches:
-      - main
+'on':
+  workflow_dispatch:
+    inputs:
+      target_commit:
+        description: 'Exact pinned immutable Git commit SHA to deploy'
+        required: true
+        type: string
+        default: '8d0bbfd65901a98620374baedfc7ea620280b006'
+      rotate_mfa:
+        description: 'Perform atomic MFA secret rotation during deployment'
+        required: false
+        type: boolean
+        default: true
 
 permissions:
   contents: read
+
+concurrency:
+  group: production-deployment
+  cancel-in-progress: false
 
 jobs:
   deploy:
@@ -47,35 +60,42 @@ jobs:
           key: ${{ secrets.ORACLE_SSH_KEY }}
           script: |
             set -e
-            echo "🚀 Starting canonical automated deployment on Oracle Cloud..."
+            echo "🚀 Starting canonical operator-triggered deployment on Oracle Cloud..."
             cd /home/ubuntu/bfi-classroom
 
-            # Preserve production .env if backup exists
-            if [ -f /home/ubuntu/.env.bfi ]; then
-              cp /home/ubuntu/.env.bfi .env.backup
-            fi
+            # Target commit resolution from explicit workflow input
+            TARGET_COMMIT="${{ github.event.inputs.target_commit || '8d0bbfd65901a98620374baedfc7ea620280b006' }}"
+            echo "Target deployment commit: $TARGET_COMMIT"
 
             # Clean any untracked diffs on tracked configuration files
             git checkout -- ecosystem.config.cjs || true
 
-            # Fetch target commit so it is available locally on remote host
-            git fetch origin main
+            # Fetch target commit without premature checkout modification
+            git fetch origin "$TARGET_COMMIT" || git fetch origin integration/super-admin-candidate || git fetch origin main
 
             # Unattended CI Smoke Credential Injection (Validated in Phase 0 before service disruption)
             export SUPER_ADMIN_TOKEN="${{ secrets.SMOKE_SUPER_ADMIN_TOKEN }}"
             export ADMIN_TOKEN="${{ secrets.SMOKE_ADMIN_TOKEN }}"
 
-            # Extract recovery tools directly from target commit, verify SHA-256 and cold-start bundle load
+            # Extract ALL 7 recovery tools directly from target commit, verify SHA-256 and cold-start bundle load
             mkdir -p server/.recovery_tools
-            for tool in preflight_lockdown_check.cjs verify_isolation.cjs run_migrations.cjs production_smoke_check.cjs production_lifecycle.cjs obtain_smoke_credentials.cjs; do
-              git show ${{ github.sha }}:scripts/$tool > server/.recovery_tools/$tool
+            for tool in production_lifecycle.cjs rotate_mfa_secrets.cjs run_migrations.cjs verify_isolation.cjs preflight_lockdown_check.cjs production_smoke_check.cjs obtain_smoke_credentials.cjs; do
+              git show "$TARGET_COMMIT":scripts/$tool > server/.recovery_tools/$tool
               chmod 755 server/.recovery_tools/$tool
             done
 
             node -e '
               const path = require("path");
               const dir = "server/.recovery_tools";
-              const tools = ["preflight_lockdown_check.cjs", "verify_isolation.cjs", "run_migrations.cjs", "production_smoke_check.cjs", "production_lifecycle.cjs", "obtain_smoke_credentials.cjs"];
+              const tools = [
+                "production_lifecycle.cjs",
+                "rotate_mfa_secrets.cjs",
+                "run_migrations.cjs",
+                "verify_isolation.cjs",
+                "preflight_lockdown_check.cjs",
+                "production_smoke_check.cjs",
+                "obtain_smoke_credentials.cjs"
+              ];
               for (const t of tools) require(path.resolve(dir, t));
               console.log("BUNDLE_VERIFIED_OK");
             '
@@ -84,14 +104,17 @@ jobs:
             # Fail-closed rollback trap restores services safely without touching DB if failure occurred before backup
             trap 'echo "❌ Deployment step halted; executing fail-closed rollback..."; if [ -f server/.recovery_tools/production_lifecycle.cjs ]; then node server/.recovery_tools/production_lifecycle.cjs rollback; elif [ -f scripts/production_lifecycle.cjs ]; then node scripts/production_lifecycle.cjs rollback; fi' ERR
 
-            node server/.recovery_tools/production_lifecycle.cjs deploy --target-commit ${{ github.sha }}
+            EXTRA_FLAGS=""
+            if [ "${{ github.event.inputs.rotate_mfa }}" = "true" ]; then
+              EXTRA_FLAGS="--rotate-mfa"
+              export NEW_MFA_ENCRYPTION_KEY="$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))")"
+            fi
+
+            node server/.recovery_tools/production_lifecycle.cjs deploy --target-commit "$TARGET_COMMIT" $EXTRA_FLAGS
 
             trap - ERR
 
-            # Restore production .env if needed
-            if [ -f .env.backup ]; then
-              cp .env.backup .env
-              rm -f .env.backup
-            fi
+            # Note: Production .env is atomically managed by production_lifecycle.cjs with mode 0600.
+            # Do NOT clobber or overwrite .env with stale backups.
 
             echo "✅ Canonical deployment completed successfully!"
