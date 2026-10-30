@@ -92,8 +92,11 @@ function spawner(cmd, args = [], spawnOpts = {}) {
     }
   }
 
-  // Git checkout / rev-parse
+  // Git status / checkout / rev-parse
   if (cmd === 'git') {
+    if (args[0] === 'status') {
+      return { status: 0, stdout: '', stderr: '', error: null };
+    }
     if (args[0] === 'checkout') {
       return { status: 0, stdout: 'HEAD is now at ' + args[1], stderr: '', error: null };
     }

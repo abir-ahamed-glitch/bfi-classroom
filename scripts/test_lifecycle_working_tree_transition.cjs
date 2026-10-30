@@ -207,6 +207,16 @@ function createRealGitSpawner(options = {}) {
       if (options.failGitStatus && args[0] === 'status') {
         return { status: 1, stdout: '', stderr: 'fatal: git status internal failure: index locked', error: null };
       }
+      if (options.failBeforeTargetCheckout && args[0] === 'checkout' && options.targetCommit && args[1] === options.targetCommit) {
+        return { status: 1, stdout: '', stderr: 'fatal: Simulated crash: failure before target checkout after reconciliation', error: null };
+      }
+      if (options.failAfterTargetCheckout && args[0] === 'rev-parse' && args[1] === 'HEAD') {
+        const currentHeadRes = child_process.spawnSync('git', ['rev-parse', 'HEAD'], spawnOpts);
+        const curHead = (currentHeadRes.stdout || '').toString().trim();
+        if (options.targetCommit && curHead.toLowerCase() === options.targetCommit.toLowerCase()) {
+          return { status: 1, stdout: '', stderr: 'fatal: Simulated crash: failure immediately after target checkout before env restore', error: null };
+        }
+      }
       return child_process.spawnSync('git', args, spawnOpts);
     }
 
@@ -517,9 +527,186 @@ async function runTestSuite() {
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // VECTOR 5: Post-Exposure Boundary Enforcement
+  // VECTOR 5: Interruption After Tracked-File Reconciliation (Before Target Checkout), Rollback & Retry
   // ─────────────────────────────────────────────────────────────────────────────
-  console.log('--- VECTOR 5: Post-Exposure Boundary Enforcement ---');
+  console.log('--- VECTOR 5: Interruption After Tracked-File Reconciliation, Rollback & Retry ---');
+  {
+    const env = createDisposableGitRepo();
+    const liveEnvContent = 'NODE_ENV=production\nPORT=3001\nJWT_SECRET=super_secret_live_key_vector5\nJWT_REFRESH_SECRET=refresh_live_vector5\nMFA_ENCRYPTION_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n';
+    fs.writeFileSync(path.join(env.rootDir, '.env'), liveEnvContent);
+    const preEnvHash = crypto.createHash('sha256').update(liveEnvContent).digest('hex');
+
+    // Dirty package-lock.json drift
+    fs.writeFileSync(path.join(env.rootDir, 'package-lock.json'), JSON.stringify({ name: 'bfi-classroom', lockfileVersion: 3, version: '1.0.0-drift' }));
+
+    // Configure spawner to fail right at target checkout (after Step 3.0 has reconciled tracked files)
+    const crashAdapter = createRealGitSpawner({
+      failBeforeTargetCheckout: true,
+      targetCommit: env.c2Rev
+    });
+
+    let deployError = null;
+    try {
+      await executeDeployment({
+        rootDir: env.rootDir,
+        targetCommit: env.c2Rev,
+        spawner: crashAdapter.spawner,
+        isRehearsal: true,
+        skipGitInspection: false
+      });
+    } catch (err) {
+      deployError = err;
+    }
+
+    assert(Boolean(deployError), 'Vector 5: Deployment failed as expected when interrupted before target checkout');
+    assert(deployError.message.includes('Git Checkout Target Commit'), 'Vector 5: Error indicates failure at target checkout step');
+
+    // Verify intermediate state at interruption point:
+    // HEAD remains at c1Rev
+    const interHead = env.runGit(['rev-parse', 'HEAD']);
+    assert(interHead.toLowerCase() === env.c1Rev.toLowerCase(), 'Vector 5: Checkout remains at historical revision c1Rev upon interruption');
+
+    // In Step 3.0, .env was checked out to HEAD baseline, but attempt-bound backup contains the live config
+    const state = JSON.parse(fs.readFileSync(path.join(env.rootDir, 'server', 'active_deployment_state.json'), 'utf8'));
+    assert(Boolean(state.envBackupFile && fs.existsSync(state.envBackupFile)), 'Vector 5: Attempt-bound envBackupFile exists');
+    assert(state.backupValidated === true, 'Vector 5: Validated database backup exists before interruption');
+
+    // Execute rollback from interrupted state
+    const rbAdapter = createRealGitSpawner();
+    const rollbackRes = await executeRollback({
+      rootDir: env.rootDir,
+      spawner: rbAdapter.spawner,
+      isRehearsal: true
+    });
+
+    assert(rollbackRes && rollbackRes.rollbackComplete === true, 'Vector 5: executeRollback completes successfully from pre-checkout interruption');
+    assert(rollbackRes.databaseRestored === true, 'Vector 5: Database was restored from validated backup');
+
+    // Verify restored configuration matches pre-disruption hash bit-for-bit
+    const restoredEnvContent = fs.readFileSync(path.join(env.rootDir, '.env'), 'utf8');
+    const restoredEnvHash = crypto.createHash('sha256').update(restoredEnvContent).digest('hex');
+    assert(restoredEnvHash === preEnvHash, 'Vector 5: Live .env restored from attempt backup matches pre-deployment configuration bit-for-bit');
+
+    // Verify database integrity
+    const db = new Database(env.dbPath, { readonly: true });
+    const qCheck = db.prepare('PRAGMA quick_check').get();
+    const fkCheck = db.prepare('PRAGMA foreign_key_check').all();
+    db.close();
+    assert(qCheck.quick_check === 'ok' && fkCheck.length === 0, 'Vector 5: Restored database integrity verified (0 FK violations)');
+
+    // Now test RETRY from the recovered state
+    console.log('   [Vector 5: Retrying deployment from recovered state...]');
+    const retryAdapter = createRealGitSpawner();
+    const retryRes = await executeDeployment({
+      rootDir: env.rootDir,
+      targetCommit: env.c2Rev,
+      spawner: retryAdapter.spawner,
+      isRehearsal: true,
+      skipGitInspection: false
+    });
+
+    assert(retryRes && retryRes.success === true, 'Vector 5: Retry deployment completes with success=true');
+    const retryHead = env.runGit(['rev-parse', 'HEAD']);
+    assert(retryHead.toLowerCase() === env.c2Rev.toLowerCase(), 'Vector 5: Retry successfully reached target revision c2Rev');
+    const finalEnvHash = crypto.createHash('sha256').update(fs.readFileSync(path.join(env.rootDir, '.env'))).digest('hex');
+    assert(finalEnvHash === preEnvHash, 'Vector 5: Final .env on target matches original configuration bit-for-bit');
+    const finalStatus = env.runGit(['status', '--porcelain', '-uno']);
+    assert(finalStatus.trim() === '', 'Vector 5: Working tree is clean on target revision after retry');
+    console.log();
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // VECTOR 6: Interruption Immediately After Target Checkout (Before Config Restoration), Rollback & Retry
+  // ─────────────────────────────────────────────────────────────────────────────
+  console.log('--- VECTOR 6: Interruption Immediately After Target Checkout, Rollback & Retry ---');
+  {
+    const env = createDisposableGitRepo();
+    const liveEnvContent = 'NODE_ENV=production\nPORT=3001\nJWT_SECRET=super_secret_live_key_vector6\nJWT_REFRESH_SECRET=refresh_live_vector6\nMFA_ENCRYPTION_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n';
+    fs.writeFileSync(path.join(env.rootDir, '.env'), liveEnvContent);
+    const preEnvHash = crypto.createHash('sha256').update(liveEnvContent).digest('hex');
+
+    // Configure spawner to fail on rev-parse HEAD verification immediately following git checkout targetCommit
+    const crashAdapter = createRealGitSpawner({
+      failAfterTargetCheckout: true,
+      targetCommit: env.c2Rev
+    });
+
+    let deployError = null;
+    try {
+      await executeDeployment({
+        rootDir: env.rootDir,
+        targetCommit: env.c2Rev,
+        spawner: crashAdapter.spawner,
+        isRehearsal: true,
+        skipGitInspection: false
+      });
+    } catch (err) {
+      deployError = err;
+    }
+
+    assert(Boolean(deployError), 'Vector 6: Deployment failed as expected when interrupted after target checkout before restore');
+    assert(deployError.message.includes('Verify Target Checkout'), 'Vector 6: Error indicates failure during checkout verification before env restore');
+
+    // Verify intermediate state:
+    // Real git HEAD has switched to c2Rev
+    const interHead = env.runGit(['rev-parse', 'HEAD']);
+    assert(interHead.toLowerCase() === env.c2Rev.toLowerCase(), 'Vector 6: Git HEAD reached target commit c2Rev before failure');
+
+    // Because in c2Rev .env is untracked and in .gitignore, git checkout removed .env
+    // And Step 3.1b was never executed, so .env is absent in working tree!
+    assert(!fs.existsSync(path.join(env.rootDir, '.env')), 'Vector 6: Live .env is absent in working tree prior to restoration step');
+
+    // But state.envBackupFile is intact
+    const state = JSON.parse(fs.readFileSync(path.join(env.rootDir, 'server', 'active_deployment_state.json'), 'utf8'));
+    assert(Boolean(state.envBackupFile && fs.existsSync(state.envBackupFile)), 'Vector 6: Attempt-bound envBackupFile is intact in backups directory');
+
+    // Execute rollback from post-checkout interrupted state
+    const rbAdapter = createRealGitSpawner();
+    const rollbackRes = await executeRollback({
+      rootDir: env.rootDir,
+      spawner: rbAdapter.spawner,
+      isRehearsal: true
+    });
+
+    assert(rollbackRes && rollbackRes.rollbackComplete === true, 'Vector 6: executeRollback completes successfully from post-checkout interruption');
+    assert(rollbackRes.databaseRestored === true, 'Vector 6: Database restored from validated backup');
+
+    // Verify HEAD restored to c1Rev
+    const restoredHead = env.runGit(['rev-parse', 'HEAD']);
+    assert(restoredHead.toLowerCase() === env.c1Rev.toLowerCase(), 'Vector 6: Rollback restored HEAD to historical revision c1Rev');
+
+    // Verify live .env was restored from attempt-bound backup (NOT clobbered by c1Rev's tracked template!)
+    assert(fs.existsSync(path.join(env.rootDir, '.env')), 'Vector 6: Live .env restored on c1Rev');
+    const restoredEnvContent = fs.readFileSync(path.join(env.rootDir, '.env'), 'utf8');
+    const restoredEnvHash = crypto.createHash('sha256').update(restoredEnvContent).digest('hex');
+    assert(restoredEnvHash === preEnvHash, 'Vector 6: Restored .env matches pre-deployment configuration bit-for-bit');
+    assert(!restoredEnvContent.includes('SECRET_TYPE=historical_tracked_template'), 'Vector 6: Historical template was prevented from clobbering runtime configuration');
+
+    // Now test RETRY from the recovered state
+    console.log('   [Vector 6: Retrying deployment from recovered state...]');
+    const retryAdapter = createRealGitSpawner();
+    const retryRes = await executeDeployment({
+      rootDir: env.rootDir,
+      targetCommit: env.c2Rev,
+      spawner: retryAdapter.spawner,
+      isRehearsal: true,
+      skipGitInspection: false
+    });
+
+    assert(retryRes && retryRes.success === true, 'Vector 6: Retry deployment completes with success=true');
+    const retryHead = env.runGit(['rev-parse', 'HEAD']);
+    assert(retryHead.toLowerCase() === env.c2Rev.toLowerCase(), 'Vector 6: Retry successfully reached target revision c2Rev');
+    const finalEnvHash = crypto.createHash('sha256').update(fs.readFileSync(path.join(env.rootDir, '.env'))).digest('hex');
+    assert(finalEnvHash === preEnvHash, 'Vector 6: Final .env on target matches original configuration bit-for-bit');
+    const finalStatus = env.runGit(['status', '--porcelain', '-uno']);
+    assert(finalStatus.trim() === '', 'Vector 6: Working tree is clean on target revision after retry');
+    console.log();
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // VECTOR 7: Post-Exposure Boundary Enforcement
+  // ─────────────────────────────────────────────────────────────────────────────
+  console.log('--- VECTOR 7: Post-Exposure Boundary Enforcement ---');
   {
     const env = createDisposableGitRepo();
     // Simulate state where traffic has already been reopened
@@ -551,15 +738,15 @@ async function runTestSuite() {
       caughtExposedError = err;
     }
 
-    assert(Boolean(caughtExposedError), 'Vector 5: Automatic rollback rejected after traffic reopening');
-    assert(caughtExposedError.message.includes('traffic reopening boundary crossed'), 'Vector 5: Error explicitly cites traffic reopening boundary');
+    assert(Boolean(caughtExposedError), 'Vector 7: Automatic rollback rejected after traffic reopening');
+    assert(caughtExposedError.message.includes('traffic reopening boundary crossed'), 'Vector 7: Error explicitly cites traffic reopening boundary');
     console.log();
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // VECTOR 6: Stale Backup and Attempt ID Mismatch Rejection
+  // VECTOR 8: Stale Backup and Attempt ID Mismatch Rejection
   // ─────────────────────────────────────────────────────────────────────────────
-  console.log('--- VECTOR 6: Stale Backup and Attempt ID Mismatch Rejection ---');
+  console.log('--- VECTOR 8: Stale Backup and Attempt ID Mismatch Rejection ---');
   {
     const env = createDisposableGitRepo();
     const stateFilePath = path.join(env.rootDir, 'server', 'active_deployment_state.json');
@@ -589,8 +776,8 @@ async function runTestSuite() {
       caughtStaleError = err;
     }
 
-    assert(Boolean(caughtStaleError), 'Vector 6: Rollback aborts when envBackupFile attemptId mismatches state attemptId');
-    assert(caughtStaleError.message.includes('Stale configuration backup'), 'Vector 6: Error explicitly rejects stale configuration backup');
+    assert(Boolean(caughtStaleError), 'Vector 8: Rollback aborts when envBackupFile attemptId mismatches state attemptId');
+    assert(caughtStaleError.message.includes('Stale configuration backup'), 'Vector 8: Error explicitly rejects stale configuration backup');
     console.log();
   }
 

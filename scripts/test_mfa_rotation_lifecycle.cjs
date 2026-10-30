@@ -855,14 +855,20 @@ async function runAllTests() {
     };
     fs.writeFileSync(path.join(fixture.serverDir, 'pre_deployment_baseline.json'), JSON.stringify(baseline));
     fs.writeFileSync(path.join(fixture.serverDir, 'pre_deployment_revision.txt'), '0000000000000000000000000000000000000000\n');
-    fs.writeFileSync(path.join(fixture.serverDir, 'active_backup_path.env'), `BACKUP_FILE=${backupFile}\nBACKUP_VALIDATED=true\nATTEMPT_ID=deploy_test\n`);
+
+    // Validly attempt-bound path for deploy_test, but genuinely absent on disk
+    const validAttemptBoundEnvBackup = path.join(backupDir, 'env_pre_reconciliation_deploy_test.env');
+    fs.writeFileSync(
+      path.join(fixture.serverDir, 'active_backup_path.env'),
+      `BACKUP_FILE=${backupFile}\nBACKUP_VALIDATED=true\nATTEMPT_ID=deploy_test\nENV_BACKUP_FILE=${validAttemptBoundEnvBackup}\n`
+    );
 
     const statePath = path.join(fixture.serverDir, 'active_deployment_state.json');
     const state = {
       attemptId: 'deploy_test',
       backupFile,
       backupValidated: true,
-      envBackupFile: path.join(backupDir, 'non_existent_env_backup.env'),
+      envBackupFile: validAttemptBoundEnvBackup, // Validly attempt-bound but genuinely absent
       configUpdateIntent: true,
       configUpdated: false,
       trafficMayReopen: false,
@@ -883,6 +889,61 @@ async function runAllTests() {
       if (err.message.includes('Validated envBackupFile is missing')) rbFailed = true;
     }
     assert(rbFailed, 'Rollback fails closed when envBackupFile is missing and config update intent is active');
+  }
+
+  // ── TEST 12b: Fail-Closed Integrity: Mismatched Attempt ID in Configuration Backup ─
+  console.log('\n--- [Test 12b] Fail-Closed Integrity: Mismatched Attempt ID in Configuration Backup ---');
+  {
+    const fixture = setupLifecycleEnv('mismatched_env_attempt', 'JWT_SECRET');
+    const backupDir = path.join(fixture.serverDir, 'backups');
+    fs.mkdirSync(backupDir, { recursive: true });
+    const backupFile = path.join(backupDir, 'bfi_classroom_preflight_test.db');
+    fs.copyFileSync(fixture.dbPath, backupFile);
+
+    const baseline = {
+      student_course_enrollments: 1,
+      users: 1,
+      batches: 1,
+      batch_course_fees: 1,
+      timestamp: new Date().toISOString()
+    };
+    fs.writeFileSync(path.join(fixture.serverDir, 'pre_deployment_baseline.json'), JSON.stringify(baseline));
+    fs.writeFileSync(path.join(fixture.serverDir, 'pre_deployment_revision.txt'), '0000000000000000000000000000000000000000\n');
+    fs.writeFileSync(
+      path.join(fixture.serverDir, 'active_backup_path.env'),
+      `BACKUP_FILE=${backupFile}\nBACKUP_VALIDATED=true\nATTEMPT_ID=deploy_test\n`
+    );
+
+    // Provide an env backup from an unrelated attempt
+    const staleEnvBackup = path.join(backupDir, 'env_pre_reconciliation_unrelated_attempt_999.env');
+    fs.writeFileSync(staleEnvBackup, 'JWT_SECRET=stale_secret\n');
+
+    const statePath = path.join(fixture.serverDir, 'active_deployment_state.json');
+    const state = {
+      attemptId: 'deploy_test',
+      backupFile,
+      backupValidated: true,
+      envBackupFile: staleEnvBackup,
+      configUpdateIntent: true,
+      configUpdated: false,
+      trafficMayReopen: false,
+      trafficReopened: false,
+      rollbackCompleted: false
+    };
+    fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
+
+    let attemptMismatchRejected = false;
+    try {
+      await executeRollback({
+        rootDir: fixture.envDir,
+        databasePath: 'server/bfi_classroom.db',
+        isRehearsal: true,
+        spawner: fixture.mockSpawner
+      });
+    } catch (err) {
+      if (err.message.includes('Stale configuration backup attempt mismatch')) attemptMismatchRejected = true;
+    }
+    assert(attemptMismatchRejected, 'Rollback strictly rejects configuration backup from mismatched attempt ID');
   }
 
   // ── TEST 13: Secret File Permissions & Symlink Rejection ──────────────────
