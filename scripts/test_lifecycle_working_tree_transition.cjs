@@ -87,10 +87,28 @@ function createDisposableGitRepo() {
     }
   }
 
-  // Copy migrations into repo
+  // Copy historical baseline migrations (up to October 25) into repo for c1Rev
   const rootMigrations = path.resolve(__dirname, '..', 'server', 'db', 'migrations');
-  if (fs.existsSync(rootMigrations)) {
-    fs.cpSync(rootMigrations, path.join(TEST_BASE_DIR, 'server', 'db', 'migrations'), { recursive: true });
+  const historicalBaselineMigrations = [
+    '20261019_allow_moderator_role.cjs',
+    '20261019_batch_moderators.cjs',
+    '20261019_course_maker.cjs',
+    '20261019_enrollment_batch_id.cjs',
+    '20261019_enrollment_unique_constraint_fix.cjs',
+    '20261019_routine_overrides_and_migration_audit.cjs',
+    '20261022_batches_unique_constraint_fix.cjs',
+    '20261022_downstream_identity_collision_fix.cjs',
+    '20261023_admin_permissions.cjs',
+    '20261023_super_admin.cjs',
+    '20261024_mfa_single_use_challenges.cjs',
+    '20261024_privileged_safeguards.cjs',
+    '20261025_admin_accountability.cjs'
+  ];
+  for (const f of historicalBaselineMigrations) {
+    const src = path.join(rootMigrations, f);
+    if (fs.existsSync(src)) {
+      fs.copyFileSync(src, path.join(TEST_BASE_DIR, 'server', 'db', 'migrations', f));
+    }
   }
 
   // Frontend build artifacts
@@ -108,15 +126,26 @@ function createDisposableGitRepo() {
   runGit(['commit', '-m', 'commit 1: historical baseline tracking .env']);
   const c1Rev = runGit(['rev-parse', 'HEAD']);
 
-  // Commit 2: Release candidate untracking .env (added to .gitignore) and updated lockfile
+  // Commit 2: Target candidate adds post-October 25 migrations, untracks .env, and ignores server/.recovery_tools/
+  const postOctober25Migrations = [
+    '20261028_admin_archiving_and_reset.cjs',
+    '20261029_universal_mfa_and_super_admin.cjs',
+    '20261030_schema_repairs_and_key_pair.cjs'
+  ];
+  for (const f of postOctober25Migrations) {
+    const src = path.join(rootMigrations, f);
+    if (fs.existsSync(src)) {
+      fs.copyFileSync(src, path.join(TEST_BASE_DIR, 'server', 'db', 'migrations', f));
+    }
+  }
   fs.unlinkSync(path.join(TEST_BASE_DIR, '.env'));
-  fs.writeFileSync(path.join(TEST_BASE_DIR, '.gitignore'), ".env\n*.bak\n*.env.tmp\nnode_modules\n");
+  fs.writeFileSync(path.join(TEST_BASE_DIR, '.gitignore'), ".env\n*.bak\n*.env.tmp\nnode_modules\nserver/.recovery_tools/\n");
   fs.writeFileSync(path.join(TEST_BASE_DIR, 'package-lock.json'), JSON.stringify({ name: 'bfi-classroom', lockfileVersion: 3, version: '2.0.0' }));
   runGit(['add', '.']);
-  runGit(['commit', '-m', 'commit 2: release candidate untracks .env and updates lockfile']);
+  runGit(['commit', '-m', 'commit 2: release candidate adds post-oct 25 migrations, untracks .env and updates lockfile']);
   const c2Rev = runGit(['rev-parse', 'HEAD']);
 
-  // Checkout back to c1Rev
+  // Checkout back to c1Rev (proves working tree lacks post-October 25 migrations at deployment start)
   runGit(['checkout', c1Rev]);
 
   // Seed baseline SQLite database matching true pre-upgrade schema

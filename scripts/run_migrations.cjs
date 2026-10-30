@@ -17,11 +17,34 @@ const Database = require('better-sqlite3');
 const path = require('path');
 const fs = require('fs');
 
+const REQUIRED_MIGRATION_MODULES = [
+  '20261023_super_admin.cjs',
+  '20261023_admin_permissions.cjs',
+  '20261024_privileged_safeguards.cjs',
+  '20261024_mfa_single_use_challenges.cjs',
+  '20261025_admin_accountability.cjs',
+  '20261028_admin_archiving_and_reset.cjs',
+  '20261029_universal_mfa_and_super_admin.cjs',
+  '20261030_schema_repairs_and_key_pair.cjs'
+];
+
 function findMigrationsDir() {
+  const isRecoveryTools = path.basename(__dirname) === '.recovery_tools';
+  if (isRecoveryTools) {
+    const bundleMigrations = path.resolve(__dirname, 'migrations');
+    if (!fs.existsSync(bundleMigrations)) {
+      throw new Error(`Self-contained recovery bundle migrations directory missing: ${bundleMigrations}`);
+    }
+    for (const modFile of REQUIRED_MIGRATION_MODULES) {
+      const fullModPath = path.join(bundleMigrations, modFile);
+      if (!fs.existsSync(fullModPath)) {
+        throw new Error(`Self-contained recovery bundle missing required migration module: ${modFile} (searched exclusively in ${bundleMigrations})`);
+      }
+    }
+    return bundleMigrations;
+  }
   const candidateFromScripts = path.resolve(__dirname, '..', 'server', 'db', 'migrations');
   if (fs.existsSync(candidateFromScripts)) return candidateFromScripts;
-  const candidateFromRecoveryTools = path.resolve(__dirname, '..', 'db', 'migrations');
-  if (fs.existsSync(candidateFromRecoveryTools)) return candidateFromRecoveryTools;
   const candidateFromCwd = path.resolve(process.cwd(), 'server', 'db', 'migrations');
   if (fs.existsSync(candidateFromCwd)) return candidateFromCwd;
   throw new Error(`Migrations directory not found relative to ${__dirname} or ${process.cwd()}`);
@@ -269,5 +292,8 @@ if (require.main === module) {
 module.exports = {
   runMigrations,
   assertSchemaIntegrity,
-  MIGRATIONS
+  MIGRATIONS,
+  REQUIRED_MIGRATION_MODULES,
+  findMigrationsDir,
+  resolveDatabasePath
 };

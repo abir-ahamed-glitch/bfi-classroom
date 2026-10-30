@@ -564,24 +564,32 @@ async function executeDeployment(options = {}) {
 
     let extractedContent = null;
     if (!isRehearsal) {
-      const showRes = spawner('git', ['show', `${targetCommit}:${scriptRel}`], { encoding: 'utf8', timeout: 10000, shell: false });
+      const showRes = spawner('git', ['show', `${targetCommit}:${scriptRel}`], { cwd: rootDir, encoding: 'utf8', timeout: 10000, shell: false });
       if (showRes.error || showRes.status !== 0 || !showRes.stdout) {
         logFatal(`Failed to extract required script "${scriptRel}" from target commit ${targetCommit}: ${showRes.stderr || showRes.error}`);
         throw new Error(`Failed to extract ${scriptRel} from target commit`);
       }
       extractedContent = showRes.stdout;
     } else {
-      const srcPath = path.resolve(rootDir, scriptRel);
-      if (fs.existsSync(srcPath)) {
-        extractedContent = fs.readFileSync(srcPath, 'utf8');
-      } else if (fs.existsSync(destPath)) {
-        extractedContent = fs.readFileSync(destPath, 'utf8');
+      let showRes = null;
+      try {
+        showRes = spawner('git', ['show', `${targetCommit}:${scriptRel}`], { cwd: rootDir, encoding: 'utf8', timeout: 5000, shell: false });
+      } catch {}
+      if (showRes && !showRes.error && showRes.status === 0 && showRes.stdout) {
+        extractedContent = showRes.stdout;
       } else {
-        const repoPath = path.resolve(__dirname, '..', scriptRel);
-        if (fs.existsSync(repoPath)) {
-          extractedContent = fs.readFileSync(repoPath, 'utf8');
+        const srcPath = path.resolve(rootDir, scriptRel);
+        if (fs.existsSync(srcPath)) {
+          extractedContent = fs.readFileSync(srcPath, 'utf8');
+        } else if (fs.existsSync(destPath)) {
+          extractedContent = fs.readFileSync(destPath, 'utf8');
         } else {
-          throw new Error(`Required script missing in rehearsal: ${scriptRel}`);
+          const repoPath = path.resolve(__dirname, '..', scriptRel);
+          if (fs.existsSync(repoPath)) {
+            extractedContent = fs.readFileSync(repoPath, 'utf8');
+          } else {
+            throw new Error(`Required script missing in rehearsal: ${scriptRel}`);
+          }
         }
       }
     }
@@ -597,6 +605,86 @@ async function executeDeployment(options = {}) {
     }
     logStep('0.2', `Extracted & verified ${sName} (SHA-256: ${hash.slice(0, 16)}...) from ${targetCommit.slice(0, 8)}`);
   }
+
+  // Extract all required migration modules into self-contained bundle (server/.recovery_tools/migrations)
+  const recoveryMigrationsDir = path.join(recoveryToolsDir, 'migrations');
+  if (!fs.existsSync(recoveryMigrationsDir)) fs.mkdirSync(recoveryMigrationsDir, { recursive: true });
+
+  const canonicalMigrationModules = [
+    '20261023_super_admin.cjs',
+    '20261023_admin_permissions.cjs',
+    '20261024_privileged_safeguards.cjs',
+    '20261024_mfa_single_use_challenges.cjs',
+    '20261025_admin_accountability.cjs',
+    '20261028_admin_archiving_and_reset.cjs',
+    '20261029_universal_mfa_and_super_admin.cjs',
+    '20261030_schema_repairs_and_key_pair.cjs'
+  ];
+
+  let targetMigrationFiles = [...canonicalMigrationModules];
+  if (!isRehearsal) {
+    const lsRes = spawner('git', ['ls-tree', '--name-only', `${targetCommit}:server/db/migrations`], { cwd: rootDir, encoding: 'utf8', timeout: 10000, shell: false });
+    if (lsRes.error || lsRes.status !== 0 || !lsRes.stdout) {
+      logFatal(`Failed to inspect migrations in target commit ${targetCommit}: ${lsRes.stderr || lsRes.error}`);
+      throw new Error(`Failed to list migrations from target commit: ${targetCommit}`);
+    }
+    const treeFiles = lsRes.stdout.split(/\r?\n/).map(f => f.trim()).filter(f => f.endsWith('.cjs'));
+    targetMigrationFiles = Array.from(new Set([...canonicalMigrationModules, ...treeFiles]));
+  } else {
+    try {
+      const lsRes = spawner('git', ['ls-tree', '--name-only', `${targetCommit}:server/db/migrations`], { cwd: rootDir, encoding: 'utf8', timeout: 5000, shell: false });
+      if (!lsRes.error && lsRes.status === 0 && lsRes.stdout) {
+        const treeFiles = lsRes.stdout.split(/\r?\n/).map(f => f.trim()).filter(f => f.endsWith('.cjs'));
+        targetMigrationFiles = Array.from(new Set([...canonicalMigrationModules, ...treeFiles]));
+      }
+    } catch {}
+  }
+
+  for (const migFile of targetMigrationFiles) {
+    const destPath = path.join(recoveryMigrationsDir, migFile);
+    let extractedContent = null;
+    if (!isRehearsal) {
+      const showRes = spawner('git', ['show', `${targetCommit}:server/db/migrations/${migFile}`], { cwd: rootDir, encoding: 'utf8', timeout: 10000, shell: false });
+      if (showRes.error || showRes.status !== 0 || !showRes.stdout) {
+        logFatal(`Failed to extract migration module "${migFile}" from target commit ${targetCommit}: ${showRes.stderr || showRes.error}`);
+        throw new Error(`Failed to extract migration ${migFile} from target commit`);
+      }
+      extractedContent = showRes.stdout;
+    } else {
+      let showRes = null;
+      try {
+        showRes = spawner('git', ['show', `${targetCommit}:server/db/migrations/${migFile}`], { cwd: rootDir, encoding: 'utf8', timeout: 5000, shell: false });
+      } catch {}
+      if (showRes && !showRes.error && showRes.status === 0 && showRes.stdout) {
+        extractedContent = showRes.stdout;
+      } else {
+        const srcPath = path.resolve(rootDir, 'server', 'db', 'migrations', migFile);
+        if (fs.existsSync(srcPath)) {
+          extractedContent = fs.readFileSync(srcPath, 'utf8');
+        } else if (fs.existsSync(destPath)) {
+          extractedContent = fs.readFileSync(destPath, 'utf8');
+        } else {
+          const repoPath = path.resolve(__dirname, '..', 'server', 'db', 'migrations', migFile);
+          if (fs.existsSync(repoPath)) {
+            extractedContent = fs.readFileSync(repoPath, 'utf8');
+          } else {
+            throw new Error(`Required migration missing in rehearsal: ${migFile}`);
+          }
+        }
+      }
+    }
+
+    fs.writeFileSync(destPath, extractedContent, 'utf8');
+    try { fs.chmodSync(destPath, 0o644); } catch {}
+
+    const hash = crypto.createHash('sha256').update(extractedContent).digest('hex');
+    const diskHash = crypto.createHash('sha256').update(fs.readFileSync(destPath)).digest('hex');
+    if (hash !== diskHash) {
+      logFatal(`Hash verification mismatch for extracted migration: ${migFile}`);
+      throw new Error(`Hash mismatch for migration ${migFile}`);
+    }
+  }
+  logStep('0.2', `Extracted & verified ${targetMigrationFiles.length} migration modules into ${recoveryMigrationsDir}`);
 
   // 0.3 Cold-start bundle loading verification in a fresh Node process
   const probeCode = `

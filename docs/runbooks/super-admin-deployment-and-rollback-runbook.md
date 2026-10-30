@@ -51,14 +51,18 @@ Before executing any commands that alter live services or databases, the operato
 1. **Target Commit Provenance:**
    - Must be an immutable 40-character Git commit hash (e.g. `1cd4b1b269be444a4141b1e1008d0a6c95ac7c94`). Mutable branch names (`main`, `HEAD`) are strictly rejected by the production runner in production mode.
 2. **Cold-Start Tooling Extraction & Provenance:**
-   - The canonical lifecycle runner automatically extracts all 6 critical tools from the approved `TARGET_COMMIT` into `server/.recovery_tools` outside git management:
+   - The canonical lifecycle runner automatically extracts all 7 operational tools and all target migration modules from the approved `TARGET_COMMIT` into `server/.recovery_tools` and `server/.recovery_tools/migrations` outside git management:
      - `scripts/preflight_lockdown_check.cjs`
      - `scripts/verify_isolation.cjs`
      - `scripts/run_migrations.cjs`
      - `scripts/production_smoke_check.cjs`
      - `scripts/production_lifecycle.cjs`
      - `scripts/obtain_smoke_credentials.cjs`
-   - The runner verifies SHA-256 checksums of each extracted tool against the target tree and executes a cold-start bundle load test in a clean Node subprocess before proceeding to service lockdown.
+     - `scripts/rotate_mfa_secrets.cjs`
+     - `server/db/migrations/*.cjs` (All canonical and schema repair migration modules)
+   - The runner verifies SHA-256 checksums of each extracted tool and migration module against the target tree and executes a cold-start bundle load test in a clean Node subprocess before proceeding to service lockdown.
+   - When running from `server/.recovery_tools/run_migrations.cjs`, migrations resolve strictly from `server/.recovery_tools/migrations/`. Missing or mismatched files fail closed immediately with zero fallback to historical working-tree modules.
+   - Because `server/.recovery_tools/` is in `.gitignore`, no untracked files are placed in `server/db/migrations`, guaranteeing zero checkout conflicts during Phase 3.1.
 3. **Smoke Credential Preflight & Verification:**
    - **Supported Channel A (Confidential Interactive Handoff):** An interactive terminal (TTY) is attached or a programmatic credential provider is configured. The operator provides credentials on demand via zero-echo prompts during Phase 5 over loopback.
    - **Supported Channel B (Unattended Tokens):** `SUPER_ADMIN_TOKEN` and `ADMIN_TOKEN` (or `SUPER_ADMIN_TOKEN_FILE` and `ADMIN_TOKEN_FILE` with mode `0o600`) are supplied. Preflight performs:
@@ -77,17 +81,88 @@ Before executing any commands that alter live services or databases, the operato
 
 ## 4. Canonical Deployment Procedure
 
-The deployment is executed using positional action syntax (`deploy`):
+The live production deployment is executed exclusively from the self-contained recovery bundle extracted into `server/.recovery_tools` from the approved target commit. Because the live checkout remains at historical revision `d4cbac1` prior to Phase 3.1, the runner must never be invoked from historical working-tree scripts (`scripts/production_lifecycle.cjs`).
+
+### Step 4.0: Operator Cold-Start Bootstrap Extraction
+
+Prior to invoking the runner, the operator extracts all 7 operational tools and all target migration modules from the fetched `TARGET_COMMIT` directly into `server/.recovery_tools` and `server/.recovery_tools/migrations` (which are ignored by `.gitignore`):
 
 ```bash
-# In an interactive operator terminal:
-TARGET_COMMIT=<40-char-sha> node scripts/production_lifecycle.cjs deploy
+TARGET_COMMIT="<40-character-approved-sha>"
 
-# Or alternatively specifying target commit via flag:
-node scripts/production_lifecycle.cjs deploy --target-commit <40-char-sha>
+# 1. Create recovery directories
+mkdir -p server/.recovery_tools/migrations
 
-# Or running directly from the verified recovery bundle extracted from the target commit:
-node server/.recovery_tools/production_lifecycle.cjs deploy --target-commit <40-char-sha>
+# 2. Extract the 7 operational tools directly from TARGET_COMMIT
+for tool in \
+  preflight_lockdown_check.cjs \
+  verify_isolation.cjs \
+  run_migrations.cjs \
+  production_smoke_check.cjs \
+  production_lifecycle.cjs \
+  obtain_smoke_credentials.cjs \
+  rotate_mfa_secrets.cjs; do
+    git show "${TARGET_COMMIT}:scripts/${tool}" > "server/.recovery_tools/${tool}"
+    chmod 0755 "server/.recovery_tools/${tool}"
+done
+
+# 3. Extract all migration modules directly from TARGET_COMMIT into server/.recovery_tools/migrations
+for mig in $(git ls-tree --name-only "${TARGET_COMMIT}:server/db/migrations"); do
+    git show "${TARGET_COMMIT}:server/db/migrations/${mig}" > "server/.recovery_tools/migrations/${mig}"
+    chmod 0644 "server/.recovery_tools/migrations/${mig}"
+done
+
+# 4. Cold-start bundle integrity probe before launching
+node -e '
+  const path = require("path");
+  const dir = path.resolve("server/.recovery_tools");
+  const tools = [
+    "preflight_lockdown_check.cjs",
+    "verify_isolation.cjs",
+    "run_migrations.cjs",
+    "production_smoke_check.cjs",
+    "production_lifecycle.cjs",
+    "obtain_smoke_credentials.cjs",
+    "rotate_mfa_secrets.cjs"
+  ];
+  for (const t of tools) require(path.join(dir, t));
+  console.log("BUNDLE_BOOTSTRAP_VERIFIED_OK");
+'
+```
+
+### Step 4.1: Single-Context Secret Generation & Deployment Execution
+
+All three rotation secrets (`NEW_MFA_ENCRYPTION_KEY`, `NEW_JWT_SECRET`, `NEW_REFRESH_SECRET`) are generated, validated, passed to the runner, and wiped from memory within a **single controlled subshell execution context**. No secondary shell (`exec bash`) is used, and tracing remains strictly disabled:
+
+```bash
+(
+  set -euo pipefail
+  set +x
+
+  cleanup() {
+    unset NEW_MFA_ENCRYPTION_KEY NEW_JWT_SECRET NEW_REFRESH_SECRET
+  }
+  trap cleanup EXIT ERR INT TERM
+
+  # 1. Generate 32-byte cryptographically secure random hex strings
+  NEW_MFA_ENCRYPTION_KEY="$(openssl rand -hex 32)"
+  NEW_JWT_SECRET="$(openssl rand -hex 32)"
+  NEW_REFRESH_SECRET="$(openssl rand -hex 32)"
+
+  # 2. Fail-closed length and format validation (zero disclosure)
+  [ "${#NEW_MFA_ENCRYPTION_KEY}" -ge 32 ] || { echo "❌ FATAL: NEW_MFA_ENCRYPTION_KEY validation failed"; exit 1; }
+  [ "${#NEW_JWT_SECRET}" -ge 32 ] || { echo "❌ FATAL: NEW_JWT_SECRET validation failed"; exit 1; }
+  [ "${#NEW_REFRESH_SECRET}" -ge 32 ] || { echo "❌ FATAL: NEW_REFRESH_SECRET validation failed"; exit 1; }
+
+  echo "✅ Fresh deployment secrets generated and validated in memory (zero disclosure)."
+
+  export NEW_MFA_ENCRYPTION_KEY NEW_JWT_SECRET NEW_REFRESH_SECRET
+
+  # 3. Launch the approved lifecycle runner directly from the verified recovery bundle
+  node server/.recovery_tools/production_lifecycle.cjs deploy \
+    --target-commit="<TARGET_COMMIT_SHA>" \
+    --rotate-mfa
+)
 ```
 
 ### Phase Walkthrough & Safety Gates:
@@ -96,7 +171,7 @@ node server/.recovery_tools/production_lifecycle.cjs deploy --target-commit <40-
 [Phase 0] Staging & Provenance Gate
   ├── Step 0.1: Validate smoke credential channel availability (Tokens or Interactive TTY)
   ├── Step 0.1.1: If unattended tokens: verify JWT claims, 15m expiration buffer, and live server GET /api/auth/me
-  ├── Step 0.2: Extract 7 recovery tools from TARGET_COMMIT -> server/.recovery_tools (SHA-256 checked)
+  ├── Step 0.2: Extract 7 recovery tools and all target migration modules -> server/.recovery_tools (SHA-256 checked)
   ├── Step 0.3: Cold-start bundle load verification in clean Node process
   └── Step 0.4: Pre-flight working-tree conflict assessment & configuration preservation:
         ├── Fails closed on Git inspection failure or unapproved modified tracked files
@@ -119,15 +194,19 @@ node server/.recovery_tools/production_lifecycle.cjs deploy --target-commit <40-
 
 [Phase 3] Pinned Commit Checkout & Build Gate
   ├── Step 3.0: Reconcile approved tracked files (.env, package-lock.json) to HEAD baseline after verified lockdown
-  ├── Step 3.1: git checkout <TARGET_COMMIT> (Enforce exact HEAD match)
+  ├── Step 3.1: git checkout <TARGET_COMMIT> (Enforce exact HEAD match, 0 untracked conflicts)
   ├── Step 3.1b: Restore effective configuration from attempt-bound backup (mode 0600, assert SHA-256 bit-for-bit)
   ├── Step 3.1c: Assert working-tree cleanliness on target commit (0 modified tracked files)
   ├── Step 3.2: NODE_ENV=development npm ci --legacy-peer-deps (Installs devDependencies for build toolchain)
   ├── Step 3.3: npm run build (Compiles frontend production bundles into dist/)
   └── Step 3.4: npm prune --omit=dev --legacy-peer-deps (Prunes devDependencies for runtime isolation)
 
-[Phase 4] Atomic Database Migration Gate
-  └── Step 4.1: node server/.recovery_tools/run_migrations.cjs (Atomic single-transaction execution)
+[Phase 4] Atomic Database Migration & Key Rotation Gate
+  ├── Step 4.1: node server/.recovery_tools/run_migrations.cjs (Loads strictly from server/.recovery_tools/migrations/)
+  └── Step 4.2: Atomic MFA key rotation & secure configuration update:
+        ├── Resolves historical encryption key (MFA_ENCRYPTION_KEY or fallback JWT_SECRET)
+        ├── Re-encrypts all TOTP secrets under NEW_MFA_ENCRYPTION_KEY in atomic transaction
+        ├── Updates .env with new secrets (mode 0600) and asserts decryptability before exposure
 
 [Phase 5] Loopback-Isolated Smoke Verification Gate
   ├── Step 5.1: Verify Nginx remains stopped (Zero public ingress)
@@ -138,12 +217,15 @@ node server/.recovery_tools/production_lifecycle.cjs deploy --target-commit <40-
   ├── Step 5.4: Execute 18-assertion production smoke check over loopback
   └── Step 5.5: Securely zero-fill and unlink temporary token files
 
-[Phase 6] Traffic Reopening Decision Point
+[Phase 6] Traffic Reopening Decision Point (Automatic Reopening upon Smoke Passage)
   ├── Step 6.1: CRITICAL BOUNDARY: Persist trafficMayReopen=true & timestamp BEFORE exposure command!
-  ├── Step 6.2: sudo systemctl start nginx (Restores public routing)
+  ├── Step 6.2: sudo systemctl start nginx (Automatically restarts Nginx upon smoke success; no prompt)
   ├── Step 6.3: Verify Nginx active status
   └── Step 6.4: Record trafficReopened=true (Operator deactivates Cloudflare 503)
 ```
+
+> [!IMPORTANT]
+> **No Interactive Checkpoint at Phase 6:** The approved lifecycle runner automatically sets the conservative boundary `trafficMayReopen = true`, starts Nginx, and restores external routing immediately upon successful completion of Phase 5 smoke assertions. There is NO manual prompt or pause before reopening. Final deployment approval explicitly includes authorization for this continuous, automatic reopening.
 
 ---
 
@@ -215,3 +297,18 @@ node scripts/rotate_mfa_secrets.cjs --db=server/bfi_classroom.db
 
 ### Step 4: Environment Update & Service Restart
 Update the production `.env` (or systemd environment) to set `MFA_ENCRYPTION_KEY` to the new key, and retain `PREVIOUS_MFA_ENCRYPTION_KEY` during the transition window. Reload PM2.
+
+---
+
+## 7. Security Notice: Historical GitHub Personal Access Token Revocation
+
+> [!WARNING]
+> **Action Required by Token Owner:**  
+> A historical GitHub Personal Access Token (`ghp_...` belonging to account `mdkawsarahamed`) was previously present in workstation Git remote URLs.
+>
+> 1. **Workstation & Server Remediation (Completed):**
+>    - The production server uses exclusively a dedicated, locked-down read-only SSH deploy key (`id_ed25519_bfi_deploy`, permissions `0600`) without embedded tokens.
+>    - The local workstation Git remote URL has been sanitized to `https://github.com/mdkawsarahamed/bficlassroom.git`, stripping all credentials.
+> 2. **Token Revocation (Outstanding Manual Action):**
+>    - Because tokens can only be invalidated by the account that created them, the token remains cryptographically active on GitHub until manually revoked.
+>    - The token owner (`mdkawsarahamed`) must log into GitHub, navigate to **Settings -> Developer Settings -> Personal Access Tokens**, identify the corresponding token, and click **Revoke** to permanently destroy it.
