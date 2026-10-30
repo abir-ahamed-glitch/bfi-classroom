@@ -52,6 +52,7 @@ export function initializeDatabase() {
       two_factor_enabled INTEGER DEFAULT 0,
       two_factor_secret TEXT,
       public_key TEXT,
+      private_key TEXT,
       is_active INTEGER DEFAULT 1,
       is_super_admin INTEGER NOT NULL DEFAULT 0,
       last_login TEXT,
@@ -349,6 +350,8 @@ export function initializeDatabase() {
       content_id INTEGER,
       reason_category TEXT NOT NULL,
       reason_detail TEXT,
+      content_snapshot TEXT,
+      screenshot_path TEXT,
       status TEXT NOT NULL DEFAULT 'pending',
       admin_note TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -874,12 +877,36 @@ export function initializeDatabase() {
     }
   }
 
-  // Migrations for notifications
+  // Migrations for notifications, users.private_key, and reports columns
   try {
     db.prepare('ALTER TABLE notifications ADD COLUMN image_url TEXT').run();
     console.log('✅ Migrated notifications table');
   } catch (err) {
     // Ignore error if column already exists
+  }
+
+  try {
+    const userCols = db.prepare('PRAGMA table_info(users)').all().map(c => c.name);
+    if (!userCols.includes('private_key')) {
+      db.prepare('ALTER TABLE users ADD COLUMN private_key TEXT').run();
+      console.log('✅ Migrated users: added private_key column');
+    }
+  } catch {
+    // Column already exists
+  }
+
+  try {
+    const reportCols = db.prepare('PRAGMA table_info(reports)').all().map(c => c.name);
+    if (!reportCols.includes('content_snapshot')) {
+      db.prepare('ALTER TABLE reports ADD COLUMN content_snapshot TEXT').run();
+      console.log('✅ Migrated reports: added content_snapshot column');
+    }
+    if (!reportCols.includes('screenshot_path')) {
+      db.prepare('ALTER TABLE reports ADD COLUMN screenshot_path TEXT').run();
+      console.log('✅ Migrated reports: added screenshot_path column');
+    }
+  } catch {
+    // Columns already exist
   }
 
   // Migrations for community_posts

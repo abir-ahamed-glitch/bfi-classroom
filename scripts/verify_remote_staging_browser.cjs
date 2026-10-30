@@ -113,11 +113,12 @@ async function runStagingBrowserVerification() {
   page.setDefaultTimeout(180000);
   page.setDefaultNavigationTimeout(180000);
 
-  // Track console warnings (specifically fake worker warnings) and unexpected page/console errors
+  // Track console warnings (specifically fake worker warnings) and unexpected page/console/HTTP errors
   const consoleWarnings = [];
   const consoleErrors = [];
   const pageErrors = [];
   const workerNetworkResponses = [];
+  const httpServerErrors = [];
 
   page.on('console', msg => {
     const text = msg.text();
@@ -147,14 +148,22 @@ async function runStagingBrowserVerification() {
     pageErrors.push(err.message);
   });
 
-  // Track HTTP responses for worker script assets to verify same-origin & MIME type
+  // Track HTTP responses for worker script assets to verify same-origin & MIME type, and track any HTTP >= 500 server errors
   page.on('response', res => {
     const url = res.url();
+    const status = res.status();
+    if (status >= 500) {
+      httpServerErrors.push({
+        status,
+        method: res.request().method(),
+        url
+      });
+    }
     if (WORKER_ASSET_REGEX.test(url)) {
       const contentType = res.headers()['content-type'] || '';
       workerNetworkResponses.push({
         url,
-        status: res.status(),
+        status,
         contentType,
         sameOrigin: isSameOriginWorkerUrl(url, TARGET_ORIGIN),
         validMime: isValidWorkerMimeType(contentType)
@@ -653,6 +662,7 @@ async function runStagingBrowserVerification() {
     console.log('\n--- Step 6: Dedicated Worker, MIME Type & Per-Consumer Fresh Work Enforcement ---');
     const fakeWorkerDetected = consoleWarnings.some(w => w.includes('Setting up fake worker'));
     const hasUnexpectedPageErrors = pageErrors.length > 0;
+    const hasHttpServerErrors = httpServerErrors.length > 0;
     const workerNetOk =
       workerNetworkResponses.length > 0 &&
       workerNetworkResponses.every(r => r.status === 200 && r.sameOrigin && r.validMime);
@@ -663,13 +673,16 @@ async function runStagingBrowserVerification() {
     if (hasUnexpectedPageErrors) {
       throw new Error(`Unexpected page error exceptions occurred: ${JSON.stringify(pageErrors)}`);
     }
+    if (hasHttpServerErrors) {
+      throw new Error(`HTTP 5xx server errors occurred during browser verification: ${JSON.stringify(httpServerErrors)}`);
+    }
 
     const sampleWorkerNet = workerNetworkResponses[0];
     recordResult(
       '6a',
-      'Same-Origin Hashed .mjs Worker, MIME Type & Zero Fake-Worker Fallbacks',
-      !fakeWorkerDetected && !hasUnexpectedPageErrors && workerNetOk,
-      `Worker: ${sampleWorkerNet.url} (status ${sampleWorkerNet.status}, MIME "${sampleWorkerNet.contentType}"), Fake workers: 0, Page errors: 0`
+      'Same-Origin Hashed .mjs Worker, MIME Type, Zero HTTP 5xx & Zero Fake-Worker Fallbacks',
+      !fakeWorkerDetected && !hasUnexpectedPageErrors && !hasHttpServerErrors && workerNetOk,
+      `Worker: ${sampleWorkerNet.url} (status ${sampleWorkerNet.status}, MIME "${sampleWorkerNet.contentType}"), Fake workers: 0, Page errors: 0, HTTP 5xx: ${httpServerErrors.length}`
     );
 
     // Verify all 4 components independently satisfied fresh document work on pdfjs-dist@6.4.299
@@ -715,7 +728,9 @@ async function runStagingBrowserVerification() {
       totalWorkersCreated: createdWorkers.length,
       totalConsoleWarnings: consoleWarnings.length,
       fakeWorkerWarningsDetected: consoleWarnings.filter(w => w.includes('Setting up fake worker')).length,
-      unexpectedPageErrors: pageErrors.length
+      unexpectedPageErrors: pageErrors.length,
+      httpServerErrorsCount: httpServerErrors.length,
+      httpServerErrors
     };
 
     if (resultArtifactPath) {

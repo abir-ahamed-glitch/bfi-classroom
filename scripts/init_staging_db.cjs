@@ -60,6 +60,18 @@ async function initStagingDb(envPath, options = {}) {
     }
   }
 
+  // Verify users.private_key and reports.content_snapshot / reports.screenshot_path exist
+  const userCols = db.prepare(`PRAGMA table_info(users)`).all().map(c => c.name);
+  if (!userCols.includes('private_key')) {
+    throw new Error(`[StagingInit] Expected column 'users.private_key' missing after initialization!`);
+  }
+  const reportCols = db.prepare(`PRAGMA table_info(reports)`).all().map(c => c.name);
+  for (const col of ['content_snapshot', 'screenshot_path']) {
+    if (!reportCols.includes(col)) {
+      throw new Error(`[StagingInit] Expected column 'reports.${col}' missing after initialization!`);
+    }
+  }
+
   // 7. Seed synthetic staging Super Admin with dynamically generated unique credentials
   let adminPassword = process.env.STAGING_ADMIN_PASSWORD;
   let credentialsFile = null;

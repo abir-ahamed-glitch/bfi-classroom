@@ -21,6 +21,9 @@ fs.mkdirSync(screenshotDirectory, { recursive: true });
 const reportTableExists = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='reports'").get();
 if (reportTableExists) {
   const reportColumns = db.prepare('PRAGMA table_info(reports)').all();
+  if (!reportColumns.some((column) => column.name === 'content_snapshot')) {
+    db.exec('ALTER TABLE reports ADD COLUMN content_snapshot TEXT');
+  }
   if (!reportColumns.some((column) => column.name === 'screenshot_path')) {
     db.exec('ALTER TABLE reports ADD COLUMN screenshot_path TEXT');
   }

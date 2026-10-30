@@ -79,6 +79,7 @@ function assertSchemaIntegrity(db) {
   // 2. Verify users table columns
   const userCols = db.prepare(`PRAGMA table_info(users)`).all().map(c => c.name);
   const requiredUserCols = [
+    'private_key',
     'is_super_admin',
     'token_version',
     'permissions_version',
