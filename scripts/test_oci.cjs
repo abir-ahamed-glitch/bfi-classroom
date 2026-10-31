@@ -3,6 +3,21 @@ const crypto = require('crypto');
 const https = require('https');
 const path = require('path');
 
+let totalTests = 0;
+let passedTests = 0;
+
+function assert(name, condition, detail = '') {
+  totalTests++;
+  if (condition) {
+    console.log(`✅ [PASS] ${name}`);
+    passedTests++;
+  } else {
+    console.error(`❌ [FAIL] ${name}`);
+    if (detail) console.error(`   Details: ${detail}`);
+    process.exit(1);
+  }
+}
+
 const tenancy = process.env.OCI_TENANCY_OCID;
 const user = process.env.OCI_USER_OCID;
 const fingerprint = process.env.OCI_FINGERPRINT;
@@ -14,8 +29,8 @@ if (!user) missing.push('OCI_USER_OCID');
 if (!fingerprint) missing.push('OCI_FINGERPRINT');
 
 if (missing.length > 0) {
-  console.log(`[OCI Diagnostic] Skipping live OCI API call: Missing required environment variable(s): ${missing.join(', ')}`);
-  console.log('[OCI Diagnostic] Set OCI_TENANCY_OCID, OCI_USER_OCID, and OCI_FINGERPRINT to execute authenticated probe.');
+  console.log(`⚠️  Required OCI credentials not configured (missing: ${missing.join(', ')}).`);
+  console.log('Skipping live OCI API call — 0 assertions executed.');
   process.exit(0);
 }
 
@@ -23,7 +38,8 @@ const baseDir = process.env.USERPROFILE || process.env.HOME || '';
 const privateKeyPath = process.env.OCI_KEY_PATH || path.join(baseDir, '.oci', 'oci_api_key.pem');
 
 if (!fs.existsSync(privateKeyPath)) {
-  console.log(`[OCI Diagnostic] Private key file not found at: ${privateKeyPath}`);
+  console.log(`⚠️  Private key file not found at: ${privateKeyPath}`);
+  console.log('Skipping live OCI API call — 0 assertions executed.');
   process.exit(0);
 }
 
@@ -55,18 +71,32 @@ const req = https.request(options, (res) => {
   res.on('data', chunk => data += chunk);
   res.on('end', () => {
     console.log('Status code:', res.statusCode);
+    let parsed = null;
+    let isJson = false;
     try {
-      console.log('Response JSON:', JSON.stringify(JSON.parse(data), null, 2));
+      parsed = JSON.parse(data);
+      isJson = true;
+      console.log('Response JSON:', JSON.stringify(parsed, null, 2));
     } catch {
       console.log('Response Raw:', data);
     }
+
+    assert('OCI signature accepted (HTTP non-401)', res.statusCode !== 401, `Status: ${res.statusCode}`);
+    assert('Response is parseable JSON', isJson === true, `Raw body: ${data.slice(0, 100)}`);
+    assert(
+      'Tenancy compartment query handled by OCI API',
+      res.statusCode === 200 || (res.statusCode === 404 && parsed && parsed.code === 'NotAuthorizedOrNotFound'),
+      `Status: ${res.statusCode}, parsed: ${JSON.stringify(parsed)}`
+    );
+
+    console.log(`\nTEST SUITE COMPLETE: ${passedTests}/${totalTests} PASSED (100%)`);
     process.exit(0);
   });
 });
 
 req.on('error', (err) => {
   console.error('[OCI Diagnostic] Request error:', err.message);
-  process.exit(0);
+  process.exit(1);
 });
 
 req.end();
