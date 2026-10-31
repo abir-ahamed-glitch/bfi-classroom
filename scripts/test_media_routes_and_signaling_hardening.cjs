@@ -82,6 +82,7 @@ async function setupDatabase() {
   const dbModule = await import('../server/db/database.js');
   dbModule.initializeDatabase();
   const db = dbModule.default;
+  activeDbHandle = db;
 
   // Configure Super Admin (ID 1)
   db.prepare(`UPDATE users SET username = 'superadmin', email = 'super@bfi.local', role = 'admin', first_name = 'Super', last_name = 'Admin', is_super_admin = 1, is_active = 1 WHERE id = 1`).run();
@@ -222,6 +223,70 @@ function requestUrl(urlPath, token = null) {
   });
 }
 
+let serverProc = null;
+const activeSockets = [];
+let activeDbHandle = null;
+let isCleaningUp = false;
+
+async function cleanup(isAsync = true) {
+  if (isCleaningUp) return;
+  isCleaningUp = true;
+
+  for (const s of activeSockets) {
+    try { s.disconnect(); } catch { /* ignore */ }
+  }
+  activeSockets.length = 0;
+
+  if (activeDbHandle) {
+    try { activeDbHandle.close(); } catch { /* ignore */ }
+    activeDbHandle = null;
+  }
+
+  if (serverProc && !serverProc.killed) {
+    try { serverProc.kill('SIGKILL'); } catch { /* ignore */ }
+    try { serverProc.kill(); } catch { /* ignore */ }
+  }
+
+  if (isAsync) {
+    // Give child process up to 500ms to terminate and release file locks
+    const start = Date.now();
+    while (Date.now() - start < 500) {
+      if (serverProc && serverProc.exitCode !== null) break;
+      await new Promise(r => setTimeout(r, 50));
+    }
+  }
+
+  if (fs.existsSync(SYNTHETIC_FILEPATH)) {
+    try { fs.unlinkSync(SYNTHETIC_FILEPATH); } catch { /* ignore */ }
+  }
+
+  if (fs.existsSync(TMP_DIR)) {
+    // Retry removing directory up to 5 times (helps on Windows if OS file handles take a moment)
+    for (let i = 0; i < 5; i++) {
+      try {
+        fs.rmSync(TMP_DIR, { recursive: true, force: true });
+        break;
+      } catch {
+        if (isAsync) await new Promise(r => setTimeout(r, 50));
+      }
+    }
+  }
+}
+
+process.on('SIGINT', () => { cleanup(false); process.exit(1); });
+process.on('SIGTERM', () => { cleanup(false); process.exit(1); });
+process.on('uncaughtException', (err) => {
+  console.error('[Test Harness] Uncaught Exception:', err);
+  cleanup(false);
+  process.exit(1);
+});
+process.on('unhandledRejection', (err) => {
+  console.error('[Test Harness] Unhandled Rejection:', err);
+  cleanup(false);
+  process.exit(1);
+});
+process.on('exit', () => { cleanup(false); });
+
 function connectSocket(token) {
   return new Promise((resolve, reject) => {
     const socket = ioClient(BASE_URL, {
@@ -230,50 +295,74 @@ function connectSocket(token) {
       reconnection: false,
       timeout: 5000
     });
-    socket.on('connect', () => resolve(socket));
+    socket.on('connect', () => {
+      activeSockets.push(socket);
+      resolve(socket);
+    });
     socket.on('connect_error', reject);
   });
 }
 
-async function main() {
-  console.log('================================================================');
-  console.log('SECURITY VERIFICATION: REPORT SCREENSHOT LOCKDOWN & CALL SIGNALING');
-  console.log('================================================================\n');
-
-  await setupDatabase();
-  console.log(`✅ Synthetic database initialized at ${TEST_DB_PATH}`);
-
-  // Start test server process
-  const serverProc = spawn('node', ['server/server.js'], {
-    cwd: path.resolve(__dirname, '..'),
-    env: {
-      ...process.env,
-      PORT: TEST_PORT,
-      DATABASE_PATH: TEST_DB_PATH,
-      JWT_SECRET,
-      JWT_REFRESH_SECRET,
-      NODE_ENV: 'test'
-    },
-    stdio: 'inherit'
-  });
-
-  // Wait for server to listen
-  await new Promise((resolve, reject) => {
-    const start = Date.now();
-    const interval = setInterval(() => {
-      const probe = http.get(`${BASE_URL}/health`, (res) => {
-        clearInterval(interval);
-        probe.destroy();
-        resolve();
-      });
-      probe.on('error', () => {
-        if (Date.now() - start > 30000) {
-          clearInterval(interval);
-          reject(new Error('Server failed to start within 30 seconds'));
+async function waitForServer(proc, port, timeoutMs = 30000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (proc.exitCode !== null) {
+      throw new Error(`Server process exited prematurely with code ${proc.exitCode}`);
+    }
+    const ready = await new Promise((resolve) => {
+      const req = http.get({
+        hostname: '127.0.0.1',
+        port,
+        path: '/health',
+        timeout: 1000
+      }, (res) => {
+        res.resume();
+        if (res.statusCode === 200 || res.statusCode === 404) {
+          resolve(true);
+        } else {
+          resolve(false);
         }
       });
-    }, 200);
-  });
+      req.on('error', () => resolve(false));
+      req.on('timeout', () => {
+        req.destroy();
+        resolve(false);
+      });
+    });
+
+    if (ready) return;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  throw new Error(`Server failed to respond to /health within ${timeoutMs / 1000} seconds`);
+}
+
+async function main() {
+  try {
+    console.log('================================================================');
+    console.log('SECURITY VERIFICATION: REPORT SCREENSHOT LOCKDOWN & CALL SIGNALING');
+    console.log('================================================================\n');
+
+    await setupDatabase();
+    console.log(`✅ Synthetic database initialized at ${TEST_DB_PATH}`);
+
+    // Start test server process with explicit HOST and isolated port
+    serverProc = spawn('node', ['server/server.js'], {
+      cwd: path.resolve(__dirname, '..'),
+      env: {
+        ...process.env,
+        HOST: '127.0.0.1',
+        PORT: TEST_PORT,
+        DATABASE_PATH: TEST_DB_PATH,
+        JWT_SECRET,
+        JWT_REFRESH_SECRET,
+        NODE_ENV: 'test'
+      },
+      stdio: 'inherit'
+    });
+
+    // Wait for server to listen using sequential probe with process exit guard
+    await waitForServer(serverProc, TEST_PORT, 30000);
+    console.log(`✅ Test server confirmed responsive on port ${TEST_PORT} (PID: ${serverProc.pid})`);
 
   let totalAssertions = 0;
   let passedAssertions = 0;
@@ -678,8 +767,8 @@ async function main() {
   assertCheck('Test E: Second group invite to user with pending group invite is blocked', duplicateGroupInvite.ok, false);
   assertCheck('Test E: Returns INVITEE_BUSY code', duplicateGroupInvite.code, 'INVITEE_BUSY');
 
-  // User 103 can still accept Alice's original group invite
-  const acceptOriginal = signalingModule.handleGroupAccepted(103, {});
+  // User 103 can still accept Alice's original group invite with exact callId
+  const acceptOriginal = signalingModule.handleGroupAccepted(103, { callId: invite103.session.callId });
   assertCheck('Test E: Original group invite remains acceptable after conflicting attempts', acceptOriginal.ok, true);
 
   // 3.4 Group-Call Invitation Lifecycle, Rejection & Expiry Controls
@@ -790,18 +879,91 @@ async function main() {
   assertCheck('pruneExpiredGroupInvites purges expired invitations', prunedInvites, 1);
   assertCheck('User 106 is free after sweep pruning', signalingModule.userBusyState(106), null);
 
-  // Teardown
-  student101Socket.disconnect();
-  aliceSocket.disconnect();
-  bobSocket.disconnect();
-  frankSocket.disconnect();
-  superSocket.disconnect();
-  mallorySocket.disconnect();
-  graceSocket.disconnect();
-  ivanSocket.disconnect();
+  // ── 3.4.6 Exact callId Matching & Stale Event Isolation Controls ──────────
+  console.log('\n--- SUITE 3.4.6: Exact callId Matching & Stale Event Isolation Controls ---\n');
+  signalingModule.resetCallSignalingState();
 
-  serverProc.kill();
-  if (fs.existsSync(SYNTHETIC_FILEPATH)) fs.unlinkSync(SYNTHETIC_FILEPATH);
+  // Test 1: Missing or invalid callId is rejected without changing state
+  assertCheck('handleGroupAccepted rejects missing callId', signalingModule.handleGroupAccepted(107, {}).ok, false);
+  assertCheck('Missing callId returns INVALID_CALL_ID code on accept', signalingModule.handleGroupAccepted(107, {}).code, 'INVALID_CALL_ID');
+  assertCheck('handleGroupAccepted rejects empty callId', signalingModule.handleGroupAccepted(107, { callId: '   ' }).ok, false);
+
+  assertCheck('handleGroupInviteDeclined rejects missing callId', signalingModule.handleGroupInviteDeclined(107, {}).ok, false);
+  assertCheck('Missing callId returns INVALID_CALL_ID code on decline', signalingModule.handleGroupInviteDeclined(107, {}).code, 'INVALID_CALL_ID');
+  assertCheck('handleGroupInviteDeclined rejects empty callId', signalingModule.handleGroupInviteDeclined(107, { callId: '   ' }).ok, false);
+
+  assertCheck('handleGroupInviteCancelled rejects missing callId', signalingModule.handleGroupInviteCancelled(10, { receiverId: 107 }).ok, false);
+  assertCheck('Missing callId returns INVALID_CALL_ID code on cancel', signalingModule.handleGroupInviteCancelled(10, { receiverId: 107 }).code, 'INVALID_CALL_ID');
+  assertCheck('handleGroupInviteCancelled rejects empty callId', signalingModule.handleGroupInviteCancelled(10, { receiverId: 107, callId: '   ' }).ok, false);
+
+  // Test 2: Stale events from an old call cannot affect a newer invitation
+  // Step A: Create and finish Call A
+  const callA = signalingModule.handleCallRequest(10, { receiverId: 60 }, activeDb).session;
+  signalingModule.handleCallAnswered(60, { callerId: 10 });
+  const staleCallId = callA.callId;
+  // End Call A
+  signalingModule.handleCallEnded(10, { targetId: 60 });
+  assertCheck('Call A cleanly ended and removed from callSessions', signalingModule.callSessions.has(staleCallId), false);
+
+  // Step B: Wait 15ms so timestamp advances, start new Call B (Alice & Frank) and invite User 107
+  await new Promise(r => setTimeout(r, 15));
+  const callB = signalingModule.handleCallRequest(10, { receiverId: 60 }, activeDb).session;
+  signalingModule.handleCallAnswered(60, { callerId: 10 });
+  const activeCallId = callB.callId;
+  assertCheck('Call B is connected with distinct callId', activeCallId !== staleCallId, true);
+
+  const inviteUser107 = signalingModule.handleGroupInvite(10, { receiverId: 107 }, activeDb);
+  assertCheck('User 107 invited to Call B', inviteUser107.ok, true);
+  assertCheck('User 107 in invited state for Call B', signalingModule.userBusyState(107)?.state, 'invited');
+  assertCheck('Call B invitedParticipants contains User 107', callB.invitedParticipants.has(107), true);
+
+  // Step C: Stale accept with staleCallId -> rejected, does NOT alter Call B
+  const staleAccept = signalingModule.handleGroupAccepted(107, { callId: staleCallId });
+  assertCheck('Stale accept with old callId fails', staleAccept.ok, false);
+  assertCheck('Stale accept returns CALL_NOT_FOUND', staleAccept.code, 'CALL_NOT_FOUND');
+  assertCheck('User 107 remains pending in Call B after stale accept', callB.invitedParticipants.has(107), true);
+  assertCheck('Call B participants do NOT include User 107 after stale accept', callB.participants.has(107), false);
+  assertCheck('User 107 busy state remains invited after stale accept', signalingModule.userBusyState(107)?.state, 'invited');
+
+  // Step D: Stale decline with staleCallId -> rejected, does NOT alter Call B
+  const staleDecline = signalingModule.handleGroupInviteDeclined(107, { callId: staleCallId });
+  assertCheck('Stale decline with old callId fails', staleDecline.ok, false);
+  assertCheck('Stale decline returns CALL_NOT_FOUND', staleDecline.code, 'CALL_NOT_FOUND');
+  assertCheck('User 107 remains pending in Call B after stale decline', callB.invitedParticipants.has(107), true);
+  assertCheck('User 107 busy state remains invited after stale decline', signalingModule.userBusyState(107)?.state, 'invited');
+
+  // Step E: Stale cancellation with staleCallId by Alice -> rejected, does NOT alter Call B
+  const staleCancel = signalingModule.handleGroupInviteCancelled(10, { receiverId: 107, callId: staleCallId });
+  assertCheck('Stale cancellation with old callId fails', staleCancel.ok, false);
+  assertCheck('Stale cancellation returns CALL_MISMATCH', staleCancel.code, 'CALL_MISMATCH');
+  assertCheck('User 107 remains pending in Call B after stale cancellation', callB.invitedParticipants.has(107), true);
+  assertCheck('User 107 busy state remains invited after stale cancellation', signalingModule.userBusyState(107)?.state, 'invited');
+
+  // Step F: Stale fallback rejection via handleCallRejected with staleCallId -> rejected, does NOT alter Call B
+  const staleCallRejected = signalingModule.handleCallRejected(107, { callId: staleCallId });
+  assertCheck('Stale handleCallRejected with old callId fails', staleCallRejected.ok, false);
+  assertCheck('User 107 remains pending in Call B after stale handleCallRejected', callB.invitedParticipants.has(107), true);
+
+  // Step G: Stale decline with another existing session's callId that did not invite User 107
+  const callC = { callId: 'call_concurrent_dummy', state: 'connected', participants: new Set([80, 81]), invitedParticipants: new Set() };
+  signalingModule.callSessions.set(callC.callId, callC);
+  const mismatchedDecline = signalingModule.handleGroupInviteDeclined(107, { callId: callC.callId });
+  assertCheck('Decline with mismatched concurrent callId fails', mismatchedDecline.ok, false);
+  assertCheck('Mismatched decline returns NOT_INVITED', mismatchedDecline.code, 'NOT_INVITED');
+  assertCheck('User 107 remains pending in Call B after mismatched decline', callB.invitedParticipants.has(107), true);
+  signalingModule.callSessions.delete(callC.callId);
+
+  // Step H: Legitimate acceptance with the exact matching activeCallId succeeds
+  const legitAccept = signalingModule.handleGroupAccepted(107, { callId: activeCallId });
+  assertCheck('Legitimate accept with exact activeCallId succeeds', legitAccept.ok, true);
+  assertCheck('User 107 added to Call B participants', callB.participants.has(107), true);
+  assertCheck('User 107 removed from Call B invitedParticipants', callB.invitedParticipants.has(107), false);
+  assertCheck('User 107 busy state is now connected', signalingModule.userBusyState(107)?.state, 'connected');
+
+  // Teardown
+  for (const s of [student101Socket, aliceSocket, bobSocket, frankSocket, superSocket, mallorySocket, graceSocket, ivanSocket]) {
+    try { s.disconnect(); } catch { /* ignore */ }
+  }
 
   console.log('\n================================================================');
   console.log(`FINAL OUTCOME: ${passedAssertions} / ${totalAssertions} ASSERTIONS PASSED (100%)`);
@@ -810,9 +972,13 @@ async function main() {
   if (passedAssertions !== totalAssertions) {
     process.exit(1);
   }
+  } finally {
+    await cleanup(true);
+  }
 }
 
-main().catch(err => {
+main().catch(async (err) => {
   console.error('Test Suite Failed:', err);
+  await cleanup(true);
   process.exit(1);
 });

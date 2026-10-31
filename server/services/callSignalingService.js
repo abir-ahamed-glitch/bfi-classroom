@@ -36,15 +36,15 @@ export const MAX_GROUP_PARTICIPANTS = 9;       // Maximum 9 participants per gro
 
 // In-memory call sessions
 // callId -> CallSession
-const callSessions = new Map();
+export const callSessions = new Map();
 
 // userId -> CallSession (current active or ringing call)
 // A user appears here as soon as a call is initiated (as caller OR receiver),
 // and is removed when the call ends, is rejected, or expires.
-const userActiveCall = new Map();
+export const userActiveCall = new Map();
 
 // Pending ringing calls by callerId -> CallSession
-const pendingCallsByCaller = new Map();
+export const pendingCallsByCaller = new Map();
 
 // ─── Internal helpers ────────────────────────────────────────────────────────
 
@@ -459,30 +459,17 @@ export function handleCallRejected(rejecterId, data) {
     }
   }
 
-  // 2. Fallback: check if rejecterId is declining an invited group call
-  let groupSession = null;
-  if (callId && callSessions.has(callId)) {
+  // 2. Fallback: check if rejecterId is declining an invited group call with exact callId
+  if (callId && typeof callId === 'string' && callId.trim()) {
     const s = callSessions.get(callId);
-    if (s.invitedParticipants?.has(rejecterId)) groupSession = s;
-  }
-  if (!groupSession) {
-    for (const s of callSessions.values()) {
-      if (s.invitedParticipants?.has(rejecterId)) {
-        if (!callerId || s.participants.has(callerId) || s.invitedTimestamps?.get(rejecterId)?.inviterId === callerId) {
-          groupSession = s;
-          break;
-        }
+    if (s && s.invitedParticipants?.has(rejecterId)) {
+      const result = handleGroupInviteDeclined(rejecterId, { callId: s.callId, reason: data?.reason });
+      if (result.ok) {
+        result.isGroupInvite = true;
+        return result;
       }
-    }
-  }
-
-  if (groupSession) {
-    const result = handleGroupInviteDeclined(rejecterId, { callId: groupSession.callId, reason: data?.reason });
-    if (result.ok) {
-      result.isGroupInvite = true;
       return result;
     }
-    return result;
   }
 
   return { ok: false, error: 'No matching pending call found for this recipient to reject.' };
@@ -622,30 +609,21 @@ export function handleGroupInvite(inviterId, data, database = db) {
 
 /**
  * Group Call: Accept an invitation to an ongoing call.
- * Enforces max capacity on accept and validates 60s invitation TTL.
+ * Enforces exact callId matching, max capacity on accept, and validates 60s invitation TTL.
  */
 export function handleGroupAccepted(joinerId, data) {
-  let session = null;
   const callId = data?.callId;
-
-  if (callId && callSessions.has(callId)) {
-    const s = callSessions.get(callId);
-    if (s.invitedParticipants?.has(joinerId)) {
-      session = s;
-    }
+  if (!callId || typeof callId !== 'string' || !callId.trim()) {
+    return { ok: false, error: 'Missing or invalid callId.', code: 'INVALID_CALL_ID' };
   }
 
-  if (!session) {
-    for (const s of callSessions.values()) {
-      if (s.invitedParticipants?.has(joinerId)) {
-        session = s;
-        break;
-      }
-    }
+  const session = callSessions.get(callId);
+  if (!session || session.state !== 'connected') {
+    return { ok: false, error: 'No active group call found for this callId.', code: 'CALL_NOT_FOUND' };
   }
 
-  if (!session || session.state !== 'connected' || !session.invitedParticipants?.has(joinerId)) {
-    return { ok: false, error: 'No active group call invitation found for your account.' };
+  if (!session.invitedParticipants?.has(joinerId)) {
+    return { ok: false, error: 'No matching pending group invitation found for your account in this call.', code: 'NOT_INVITED' };
   }
 
   // Enforce group invitation expiry
@@ -690,31 +668,22 @@ export function handleGroupAccepted(joinerId, data) {
 /**
  * Group Call: Decline an invitation to an ongoing group call.
  * Authenticated invitee can decline their exact pending invitation.
- * Removes only the decliner from invitedParticipants without ending the group call
- * or altering other sessions.
+ * Requires exact callId matching; removes only the decliner from invitedParticipants
+ * without ending the group call or altering other sessions.
  */
 export function handleGroupInviteDeclined(declinerId, data) {
-  let session = null;
   const callId = data?.callId;
-
-  if (callId && callSessions.has(callId)) {
-    const s = callSessions.get(callId);
-    if (s.invitedParticipants?.has(declinerId)) {
-      session = s;
-    }
+  if (!callId || typeof callId !== 'string' || !callId.trim()) {
+    return { ok: false, error: 'Missing or invalid callId.', code: 'INVALID_CALL_ID' };
   }
 
+  const session = callSessions.get(callId);
   if (!session) {
-    for (const s of callSessions.values()) {
-      if (s.invitedParticipants?.has(declinerId)) {
-        session = s;
-        break;
-      }
-    }
+    return { ok: false, error: 'No matching call session found for this callId.', code: 'CALL_NOT_FOUND' };
   }
 
-  if (!session || !session.invitedParticipants?.has(declinerId)) {
-    return { ok: false, error: 'No matching pending group invitation found for this user.' };
+  if (!session.invitedParticipants?.has(declinerId)) {
+    return { ok: false, error: 'No matching pending group invitation found for this user in this call.', code: 'NOT_INVITED' };
   }
 
   // Enforce expiry check
@@ -746,9 +715,14 @@ export function handleGroupInviteDeclined(declinerId, data) {
 /**
  * Group Call: Cancel a pending invitation sent to a user.
  * Authenticated active participant in the group call can cancel an invitation.
- * Removes the invitee from invitedParticipants and notifies them to dismiss ringing UI.
+ * Requires exact callId matching; removes the invitee from invitedParticipants and notifies them to dismiss ringing UI.
  */
 export function handleGroupInviteCancelled(cancellerId, data) {
+  const callId = data?.callId;
+  if (!callId || typeof callId !== 'string' || !callId.trim()) {
+    return { ok: false, error: 'Missing or invalid callId.', code: 'INVALID_CALL_ID' };
+  }
+
   const receiverId = Number(data?.receiverId);
   if (!receiverId) return { ok: false, error: 'Missing receiverId.' };
 
@@ -757,12 +731,12 @@ export function handleGroupInviteCancelled(cancellerId, data) {
     return { ok: false, error: 'You are not in an active connected call.' };
   }
 
-  if (data?.callId && session.callId !== data.callId) {
-    return { ok: false, error: 'Mismatched callId.' };
+  if (session.callId !== callId) {
+    return { ok: false, error: 'Mismatched callId.', code: 'CALL_MISMATCH' };
   }
 
   if (!session.invitedParticipants?.has(receiverId)) {
-    return { ok: false, error: 'No pending invitation found for this user in this call.' };
+    return { ok: false, error: 'No pending invitation found for this user in this call.', code: 'NOT_INVITED' };
   }
 
   session.invitedParticipants.delete(receiverId);

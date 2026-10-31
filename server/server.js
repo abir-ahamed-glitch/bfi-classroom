@@ -150,6 +150,11 @@ function isProxyDomainAllowed(hostname) {
 }
 
 
+// Lightweight health readiness probe endpoint for deployment, monitoring, and automated test harnesses
+app.get(['/health', '/api/health', '/bfi-classroom/health', '/bfi-classroom/api/health'], (_req, res) => {
+  res.status(200).json({ status: 'ok', timestamp: Date.now() });
+});
+
 // SEC-02 & SEC-05: Dedicated rate limiter for public proxy and link preview endpoints
 const publicProxyLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
