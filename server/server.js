@@ -1,5 +1,6 @@
 import './bootstrap.js';
 import crypto from 'crypto';
+import fs from 'fs';
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -58,8 +59,19 @@ import adminManagementRoutes from './routes/admin-management.js';
 import { checkScheduledBroadcasts } from './utils/broadcastScheduler.js';
 
 import { getJwtRefreshSecret, getJwtSecret } from './config/security.js';
-import { authenticateToken } from './middleware/auth.js';
+import { authenticateToken, isSuperAdmin, hasAnyPermission } from './middleware/auth.js';
 import { corsOptions, socketCorsOptions } from './config/cors.js';
+import {
+  handleCallRequest,
+  handleCallAnswered,
+  handleCallRejected,
+  verifyActivePeer,
+  handleCallEnded,
+  handleGroupInvite,
+  handleGroupAccepted,
+  handleGroupLeft,
+  handleUserDisconnect
+} from './services/callSignalingService.js';
 
 const app = express();
 const httpServer = createServer(app);
@@ -434,23 +446,74 @@ app.use((req, res, next) => {
 
 // Inbox attachments are private. Use /api/inbox/attachments/:filename so the
 // API can verify the requesting user belongs to that conversation.
-app.use(['/media/inbox-attachments', '/bfi-classroom/media/inbox-attachments'], (_req, res) => {
-  res.status(401).json({ error: 'Authentication required' });
+app.use([
+  '/media/inbox-attachments',
+  '/bfi-classroom/media/inbox-attachments',
+  '/uploads/inbox-attachments',
+  '/bfi-classroom/uploads/inbox-attachments'
+], (_req, res) => {
+  res.status(403).json({ error: 'Private inbox attachments must be accessed via /api/inbox/attachments/:filename' });
 });
 
 // Static files for media uploads mapping
-const reportScreenshotsPath = path.join(__dirname, '..', 'uploads', 'report-screenshots');
+const reportScreenshotsPath = path.resolve(__dirname, '..', 'uploads', 'report-screenshots');
+
 const serveReportScreenshot = (req, res) => {
-  const filename = path.basename(req.params.filename || '');
-  if (!/^report-screenshot-\d+-\d+\.(jpg|png|webp|gif)$/.test(filename)) {
+  let rawFilename = req.params.filename || '';
+  if (rawFilename.endsWith('/view')) {
+    rawFilename = rawFilename.slice(0, -5);
+  }
+  const filename = path.basename(rawFilename);
+  const match = filename.match(/^report-screenshot-(\d+)-(\d+)\.(jpg|png|webp|gif)$/);
+  if (!match) {
     return res.status(404).end();
   }
-  return res.sendFile(path.join(reportScreenshotsPath, filename), (error) => {
-    if (error && !res.headersSent) res.status(error.statusCode || 404).end();
+
+  const reporterIdFromFilename = Number(match[1]);
+  const user = req.user;
+
+  // Access check:
+  // 1. Owner who uploaded/filed the screenshot
+  const isOwner = Boolean(user && user.id === reporterIdFromFilename);
+
+  // 2. Report Moderator: Admin with 'reports:view' or 'reports:moderate' permission, or Super Admin
+  const isModerator = Boolean(user && (
+    isSuperAdmin(user) ||
+    hasAnyPermission(user, 'reports:view', 'reports:moderate')
+  ));
+
+  if (!isOwner && !isModerator) {
+    return res.status(403).json({ error: 'Access denied: You do not have permission to view this report screenshot.' });
+  }
+
+  const filePath = path.join(reportScreenshotsPath, filename);
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).end();
+  }
+
+  res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; sandbox");
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+
+  return res.sendFile(filename, { root: reportScreenshotsPath }, (error) => {
+    if (error && !res.headersSent) {
+      res.status(error.statusCode || 404).end();
+    }
   });
 };
-app.get('/uploads/report-screenshots/:filename', authenticateToken, serveReportScreenshot);
-app.get('/bfi-classroom/uploads/report-screenshots/:filename', authenticateToken, serveReportScreenshot);
+
+const reportScreenshotRoutes = [
+  '/uploads/report-screenshots/:filename',
+  '/uploads/report-screenshots/:filename/view',
+  '/bfi-classroom/uploads/report-screenshots/:filename',
+  '/bfi-classroom/uploads/report-screenshots/:filename/view',
+  '/media/report-screenshots/:filename',
+  '/media/report-screenshots/:filename/view',
+  '/bfi-classroom/media/report-screenshots/:filename',
+  '/bfi-classroom/media/report-screenshots/:filename/view'
+];
+app.get(reportScreenshotRoutes, authenticateToken, serveReportScreenshot);
+
 const serveStaticOptions = {
   setHeaders: (res, filePath) => {
     const ext = path.extname(filePath).toLowerCase();
@@ -464,6 +527,12 @@ const serveStaticOptions = {
 };
 
 app.use(['/bfi-classroom/media', '/media'], (req, res, next) => {
+  // SEC-02/SEC-03: Never allow unauthenticated static bypass to private directories
+  const subpath = (req.path || '').toLowerCase();
+  if (subpath.startsWith('/report-screenshots') || subpath.startsWith('/inbox-attachments')) {
+    return res.status(401).json({ error: 'Authentication required' });
+  }
+
   // SEC-03: Retain strict CSP sandbox and nosniff protection for user-uploaded static files
   res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; sandbox");
   res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -665,89 +734,102 @@ io.on('connection', (socket) => {
   
   // WebRTC Signaling Events
   socket.on('call-request', (data) => {
-    if (!data || !data.receiverId) return;
-    const sanitized = { ...data, callerId: socket.user.id, callerData: { ...(data.callerData || {}), id: socket.user.id } };
-    io.to(`user:${data.receiverId}`).emit('call-request', sanitized);
+    const result = handleCallRequest(socket.user.id, data);
+    if (!result.ok) {
+      socket.emit('call-rejected', { callerId: socket.user.id, reason: result.error, code: result.code });
+      return;
+    }
+    io.to(`user:${result.receiverId}`).emit('call-request', result.sanitizedPayload);
   });
 
   socket.on('call-answered', (data) => {
-    if (!data || !data.callerId) return;
-    const sanitized = { ...data, answererId: socket.user.id };
-    io.to(`user:${data.callerId}`).emit('call-answered', sanitized);
+    const result = handleCallAnswered(socket.user.id, data);
+    if (!result.ok) return;
+    io.to(`user:${result.callerId}`).emit('call-answered', result.sanitizedPayload);
   });
 
   socket.on('call-rejected', (data) => {
-    if (!data || !data.callerId) return;
-    const sanitized = { ...data, rejecterId: socket.user.id };
-    io.to(`user:${data.callerId}`).emit('call-rejected', sanitized);
+    const result = handleCallRejected(socket.user.id, data);
+    if (!result.ok) return;
+    io.to(`user:${result.callerId}`).emit('call-rejected', result.sanitizedPayload);
   });
 
   socket.on('webrtc-offer', (data) => {
-    if (!data || !data.receiverId) return;
+    const receiverId = Number(data?.receiverId);
+    if (!verifyActivePeer(socket.user.id, receiverId)) return;
     const sanitized = { ...data, callerId: socket.user.id };
-    io.to(`user:${data.receiverId}`).emit('webrtc-offer', sanitized);
+    io.to(`user:${receiverId}`).emit('webrtc-offer', sanitized);
   });
 
   socket.on('webrtc-answer', (data) => {
-    if (!data || !data.callerId) return;
+    const callerId = Number(data?.callerId);
+    if (!verifyActivePeer(socket.user.id, callerId)) return;
     const sanitized = { ...data, answererId: socket.user.id };
-    io.to(`user:${data.callerId}`).emit('webrtc-answer', sanitized);
+    io.to(`user:${callerId}`).emit('webrtc-answer', sanitized);
   });
 
   socket.on('ice-candidate', (data) => {
-    if (!data || !data.targetId) return;
+    const targetId = Number(data?.targetId);
+    if (!verifyActivePeer(socket.user.id, targetId)) return;
     const sanitized = { ...data, fromId: socket.user.id };
-    io.to(`user:${data.targetId}`).emit('ice-candidate', sanitized);
+    io.to(`user:${targetId}`).emit('ice-candidate', sanitized);
   });
 
   socket.on('call-ended', (data) => {
-    if (!data || !data.targetId) return;
-    const sanitized = { ...data, fromId: socket.user.id };
-    io.to(`user:${data.targetId}`).emit('call-ended', sanitized);
+    const result = handleCallEnded(socket.user.id, data);
+    if (result.ok && result.peersToNotify) {
+      result.peersToNotify.forEach(pid => {
+        io.to(`user:${pid}`).emit('call-ended', result.sanitizedPayload);
+      });
+    }
   });
 
   // ── Group Call Signaling ──────────────────────────────────────────
   // Invite a new person into an ongoing call
   socket.on('group-call-invite', (data) => {
-    // data: { receiverId, callerData, existingParticipants: [{ id, data }], hasVideo }
-    io.to(`user:${data.receiverId}`).emit('group-call-invite', data);
+    const result = handleGroupInvite(socket.user.id, data);
+    if (!result.ok) return;
+    io.to(`user:${result.receiverId}`).emit('group-call-invite', result.sanitizedPayload);
   });
 
   // New person accepted the group call invite
   socket.on('group-call-accepted', (data) => {
-    // data: { participantIds: [...], joinerData: { id, name, avatar, hasVideo } }
-    // Notify every existing participant so they each create a PC for the joiner
-    if (data.participantIds && Array.isArray(data.participantIds)) {
-      data.participantIds.forEach(pid => {
-        io.to(`user:${pid}`).emit('group-call-accepted', data);
-      });
-    }
+    const result = handleGroupAccepted(socket.user.id, data);
+    if (!result.ok) return;
+    result.peersToNotify.forEach(pid => {
+      io.to(`user:${pid}`).emit('group-call-accepted', result.sanitizedPayload);
+    });
   });
 
   // Someone left the group call
   socket.on('group-call-left', (data) => {
-    // data: { participantIds: [...], userId }
-    if (data.participantIds && Array.isArray(data.participantIds)) {
-      data.participantIds.forEach(pid => {
-        io.to(`user:${pid}`).emit('group-call-left', data);
-      });
-    }
+    const result = handleGroupLeft(socket.user.id, data);
+    if (!result.ok) return;
+    result.peersToNotify.forEach(pid => {
+      io.to(`user:${pid}`).emit('group-call-left', result.sanitizedPayload);
+    });
   });
 
   // Group-specific WebRTC signaling (uses fromId to disambiguate peer connections)
   socket.on('group-webrtc-offer', (data) => {
-    // data: { receiverId, fromId, offer }
-    io.to(`user:${data.receiverId}`).emit('group-webrtc-offer', data);
+    const receiverId = Number(data?.receiverId);
+    if (!verifyActivePeer(socket.user.id, receiverId)) return;
+    const sanitized = { ...data, fromId: socket.user.id };
+    io.to(`user:${receiverId}`).emit('group-webrtc-offer', sanitized);
   });
 
   socket.on('group-webrtc-answer', (data) => {
-    // data: { receiverId, fromId, answer }
-    io.to(`user:${data.receiverId}`).emit('group-webrtc-answer', data);
+    const receiverId = Number(data?.receiverId);
+    if (!verifyActivePeer(socket.user.id, receiverId)) return;
+    const sanitized = { ...data, fromId: socket.user.id };
+    io.to(`user:${receiverId}`).emit('group-webrtc-answer', sanitized);
   });
 
   socket.on('group-ice-candidate', (data) => {
-    // data: { targetId, fromId, candidate }
-    io.to(`user:${data.targetId}`).emit('group-ice-candidate', data);
+    const targetId = Number(data?.targetId);
+    if (!verifyActivePeer(socket.user.id, targetId)) return;
+    const sanitized = { ...data, fromId: socket.user.id };
+    io.to(`user:${targetId}`).emit('group-ice-candidate', sanitized);
   });
 
   socket.on('disconnect', () => {
@@ -758,6 +840,13 @@ io.on('connection', (socket) => {
       if (sockets.size === 0) {
         userConnections.delete(userId);
         socket.broadcast.emit('user_offline', userId);
+
+        const disconnectCall = handleUserDisconnect(userId);
+        if (disconnectCall && disconnectCall.peersToNotify) {
+          disconnectCall.peersToNotify.forEach(pid => {
+            io.to(`user:${pid}`).emit('call-ended', { targetId: pid, fromId: userId });
+          });
+        }
       }
     }
   });
@@ -782,21 +871,20 @@ app.use('/bfi-classroom/assets', express.static(clientAssetsPath));
 app.use('/bfi-classroom', express.static(clientBuildPath, { redirect: false }));
 app.use(express.static(clientBuildPath));
 
-app.get('/bfi-classroom', (req, res) => {
-  res.sendFile(path.join(clientBuildPath, 'index.html'));
-});
+const serveSpaIndex = (_req, res) => {
+  const indexHtml = path.join(clientBuildPath, 'index.html');
+  if (!fs.existsSync(indexHtml)) {
+    return res.status(404).send('Not Found');
+  }
+  return res.sendFile(indexHtml, (err) => {
+    if (err && !res.headersSent) res.status(404).end();
+  });
+};
 
-app.get('/bfi-classroom/', (req, res) => {
-  res.sendFile(path.join(clientBuildPath, 'index.html'));
-});
-
-app.get(/^\/bfi-classroom(?:\/.*)?$/, (req, res) => {
-  res.sendFile(path.join(clientBuildPath, 'index.html'));
-});
-
-app.get(/^\/.*$/, (req, res) => {
-  res.sendFile(path.join(clientBuildPath, 'index.html'));
-});
+app.get('/bfi-classroom', serveSpaIndex);
+app.get('/bfi-classroom/', serveSpaIndex);
+app.get(/^\/bfi-classroom(?:\/.*)?$/, serveSpaIndex);
+app.get(/^\/.*$/, serveSpaIndex);
 
 // Global Error Handler
 app.use((err, req, res, _next) => {
