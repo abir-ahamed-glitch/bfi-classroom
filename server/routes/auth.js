@@ -29,6 +29,29 @@ export function getCustomEmailDispatcher() {
   return customEmailDispatcher;
 }
 
+// Categorizes email delivery errors into allowlisted tokens to prevent sensitive data leakage (tokens/links) in audit logs
+export function categorizeDeliveryError(err) {
+  if (!err) return 'smtp_dispatch_exception';
+  const msg = String(err.message || '').toLowerCase();
+  const code = String(err.code || '').toLowerCase();
+  if (code === 'econnrefused' || msg.includes('econnrefused') || msg.includes('connection refused')) {
+    return 'smtp_connection_refused';
+  }
+  if (code === 'etimedout' || msg.includes('timeout') || msg.includes('timed out')) {
+    return 'smtp_timeout';
+  }
+  if (code === 'eauth' || msg.includes('auth') || msg.includes('invalid login')) {
+    return 'smtp_auth_error';
+  }
+  if (msg.includes('rate') || msg.includes('limit')) {
+    return 'smtp_rate_limited';
+  }
+  if (code === 'enotfound' || msg.includes('enotfound') || msg.includes('dns')) {
+    return 'smtp_dns_resolution_failed';
+  }
+  return 'smtp_dispatch_exception';
+}
+
 function buildUserPayload(user) {
   let profile = null;
   if (user.role === 'student') {
@@ -1474,7 +1497,7 @@ router.post('/admin-forgot-password', authLimiter, sanitizeInput, async (req, re
     } catch (err) {
       deliveryStatus = 'failed';
       deliveryOutcome = 'failure';
-      deliveryError = err?.message || 'dispatch_exception';
+      deliveryError = categorizeDeliveryError(err);
     }
 
     try {

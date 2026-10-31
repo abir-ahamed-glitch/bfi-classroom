@@ -768,28 +768,61 @@ async function runTests() {
     console.log('✅ PASS: Delivery false-return recorded outcome=failure, deliveryStatus=failed, uniform 200 response.');
   }
 
-  console.log('\n--- [Test 2.9] Admin Recovery: Thrown-Error Delivery Failure Audit Status ---');
+  console.log('\n--- [Test 2.9] Admin Recovery: Thrown-Error Delivery Failure & Error Redaction Audit Status ---');
   {
-    // Configure mock dispatcher to throw exception
-    setCustomEmailDispatcher(async () => {
-      throw new Error('Simulated SMTP connection timeout');
+    // Capture application logs to verify sensitive links/tokens are not dumped to console
+    const capturedLogs = [];
+    const origConsoleError = console.error;
+    const origConsoleWarn = console.warn;
+    const logCapture = (...args) => { capturedLogs.push(args.join(' ')); };
+
+    let thrownSensitiveLink = null;
+    let thrownSensitiveToken = null;
+
+    setCustomEmailDispatcher(async (email, link) => {
+      thrownSensitiveLink = link;
+      // Extract raw token from reset link
+      thrownSensitiveToken = link.split('/').pop();
+      // Dispatcher throws exception explicitly embedding the raw reset link and raw token
+      throw new Error(`SMTP timeout failure while dispatching link ${link} with token ${thrownSensitiveToken}`);
     });
 
-    const ctx = mockReqRes({ method: 'POST', url: '/api/auth/admin-forgot-password', body: { email: 'eligible@bfibd.org' } });
-    await adminForgotPasswordHandler(ctx.req, ctx.res);
-    const res = ctx.getResult();
+    try {
+      console.error = logCapture;
+      console.warn = logCapture;
 
-    // Uniform public response is still returned
-    assert.strictEqual(res.status, 200);
-    assert.strictEqual(res.data.message, expectedGenericMsg);
+      const ctx = mockReqRes({ method: 'POST', url: '/api/auth/admin-forgot-password', body: { email: 'eligible@bfibd.org' } });
+      await adminForgotPasswordHandler(ctx.req, ctx.res);
+      const res = ctx.getResult();
 
-    const audit = db.prepare(`SELECT * FROM admin_audit_logs WHERE actor_id = 10 AND action = 'admin_recovery_dispatched' ORDER BY id DESC LIMIT 1`).get();
-    assert.ok(audit);
-    assert.strictEqual(audit.outcome, 'failure', 'Outcome must be failure on thrown error');
-    const details = JSON.parse(audit.details);
-    assert.strictEqual(details.deliveryStatus, 'failed');
-    assert.strictEqual(details.error, 'Simulated SMTP connection timeout');
-    console.log('✅ PASS: Thrown-error delivery failure recorded outcome=failure, deliveryStatus=failed, uniform 200 response.');
+      // Uniform public response is still returned
+      assert.strictEqual(res.status, 200);
+      assert.strictEqual(res.data.message, expectedGenericMsg);
+
+      const audit = db.prepare(`SELECT * FROM admin_audit_logs WHERE actor_id = 10 AND action = 'admin_recovery_dispatched' ORDER BY id DESC LIMIT 1`).get();
+      assert.ok(audit);
+      assert.strictEqual(audit.outcome, 'failure', 'Outcome must be failure on thrown error');
+      const details = JSON.parse(audit.details);
+      assert.strictEqual(details.deliveryStatus, 'failed');
+
+      // Assert error is categorized into allowlisted failure category rather than raw exception text
+      assert.strictEqual(details.error, 'smtp_timeout', 'Must record allowlisted error category');
+
+      // Assert neither the raw reset link nor raw token appears in audit details string
+      assert.ok(thrownSensitiveLink && thrownSensitiveToken);
+      assert.strictEqual(audit.details.includes(thrownSensitiveLink), false, 'Raw reset link must NEVER appear in audit record');
+      assert.strictEqual(audit.details.includes(thrownSensitiveToken), false, 'Raw reset token must NEVER appear in audit record');
+
+      // Assert neither appears in captured application console logs
+      const combinedLogs = capturedLogs.join('\n');
+      assert.strictEqual(combinedLogs.includes(thrownSensitiveLink), false, 'Raw reset link must NEVER appear in captured logs');
+      assert.strictEqual(combinedLogs.includes(thrownSensitiveToken), false, 'Raw reset token must NEVER appear in captured logs');
+    } finally {
+      console.error = origConsoleError;
+      console.warn = origConsoleWarn;
+    }
+
+    console.log('✅ PASS: Thrown-error delivery failure categorized into allowlisted token (smtp_timeout), zero link/token leakage in audit or logs.');
   }
 
   console.log('\n--- [Test 2.10] Admin Recovery: Test Suppression Default Audit Status ---');
