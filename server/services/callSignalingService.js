@@ -31,6 +31,7 @@ import db from '../db/database.js';
  */
 
 export const PENDING_CALL_TTL_MS = 60 * 1000; // 60-second pending call expiry
+export const GROUP_INVITE_TTL_MS = 60 * 1000;  // 60-second group invitation expiry
 export const MAX_GROUP_PARTICIPANTS = 9;       // Maximum 9 participants per group call
 
 // In-memory call sessions
@@ -84,6 +85,7 @@ function teardownConnectedSession(session) {
     if (userActiveCall.get(pid) === session) userActiveCall.delete(pid);
     notifyIds.push(pid);
   });
+  if (session.invitedTimestamps) session.invitedTimestamps.clear();
   return notifyIds;
 }
 
@@ -96,8 +98,42 @@ export function isPendingCallExpired(session, now = Date.now()) {
 }
 
 /**
- * Sweeps and removes all expired pending ringing calls.
- * Returns the count of sessions pruned.
+ * Checks whether an unaccepted group invitation for inviteeId has exceeded its 60-second TTL.
+ */
+export function isGroupInviteExpired(session, inviteeId, now = Date.now()) {
+  if (!session || !session.invitedParticipants?.has(inviteeId)) return false;
+  const meta = session.invitedTimestamps?.get(inviteeId);
+  const invitedAt = meta?.invitedAt || session.createdAt;
+  return (now - invitedAt) > GROUP_INVITE_TTL_MS;
+}
+
+/**
+ * Sweeps and removes expired group invitations across all active call sessions.
+ * Returns the count of pruned invitations.
+ */
+export function pruneExpiredGroupInvites(now = Date.now()) {
+  let prunedCount = 0;
+  for (const session of callSessions.values()) {
+    if (session.invitedParticipants) {
+      const expiredInvitees = [];
+      for (const inviteeId of session.invitedParticipants) {
+        if (isGroupInviteExpired(session, inviteeId, now)) {
+          expiredInvitees.push(inviteeId);
+        }
+      }
+      for (const inviteeId of expiredInvitees) {
+        session.invitedParticipants.delete(inviteeId);
+        if (session.invitedTimestamps) session.invitedTimestamps.delete(inviteeId);
+        prunedCount++;
+      }
+    }
+  }
+  return prunedCount;
+}
+
+/**
+ * Sweeps and removes all expired pending ringing calls and group invitations.
+ * Returns the count of sessions/invitations pruned.
  */
 export function pruneExpiredPendingCalls(now = Date.now()) {
   const expired = [];
@@ -109,7 +145,8 @@ export function pruneExpiredPendingCalls(now = Date.now()) {
   for (const session of expired) {
     cleanupPendingCall(session);
   }
-  return expired.length;
+  const groupPruned = pruneExpiredGroupInvites(now);
+  return expired.length + groupPruned;
 }
 
 /**
@@ -119,7 +156,8 @@ export function pruneExpiredPendingCalls(now = Date.now()) {
  *   null                    – user is free
  *   { state, session }      – user is busy (state = 'ringing' | 'connected' | 'invited')
  *
- * A ringing session that has expired is cleaned up and treated as free.
+ * Expired ringing sessions and expired group invitations are cleaned up
+ * inline on access and treated as free.
  */
 export function userBusyState(userId) {
   const session = userActiveCall.get(userId);
@@ -135,10 +173,15 @@ export function userBusyState(userId) {
     }
   }
 
-  // Check whether user has a pending group-call invite in any session
+  // Check whether user has an unaccepted group-call invite in any session
   for (const s of callSessions.values()) {
     if (s.invitedParticipants && s.invitedParticipants.has(userId)) {
-      return { state: 'invited', session: s };
+      if (isGroupInviteExpired(s, userId)) {
+        s.invitedParticipants.delete(userId);
+        if (s.invitedTimestamps) s.invitedTimestamps.delete(userId);
+      } else {
+        return { state: 'invited', session: s };
+      }
     }
   }
 
@@ -146,11 +189,18 @@ export function userBusyState(userId) {
 }
 
 /**
- * Check whether userId has a pending group-call invite in ANY session.
+ * Check whether userId has an unexpired pending group-call invite in ANY session.
  */
 function isUserPendingGroupInvite(userId) {
   for (const s of callSessions.values()) {
-    if (s.invitedParticipants.has(userId)) return true;
+    if (s.invitedParticipants && s.invitedParticipants.has(userId)) {
+      if (isGroupInviteExpired(s, userId)) {
+        s.invitedParticipants.delete(userId);
+        if (s.invitedTimestamps) s.invitedTimestamps.delete(userId);
+      } else {
+        return true;
+      }
+    }
   }
   return false;
 }
@@ -377,37 +427,65 @@ export function handleCallAnswered(answererId, data) {
 }
 
 /**
- * Rejecting a 1:1 call request.
+ * Rejecting a 1:1 call request or declining a group call invitation.
  * Only the exact invited recipient may reject; third parties are silently dropped.
- * Expired sessions are cleaned up and returned as CALL_EXPIRED.
+ * Expired sessions are cleaned up and returned as CALL_EXPIRED / INVITE_EXPIRED.
  */
 export function handleCallRejected(rejecterId, data) {
   const callerId = Number(data?.callerId);
-  if (!callerId) return { ok: false, error: 'Missing callerId.' };
+  const callId = data?.callId;
 
-  const session = pendingCallsByCaller.get(callerId);
-  if (!session || session.targetReceiverId !== rejecterId || session.state !== 'ringing') {
-    return { ok: false, error: 'No matching pending call found for this recipient to reject.' };
-  }
+  // 1. Check for a matching 1:1 ringing call
+  if (callerId) {
+    const session = pendingCallsByCaller.get(callerId);
+    if (session && session.targetReceiverId === rejecterId && session.state === 'ringing') {
+      if (isPendingCallExpired(session)) {
+        cleanupPendingCall(session);
+        return { ok: false, error: 'Call invitation has expired.', code: 'CALL_EXPIRED' };
+      }
 
-  // Enforce 60-second TTL
-  if (isPendingCallExpired(session)) {
-    cleanupPendingCall(session);
-    return { ok: false, error: 'Call invitation has expired.', code: 'CALL_EXPIRED' };
-  }
+      cleanupPendingCall(session);
 
-  cleanupPendingCall(session);
-
-  return {
-    ok: true,
-    callerId,
-    sanitizedPayload: {
-      callId: session.callId,
-      callerId,
-      rejecterId,
-      reason: data?.reason || 'Call rejected'
+      return {
+        ok: true,
+        callerId,
+        sanitizedPayload: {
+          callId: session.callId,
+          callerId,
+          rejecterId,
+          reason: data?.reason || 'Call rejected'
+        }
+      };
     }
-  };
+  }
+
+  // 2. Fallback: check if rejecterId is declining an invited group call
+  let groupSession = null;
+  if (callId && callSessions.has(callId)) {
+    const s = callSessions.get(callId);
+    if (s.invitedParticipants?.has(rejecterId)) groupSession = s;
+  }
+  if (!groupSession) {
+    for (const s of callSessions.values()) {
+      if (s.invitedParticipants?.has(rejecterId)) {
+        if (!callerId || s.participants.has(callerId) || s.invitedTimestamps?.get(rejecterId)?.inviterId === callerId) {
+          groupSession = s;
+          break;
+        }
+      }
+    }
+  }
+
+  if (groupSession) {
+    const result = handleGroupInviteDeclined(rejecterId, { callId: groupSession.callId, reason: data?.reason });
+    if (result.ok) {
+      result.isGroupInvite = true;
+      return result;
+    }
+    return result;
+  }
+
+  return { ok: false, error: 'No matching pending call found for this recipient to reject.' };
 }
 
 /**
@@ -514,6 +592,11 @@ export function handleGroupInvite(inviterId, data, database = db) {
   }
 
   session.invitedParticipants.add(receiverId);
+  if (!session.invitedTimestamps) session.invitedTimestamps = new Map();
+  session.invitedTimestamps.set(receiverId, {
+    invitedAt: Date.now(),
+    inviterId
+  });
   session.lastActivity = Date.now();
 
   // Authoritatively construct existing participants list from session
@@ -539,24 +622,43 @@ export function handleGroupInvite(inviterId, data, database = db) {
 
 /**
  * Group Call: Accept an invitation to an ongoing call.
- * Enforces max capacity on accept as a final guard.
+ * Enforces max capacity on accept and validates 60s invitation TTL.
  */
 export function handleGroupAccepted(joinerId, data) {
   let session = null;
-  for (const s of callSessions.values()) {
-    if (s.invitedParticipants.has(joinerId)) {
+  const callId = data?.callId;
+
+  if (callId && callSessions.has(callId)) {
+    const s = callSessions.get(callId);
+    if (s.invitedParticipants?.has(joinerId)) {
       session = s;
-      break;
     }
   }
 
-  if (!session || session.state !== 'connected') {
+  if (!session) {
+    for (const s of callSessions.values()) {
+      if (s.invitedParticipants?.has(joinerId)) {
+        session = s;
+        break;
+      }
+    }
+  }
+
+  if (!session || session.state !== 'connected' || !session.invitedParticipants?.has(joinerId)) {
     return { ok: false, error: 'No active group call invitation found for your account.' };
+  }
+
+  // Enforce group invitation expiry
+  if (isGroupInviteExpired(session, joinerId)) {
+    session.invitedParticipants.delete(joinerId);
+    if (session.invitedTimestamps) session.invitedTimestamps.delete(joinerId);
+    return { ok: false, error: 'Group call invitation has expired.', code: 'INVITE_EXPIRED' };
   }
 
   // Enforce max 9-person group limit on accept
   if (session.participants.size >= MAX_GROUP_PARTICIPANTS) {
     session.invitedParticipants.delete(joinerId);
+    if (session.invitedTimestamps) session.invitedTimestamps.delete(joinerId);
     return {
       ok: false,
       error: `Group call has reached the maximum capacity of ${MAX_GROUP_PARTICIPANTS} participants.`,
@@ -566,6 +668,7 @@ export function handleGroupAccepted(joinerId, data) {
 
   session.participants.add(joinerId);
   session.invitedParticipants.delete(joinerId);
+  if (session.invitedTimestamps) session.invitedTimestamps.delete(joinerId);
   session.lastActivity = Date.now();
   userActiveCall.set(joinerId, session);
 
@@ -585,6 +688,100 @@ export function handleGroupAccepted(joinerId, data) {
 }
 
 /**
+ * Group Call: Decline an invitation to an ongoing group call.
+ * Authenticated invitee can decline their exact pending invitation.
+ * Removes only the decliner from invitedParticipants without ending the group call
+ * or altering other sessions.
+ */
+export function handleGroupInviteDeclined(declinerId, data) {
+  let session = null;
+  const callId = data?.callId;
+
+  if (callId && callSessions.has(callId)) {
+    const s = callSessions.get(callId);
+    if (s.invitedParticipants?.has(declinerId)) {
+      session = s;
+    }
+  }
+
+  if (!session) {
+    for (const s of callSessions.values()) {
+      if (s.invitedParticipants?.has(declinerId)) {
+        session = s;
+        break;
+      }
+    }
+  }
+
+  if (!session || !session.invitedParticipants?.has(declinerId)) {
+    return { ok: false, error: 'No matching pending group invitation found for this user.' };
+  }
+
+  // Enforce expiry check
+  if (isGroupInviteExpired(session, declinerId)) {
+    session.invitedParticipants.delete(declinerId);
+    if (session.invitedTimestamps) session.invitedTimestamps.delete(declinerId);
+    return { ok: false, error: 'Group call invitation has expired.', code: 'INVITE_EXPIRED' };
+  }
+
+  session.invitedParticipants.delete(declinerId);
+  if (session.invitedTimestamps) session.invitedTimestamps.delete(declinerId);
+  session.lastActivity = Date.now();
+
+  const peersToNotify = Array.from(session.participants);
+
+  return {
+    ok: true,
+    session,
+    peersToNotify,
+    isGroupInvite: true,
+    sanitizedPayload: {
+      callId: session.callId,
+      declinerId,
+      reason: data?.reason || 'Group invitation declined'
+    }
+  };
+}
+
+/**
+ * Group Call: Cancel a pending invitation sent to a user.
+ * Authenticated active participant in the group call can cancel an invitation.
+ * Removes the invitee from invitedParticipants and notifies them to dismiss ringing UI.
+ */
+export function handleGroupInviteCancelled(cancellerId, data) {
+  const receiverId = Number(data?.receiverId);
+  if (!receiverId) return { ok: false, error: 'Missing receiverId.' };
+
+  const session = userActiveCall.get(cancellerId);
+  if (!session || session.state !== 'connected' || !session.participants?.has(cancellerId)) {
+    return { ok: false, error: 'You are not in an active connected call.' };
+  }
+
+  if (data?.callId && session.callId !== data.callId) {
+    return { ok: false, error: 'Mismatched callId.' };
+  }
+
+  if (!session.invitedParticipants?.has(receiverId)) {
+    return { ok: false, error: 'No pending invitation found for this user in this call.' };
+  }
+
+  session.invitedParticipants.delete(receiverId);
+  if (session.invitedTimestamps) session.invitedTimestamps.delete(receiverId);
+  session.lastActivity = Date.now();
+
+  return {
+    ok: true,
+    session,
+    receiverId,
+    sanitizedPayload: {
+      callId: session.callId,
+      receiverId,
+      cancelledBy: cancellerId
+    }
+  };
+}
+
+/**
  * Group Call: Participant leaving an ongoing group call.
  * Tears down the group call when ≤1 participant remains.
  */
@@ -595,6 +792,7 @@ export function handleGroupLeft(leaverId, _data) {
     for (const s of callSessions.values()) {
       if (s.invitedParticipants && s.invitedParticipants.has(leaverId)) {
         s.invitedParticipants.delete(leaverId);
+        if (s.invitedTimestamps) s.invitedTimestamps.delete(leaverId);
         s.lastActivity = Date.now();
         return {
           ok: true,
@@ -648,6 +846,7 @@ export function handleUserDisconnect(userId) {
     for (const s of callSessions.values()) {
       if (s.invitedParticipants && s.invitedParticipants.has(userId)) {
         s.invitedParticipants.delete(userId);
+        if (s.invitedTimestamps) s.invitedTimestamps.delete(userId);
       }
     }
     return null;

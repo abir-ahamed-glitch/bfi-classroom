@@ -70,6 +70,8 @@ import {
   handleGroupInvite,
   handleGroupAccepted,
   handleGroupLeft,
+  handleGroupInviteDeclined,
+  handleGroupInviteCancelled,
   handleUserDisconnect
 } from './services/callSignalingService.js';
 
@@ -751,7 +753,13 @@ io.on('connection', (socket) => {
   socket.on('call-rejected', (data) => {
     const result = handleCallRejected(socket.user.id, data);
     if (!result.ok) return;
-    io.to(`user:${result.callerId}`).emit('call-rejected', result.sanitizedPayload);
+    if (result.isGroupInvite) {
+      result.peersToNotify.forEach(pid => {
+        io.to(`user:${pid}`).emit('group-call-declined', result.sanitizedPayload);
+      });
+    } else {
+      io.to(`user:${result.callerId}`).emit('call-rejected', result.sanitizedPayload);
+    }
   });
 
   socket.on('webrtc-offer', (data) => {
@@ -808,6 +816,22 @@ io.on('connection', (socket) => {
     result.peersToNotify.forEach(pid => {
       io.to(`user:${pid}`).emit('group-call-left', result.sanitizedPayload);
     });
+  });
+
+  // Group invitation declined by invitee
+  socket.on('group-call-declined', (data) => {
+    const result = handleGroupInviteDeclined(socket.user.id, data);
+    if (!result.ok) return;
+    result.peersToNotify.forEach(pid => {
+      io.to(`user:${pid}`).emit('group-call-declined', result.sanitizedPayload);
+    });
+  });
+
+  // Group invitation cancelled by inviter / participant
+  socket.on('group-invite-cancelled', (data) => {
+    const result = handleGroupInviteCancelled(socket.user.id, data);
+    if (!result.ok) return;
+    io.to(`user:${result.receiverId}`).emit('group-invite-cancelled', result.sanitizedPayload);
   });
 
   // Group-specific WebRTC signaling (uses fromId to disambiguate peer connections)

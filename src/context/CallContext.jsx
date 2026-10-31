@@ -190,7 +190,18 @@ export const CallProvider = ({ children }) => {
   const rejectCall = useCallback(() => {
     const incoming = incomingCallRef.current;
     if (incoming && socketRef.current) {
-      socketRef.current.emit('call-rejected', { callerId: incoming.callerData.id });
+      if (incoming.isGroupInvite) {
+        socketRef.current.emit('group-call-declined', {
+          callId: incoming.callId,
+          inviterId: incoming.callerData?.id,
+          reason: 'Group invitation declined'
+        });
+      } else {
+        socketRef.current.emit('call-rejected', {
+          callId: incoming.callId,
+          callerId: incoming.callerData?.id
+        });
+      }
     }
     soundManager.stopAll();
     setIncomingCall(null);
@@ -353,18 +364,37 @@ export const CallProvider = ({ children }) => {
     socket.on('group-call-invite', (data) => {
       console.log('[GroupCall] Incoming group-call-invite', data);
       if (callStateRef.current !== 'idle') {
-        // Auto-reject if already in a call
+        socket.emit('group-call-declined', {
+          callId: data.callId,
+          inviterId: data.callerData?.id,
+          reason: 'Recipient busy'
+        });
         return;
       }
       const ringtoneId = parseInt(localStorage.getItem('selectedRingtoneId') || '1', 10);
       soundManager.playRingtone(ringtoneId);
       setIncomingCall({
+        callId: data.callId,
         callerData: data.callerData,
         isGroupInvite: true,
         existingParticipants: data.existingParticipants || [],
         hasVideo: data.hasVideo,
       });
       setCallState('receiving');
+    });
+
+    socket.on('group-invite-cancelled', (data) => {
+      console.log('[GroupCall] group-invite-cancelled', data);
+      if (incomingCallRef.current?.isGroupInvite &&
+          (!data.callId || incomingCallRef.current.callId === data.callId)) {
+        soundManager.stopAll();
+        setIncomingCall(null);
+        setCallState('idle');
+      }
+    });
+
+    socket.on('group-call-declined', (data) => {
+      console.log('[GroupCall] group-call-declined by user', data?.declinerId);
     });
 
     socket.on('group-call-accepted', async (data) => {
@@ -710,6 +740,7 @@ export const CallProvider = ({ children }) => {
       // Notify all existing participants that we joined
       const existingIds = allParticipants.map(p => Number(p.id));
       socketRef.current.emit('group-call-accepted', {
+        callId: incoming.callId,
         participantIds: existingIds,
         joinerData: {
           id: currentUser.id,

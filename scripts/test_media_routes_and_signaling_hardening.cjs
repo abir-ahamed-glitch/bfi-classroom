@@ -201,7 +201,8 @@ const tokens = {
   batchmate_frank: makeToken({ id: 60, username: 'batchmate_frank', role: 'student' }),
   mallory_text_spoof: makeToken({ id: 70, username: 'mallory_text_spoof', role: 'student' }),
   grace_archived: makeToken({ id: 80, username: 'grace_archived', role: 'student' }),
-  ivan_deleted: makeToken({ id: 90, username: 'ivan_deleted', role: 'student' })
+  ivan_deleted: makeToken({ id: 90, username: 'ivan_deleted', role: 'student' }),
+  student_101: makeToken({ id: 101, username: 'student_101', role: 'student' })
 };
 
 function requestUrl(urlPath, token = null) {
@@ -358,14 +359,15 @@ async function main() {
   // ── SUITE 2: Socket.IO Call & Group-Call Signaling Governance ────────
   console.log('\n--- SUITE 2: Socket.IO Call & Group-Call Signaling Governance ---\n');
 
-  const [aliceSocket, bobSocket, frankSocket, superSocket, mallorySocket, graceSocket, ivanSocket] = await Promise.all([
+  const [aliceSocket, bobSocket, frankSocket, superSocket, mallorySocket, graceSocket, ivanSocket, student101Socket] = await Promise.all([
     connectSocket(tokens.reporter_alice),
     connectSocket(tokens.unrelated_bob),
     connectSocket(tokens.batchmate_frank),
     connectSocket(tokens.super_admin),
     connectSocket(tokens.mallory_text_spoof),
     connectSocket(tokens.grace_archived),
-    connectSocket(tokens.ivan_deleted)
+    connectSocket(tokens.ivan_deleted),
+    connectSocket(tokens.student_101)
   ]);
   // Explicitly ensure Mallory (70) has 'BATCH-01' profile text but NO row in batch_students or student_course_enrollments
   const dbForSetup = (await import('../server/db/database.js')).default;
@@ -485,6 +487,34 @@ async function main() {
   bobSocket.emit('ice-candidate', { targetId: 60, candidate: { candidate: 'forged-bob-candidate' } });
   await new Promise(r => setTimeout(r, 400));
   assertCheck('Bob cannot inject ICE candidate into Alice & Frank call', frankReceivedFakeIce, null);
+
+  // 2.12 Group-Call Invite & Decline via Socket.IO
+  let user101ReceivedInvite = null;
+  student101Socket.on('group-call-invite', d => { user101ReceivedInvite = d; });
+  aliceSocket.emit('group-call-invite', { receiverId: 101, callerData: { id: 10, name: 'Alice' } });
+  await new Promise(r => setTimeout(r, 400));
+  assertCheck('User 101 receives group-call-invite with callId', Boolean(user101ReceivedInvite?.callId), true);
+
+  // User 101 declines the invitation
+  let aliceReceivedGroupDecline = null;
+  let frankReceivedGroupDecline = null;
+  aliceSocket.on('group-call-declined', d => { aliceReceivedGroupDecline = d; });
+  frankSocket.on('group-call-declined', d => { frankReceivedGroupDecline = d; });
+
+  student101Socket.emit('group-call-declined', {
+    callId: user101ReceivedInvite.callId,
+    inviterId: 10,
+    reason: 'Declining group call'
+  });
+  await new Promise(r => setTimeout(r, 400));
+  assertCheck('Alice receives group-call-declined from User 101', aliceReceivedGroupDecline?.declinerId, 101);
+  assertCheck('Frank (group peer) receives group-call-declined from User 101', frankReceivedGroupDecline?.declinerId, 101);
+
+  // Alice and Frank session is still intact: offer still works
+  frankReceivedOffer = null;
+  aliceSocket.emit('webrtc-offer', { receiverId: 60, offer: { sdp: 'still-connected-sdp' } });
+  await new Promise(r => setTimeout(r, 400));
+  assertCheck('Alice & Frank session remains connected after group invite decline', frankReceivedOffer?.offer?.sdp, 'still-connected-sdp');
 
   // Frank ends call
   let aliceReceivedEnded = null;
@@ -652,7 +682,116 @@ async function main() {
   const acceptOriginal = signalingModule.handleGroupAccepted(103, {});
   assertCheck('Test E: Original group invite remains acceptable after conflicting attempts', acceptOriginal.ok, true);
 
+  // 3.4 Group-Call Invitation Lifecycle, Rejection & Expiry Controls
+  console.log('\n--- SUITE 3.4: Group-Call Invitation Rejection & Expiry Controls ---\n');
+
+  // ── 3.4.1 Group Invitation Expiry TTL Constant & Detection ───────────────
+  assertCheck('GROUP_INVITE_TTL_MS is strictly 60,000ms', signalingModule.GROUP_INVITE_TTL_MS, 60000);
+
+  signalingModule.resetCallSignalingState();
+  // Alice (10) and Frank (60) connected
+  signalingModule.handleCallRequest(10, { receiverId: 60 }, activeDb);
+  signalingModule.handleCallAnswered(60, { callerId: 10 });
+
+  // Alice invites User 101
+  const invite101 = signalingModule.handleGroupInvite(10, { receiverId: 101 }, activeDb);
+  assertCheck('Group invite for User 101 created', invite101.ok, true);
+  assertCheck('User 101 is busy in invited state', signalingModule.userBusyState(101)?.state, 'invited');
+
+  // Backdate User 101 invitation to 65 seconds ago
+  invite101.session.invitedTimestamps.get(101).invitedAt = Date.now() - 65000;
+  assertCheck('isGroupInviteExpired detects expired group invitation', signalingModule.isGroupInviteExpired(invite101.session, 101), true);
+
+  // Attempt to accept expired group invitation -> rejected with INVITE_EXPIRED
+  const acceptExpiredGroup = signalingModule.handleGroupAccepted(101, { callId: invite101.session.callId });
+  assertCheck('handleGroupAccepted rejects expired invitation', acceptExpiredGroup.ok, false);
+  assertCheck('Expired group accept returns INVITE_EXPIRED code', acceptExpiredGroup.code, 'INVITE_EXPIRED');
+
+  // Verify User 101 is now free after expired accept attempt
+  assertCheck('User 101 is free after expired invitation cleanup', signalingModule.userBusyState(101), null);
+
+  // User 101 can now start a new 1:1 call to User 102
+  const newCallFromExpiredInvitee = signalingModule.handleCallRequest(101, { receiverId: 102 }, activeDb);
+  assertCheck('Previously-expired invitee can start a new call', newCallFromExpiredInvitee.ok, true);
+
+  // ── 3.4.2 Authenticated Group Invite Decline Flow ─────────────────────────
+  signalingModule.resetCallSignalingState();
+  // Alice (10) and Frank (60) connected in group call
+  const s2 = signalingModule.handleCallRequest(10, { receiverId: 60 }, activeDb).session;
+  signalingModule.handleCallAnswered(60, { callerId: 10 });
+
+  // Alice invites User 102
+  signalingModule.handleGroupInvite(10, { receiverId: 102 }, activeDb);
+  assertCheck('User 102 is marked invited before decline', signalingModule.userBusyState(102)?.state, 'invited');
+
+  // User 102 declines the group invitation
+  const declineRes = signalingModule.handleGroupInviteDeclined(102, { callId: s2.callId, reason: 'Busy studying' });
+  assertCheck('handleGroupInviteDeclined returns ok: true', declineRes.ok, true);
+  assertCheck('handleGroupInviteDeclined sets isGroupInvite: true', declineRes.isGroupInvite, true);
+  assertCheck('Decline payload has authoritatively declinerId: 102', declineRes.sanitizedPayload?.declinerId, 102);
+
+  // Group call remains connected with original participants (Alice & Frank)
+  assertCheck('Group call session still has 2 active participants', s2.participants.size, 2);
+  assertCheck('Group call session is still connected', s2.state, 'connected');
+  assertCheck('Alice & Frank peer signaling remains valid', signalingModule.verifyActivePeer(10, 60), true);
+
+  // User 102 is NO LONGER busy
+  assertCheck('Decliner User 102 is free after decline', signalingModule.userBusyState(102), null);
+
+  // User 102 can immediately receive a new call from User 103
+  const incomingCallToDecliner = signalingModule.handleCallRequest(103, { receiverId: 102 }, activeDb);
+  assertCheck('Declined invitee can immediately receive new call', incomingCallToDecliner.ok, true);
+
+  // ── 3.4.3 Fallback Rejection via handleCallRejected ────────────────────────
+  signalingModule.resetCallSignalingState();
+  const s3 = signalingModule.handleCallRequest(10, { receiverId: 60 }, activeDb).session;
+  signalingModule.handleCallAnswered(60, { callerId: 10 });
+
+  // Alice invites User 104
+  signalingModule.handleGroupInvite(10, { receiverId: 104 }, activeDb);
+
+  // User 104 calls handleCallRejected with inviterId as callerId (legacy / client fallback)
+  const fallbackReject = signalingModule.handleCallRejected(104, { callerId: 10, callId: s3.callId });
+  assertCheck('handleCallRejected handles group invite decline fallback', fallbackReject.ok, true);
+  assertCheck('handleCallRejected sets isGroupInvite: true', fallbackReject.isGroupInvite, true);
+  assertCheck('User 104 is free after fallback rejection', signalingModule.userBusyState(104), null);
+  assertCheck('Group call session remains connected after fallback rejection', s3.state, 'connected');
+
+  // ── 3.4.4 Group Invitation Cancellation Flow ──────────────────────────────
+  signalingModule.resetCallSignalingState();
+  const s4 = signalingModule.handleCallRequest(10, { receiverId: 60 }, activeDb).session;
+  signalingModule.handleCallAnswered(60, { callerId: 10 });
+
+  // Alice invites User 105
+  signalingModule.handleGroupInvite(10, { receiverId: 105 }, activeDb);
+
+  // Third party (User 20, not in call) attempts to cancel -> fails
+  const unauthorizedCancel = signalingModule.handleGroupInviteCancelled(20, { receiverId: 105, callId: s4.callId });
+  assertCheck('Unauthorized non-participant cannot cancel group invitation', unauthorizedCancel.ok, false);
+
+  // Alice (inviter/participant) cancels the invitation
+  const cancelRes = signalingModule.handleGroupInviteCancelled(10, { receiverId: 105, callId: s4.callId });
+  assertCheck('Legitimate participant cancels group invitation', cancelRes.ok, true);
+  assertCheck('Cancelled user is removed from invitedParticipants', s4.invitedParticipants.has(105), false);
+  assertCheck('User 105 is free after cancellation', signalingModule.userBusyState(105), null);
+
+  // User 105 can start a new call to User 106
+  const callAfterCancel = signalingModule.handleCallRequest(105, { receiverId: 106 }, activeDb);
+  assertCheck('User 105 can start new call after invitation cancellation', callAfterCancel.ok, true);
+
+  // ── 3.4.5 Group Invitation Sweep Pruning ──────────────────────────────────
+  signalingModule.resetCallSignalingState();
+  const s5 = signalingModule.handleCallRequest(10, { receiverId: 60 }, activeDb).session;
+  signalingModule.handleCallAnswered(60, { callerId: 10 });
+  signalingModule.handleGroupInvite(10, { receiverId: 106 }, activeDb);
+  s5.invitedTimestamps.get(106).invitedAt = Date.now() - 70000;
+
+  const prunedInvites = signalingModule.pruneExpiredGroupInvites();
+  assertCheck('pruneExpiredGroupInvites purges expired invitations', prunedInvites, 1);
+  assertCheck('User 106 is free after sweep pruning', signalingModule.userBusyState(106), null);
+
   // Teardown
+  student101Socket.disconnect();
   aliceSocket.disconnect();
   bobSocket.disconnect();
   frankSocket.disconnect();
