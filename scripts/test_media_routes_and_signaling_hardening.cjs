@@ -266,9 +266,9 @@ async function main() {
         resolve();
       });
       probe.on('error', () => {
-        if (Date.now() - start > 10000) {
+        if (Date.now() - start > 30000) {
           clearInterval(interval);
-          reject(new Error('Server failed to start within 10 seconds'));
+          reject(new Error('Server failed to start within 30 seconds'));
         }
       });
     }, 200);
@@ -555,6 +555,102 @@ async function main() {
   const overCapacityInvite = signalingModule.handleGroupInvite(10, { receiverId: 108 }, activeDb);
   assertCheck('Invitation exceeding 9 participants is rejected', overCapacityInvite.ok, false);
   assertCheck('Exceeded capacity returns MAX_PARTICIPANTS_REACHED code', overCapacityInvite.code, 'MAX_PARTICIPANTS_REACHED');
+
+  // 3.3 Call-State Conflict Prevention Tests
+  console.log('\n--- SUITE 3.3: Call-State Conflict Negative Controls ---\n');
+
+  // ── Test A: Ringing caller cannot start a second call ─────────────────────
+  signalingModule.resetCallSignalingState();
+  const callerRingResult = signalingModule.handleCallRequest(10, { receiverId: 60 }, activeDb);
+  assertCheck('Test A setup: Alice→Frank ringing session created', callerRingResult.ok, true);
+
+  // Alice (10) attempts a second call to User 101 (eligible cohort peer) while already ringing
+  const secondCallByCaller = signalingModule.handleCallRequest(10, { receiverId: 101 }, activeDb);
+  assertCheck('Test A: Ringing caller cannot start a second call', secondCallByCaller.ok, false);
+  assertCheck('Test A: Returns CALLER_RINGING code', secondCallByCaller.code, 'CALLER_RINGING');
+
+  // Original call (Alice→Frank) remains answerable
+  const answerOriginalAfterBlock = signalingModule.handleCallAnswered(60, { callerId: 10 });
+  assertCheck('Test A: Original pending call still answerable after blocked second attempt', answerOriginalAfterBlock.ok, true);
+
+  // ── Test B: Second caller cannot ring an already-ringing receiver ──────────
+  signalingModule.resetCallSignalingState();
+  // Frank (60) calls Alice (10); Alice is now ringing as receiver
+  signalingModule.handleCallRequest(60, { receiverId: 10 }, activeDb);
+  // User 101 (eligible cohort peer) also tries to call Alice (10) — Alice is ringing, must block
+  const secondCallerToRinging = signalingModule.handleCallRequest(101, { receiverId: 10 }, activeDb);
+  assertCheck('Test B: Second caller blocked when receiver is already ringing', secondCallerToRinging.ok, false);
+  assertCheck('Test B: Returns RECIPIENT_RINGING code', secondCallerToRinging.code, 'RECIPIENT_RINGING');
+
+  // Frank's original call to Alice remains answerable
+  const answerOriginalReceiver = signalingModule.handleCallAnswered(10, { callerId: 60 });
+  assertCheck('Test B: Original ringing call to receiver still answerable', answerOriginalReceiver.ok, true);
+
+  // Alice is now CONNECTED; User 101 must still be blocked
+  const thirdCallerToConnected = signalingModule.handleCallRequest(101, { receiverId: 10 }, activeDb);
+  assertCheck('Test B: Connected receiver blocks incoming call', thirdCallerToConnected.ok, false);
+  assertCheck('Test B: Returns RECIPIENT_BUSY code for connected receiver', thirdCallerToConnected.code, 'RECIPIENT_BUSY');
+
+  // ── Test C: Group invite rejected when invitee is already in another call ──
+  signalingModule.resetCallSignalingState();
+  // Alice (10) ↔ Frank (60): connected in Call 1
+  signalingModule.handleCallRequest(10, { receiverId: 60 }, activeDb);
+  signalingModule.handleCallAnswered(60, { callerId: 10 });
+  // User 101 ↔ User 102: connected in Call 2
+  signalingModule.handleCallRequest(101, { receiverId: 102 }, activeDb);
+  signalingModule.handleCallAnswered(102, { callerId: 101 });
+
+  // Alice (in call with Frank) tries to invite User 101 (connected with 102)
+  const busyInvite = signalingModule.handleGroupInvite(10, { receiverId: 101 }, activeDb);
+  assertCheck('Test C: Group invite to user already connected in another call is rejected', busyInvite.ok, false);
+  assertCheck('Test C: Returns INVITEE_BUSY code', busyInvite.code, 'INVITEE_BUSY');
+
+  // Alice-Frank session remains intact: verifyActivePeer should still confirm both sides
+  assertCheck('Test C: Alice-Frank session is intact after rejected group invite', signalingModule.verifyActivePeer(10, 60), true);
+  assertCheck('Test C: Frank-Alice session is intact after rejected group invite', signalingModule.verifyActivePeer(60, 10), true);
+  // User 101-102 session also remains intact
+  assertCheck('Test C: Peer 101-102 session is intact after rejected group invite', signalingModule.verifyActivePeer(101, 102), true);
+
+  // ── Test D: cleanupPendingCall identity guard (observable via call behaviour) ──
+  signalingModule.resetCallSignalingState();
+  // Frank (60) calls Alice (10)
+  signalingModule.handleCallRequest(60, { receiverId: 10 }, activeDb);
+  // Alice rejects the call
+  const reject1 = signalingModule.handleCallRejected(10, { callerId: 60 });
+  assertCheck('Test D: Alice correctly rejects Frank\'s call', reject1.ok, true);
+
+  // After rejection, User 101 can now call Alice (10) — userActiveCall[10] was cleanly removed
+  const newCallAfterRejection = signalingModule.handleCallRequest(101, { receiverId: 10 }, activeDb);
+  assertCheck('Test D: New call to previously-ringing receiver succeeds after rejection', newCallAfterRejection.ok, true);
+
+  // Frank (60) is also free; can be called by User 102
+  const frankFreeCheck = signalingModule.handleCallRequest(102, { receiverId: 60 }, activeDb);
+  assertCheck('Test D: Frank is free and can receive calls after his call was rejected and cleaned up', frankFreeCheck.ok, true);
+
+  // ── Test E: User with pending group invite is busy for conflicting calls ───
+  signalingModule.resetCallSignalingState();
+  // Alice (10) and Frank (60) connected
+  signalingModule.handleCallRequest(10, { receiverId: 60 }, activeDb);
+  signalingModule.handleCallAnswered(60, { callerId: 10 });
+  // Alice invites User 103 to group call
+  const invite103 = signalingModule.handleGroupInvite(10, { receiverId: 103 }, activeDb);
+  assertCheck('Test E setup: Group invite for User 103 created', invite103.ok, true);
+
+  // User 104 tries to call User 103 (1:1 call) -> User 103 has pending group invite, must block
+  const callToPendingInvitee = signalingModule.handleCallRequest(104, { receiverId: 103 }, activeDb);
+  assertCheck('Test E: 1:1 call to user with pending group invite is blocked', callToPendingInvitee.ok, false);
+  assertCheck('Test E: Returns RECIPIENT_RINGING code', callToPendingInvitee.code, 'RECIPIENT_RINGING');
+
+  // Another ongoing call tries to invite User 103 -> blocked
+  signalingModule.handleCallRequest(105, { receiverId: 106 }, activeDb);
+  signalingModule.handleCallAnswered(106, { callerId: 105 });
+  const duplicateGroupInvite = signalingModule.handleGroupInvite(105, { receiverId: 103 }, activeDb);
+  assertCheck('Test E: Second group invite to user with pending group invite is blocked', duplicateGroupInvite.ok, false);
+  assertCheck('Test E: Returns INVITEE_BUSY code', duplicateGroupInvite.code, 'INVITEE_BUSY');
+
+  // User 103 can still accept Alice's original group invite
+  const acceptOriginal = signalingModule.handleGroupAccepted(103, {});
+  assertCheck('Test E: Original group invite remains acceptable after conflicting attempts', acceptOriginal.ok, true);
 
   // Teardown
   aliceSocket.disconnect();

@@ -4,43 +4,87 @@ import db from '../db/database.js';
  * server/services/callSignalingService.js
  *
  * Authoritative WebRTC & Group-Call Signaling Governance:
- * 1. Relationship Validation: Enforces recipient eligibility using actual active batch membership
- *    (batch_students + non-deleted, active batches table rows) or existing chat history, rather
- *    than unverified student profile text.
- * 2. Active Call State Machine: Tracks 1:1 and group calls from 'ringing' to 'connected' and 'ended'.
- * 3. Exact Pending Call Rejection: Only the designated recipient of an active pending call can reject it.
- * 4. Pending Call Expiry: Enforces an authoritative 60-second TTL on ringing calls.
- * 5. Group Call Capacity: Enforces an authoritative maximum ceiling of 9 participants per group call.
- * 6. Call-Membership Verification: Drops signaling (offers, answers, ICE candidates) if sender & receiver
- *    are not actively connected peers in the same session.
- * 7. Client Payload Sanitization: Enforces callerId, answererId, and fromId from authenticated socket session;
- *    prevents broadcast flooding.
+ *
+ * State machine rules (one consistent policy for all entry points):
+ *  - A user who is RINGING (caller or receiver) in a non-expired call is BUSY.
+ *    No second call may be sent by or directed at them until the first expires
+ *    or is rejected/ended.
+ *  - A user who is CONNECTED is BUSY. Same rule.
+ *  - A user who is in invitedParticipants of any session (not yet accepted) is
+ *    BUSY and cannot receive a group-call invite from a different call.
+ *  - cleanupPendingCall only removes userActiveCall entries that still point to
+ *    the session being cleaned up, preventing deletion of a newer session's mapping.
+ *
+ * Functions:
+ * 1. canCommunicate: relationship validation via actual active batch membership.
+ * 2. userBusyState: single source of truth for whether a user is busy and why.
+ * 3. handleCallRequest: initiates a 1:1 call; blocked if caller or receiver busy.
+ * 4. handleCallAnswered: transitions ringing → connected; blocked if expired.
+ * 5. handleCallRejected: only the exact invited recipient may reject.
+ * 6. verifyActivePeer: WebRTC signaling gate (sender & target in same connected session).
+ * 7. handleCallEnded: tears down any session the sender belongs to.
+ * 8. handleGroupInvite: adds invitee; blocked if invitee already busy in any call.
+ * 9. handleGroupAccepted: invitee joins; blocked if capacity exceeded.
+ * 10. handleGroupLeft: removes leaver; tears down if ≤1 participant remains.
+ * 11. handleUserDisconnect: socket-close cleanup with peer notification.
+ * 12. resetCallSignalingState: test/restart helper.
  */
 
 export const PENDING_CALL_TTL_MS = 60 * 1000; // 60-second pending call expiry
-export const MAX_GROUP_PARTICIPANTS = 9;      // Maximum 9 participants in a group call
+export const MAX_GROUP_PARTICIPANTS = 9;       // Maximum 9 participants per group call
 
 // In-memory call sessions
 // callId -> CallSession
 const callSessions = new Map();
 
 // userId -> CallSession (current active or ringing call)
+// A user appears here as soon as a call is initiated (as caller OR receiver),
+// and is removed when the call ends, is rejected, or expires.
 const userActiveCall = new Map();
 
 // Pending ringing calls by callerId -> CallSession
 const pendingCallsByCaller = new Map();
 
+// ─── Internal helpers ────────────────────────────────────────────────────────
+
 /**
- * Helper to clean up a pending call session from all tracking maps.
+ * Remove a ringing session from all tracking maps.
+ * SAFE: only removes userActiveCall[userId] when it still points to THIS session,
+ * preventing accidental deletion of a newer session's pointer.
  */
 function cleanupPendingCall(session) {
   if (!session) return;
   callSessions.delete(session.callId);
-  userActiveCall.delete(session.callerId);
-  if (session.targetReceiverId) {
+  pendingCallsByCaller.delete(session.callerId);
+
+  // Guard: only delete the userActiveCall entry if it still references this session.
+  if (userActiveCall.get(session.callerId) === session) {
+    userActiveCall.delete(session.callerId);
+  }
+  if (session.targetReceiverId !== undefined &&
+      userActiveCall.get(session.targetReceiverId) === session) {
     userActiveCall.delete(session.targetReceiverId);
   }
+}
+
+/**
+ * Remove a connected session from all tracking maps and return the peer IDs to notify.
+ */
+function teardownConnectedSession(session) {
+  if (!session) return [];
+  callSessions.delete(session.callId);
   pendingCallsByCaller.delete(session.callerId);
+
+  const notifyIds = [];
+  session.participants.forEach(pid => {
+    if (userActiveCall.get(pid) === session) userActiveCall.delete(pid);
+    notifyIds.push(pid);
+  });
+  session.invitedParticipants.forEach(pid => {
+    if (userActiveCall.get(pid) === session) userActiveCall.delete(pid);
+    notifyIds.push(pid);
+  });
+  return notifyIds;
 }
 
 /**
@@ -53,6 +97,7 @@ export function isPendingCallExpired(session, now = Date.now()) {
 
 /**
  * Sweeps and removes all expired pending ringing calls.
+ * Returns the count of sessions pruned.
  */
 export function pruneExpiredPendingCalls(now = Date.now()) {
   const expired = [];
@@ -66,6 +111,51 @@ export function pruneExpiredPendingCalls(now = Date.now()) {
   }
   return expired.length;
 }
+
+/**
+ * Single source of truth: determine whether userId is currently busy.
+ *
+ * Returns one of:
+ *   null                    – user is free
+ *   { state, session }      – user is busy (state = 'ringing' | 'connected' | 'invited')
+ *
+ * A ringing session that has expired is cleaned up and treated as free.
+ */
+export function userBusyState(userId) {
+  const session = userActiveCall.get(userId);
+  if (session) {
+    if (session.state === 'ringing') {
+      if (isPendingCallExpired(session)) {
+        cleanupPendingCall(session);
+      } else {
+        return { state: 'ringing', session };
+      }
+    } else if (session.state === 'connected') {
+      return { state: 'connected', session };
+    }
+  }
+
+  // Check whether user has a pending group-call invite in any session
+  for (const s of callSessions.values()) {
+    if (s.invitedParticipants && s.invitedParticipants.has(userId)) {
+      return { state: 'invited', session: s };
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Check whether userId has a pending group-call invite in ANY session.
+ */
+function isUserPendingGroupInvite(userId) {
+  for (const s of callSessions.values()) {
+    if (s.invitedParticipants.has(userId)) return true;
+  }
+  return false;
+}
+
+// ─── Relationship validation ─────────────────────────────────────────────────
 
 /**
  * Validate whether caller is permitted to initiate a call to receiver.
@@ -134,9 +224,9 @@ export function canCommunicate(callerId, receiverId, database = db) {
       if (instructorBatchMatch) return true;
     }
 
-    // Students enrolled in the same active batch can call each other
-    // Enforces actual active batch membership via batch_students or student_course_enrollments
-    // joined to non-deleted, non-archived batches, rather than free-form student_profiles.batch_number text.
+    // Students enrolled in the same active batch can call each other.
+    // Uses batch_students and student_course_enrollments (integer batch_id),
+    // joined to non-deleted, non-archived batches rows.
     const sameBatch = database.prepare(`
       SELECT 1
       FROM (
@@ -166,8 +256,21 @@ export function canCommunicate(callerId, receiverId, database = db) {
   }
 }
 
+// ─── State machine handlers ──────────────────────────────────────────────────
+
 /**
  * Initiates a 1:1 call request.
+ *
+ * Consistent busy rule applied to BOTH caller and receiver:
+ *  - CONNECTED → CALLER_BUSY / RECIPIENT_BUSY
+ *  - RINGING (non-expired) → CALLER_BUSY / RECIPIENT_BUSY
+ *  - RINGING (expired) → cleaned up, treated as free
+ *
+ * A caller who is already ringing in a non-expired call cannot start a second
+ * call; their original ringing session remains answerable.
+ *
+ * A receiver who already has a non-expired ringing call directed at them
+ * cannot receive a second call; the first caller's session is preserved intact.
  */
 export function handleCallRequest(callerId, data, database = db) {
   const receiverId = Number(data?.receiverId);
@@ -175,35 +278,29 @@ export function handleCallRequest(callerId, data, database = db) {
     return { ok: false, error: 'Recipient is not eligible to receive calls from this account.', code: 'CALL_DISALLOWED' };
   }
 
-  // Prune any globally expired ringing calls first
+  // Prune globally expired ringing calls first
   pruneExpiredPendingCalls();
 
-  // Check if caller is already in an active connected call
-  const existingCall = userActiveCall.get(callerId);
-  if (existingCall) {
-    if (existingCall.state === 'connected') {
-      return { ok: false, error: 'You are already in an active call.', code: 'CALLER_BUSY' };
-    }
-    // Clean up stale expired ringing call
-    if (existingCall.state === 'ringing' && isPendingCallExpired(existingCall)) {
-      cleanupPendingCall(existingCall);
-    }
+  // ── Caller busy check ──────────────────────────────────────────────────
+  const callerBusy = userBusyState(callerId);
+  if (callerBusy) {
+    const code = callerBusy.state === 'connected' ? 'CALLER_BUSY' : 'CALLER_RINGING';
+    return { ok: false, error: 'You are already in an active or ringing call.', code };
   }
 
-  // Check if receiver is already in a connected call
-  const receiverActive = userActiveCall.get(receiverId);
-  if (receiverActive) {
-    if (receiverActive.state === 'connected') {
-      return { ok: false, error: 'Recipient is currently busy on another call.', code: 'RECIPIENT_BUSY' };
-    }
-    if (receiverActive.state === 'ringing' && isPendingCallExpired(receiverActive)) {
-      cleanupPendingCall(receiverActive);
-    }
+  // ── Receiver busy check ────────────────────────────────────────────────
+  const receiverBusy = userBusyState(receiverId);
+  if (receiverBusy) {
+    const code = receiverBusy.state === 'connected' ? 'RECIPIENT_BUSY' : 'RECIPIENT_RINGING';
+    return { ok: false, error: 'Recipient is currently busy on another call.', code };
   }
 
-  // Clear any existing pending ringing call initiated by this caller
+  // Safety net: clear any expired-and-already-pruned residual (belt-and-suspenders)
   const stale = pendingCallsByCaller.get(callerId);
   if (stale) {
+    // Only reachable if the stale session expired between pruneExpiredPendingCalls()
+    // above and this point (race is possible only in multi-threaded environments;
+    // Node.js is single-threaded so this is purely defensive).
     cleanupPendingCall(stale);
   }
 
@@ -240,6 +337,7 @@ export function handleCallRequest(callerId, data, database = db) {
 
 /**
  * Answering a 1:1 call request.
+ * Only the designated recipient of the matching non-expired ringing call may answer.
  */
 export function handleCallAnswered(answererId, data) {
   const callerId = Number(data?.callerId);
@@ -280,7 +378,8 @@ export function handleCallAnswered(answererId, data) {
 
 /**
  * Rejecting a 1:1 call request.
- * Enforces that only the designated recipient of that exact pending call can reject it.
+ * Only the exact invited recipient may reject; third parties are silently dropped.
+ * Expired sessions are cleaned up and returned as CALL_EXPIRED.
  */
 export function handleCallRejected(rejecterId, data) {
   const callerId = Number(data?.callerId);
@@ -313,6 +412,7 @@ export function handleCallRejected(rejecterId, data) {
 
 /**
  * Verifies that sender and receiver are active peers in the same connected call session.
+ * Used to gate all WebRTC signaling (offer, answer, ICE candidate).
  */
 export function verifyActivePeer(senderId, targetId) {
   if (!Number.isInteger(senderId) || !Number.isInteger(targetId)) return false;
@@ -322,7 +422,8 @@ export function verifyActivePeer(senderId, targetId) {
 }
 
 /**
- * Handles ending a call (either 1:1 or group).
+ * Handles ending a call (1:1 or group).
+ * Tears down the session the sender is in, notifying all other participants.
  */
 export function handleCallEnded(senderId, data) {
   const session = userActiveCall.get(senderId);
@@ -333,16 +434,16 @@ export function handleCallEnded(senderId, data) {
     session.participants.forEach(pid => {
       if (pid !== senderId) peersToNotify.add(pid);
     });
-
     session.invitedParticipants.forEach(pid => peersToNotify.add(pid));
 
-    // Tear down session
-    callSessions.delete(session.callId);
-    session.participants.forEach(pid => userActiveCall.delete(pid));
-    session.invitedParticipants.forEach(pid => userActiveCall.delete(pid));
-    pendingCallsByCaller.delete(session.callerId);
+    // Use safe teardown
+    if (session.state === 'ringing') {
+      cleanupPendingCall(session);
+    } else {
+      teardownConnectedSession(session);
+    }
   } else if (targetId) {
-    // Check if there was a pending call between sender and target
+    // Sender may have already been cleaned up; look for a pending call they initiated
     const pending = pendingCallsByCaller.get(senderId) || pendingCallsByCaller.get(targetId);
     if (pending && (pending.callerId === senderId || pending.targetReceiverId === senderId)) {
       cleanupPendingCall(pending);
@@ -361,8 +462,14 @@ export function handleCallEnded(senderId, data) {
 }
 
 /**
- * Group Call: Inviting a new participant into an ongoing call.
- * Enforces maximum 9-person group call ceiling.
+ * Group Call: Invite a new participant into an ongoing call.
+ *
+ * Enforces:
+ *  - Inviter must be in a connected call (NOT_IN_CALL)
+ *  - Invitee must be eligible (canCommunicate)
+ *  - Invitee must not already be in this call (ALREADY_PARTICIPANT)
+ *  - Invitee must not be ringing, connected, or pending-invited in ANY other call (INVITEE_BUSY)
+ *  - Total capacity must not exceed MAX_GROUP_PARTICIPANTS (MAX_PARTICIPANTS_REACHED)
  */
 export function handleGroupInvite(inviterId, data, database = db) {
   const receiverId = Number(data?.receiverId);
@@ -379,7 +486,24 @@ export function handleGroupInvite(inviterId, data, database = db) {
     return { ok: false, error: 'User is already in this call.', code: 'ALREADY_PARTICIPANT' };
   }
 
-  // Enforce max 9-person group call ceiling
+  // Invitee busy check: ringing, connected in any call, or already pending-invited in another call
+  const inviteeBusy = userBusyState(receiverId);
+  if (inviteeBusy) {
+    return {
+      ok: false,
+      error: 'Recipient is currently busy on another call.',
+      code: 'INVITEE_BUSY'
+    };
+  }
+  if (isUserPendingGroupInvite(receiverId)) {
+    return {
+      ok: false,
+      error: 'Recipient already has a pending group call invitation.',
+      code: 'INVITEE_BUSY'
+    };
+  }
+
+  // Enforce max capacity
   const totalParticipants = session.participants.size + session.invitedParticipants.size;
   if (totalParticipants >= MAX_GROUP_PARTICIPANTS) {
     return {
@@ -392,7 +516,7 @@ export function handleGroupInvite(inviterId, data, database = db) {
   session.invitedParticipants.add(receiverId);
   session.lastActivity = Date.now();
 
-  // Authoritatively construct existing participants list from active session
+  // Authoritatively construct existing participants list from session
   const existingParticipants = Array.from(session.participants).map(pid => ({
     id: pid,
     data: pid === inviterId ? data?.callerData : undefined
@@ -414,8 +538,8 @@ export function handleGroupInvite(inviterId, data, database = db) {
 }
 
 /**
- * Group Call: Accepting an invitation to an ongoing call.
- * Enforces maximum 9-person group call ceiling.
+ * Group Call: Accept an invitation to an ongoing call.
+ * Enforces max capacity on accept as a final guard.
  */
 export function handleGroupAccepted(joinerId, data) {
   let session = null;
@@ -445,7 +569,6 @@ export function handleGroupAccepted(joinerId, data) {
   session.lastActivity = Date.now();
   userActiveCall.set(joinerId, session);
 
-  // Authoritative peers to notify (all other existing participants in this session)
   const peersToNotify = Array.from(session.participants).filter(pid => pid !== joinerId);
 
   const sanitizedPayload = {
@@ -463,21 +586,44 @@ export function handleGroupAccepted(joinerId, data) {
 
 /**
  * Group Call: Participant leaving an ongoing group call.
+ * Tears down the group call when ≤1 participant remains.
  */
 export function handleGroupLeft(leaverId, _data) {
   const session = userActiveCall.get(leaverId);
-  if (!session) return { ok: false };
+  if (!session) {
+    // If leaverId was an invited participant who hasn't accepted yet, cancel invite
+    for (const s of callSessions.values()) {
+      if (s.invitedParticipants && s.invitedParticipants.has(leaverId)) {
+        s.invitedParticipants.delete(leaverId);
+        s.lastActivity = Date.now();
+        return {
+          ok: true,
+          peersToNotify: Array.from(s.participants),
+          sanitizedPayload: {
+            callId: s.callId,
+            participantIds: Array.from(s.participants),
+            userId: leaverId
+          }
+        };
+      }
+    }
+    return { ok: false };
+  }
 
   session.participants.delete(leaverId);
-  userActiveCall.delete(leaverId);
+  if (userActiveCall.get(leaverId) === session) {
+    userActiveCall.delete(leaverId);
+  }
   session.lastActivity = Date.now();
 
   const remainingParticipants = Array.from(session.participants);
 
   if (remainingParticipants.length <= 1) {
-    // If 1 or 0 participants left, tear down group call
     callSessions.delete(session.callId);
-    remainingParticipants.forEach(pid => userActiveCall.delete(pid));
+    pendingCallsByCaller.delete(session.callerId);
+    remainingParticipants.forEach(pid => {
+      if (userActiveCall.get(pid) === session) userActiveCall.delete(pid);
+    });
   }
 
   return {
@@ -493,10 +639,19 @@ export function handleGroupLeft(leaverId, _data) {
 
 /**
  * Clean up active sessions on socket disconnect when all sockets for a user close.
+ * Notifies remaining peers of the disconnection.
  */
 export function handleUserDisconnect(userId) {
   const session = userActiveCall.get(userId);
-  if (!session) return null;
+  if (!session) {
+    // If disconnecting user had a pending group invite, prune it
+    for (const s of callSessions.values()) {
+      if (s.invitedParticipants && s.invitedParticipants.has(userId)) {
+        s.invitedParticipants.delete(userId);
+      }
+    }
+    return null;
+  }
 
   const peersToNotify = [];
 
@@ -506,12 +661,17 @@ export function handleUserDisconnect(userId) {
     if (otherId) peersToNotify.push(otherId);
   } else if (session.state === 'connected') {
     session.participants.delete(userId);
-    userActiveCall.delete(userId);
+    if (userActiveCall.get(userId) === session) {
+      userActiveCall.delete(userId);
+    }
     peersToNotify.push(...Array.from(session.participants));
 
     if (session.participants.size <= 1) {
       callSessions.delete(session.callId);
-      session.participants.forEach(pid => userActiveCall.delete(pid));
+      pendingCallsByCaller.delete(session.callerId);
+      session.participants.forEach(pid => {
+        if (userActiveCall.get(pid) === session) userActiveCall.delete(pid);
+      });
     }
   }
 
@@ -519,7 +679,7 @@ export function handleUserDisconnect(userId) {
 }
 
 /**
- * Reset all active calls (useful for testing or server restart).
+ * Reset all active call state. Used in test teardown and server restart.
  */
 export function resetCallSignalingState() {
   callSessions.clear();
