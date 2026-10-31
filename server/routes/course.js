@@ -8,6 +8,7 @@ import { logTrashAction } from '../utils/trashLogger.js';
 import db from '../db/database.js';
 import { authenticateToken, requireRole, requireAnyPermission, isSuperAdmin, hasAnyPermission } from '../middleware/auth.js';
 import { optimizeUploadedImage } from '../utils/imageOptimizer.js';
+import { safeDeleteCourseMaterialFile } from '../utils/safe-material-cleanup.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -341,10 +342,9 @@ router.put('/:id', authenticateToken, requireRole('admin'), requireAnyPermission
     let file_type = existing.file_type;
 
     if (req.file) {
-      // Delete old file if it was a local upload
-      if (existing.file_url && existing.file_url.startsWith('/media/')) {
-        const oldPath = path.join(__dirname, '../../uploads', existing.file_url.replace('/media/', ''));
-        if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
+      // Delete old file if it was a managed local upload
+      if (existing.file_url) {
+        safeDeleteCourseMaterialFile(existing.file_url);
       }
       file_url = `/media/course-materials/${req.file.filename}`;
       const ext = path.extname(req.file.originalname).toLowerCase().replace('.', '');

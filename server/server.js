@@ -59,16 +59,13 @@ import { checkScheduledBroadcasts } from './utils/broadcastScheduler.js';
 
 import { getJwtRefreshSecret, getJwtSecret } from './config/security.js';
 import { authenticateToken } from './middleware/auth.js';
+import { corsOptions, socketCorsOptions } from './config/cors.js';
 
 const app = express();
 const httpServer = createServer(app);
 app.set('trust proxy', 1);
 const io = new Server(httpServer, {
-  cors: {
-    origin: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE'],
-    credentials: true,
-  },
+  cors: socketCorsOptions,
   pingTimeout: 20000,
   pingInterval: 25000,
   maxHttpBufferSize: 1e7
@@ -421,11 +418,7 @@ const apiLimiter = rateLimit({
 // Apply rate limiter specifically to /api routes
 app.use('/api', apiLimiter);
 
-app.use(cors({
-  origin: true,
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-}));
+app.use(cors(corsOptions));
 
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
