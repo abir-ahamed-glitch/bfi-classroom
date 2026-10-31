@@ -47,6 +47,7 @@ test_helper.js
 test-results/
 playwright-report/
 .playwright-artifacts/
+.tmp_sharp_test*
 
 # Cloudflare wrangler
 .wrangler/

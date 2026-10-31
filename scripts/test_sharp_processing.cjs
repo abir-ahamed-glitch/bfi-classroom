@@ -52,6 +52,18 @@ async function main() {
   const tmpDir = path.resolve(__dirname, '..', '.tmp_sharp_test_' + Date.now());
   fs.mkdirSync(tmpDir, { recursive: true });
 
+  const cleanupTmpDir = () => {
+    try {
+      if (fs.existsSync(tmpDir)) {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    } catch (_) {}
+  };
+
+  process.on('exit', cleanupTmpDir);
+  process.on('SIGINT', () => { cleanupTmpDir(); process.exit(130); });
+  process.on('SIGTERM', () => { cleanupTmpDir(); process.exit(143); });
+
   try {
     // Generate valid test fixtures using Sharp
     const validPngBuffer = await sharp({
@@ -191,14 +203,13 @@ async function main() {
 
   } finally {
     // Cleanup test temp directory
-    try {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    } catch (_) {}
+    cleanupTmpDir();
+    process.removeListener('exit', cleanupTmpDir);
   }
 
-  console.log(`\n================================================================`);
+  console.log('\n================================================================');
   console.log(`Sharp Image Processing Results: ${passedTests}/${totalTests} Passed`);
-  console.log(`================================================================`);
+  console.log('================================================================');
 
   if (passedTests !== totalTests) {
     process.exit(1);
