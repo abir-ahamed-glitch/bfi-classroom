@@ -3,11 +3,29 @@ const crypto = require('crypto');
 const https = require('https');
 const path = require('path');
 
-const tenancy = 'ocid1.tenancy.oc1..aaaaaaaazyu5j7lgqitg44n4cbakqkee3i3ons5dueznfzkcwl7cq6tojfoa';
-const user = 'ocid1.user.oc1..aaaaaaaap4grec5k4lphrspjkixnwnlsin6h5ky4iqpgblva2rvu4ixjtduq';
-const fingerprint = 'd7:20:8d:01:67:a0:fb:12:0a:b3:65:fe:3d:1b:50:ce';
-const region = 'ap-singapore-1';
-const privateKeyPath = path.join(process.env.USERPROFILE, '.oci', 'oci_api_key.pem');
+const tenancy = process.env.OCI_TENANCY_OCID;
+const user = process.env.OCI_USER_OCID;
+const fingerprint = process.env.OCI_FINGERPRINT;
+const region = process.env.OCI_REGION || 'ap-singapore-1';
+
+const missing = [];
+if (!tenancy) missing.push('OCI_TENANCY_OCID');
+if (!user) missing.push('OCI_USER_OCID');
+if (!fingerprint) missing.push('OCI_FINGERPRINT');
+
+if (missing.length > 0) {
+  console.log(`[OCI Diagnostic] Skipping live OCI API call: Missing required environment variable(s): ${missing.join(', ')}`);
+  console.log('[OCI Diagnostic] Set OCI_TENANCY_OCID, OCI_USER_OCID, and OCI_FINGERPRINT to execute authenticated probe.');
+  process.exit(0);
+}
+
+const baseDir = process.env.USERPROFILE || process.env.HOME || '';
+const privateKeyPath = process.env.OCI_KEY_PATH || path.join(baseDir, '.oci', 'oci_api_key.pem');
+
+if (!fs.existsSync(privateKeyPath)) {
+  console.log(`[OCI Diagnostic] Private key file not found at: ${privateKeyPath}`);
+  process.exit(0);
+}
 
 const privateKey = fs.readFileSync(privateKeyPath, 'utf8');
 const host = `iaas.${region}.oraclecloud.com`;
@@ -42,7 +60,13 @@ const req = https.request(options, (res) => {
     } catch {
       console.log('Response Raw:', data);
     }
+    process.exit(0);
   });
 });
-req.on('error', err => console.error(err));
+
+req.on('error', (err) => {
+  console.error('[OCI Diagnostic] Request error:', err.message);
+  process.exit(0);
+});
+
 req.end();
