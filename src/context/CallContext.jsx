@@ -47,6 +47,8 @@ export const CallProvider = ({ children }) => {
   const participantsRef  = useRef(new Map());
   const callStartTimeRef = useRef(null);          // timestamp when call connected
   const callStatusRef    = useRef('missed');      // 'answered'|'missed'|'declined'
+  const showAlertRef     = useRef(showAlert);
+  showAlertRef.current   = showAlert;
 
   // Keep refs in sync with state
   callStateRef.current    = callState;
@@ -398,6 +400,49 @@ export const CallProvider = ({ children }) => {
       }
     });
 
+    socket.on('group-invite-result', (data) => {
+      console.log('[GroupCall] group-invite-result', data);
+      if (data?.action === 'cancel') {
+        if (data?.ok && data?.receiverId) {
+          setPendingInvites(prev => {
+            const next = new Set(prev);
+            next.delete(Number(data.receiverId));
+            return next;
+          });
+        } else if (!data?.ok && showAlertRef.current && data?.error) {
+          showAlertRef.current(data.error, { title: 'Call Error' });
+        }
+        return;
+      }
+      if (data?.ok && data?.receiverId) {
+        setPendingInvites(prev => new Set(prev).add(Number(data.receiverId)));
+      } else if (!data?.ok) {
+        if (data?.receiverId) {
+          setPendingInvites(prev => {
+            const next = new Set(prev);
+            next.delete(Number(data.receiverId));
+            return next;
+          });
+        }
+        if (showAlertRef.current && data?.error) {
+          showAlertRef.current(data.error, { title: 'Call Error' });
+        }
+      }
+    });
+
+    socket.on('group-invite-cancelled-result', (data) => {
+      console.log('[GroupCall] group-invite-cancelled-result', data);
+      if (data?.ok && data?.receiverId) {
+        setPendingInvites(prev => {
+          const next = new Set(prev);
+          next.delete(Number(data.receiverId));
+          return next;
+        });
+      } else if (!data?.ok && showAlertRef.current && data?.error) {
+        showAlertRef.current(data.error, { title: 'Call Error' });
+      }
+    });
+
     socket.on('group-call-declined', (data) => {
       console.log('[GroupCall] group-call-declined by user', data?.declinerId);
       if (data?.declinerId) {
@@ -736,6 +781,7 @@ export const CallProvider = ({ children }) => {
         targetData: incoming.callerData,
         hasVideo: incoming.hasVideo || hasVideo,
         isCaller: false,
+        callId: incoming.callId,
       });
       setCallState('connected');
 
@@ -813,7 +859,6 @@ export const CallProvider = ({ children }) => {
       hasVideo: activeCallRef.current?.hasVideo || false,
     });
 
-    setPendingInvites(prev => new Set(prev).add(Number(userId)));
     setShowAddPerson(false);
   }, [getMyCallerData]);
 
@@ -824,11 +869,6 @@ export const CallProvider = ({ children }) => {
     socketRef.current.emit('group-invite-cancelled', {
       callId,
       receiverId: numReceiverId
-    });
-    setPendingInvites(prev => {
-      const next = new Set(prev);
-      next.delete(numReceiverId);
-      return next;
     });
   }, []);
 

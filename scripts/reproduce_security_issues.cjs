@@ -315,11 +315,11 @@ async function run() {
     bReceivedGroupAccepted = data;
   });
 
-  // Note: Post-hardening, handleGroupAccepted rejects missing callId (INVALID_CALL_ID).
-  // Passing exploratory callId verifies that client-specified arbitrary participantIds fail closed.
+  // Note: Post-hardening, handleGroupAccepted rejects any callId that does not match a live session (CALL_NOT_FOUND).
+  // This exploratory scenario is inert post-hardening; the broadcast-target property (ensuring notifications reach
+  // only authoritative session participants) is fully verified in scripts/test_media_routes_and_signaling_hardening.cjs.
   clientA.emit('group-call-accepted', {
-    callId: 'call_test_exploratory_broadcast',
-    participantIds: [20], // Client specifies arbitrary target user IDs
+    participantIds: [20], // Client specifies arbitrary target user IDs without a valid call session
     joinerData: { id: 10, name: 'Spam Joiner' }
   });
 

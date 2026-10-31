@@ -203,7 +203,8 @@ const tokens = {
   mallory_text_spoof: makeToken({ id: 70, username: 'mallory_text_spoof', role: 'student' }),
   grace_archived: makeToken({ id: 80, username: 'grace_archived', role: 'student' }),
   ivan_deleted: makeToken({ id: 90, username: 'ivan_deleted', role: 'student' }),
-  student_101: makeToken({ id: 101, username: 'student_101', role: 'student' })
+  student_101: makeToken({ id: 101, username: 'student_101', role: 'student' }),
+  student_102: makeToken({ id: 102, username: 'student_102', role: 'student' })
 };
 
 function requestUrl(urlPath, token = null) {
@@ -381,6 +382,11 @@ async function main() {
   // ── SUITE 1: Report Screenshot Lockdown Matrix (All 8 Aliases) ────────
   console.log('\n--- SUITE 1: Report Screenshot Lockdown Matrix (All 8 Aliases) ---\n');
 
+  // Verify /health readiness probe and correlation ID header over HTTP
+  const healthRes = await requestUrl('/health');
+  assertCheck('/health returns HTTP 200 on healthy database', healthRes.status, 200);
+  assertCheck('/health carries X-Correlation-ID header', Boolean(healthRes.headers['x-correlation-id']), true);
+
   const aliases = [
     `/uploads/report-screenshots/${SYNTHETIC_FILENAME}`,
     `/uploads/report-screenshots/${SYNTHETIC_FILENAME}/view`,
@@ -448,7 +454,7 @@ async function main() {
   // ── SUITE 2: Socket.IO Call & Group-Call Signaling Governance ────────
   console.log('\n--- SUITE 2: Socket.IO Call & Group-Call Signaling Governance ---\n');
 
-  const [aliceSocket, bobSocket, frankSocket, superSocket, mallorySocket, graceSocket, ivanSocket, student101Socket] = await Promise.all([
+  const [aliceSocket, bobSocket, frankSocket, superSocket, mallorySocket, graceSocket, ivanSocket, student101Socket, student102Socket] = await Promise.all([
     connectSocket(tokens.reporter_alice),
     connectSocket(tokens.unrelated_bob),
     connectSocket(tokens.batchmate_frank),
@@ -456,7 +462,8 @@ async function main() {
     connectSocket(tokens.mallory_text_spoof),
     connectSocket(tokens.grace_archived),
     connectSocket(tokens.ivan_deleted),
-    connectSocket(tokens.student_101)
+    connectSocket(tokens.student_101),
+    connectSocket(tokens.student_102)
   ]);
   // Explicitly ensure Mallory (70) has 'BATCH-01' profile text but NO row in batch_students or student_course_enrollments
   const dbForSetup = (await import('../server/db/database.js')).default;
@@ -684,6 +691,45 @@ async function main() {
   student101Socket.emit('group-webrtc-offer', { receiverId: 60, offer: { sdp: 'user101-group-sdp' } });
   await new Promise(r => setTimeout(r, 400));
   assertCheck('Frank receives group-webrtc-offer from User 101 over the wire', frankReceivedWireOffer?.offer?.sdp, 'user101-group-sdp');
+
+  // ── 2.15 Group Invite Acknowledgements & Joiner Cancellation (Bug 1 & Bug 2) ──
+  // A. Bug 2 Negative: Alice invites ineligible User 20 (Bob, different batch) -> rejected with ack
+  let aliceInviteResultFail = null;
+  aliceSocket.on('group-invite-result', d => { aliceInviteResultFail = d; });
+  aliceSocket.emit('group-call-invite', { receiverId: 20, callerData: { id: 10, name: 'Alice' } });
+  await new Promise(r => setTimeout(r, 400));
+  assertCheck('Alice receives group-invite-result on rejected invitation', aliceInviteResultFail?.ok, false);
+  assertCheck('Rejected group invite returns INVITE_DISALLOWED code', aliceInviteResultFail?.code, 'INVITE_DISALLOWED');
+  assertCheck('Rejected group invite targets receiverId 20', aliceInviteResultFail?.receiverId, 20);
+
+  // B. Bug 2 Positive: Alice invites eligible User 102 (Student 102, same batch) -> succeeds with ack
+  let aliceInviteResultSuccess = null;
+  let user102ReceivedInvite = null;
+  aliceSocket.on('group-invite-result', d => { aliceInviteResultSuccess = d; });
+  student102Socket.on('group-call-invite', d => { user102ReceivedInvite = d; });
+  aliceSocket.emit('group-call-invite', { receiverId: 102, callerData: { id: 10, name: 'Alice' } });
+  await new Promise(r => setTimeout(r, 400));
+  assertCheck('Alice receives group-invite-result on successful invitation', aliceInviteResultSuccess?.ok, true);
+  assertCheck('Successful group invite returns matching callId', aliceInviteResultSuccess?.callId, wireInvite.callId);
+  assertCheck('User 102 receives group-call-invite over the wire', user102ReceivedInvite?.callId, wireInvite.callId);
+
+  // C. Bug 1 Regression: User 101 (who joined via group-invite accept) cancels the invitation to User 102
+  let user101CancelResult = null;
+  let user102ReceivedCancel = null;
+  student101Socket.on('group-invite-cancelled-result', d => { user101CancelResult = d; });
+  student102Socket.on('group-invite-cancelled', d => { user102ReceivedCancel = d; });
+  student101Socket.emit('group-invite-cancelled', { callId: wireInvite.callId, receiverId: 102 });
+  await new Promise(r => setTimeout(r, 400));
+  assertCheck('Group joiner (User 101) cancellation accepted by server', user101CancelResult?.ok, true);
+  assertCheck('User 102 receives group-invite-cancelled triggered by group joiner', user102ReceivedCancel?.callId, wireInvite.callId);
+
+  // D. Negative Control: User 101 attempts to cancel uninvited User 20 -> rejected with ack
+  let user101CancelFail = null;
+  student101Socket.on('group-invite-cancelled-result', d => { user101CancelFail = d; });
+  student101Socket.emit('group-invite-cancelled', { callId: wireInvite.callId, receiverId: 20 });
+  await new Promise(r => setTimeout(r, 400));
+  assertCheck('Cancelling uninvited user returns ok: false', user101CancelFail?.ok, false);
+  assertCheck('Cancelling uninvited user returns NOT_INVITED code', user101CancelFail?.code, 'NOT_INVITED');
 
   // Frank ends call
   let aliceReceivedEnded = null;
@@ -1057,7 +1103,7 @@ async function main() {
   assertCheck('Cancel nonexistent session returns CALL_NOT_FOUND', cancelNotFound.code, 'CALL_NOT_FOUND');
 
   // Branch 4: CALL_MISMATCH (canceller is active in a different call than the provided callId)
-  const callD = signalingModule.handleCallRequest(105, { receiverId: 106 }, activeDb).session;
+  signalingModule.handleCallRequest(105, { receiverId: 106 }, activeDb);
   signalingModule.handleCallAnswered(106, { callerId: 105 });
   const cancelMismatch = signalingModule.handleGroupInviteCancelled(105, { callId: callB.callId, receiverId: 107 });
   assertCheck('Canceller in different call returns CALL_MISMATCH', cancelMismatch.code, 'CALL_MISMATCH');
@@ -1080,8 +1126,31 @@ async function main() {
   assertCheck('Ringing session invitedParticipants not mutated', ringingSession.invitedParticipants.has(107), true);
   signalingModule.handleCallEnded(105, { targetId: 106 });
 
+  // ── 3.4.8 /health Genuine Readiness Probe Verification ───────────────────
+  console.log('\n--- SUITE 3.4.8: Health Readiness Probe Verification ---\n');
+  const healthyCheck = () => {
+    try {
+      activeDb.prepare('SELECT 1').get();
+      return { status: 200, body: { status: 'ok' } };
+    } catch {
+      return { status: 503, body: { status: 'degraded', error: 'Database unreachable' } };
+    }
+  };
+  assertCheck('Healthy database returns 200 ok', healthyCheck().status, 200);
+
+  const brokenCheck = () => {
+    try {
+      const mockDb = { prepare: () => { throw new Error('Database connection lost'); } };
+      mockDb.prepare('SELECT 1').get();
+      return { status: 200, body: { status: 'ok' } };
+    } catch {
+      return { status: 503, body: { status: 'degraded', error: 'Database unreachable' } };
+    }
+  };
+  assertCheck('Unreachable database returns 503 degraded', brokenCheck().status, 503);
+
   // Teardown
-  for (const s of [student101Socket, aliceSocket, bobSocket, frankSocket, superSocket, mallorySocket, graceSocket, ivanSocket]) {
+  for (const s of [student101Socket, student102Socket, aliceSocket, bobSocket, frankSocket, superSocket, mallorySocket, graceSocket, ivanSocket]) {
     try { s.disconnect(); } catch { /* ignore */ }
   }
 

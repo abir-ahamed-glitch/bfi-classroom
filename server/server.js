@@ -160,11 +160,13 @@ app.use((req, res, next) => {
 
 // Genuine health readiness probe endpoint for deployment, monitoring, and automated test harnesses
 // Verifies HTTP gateway liveness and active database connectivity
+let healthStmt = null;
 app.get(['/health', '/api/health', '/bfi-classroom/health', '/bfi-classroom/api/health'], (_req, res) => {
   try {
-    db.prepare('SELECT 1').get();
+    healthStmt ||= db.prepare('SELECT 1');
+    healthStmt.get();
     res.status(200).json({ status: 'ok', timestamp: Date.now() });
-  } catch (err) {
+  } catch {
     res.status(503).json({ status: 'degraded', error: 'Database unreachable', timestamp: Date.now() });
   }
 });
@@ -807,7 +809,20 @@ io.on('connection', (socket) => {
   // Invite a new person into an ongoing call
   socket.on('group-call-invite', (data) => {
     const result = handleGroupInvite(socket.user.id, data);
-    if (!result.ok) return;
+    if (!result.ok) {
+      socket.emit('group-invite-result', {
+        ok: false,
+        receiverId: Number(data?.receiverId) || null,
+        code: result.code || 'INVITE_FAILED',
+        error: result.error
+      });
+      return;
+    }
+    socket.emit('group-invite-result', {
+      ok: true,
+      receiverId: result.receiverId,
+      callId: result.session.callId
+    });
     io.to(`user:${result.receiverId}`).emit('group-call-invite', result.sanitizedPayload);
   });
 
@@ -841,7 +856,24 @@ io.on('connection', (socket) => {
   // Group invitation cancelled by inviter / participant
   socket.on('group-invite-cancelled', (data) => {
     const result = handleGroupInviteCancelled(socket.user.id, data);
-    if (!result.ok) return;
+    if (!result.ok) {
+      const ack = {
+        ok: false,
+        receiverId: Number(data?.receiverId) || null,
+        code: result.code || 'CANCEL_FAILED',
+        error: result.error
+      };
+      socket.emit('group-invite-cancelled-result', ack);
+      socket.emit('group-invite-result', { ...ack, action: 'cancel' });
+      return;
+    }
+    const ack = {
+      ok: true,
+      receiverId: result.receiverId,
+      callId: result.session.callId
+    };
+    socket.emit('group-invite-cancelled-result', ack);
+    socket.emit('group-invite-result', { ...ack, action: 'cancel' });
     io.to(`user:${result.receiverId}`).emit('group-invite-cancelled', result.sanitizedPayload);
   });
 
