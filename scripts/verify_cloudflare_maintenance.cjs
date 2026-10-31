@@ -8,7 +8,12 @@
  * probes against the target hostname (e.g. classroom.bfibd.org).
  *
  * Usage:
- *   node scripts/verify_cloudflare_maintenance.cjs --expect-state=active|inactive [--zone-name=bfibd.org] [--host=classroom.bfibd.org] [--require-token]
+ *   node scripts/verify_cloudflare_maintenance.cjs --expect-state=active|inactive [--zone-name=bfibd.org] [--host=classroom.bfibd.org]
+ *
+ * Exit Codes:
+ *   0 = CONFIRMED  (maintenance state verified matching expectation)
+ *   1 = VIOLATED   (maintenance state contradicts expectation or invalid arguments)
+ *   2 = UNVERIFIED (could not verify: missing token, zone not found, or API scope error)
  *
  * Security:
  *   - Strictly read-only calls (GET requests only).
@@ -18,6 +23,17 @@
 const https = require('node:https');
 const { URL } = require('node:url');
 
+const INTERCEPTING_ERROR_PAGE_IDS = [
+  '500_errors',
+  '1000_errors',
+  'always_online',
+  'basic_challenge',
+  'waf_challenge',
+  'ip_block',
+  'waf_block',
+  'country_challenge',
+];
+
 function parseArgs() {
   const args = process.argv.slice(2);
   const options = {
@@ -25,23 +41,23 @@ function parseArgs() {
     zoneName: process.env.CLOUDFLARE_ZONE_NAME || 'bfibd.org',
     host: process.env.CLOUDFLARE_HOST || 'classroom.bfibd.org',
     zoneId: process.env.CLOUDFLARE_ZONE_ID || null,
-    requireToken: false,
-    publicProbeOnly: false,
   };
 
   for (const arg of args) {
     if (arg.startsWith('--expect-state=')) {
-      options.expectState = arg.split('=')[1].toLowerCase();
+      const rawVal = arg.split('=')[1];
+      const val = (rawVal || '').toLowerCase().trim();
+      if (val !== 'active' && val !== 'inactive') {
+        console.error(`Error: Invalid --expect-state="${rawVal}". Allowed values are "active" or "inactive".`);
+        process.exit(1);
+      }
+      options.expectState = val;
     } else if (arg.startsWith('--zone-name=')) {
       options.zoneName = arg.split('=')[1];
     } else if (arg.startsWith('--host=')) {
       options.host = arg.split('=')[1];
     } else if (arg.startsWith('--zone-id=')) {
       options.zoneId = arg.split('=')[1];
-    } else if (arg === '--require-token') {
-      options.requireToken = true;
-    } else if (arg === '--public-probe-only') {
-      options.publicProbeOnly = true;
     }
   }
 
@@ -128,12 +144,34 @@ function probePublicUrl(urlStr) {
   });
 }
 
+function routeMatchesHost(pattern, targetHost) {
+  if (!pattern || typeof pattern !== 'string') return false;
+  let clean = pattern.trim().toLowerCase();
+  clean = clean.replace(/^[a-z]+:\/\//, '');
+  const slashIdx = clean.indexOf('/');
+  const hostPartWithPort = slashIdx >= 0 ? clean.slice(0, slashIdx) : clean;
+  const colonIdx = hostPartWithPort.indexOf(':');
+  const routeHost = colonIdx >= 0 ? hostPartWithPort.slice(0, colonIdx) : hostPartWithPort;
+  const host = targetHost.toLowerCase();
+
+  if (routeHost === host) return true;
+  if (routeHost === `*.${host}`) return true;
+  if (routeHost.startsWith('*.')) {
+    const suffix = routeHost.slice(2);
+    if (host.endsWith(`.${suffix}`) || host === suffix) return true;
+  }
+  if (routeHost === '*') return true;
+  return false;
+}
+
 async function inspectZoneMaintenance(zoneId, token, targetHost) {
   const findings = {
     activeRulesets: [],
     activeWorkerRoutes: [],
     customErrorPages: [],
-    warnings: [],
+    evaluatedPageIds: [],
+    skippedChecks: [],
+    errors: [],
   };
 
   // 1. Inspect Rulesets
@@ -145,57 +183,71 @@ async function inspectZoneMaintenance(zoneId, token, targetHost) {
         findings.activeRulesets.push(rs.name || rs.id);
       }
     } else if (res.statusCode === 403) {
-      findings.warnings.push('Zone Rulesets read skipped: Token lacks Rulesets:Read permission (HTTP 403)');
+      findings.skippedChecks.push('Rulesets:Read (HTTP 403 Forbidden)');
     } else {
-      findings.warnings.push(`Zone Rulesets query returned HTTP ${res.statusCode}`);
+      findings.errors.push(`Zone Rulesets query returned HTTP ${res.statusCode}`);
     }
   } catch (err) {
-    findings.warnings.push(`Zone Rulesets error: ${err.message}`);
+    findings.errors.push(`Zone Rulesets error: ${err.message}`);
   }
 
   // 2. Inspect Worker Routes
   try {
     const res = await requestJson(`https://api.cloudflare.com/client/v4/zones/${zoneId}/workers/routes`, token);
     if (res.statusCode === 200 && res.data && Array.isArray(res.data.result)) {
-      for (const route of res.data.result) {
-        if (route.pattern && (route.pattern.includes(targetHost) || route.pattern.includes('*'))) {
-          findings.activeWorkerRoutes.push(`${route.pattern} -> ${route.script || 'unknown'}`);
-        }
+      const activeRoutes = res.data.result.filter((route) => routeMatchesHost(route.pattern, targetHost));
+      for (const route of activeRoutes) {
+        findings.activeWorkerRoutes.push(`${route.pattern} -> ${route.script || 'unknown'}`);
       }
     } else if (res.statusCode === 403) {
-      findings.warnings.push('Worker Routes read skipped: Token lacks Workers:Routes:Read permission (HTTP 403)');
+      findings.skippedChecks.push('Workers:Routes:Read (HTTP 403 Forbidden)');
     } else {
-      findings.warnings.push(`Worker Routes query returned HTTP ${res.statusCode}`);
+      findings.errors.push(`Worker Routes query returned HTTP ${res.statusCode}`);
     }
   } catch (err) {
-    findings.warnings.push(`Worker Routes error: ${err.message}`);
+    findings.errors.push(`Worker Routes error: ${err.message}`);
   }
 
-  // 3. Inspect Custom Error Pages
+  // 3. Inspect Custom Error Pages (interception capable only)
   try {
     const res = await requestJson(`https://api.cloudflare.com/client/v4/zones/${zoneId}/custom_pages`, token);
     if (res.statusCode === 200 && res.data && Array.isArray(res.data.result)) {
-      for (const page of res.data.result) {
-        if (page.url && page.state === 'customized') {
-          findings.customErrorPages.push(`${page.description || page.id} (URL: ${page.url})`);
+      const interceptingPages = res.data.result.filter((p) => INTERCEPTING_ERROR_PAGE_IDS.includes(p.id));
+      findings.evaluatedPageIds = interceptingPages.map((p) => p.id);
+      for (const p of interceptingPages) {
+        if (p.url && p.state === 'customized') {
+          findings.customErrorPages.push(`${p.id} (${p.url})`);
         }
       }
     } else if (res.statusCode === 403) {
-      findings.warnings.push('Custom Pages read skipped: Token lacks Custom Pages permission (HTTP 403)');
+      findings.skippedChecks.push('Custom Pages:Read (HTTP 403 Forbidden)');
     } else {
-      findings.warnings.push(`Custom Pages query returned HTTP ${res.statusCode}`);
+      findings.errors.push(`Custom Error Pages query returned HTTP ${res.statusCode}`);
     }
   } catch (err) {
-    findings.warnings.push(`Custom Pages error: ${err.message}`);
+    findings.errors.push(`Custom Error Pages error: ${err.message}`);
   }
 
   return findings;
 }
 
+async function listVisibleZones(token) {
+  try {
+    const res = await requestJson('https://api.cloudflare.com/client/v4/zones?per_page=50', token);
+    if (res.statusCode === 200 && res.data && Array.isArray(res.data.result)) {
+      return res.data.result.map((z) => z.name);
+    }
+    return [];
+  } catch {
+    return [];
+  }
+}
+
 async function main() {
   const options = parseArgs();
+
   console.log('================================================================');
-  console.log('CLOUDFLARE MAINTENANCE STATE VERIFICATION (v2.0)');
+  console.log('CLOUDFLARE MAINTENANCE STATE VERIFICATION (v2.1)');
   console.log('================================================================');
   console.log(`Target DNS Zone: ${options.zoneName}`);
   console.log(`Target Hostname: ${options.host}`);
@@ -208,45 +260,66 @@ async function main() {
 
   if (!token) {
     console.log('\n[API Preflight] CLOUDFLARE_API_TOKEN is not set in environment.');
-    if (options.requireToken) {
-      console.error('❌ FATAL: --require-token specified but no token provided.');
-      process.exit(1);
-    }
-  } else if (!options.publicProbeOnly) {
-    console.log('\n[API Preflight] Querying zone record for:', options.zoneName);
-    try {
-      const zonesRes = await requestJson(
-        `https://api.cloudflare.com/client/v4/zones?name=${encodeURIComponent(options.zoneName)}`,
-        token
-      );
-      if (zonesRes.statusCode === 200 && zonesRes.data && Array.isArray(zonesRes.data.result)) {
-        if (zonesRes.data.result.length > 0) {
-          zoneId = zonesRes.data.result[0].id;
-          zoneFound = true;
-          console.log(`✅ Located Zone "${options.zoneName}" (Zone ID: ${zoneId})`);
-        } else {
-          console.log(`⚠️ Zone lookup returned 0 matching zones for name "${options.zoneName}".`);
-          console.log('   (Ensure --zone-name specifies the parent DNS zone e.g. "bfibd.org", not a subdomain).');
-        }
-      } else if (zonesRes.statusCode === 403) {
-        console.log('⚠️ Token lacks permission to list zones (HTTP 403 Forbidden).');
-      } else {
-        console.log(`⚠️ Zone lookup returned HTTP ${zonesRes.statusCode}`);
-      }
-    } catch (err) {
-      console.log(`⚠️ Zone lookup error: ${err.message}`);
-    }
+    console.error('\nVERDICT: UNVERIFIED');
+    console.error('Reason: No Cloudflare API token supplied — zone maintenance state cannot be confirmed.');
+    process.exit(2);
+  }
 
-    if (zoneFound && zoneId) {
-      console.log('\n[Zone Governance] Inspecting zone maintenance mechanisms...');
-      zoneFindings = await inspectZoneMaintenance(zoneId, token, options.host);
-      console.log(`- Maintenance Rulesets: ${zoneFindings.activeRulesets.length}`);
-      console.log(`- Active Worker Routes on Host: ${zoneFindings.activeWorkerRoutes.length}`);
-      console.log(`- Custom Error Pages Active: ${zoneFindings.customErrorPages.length}`);
-      for (const w of zoneFindings.warnings) {
-        console.log(`  ℹ️  ${w}`);
+  console.log(`\n[API Preflight] Querying zone record for: "${options.zoneName}"`);
+  try {
+    const zonesRes = await requestJson(
+      `https://api.cloudflare.com/client/v4/zones?name=${encodeURIComponent(options.zoneName)}`,
+      token
+    );
+    if (zonesRes.statusCode === 200 && zonesRes.data && Array.isArray(zonesRes.data.result)) {
+      if (zonesRes.data.result.length > 0) {
+        zoneId = zonesRes.data.result[0].id;
+        zoneFound = true;
+        console.log(`✅ Located Zone "${options.zoneName}" (Zone ID: ${zoneId})`);
+      } else {
+        console.error(`❌ Zone lookup returned 0 matching zones for name "${options.zoneName}".`);
+        console.error(`   Searched zone name: "${options.zoneName}"`);
+        const visibleZones = await listVisibleZones(token);
+        if (visibleZones.length > 0) {
+          console.error(`   Visible zones for this token (${visibleZones.length}): ${visibleZones.join(', ')}`);
+        } else {
+          console.error('   Visible zones for this token: none');
+        }
+        console.error(`\nVERDICT: UNVERIFIED`);
+        console.error(`Reason: Zone "${options.zoneName}" was not found — maintenance state NOT confirmed.`);
+        process.exit(2);
       }
+    } else if (zonesRes.statusCode === 403) {
+      console.error(`⚠️  Token lacks permission to query zones (HTTP 403 Forbidden).`);
+      console.error(`\nVERDICT: UNVERIFIED`);
+      console.error(`Reason: Token lacks Zone:Read permission (HTTP 403) — maintenance state NOT confirmed.`);
+      process.exit(2);
+    } else {
+      console.error(`⚠️  Zone query for "${options.zoneName}" returned HTTP ${zonesRes.statusCode}`);
+      console.error(`\nVERDICT: UNVERIFIED`);
+      console.error(`Reason: Zone lookup failed (HTTP ${zonesRes.statusCode}) — maintenance state NOT confirmed.`);
+      process.exit(2);
     }
+  } catch (err) {
+    console.error(`⚠️  Zone lookup transport error: ${err.message}`);
+    console.error(`\nVERDICT: UNVERIFIED`);
+    console.error(`Reason: Zone lookup error (${err.message}) — maintenance state NOT confirmed.`);
+    process.exit(2);
+  }
+
+  console.log('\n[Zone Governance] Inspecting zone maintenance mechanisms...');
+  zoneFindings = await inspectZoneMaintenance(zoneId, token, options.host);
+  console.log(`- Maintenance Rulesets: ${zoneFindings.activeRulesets.length}`);
+  console.log(`- Active Worker Routes on Host: ${zoneFindings.activeWorkerRoutes.length}`);
+  console.log(`- Custom Error Pages Active: ${zoneFindings.customErrorPages.length}`);
+  if (zoneFindings.evaluatedPageIds.length > 0) {
+    console.log(`  (Evaluated intercepting page types: ${zoneFindings.evaluatedPageIds.join(', ')})`);
+  }
+  for (const s of zoneFindings.skippedChecks) {
+    console.log(`  ℹ️  Zone check skipped: Token lacks ${s}`);
+  }
+  for (const e of zoneFindings.errors) {
+    console.log(`  ⚠️  Zone check error: ${e}`);
   }
 
   // Probe public endpoint
@@ -258,51 +331,84 @@ async function main() {
 
   let observedPublicState = 'unknown';
   if (probe.statusCode === 503) {
-    observedPublicState = 'active'; // Maintenance page active
+    observedPublicState = 'active';
     console.log('Observed Public Status: MAINTENANCE_ACTIVE (HTTP 503)');
   } else if (probe.statusCode === 200) {
-    observedPublicState = 'inactive'; // Live application traffic passing
+    observedPublicState = 'inactive';
     console.log('Observed Public Status: MAINTENANCE_INACTIVE (HTTP 200 Live App)');
   } else {
     console.log(`Observed Public Status: UNEXPECTED (HTTP ${probe.statusCode})`);
   }
 
-  // Zone mechanism check
-  let zoneMaintenanceDetected = false;
-  if (zoneFindings) {
-    if (zoneFindings.activeRulesets.length > 0 || zoneFindings.activeWorkerRoutes.length > 0 || zoneFindings.customErrorPages.length > 0) {
-      zoneMaintenanceDetected = true;
+  // Check if any checks were skipped or errors occurred
+  if (zoneFindings.skippedChecks.length > 0) {
+    console.error(`\nVERDICT: UNVERIFIED`);
+    console.error(`UNVERIFIED: ${zoneFindings.skippedChecks.length} zone checks skipped (token lacks scope) — maintenance state NOT confirmed.`);
+    for (const s of zoneFindings.skippedChecks) {
+      console.error(`  - ${s}`);
     }
+    process.exit(2);
   }
 
-  if (options.expectState) {
-    let failureReason = null;
-    if (options.expectState === 'inactive') {
-      if (observedPublicState !== 'inactive') {
-        failureReason = `Expected public state "inactive", but observed HTTP ${probe.statusCode} (${observedPublicState}).`;
-      } else if (zoneMaintenanceDetected) {
-        failureReason = `Expected maintenance to be inactive, but active zone maintenance mechanisms were detected.`;
-      }
-    } else if (options.expectState === 'active') {
-      if (observedPublicState !== 'active') {
-        failureReason = `Expected public state "active" (HTTP 503), but observed HTTP ${probe.statusCode} (${observedPublicState}).`;
-      }
-    }
+  if (zoneFindings.errors.length > 0) {
+    console.error(`\nVERDICT: UNVERIFIED`);
+    console.error(`UNVERIFIED: ${zoneFindings.errors.length} zone checks encountered errors — maintenance state NOT confirmed.`);
+    process.exit(2);
+  }
 
-    if (failureReason) {
-      console.error(`\n❌ ASSERTION FAILED: ${failureReason}`);
-      process.exit(1);
+  const zoneMaintenanceActive = (
+    zoneFindings.activeRulesets.length > 0 ||
+    zoneFindings.activeWorkerRoutes.length > 0 ||
+    zoneFindings.customErrorPages.length > 0
+  );
+
+  if (options.expectState === 'inactive') {
+    if (observedPublicState === 'inactive' && !zoneMaintenanceActive) {
+      console.log('\nVERDICT: CONFIRMED');
+      console.log('PASS: Maintenance state confirmed as "inactive" (0 active zone mechanisms, public probe HTTP 200).');
+      process.exit(0);
     } else {
-      console.log(`\n✅ PASS: Maintenance state confirmed as "${options.expectState}".`);
+      console.error('\nVERDICT: VIOLATED');
+      if (zoneMaintenanceActive) {
+        console.error('FAIL: Expected maintenance to be inactive, but active zone maintenance mechanisms were detected.');
+        if (zoneFindings.activeRulesets.length > 0) {
+          console.error(`  Rulesets: ${zoneFindings.activeRulesets.join(', ')}`);
+        }
+        if (zoneFindings.activeWorkerRoutes.length > 0) {
+          console.error(`  Worker Routes: ${zoneFindings.activeWorkerRoutes.join(', ')}`);
+        }
+        if (zoneFindings.customErrorPages.length > 0) {
+          console.error(`  Custom Error Pages: ${zoneFindings.customErrorPages.join(', ')}`);
+        }
+      }
+      if (observedPublicState !== 'inactive') {
+        console.error(`FAIL: Expected public probe HTTP 200 (inactive), but observed HTTP ${probe.statusCode} (${observedPublicState}).`);
+      }
+      process.exit(1);
     }
-  } else {
-    console.log('\n✅ Verification complete (inspection only).');
+  } else if (options.expectState === 'active') {
+    if (observedPublicState === 'active' && zoneMaintenanceActive) {
+      console.log('\nVERDICT: CONFIRMED');
+      console.log('PASS: Maintenance state confirmed as "active" (active zone mechanism confirmed, public probe HTTP 503).');
+      process.exit(0);
+    } else {
+      console.error('\nVERDICT: VIOLATED');
+      if (observedPublicState !== 'active') {
+        console.error(`FAIL: Expected public probe HTTP 503 (active), but observed HTTP ${probe.statusCode} (${observedPublicState}).`);
+      }
+      if (!zoneMaintenanceActive) {
+        console.error('FAIL: Public probe did not find active maintenance mechanisms in zone configuration.');
+      }
+      process.exit(1);
+    }
   }
 
+  console.log('\nVERDICT: CONFIRMED');
+  console.log('Verification complete (inspection mode, no expectation asserted).');
   process.exit(0);
 }
 
 main().catch((err) => {
-  console.error(`Unhandled error: ${err.message}`);
-  process.exit(1);
+  console.error(`\nFATAL: Unhandled error in verifier: ${err.message}`);
+  process.exit(2);
 });
