@@ -139,6 +139,7 @@ describe('Security Remediation Suite: SEC-01 through SEC-12', () => {
         CREATE TABLE users (
           id INTEGER PRIMARY KEY,
           username TEXT,
+          two_factor_enabled INTEGER DEFAULT 0,
           two_factor_secret TEXT,
           pending_two_factor_secret TEXT
         );
@@ -157,9 +158,9 @@ describe('Security Remediation Suite: SEC-01 through SEC-12', () => {
       // Insert legacy plain pending secret (user 3)
       const enc3 = encryptSecret(secret3, keyOld);
 
-      db.prepare('INSERT INTO users (id, username, two_factor_secret, pending_two_factor_secret) VALUES (?, ?, ?, ?)').run(1, 'u1', enc1, null);
-      db.prepare('INSERT INTO users (id, username, two_factor_secret, pending_two_factor_secret) VALUES (?, ?, ?, ?)').run(2, 'u2', null, enc2);
-      db.prepare('INSERT INTO users (id, username, two_factor_secret, pending_two_factor_secret) VALUES (?, ?, ?, ?)').run(3, 'u3', null, enc3);
+      db.prepare('INSERT INTO users (id, username, two_factor_enabled, two_factor_secret, pending_two_factor_secret) VALUES (?, ?, ?, ?, ?)').run(1, 'u1', 1, enc1, null);
+      db.prepare('INSERT INTO users (id, username, two_factor_enabled, two_factor_secret, pending_two_factor_secret) VALUES (?, ?, ?, ?, ?)').run(2, 'u2', 0, null, enc2);
+      db.prepare('INSERT INTO users (id, username, two_factor_enabled, two_factor_secret, pending_two_factor_secret) VALUES (?, ?, ?, ?, ?)').run(3, 'u3', 0, null, enc3);
       db.close();
 
       const scriptPath = path.join(__dirname, '../scripts/rotate_mfa_secrets.cjs');
@@ -873,7 +874,7 @@ describe('Security Remediation Suite: SEC-01 through SEC-12', () => {
       const deployContent = fs.readFileSync(path.join(__dirname, '../.github/workflows/deploy.yml'), 'utf8');
       assert.match(deployContent, /permissions:\s*[\r\n]+\s*contents:\s*read/);
       assert.match(deployContent, /environment:\s*production/);
-      assert.match(deployContent, /production_lifecycle\.cjs\s+deploy\s+--target-commit\s+\$\{\{\s*github\.sha\s*\}\}/);
+      assert.match(deployContent, /production_lifecycle\.cjs\s+deploy\s+--target-commit\s+"\$TARGET_COMMIT"/);
       assert.match(deployContent, /production_lifecycle\.cjs\s+rollback/);
     });
   });

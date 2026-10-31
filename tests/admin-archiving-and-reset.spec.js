@@ -844,18 +844,18 @@ test.describe('Task 5: Preservation of Existing Recovery Flows & Email Ownership
     assert.strictEqual(tokenRowStudent.token_version, 1);
 
     // 2. Flow 2: Admin self-recovery restrictions
-    // Unverified admin email rejected with 403 EMAIL_UNVERIFIED
+    // Unverified admin email returns uniform generic 200 to prevent account enumeration
     const ctxAdminForgotUnverified = mockReqRes({ body: { email: 'unverified@bfibd.org' } });
     await adminForgotHandler(ctxAdminForgotUnverified.req, ctxAdminForgotUnverified.res);
-    assert.strictEqual(ctxAdminForgotUnverified.getResult().statusCode, 403);
-    assert.strictEqual(ctxAdminForgotUnverified.getResult().jsonPayload?.code, 'EMAIL_UNVERIFIED');
+    assert.strictEqual(ctxAdminForgotUnverified.getResult().statusCode, 200);
+    assert.ok(ctxAdminForgotUnverified.getResult().jsonPayload?.message);
 
-    // Reset-pending admin rejected
+    // Reset-pending admin returns uniform generic 200 to prevent account enumeration
     serverDb.prepare("UPDATE users SET password_reset_pending = 1 WHERE id = 21").run();
     const ctxAdminForgotPending = mockReqRes({ body: { email: 'verified@bfibd.org' } });
     await adminForgotHandler(ctxAdminForgotPending.req, ctxAdminForgotPending.res);
-    assert.strictEqual(ctxAdminForgotPending.getResult().statusCode, 403);
-    assert.strictEqual(ctxAdminForgotPending.getResult().jsonPayload?.code, 'PASSWORD_RESET_PENDING');
+    assert.strictEqual(ctxAdminForgotPending.getResult().statusCode, 200);
+    assert.ok(ctxAdminForgotPending.getResult().jsonPayload?.message);
 
     // Clear reset-pending and proceed with verified admin self-recovery
     serverDb.prepare("UPDATE users SET password_reset_pending = 0 WHERE id = 21").run();

@@ -1,0 +1,80 @@
+--- /etc/nginx/sites-available/bfi-classroom
++++ /etc/nginx/sites-available/bfi-classroom
+@@ -15,12 +15,69 @@ server {
+     gzip on;
+     gzip_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript;
+ 
++    # ─── SEC-03: Cloudflare Proxy IP Trust Boundary ───────────────────────────
++    # Official Cloudflare IPv4 CIDRs
++    set_real_ip_from 173.245.48.0/20;
++    set_real_ip_from 103.21.244.0/22;
++    set_real_ip_from 103.22.200.0/22;
++    set_real_ip_from 103.31.4.0/22;
++    set_real_ip_from 141.101.64.0/18;
++    set_real_ip_from 108.162.192.0/18;
++    set_real_ip_from 190.93.240.0/20;
++    set_real_ip_from 188.114.96.0/20;
++    set_real_ip_from 197.234.240.0/22;
++    set_real_ip_from 198.41.128.0/17;
++    set_real_ip_from 162.158.0.0/15;
++    set_real_ip_from 104.16.0.0/13;
++    set_real_ip_from 104.24.0.0/14;
++    set_real_ip_from 172.64.0.0/13;
++    set_real_ip_from 131.0.72.0/22;
++
++    # Official Cloudflare IPv6 CIDRs
++    set_real_ip_from 2400:cb00::/32;
++    set_real_ip_from 2606:4700::/32;
++    set_real_ip_from 2803:f800::/32;
++    set_real_ip_from 2405:b500::/32;
++    set_real_ip_from 2405:8100::/32;
++    set_real_ip_from 2a06:98c0::/29;
++    set_real_ip_from 2c0f:f248::/32;
++
++    real_ip_header CF-Connecting-IP;
++    real_ip_recursive on;
++
++    # ─── SEC-02: Private Uploads Lockdown ────────────────────────────────────
++    # Halt location evaluation and immediately return 403 for private inbox attachments
++    location ^~ /uploads/inbox-attachments/ {
++        return 403;
++    }
++
++    location ^~ /bfi-classroom/uploads/inbox-attachments/ {
++        return 403;
++    }
++
++    # Delegate report screenshots to Express so authenticateToken middleware is enforced
++    location ^~ /uploads/report-screenshots/ {
++        proxy_pass http://127.0.0.1:3001;
++        proxy_http_version 1.1;
++        proxy_set_header Upgrade $http_upgrade;
++        proxy_set_header Connection "upgrade";
++        proxy_set_header Host $host;
++        proxy_set_header X-Real-IP $remote_addr;
++        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
++        proxy_set_header X-Forwarded-Proto $scheme;
++        proxy_set_header CF-Connecting-IP $remote_addr;
++        proxy_cache_bypass $http_upgrade;
++    }
++
++    # Public static uploads (course materials, certificates, broadcast attachments)
+     location /uploads/ {
+         alias /home/ubuntu/bfi-classroom/uploads/;
+         expires 30d;
+         add_header Cache-Control "public, no-transform";
++        add_header X-Content-Type-Options nosniff;
+     }
+ 
++    # Reverse proxy to Express application
+     location / {
+         proxy_pass http://127.0.0.1:3001;
+         proxy_http_version 1.1;
+@@ -30,6 +87,7 @@ server {
+         proxy_set_header X-Real-IP $remote_addr;
+         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+         proxy_set_header X-Forwarded-Proto $scheme;
++        proxy_set_header CF-Connecting-IP $remote_addr;
+         proxy_cache_bypass $http_upgrade;
+     }
+ }
