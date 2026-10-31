@@ -1131,14 +1131,23 @@ async function main() {
   console.log('\n--- SUITE 3.4.8: Health Readiness Probe Verification ---\n');
   const { probeHealth, resetHealthProbe } = await import('../server/services/healthProbe.js');
 
-  const healthy = probeHealth(activeDb);
-  assertCheck('Health probe returns 200 when database is healthy', healthy.status, 200);
-  assertCheck('Health probe reports ok status', healthy.body.status, 'ok');
-
   resetHealthProbe();
-  const broken = probeHealth({ prepare: () => { throw new Error('Database connection lost'); } });
-  assertCheck('Health probe returns 503 when database is unreachable', broken.status, 503);
-  assertCheck('Health probe reports degraded status', broken.body.status, 'degraded');
+
+  // Healthy probe first — this primes the statement cache.
+  assertCheck('Health probe returns 200 when database is healthy', probeHealth(activeDb).status, 200);
+  assertCheck('Health probe reports ok status', probeHealth(activeDb).body.status, 'ok');
+
+  // Now probe a broken handle WITHOUT resetting in between.
+  // Note: resetHealthProbe() must NOT be called here; doing so would mask the stale-cache bug
+  // where a throwing prepare() left the previous handle's statement active in healthStmt.
+  const throwingDb = { prepare: () => { throw new Error('Database connection lost'); } };
+  assertCheck('Health probe returns 503 when database is unreachable', probeHealth(throwingDb).status, 503);
+  assertCheck('Health probe reports degraded status', probeHealth(throwingDb).body.status, 'degraded');
+
+  // Regression guard: the same broken handle must STILL report 503 on repeat without resetting.
+  assertCheck('Health probe keeps reporting 503 on repeated probes with a broken handle',
+    probeHealth(throwingDb).status, 503);
+
   resetHealthProbe();
 
   // ── 3.4.9 Client-Side Group-Invite Accept State Guard ────────────────────

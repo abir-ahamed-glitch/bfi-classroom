@@ -11,12 +11,15 @@ export function probeHealth(dbHandle) {
   try {
     if (!dbHandle) throw new Error('No database handle provided');
     if (cachedDb !== dbHandle) {
+      const stmt = dbHandle.prepare('SELECT 1'); // prepare FIRST
+      healthStmt = stmt;                         // publish cache only on success
       cachedDb = dbHandle;
-      healthStmt = dbHandle.prepare('SELECT 1');
     }
     healthStmt.get();
     return { status: 200, body: { status: 'ok', timestamp: Date.now() } };
   } catch {
+    cachedDb = null; // drop the stale cache so the next call re-prepares
+    healthStmt = null;
     return { status: 503, body: { status: 'degraded', error: 'Database unreachable', timestamp: Date.now() } };
   }
 }
