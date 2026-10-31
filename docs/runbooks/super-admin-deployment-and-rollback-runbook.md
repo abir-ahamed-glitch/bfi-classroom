@@ -76,6 +76,22 @@ Before executing any commands that alter live services or databases, the operato
         - **Ambiguity vs. Confirmed Downtime:** Confirmed service downtime requires unambiguous evidence on BOTH credential checks (`isSaRefused && isOaRefused`, meaning strict `ECONNREFUSED` on port 3001). Any mixed failure—such as the Super Admin request returning `ECONNREFUSED` while the Ordinary Admin request encounters `ETIMEDOUT`, `ECONNRESET`, or HTTP 5xx (or vice versa)—is strictly classified as an `ambiguous_failure`. Ambiguous failures immediately fail closed; they are **never** treated as permission for unattended deployment.
         - **Zero Service-Stop Guarantee on Preflight & Mixed Failure:** All preflight rejections (including syntax errors, missing buffer, explicit auth rejection, and mixed/ambiguous connection failures) occur in Phase 0 prior to issuing any service alteration commands (`systemctl stop nginx`, `pm2 stop`). The deployment halts immediately with **0 service-stop commands issued**, ensuring production services remain completely undisturbed during transient network partitions or socket timeouts.
    - **Strict Fail-Closed Rejection:** `SMOKE_SUPER_ADMIN_PASSWORD` is unsupported. Partial, expired, or malformed credentials throw an immediate fatal error in Phase 0. Fabricated authentication tokens are strictly forbidden; all access tokens must be authentically issued by the backend.
+4. **Cloudflare Maintenance Mode & Ingress Verification:**
+   - **Required Permission Set:** Operator provides a scoped Cloudflare API token configured in environment or GitHub secrets:
+     - Scope: `Zone: Zone: Read` + `Zone: Rulesets: Read` for zone `classroom.bfibd.org`.
+     - Token must be strictly read-only, short-lived, and never committed to version control.
+   - **Pre-Disruption Preflight (Before Phase 1 Lockdown):**
+     - When Cloudflare maintenance page (HTTP 503) is engaged prior to shutting down services, verify active interception:
+       ```bash
+       node scripts/verify_cloudflare_maintenance.cjs --expect-state=active
+       ```
+     - A 503 response is treated as the maintenance page being active; the script prints the `Server` and `CF-Ray` headers so the operator can confirm the response is the Cloudflare-branded interstitial rather than an origin-generated error. The `--expect-state=inactive` check, which gates traffic reopening, is exact.
+   - **Post-Deployment Pre-Traffic & Reopening Verification (Phase 6):**
+     - After restoring live traffic (Step 6.4) and deactivating the Cloudflare 503 rule, verify normal public routing:
+       ```bash
+       node scripts/verify_cloudflare_maintenance.cjs --expect-state=inactive
+       ```
+     - Confirms public edge CDN returns `200 OK` from the application backend and is no longer intercepting traffic.
 
 ---
 
