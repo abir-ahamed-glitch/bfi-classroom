@@ -402,18 +402,6 @@ export const CallProvider = ({ children }) => {
 
     socket.on('group-invite-result', (data) => {
       console.log('[GroupCall] group-invite-result', data);
-      if (data?.action === 'cancel') {
-        if (data?.ok && data?.receiverId) {
-          setPendingInvites(prev => {
-            const next = new Set(prev);
-            next.delete(Number(data.receiverId));
-            return next;
-          });
-        } else if (!data?.ok && showAlertRef.current && data?.error) {
-          showAlertRef.current(data.error, { title: 'Call Error' });
-        }
-        return;
-      }
       if (data?.ok && data?.receiverId) {
         setPendingInvites(prev => new Set(prev).add(Number(data.receiverId)));
       } else if (!data?.ok) {
@@ -438,8 +426,17 @@ export const CallProvider = ({ children }) => {
           next.delete(Number(data.receiverId));
           return next;
         });
-      } else if (!data?.ok && showAlertRef.current && data?.error) {
-        showAlertRef.current(data.error, { title: 'Call Error' });
+      } else if (!data?.ok) {
+        if (data?.receiverId) {
+          setPendingInvites(prev => {
+            const next = new Set(prev);
+            next.delete(Number(data.receiverId));
+            return next;
+          });
+        }
+        if (showAlertRef.current && data?.error) {
+          showAlertRef.current(data.error, { title: 'Call Error' });
+        }
       }
     });
 

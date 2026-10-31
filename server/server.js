@@ -13,6 +13,7 @@ import { Server } from 'socket.io';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import { initializeDatabase } from './db/database.js';
 import db from './db/database.js';
+import { probeHealth } from './services/healthProbe.js';
 
 import jwt from 'jsonwebtoken';
 import { validateSafePublicUrl, isPrivateIP, createPinnedAgent, readBoundedStream, PayloadTooLargeError } from './utils/ssrf-filter.js';
@@ -160,15 +161,9 @@ app.use((req, res, next) => {
 
 // Genuine health readiness probe endpoint for deployment, monitoring, and automated test harnesses
 // Verifies HTTP gateway liveness and active database connectivity
-let healthStmt = null;
 app.get(['/health', '/api/health', '/bfi-classroom/health', '/bfi-classroom/api/health'], (_req, res) => {
-  try {
-    healthStmt ||= db.prepare('SELECT 1');
-    healthStmt.get();
-    res.status(200).json({ status: 'ok', timestamp: Date.now() });
-  } catch {
-    res.status(503).json({ status: 'degraded', error: 'Database unreachable', timestamp: Date.now() });
-  }
+  const result = probeHealth(db);
+  res.status(result.status).json(result.body);
 });
 
 // SEC-02 & SEC-05: Dedicated rate limiter for public proxy and link preview endpoints
@@ -864,7 +859,6 @@ io.on('connection', (socket) => {
         error: result.error
       };
       socket.emit('group-invite-cancelled-result', ack);
-      socket.emit('group-invite-result', { ...ack, action: 'cancel' });
       return;
     }
     const ack = {
@@ -873,7 +867,6 @@ io.on('connection', (socket) => {
       callId: result.session.callId
     };
     socket.emit('group-invite-cancelled-result', ack);
-    socket.emit('group-invite-result', { ...ack, action: 'cancel' });
     io.to(`user:${result.receiverId}`).emit('group-invite-cancelled', result.sanitizedPayload);
   });
 

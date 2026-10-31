@@ -730,6 +730,7 @@ async function main() {
   await new Promise(r => setTimeout(r, 400));
   assertCheck('Cancelling uninvited user returns ok: false', user101CancelFail?.ok, false);
   assertCheck('Cancelling uninvited user returns NOT_INVITED code', user101CancelFail?.code, 'NOT_INVITED');
+  assertCheck('Failed cancel ack carries receiverId for client-side purge', user101CancelFail?.receiverId, 20);
 
   // Frank ends call
   let aliceReceivedEnded = null;
@@ -1128,26 +1129,24 @@ async function main() {
 
   // ── 3.4.8 /health Genuine Readiness Probe Verification ───────────────────
   console.log('\n--- SUITE 3.4.8: Health Readiness Probe Verification ---\n');
-  const healthyCheck = () => {
-    try {
-      activeDb.prepare('SELECT 1').get();
-      return { status: 200, body: { status: 'ok' } };
-    } catch {
-      return { status: 503, body: { status: 'degraded', error: 'Database unreachable' } };
-    }
-  };
-  assertCheck('Healthy database returns 200 ok', healthyCheck().status, 200);
+  const { probeHealth, resetHealthProbe } = await import('../server/services/healthProbe.js');
 
-  const brokenCheck = () => {
-    try {
-      const mockDb = { prepare: () => { throw new Error('Database connection lost'); } };
-      mockDb.prepare('SELECT 1').get();
-      return { status: 200, body: { status: 'ok' } };
-    } catch {
-      return { status: 503, body: { status: 'degraded', error: 'Database unreachable' } };
-    }
-  };
-  assertCheck('Unreachable database returns 503 degraded', brokenCheck().status, 503);
+  const healthy = probeHealth(activeDb);
+  assertCheck('Health probe returns 200 when database is healthy', healthy.status, 200);
+  assertCheck('Health probe reports ok status', healthy.body.status, 'ok');
+
+  resetHealthProbe();
+  const broken = probeHealth({ prepare: () => { throw new Error('Database connection lost'); } });
+  assertCheck('Health probe returns 503 when database is unreachable', broken.status, 503);
+  assertCheck('Health probe reports degraded status', broken.body.status, 'degraded');
+  resetHealthProbe();
+
+  // ── 3.4.9 Client-Side Group-Invite Accept State Guard ────────────────────
+  console.log('\n--- SUITE 3.4.9: Client-Side CallContext Regression Guard ---\n');
+  const callContextSource = fs.readFileSync(path.resolve(__dirname, '..', 'src', 'context', 'CallContext.jsx'), 'utf8');
+  const groupAcceptMatch = callContextSource.match(/const\s+answerCall[\s\S]*?if\s*\(\s*incoming\.isGroupInvite\s*\)\s*\{[\s\S]*?setActiveCall\(\{([\s\S]*?)\}\);/);
+  const hasGroupCallId = Boolean(groupAcceptMatch && groupAcceptMatch[1].includes('callId: incoming.callId'));
+  assertCheck('Static guard: CallContext group accept setActiveCall assigns callId: incoming.callId', hasGroupCallId, true);
 
   // Teardown
   for (const s of [student101Socket, student102Socket, aliceSocket, bobSocket, frankSocket, superSocket, mallorySocket, graceSocket, ivanSocket]) {
