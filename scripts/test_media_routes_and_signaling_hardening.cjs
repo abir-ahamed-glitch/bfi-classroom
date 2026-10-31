@@ -27,16 +27,24 @@
  *
  * 2. SOCKET.IO CALL & GROUP-CALL SIGNALING GOVERNANCE
  *    - Negative Controls:
+ *      - Arbitrary call-rejected by authenticated user with no active pending call -> target receives nothing
+ *      - Rejection of call-rejected by third-party non-recipient on a pending call
+ *      - Strict enforcement that only the invited recipient can reject a pending call
  *      - Rejection of 1:1 call-request to unrelated users across batches
+ *      - Rejection of call-request based solely on student_profiles.batch_number text without active batch_students row
+ *      - Rejection of call-request for students in archived batches
+ *      - Rejection of call-request for students in soft-deleted batches
  *      - Rejection of 1:1 call-request to self or non-existent/inactive users
  *      - Rejection of WebRTC offer, answer, and ICE candidate when no call session is active
  *      - Rejection of group-call-invite from users not in a connected call
- *      - Rejection of group-call-accepted from users not having a pending invitation
+ *      - Enforcement of 60-second pending call expiry TTL (calls expired after 60s fail to answer or reject)
+ *      - Enforcement of maximum 9-person group call ceiling
  *      - Rejection of client-controlled broadcast spamming via participantIds
  *      - Enforcement of fromId from socket session (spoofing prevented)
  *    - Positive Controls:
- *      - Successful 1:1 call establishment between batchmates (ringing -> answered -> WebRTC signaling -> call ended)
- *      - Successful group-call invitation and join between eligible peers
+ *      - Successful 1:1 call establishment between active batchmates (ringing -> answered -> WebRTC signaling -> call ended)
+ *      - Successful 1:1 call rejection by the designated recipient
+ *      - Successful group-call invitation up to 9-person maximum ceiling
  */
 
 const fs = require('fs');
@@ -89,12 +97,70 @@ async function setupDatabase() {
   insertUser.run(40, 'moderator_diana', 'diana_mod@bfi.local', 'admin', 'Diana', 'Moderator', 0, 1);
   insertUser.run(50, 'inactive_eve', 'eve@bfi.local', 'student', 'Eve', 'Inactive', 0, 0);
   insertUser.run(60, 'batchmate_frank', 'frank@bfi.local', 'student', 'Frank', 'Batchmate', 0, 1);
+  insertUser.run(70, 'mallory_text_spoof', 'mallory@bfi.local', 'student', 'Mallory', 'Spoof', 0, 1);
+  insertUser.run(80, 'grace_archived', 'grace@bfi.local', 'student', 'Grace', 'Archived', 0, 1);
+  insertUser.run(81, 'heidi_archived', 'heidi@bfi.local', 'student', 'Heidi', 'Archived', 0, 1);
+  insertUser.run(90, 'ivan_deleted', 'ivan@bfi.local', 'student', 'Ivan', 'Deleted', 0, 1);
+  insertUser.run(91, 'judy_deleted', 'judy@bfi.local', 'student', 'Judy', 'Deleted', 0, 1);
+
+  // Group call cohort candidate users (101..108)
+  for (let id = 101; id <= 108; id++) {
+    insertUser.run(id, `student_${id}`, `student_${id}@bfi.local`, 'student', `User${id}`, 'Cohort', 0, 1);
+  }
+
+  // Batches:
+  // Batch 1: Active batch
+  db.prepare(`
+    INSERT OR REPLACE INTO batches (id, batch_name, batch_number, course_name, status, deleted_at)
+    VALUES (1, 'Batch 01', 'BATCH-01', 'Film Appreciation Course', 'active', NULL)
+  `).run();
+
+  // Batch 2: Active batch (different)
+  db.prepare(`
+    INSERT OR REPLACE INTO batches (id, batch_name, batch_number, course_name, status, deleted_at)
+    VALUES (2, 'Batch 02', 'BATCH-02', 'Film Appreciation Course', 'active', NULL)
+  `).run();
+
+  // Batch 3: Archived batch
+  db.prepare(`
+    INSERT OR REPLACE INTO batches (id, batch_name, batch_number, course_name, status, deleted_at)
+    VALUES (3, 'Batch 03', 'BATCH-03', 'Film Appreciation Course', 'archived', NULL)
+  `).run();
+
+  // Batch 4: Soft-deleted batch
+  db.prepare(`
+    INSERT OR REPLACE INTO batches (id, batch_name, batch_number, course_name, status, deleted_at)
+    VALUES (4, 'Batch 04', 'BATCH-04', 'Film Appreciation Course', 'active', '2026-10-31 00:00:00')
+  `).run();
+
+  // Active Batch Memberships in batch_students:
+  // Alice (10) and Frank (60) in Batch 1
+  db.prepare('INSERT OR REPLACE INTO batch_students (batch_id, student_id) VALUES (1, 10)').run();
+  db.prepare('INSERT OR REPLACE INTO batch_students (batch_id, student_id) VALUES (1, 60)').run();
+
+  // Group candidate users (101..108) also in Batch 1
+  for (let id = 101; id <= 108; id++) {
+    db.prepare('INSERT OR REPLACE INTO batch_students (batch_id, student_id) VALUES (1, ?)').run(id);
+  }
+
+  // Bob (20) in Batch 2
+  db.prepare('INSERT OR REPLACE INTO batch_students (batch_id, student_id) VALUES (2, 20)').run();
+
+  // Grace (80) and Heidi (81) in Archived Batch 3
+  db.prepare('INSERT OR REPLACE INTO batch_students (batch_id, student_id) VALUES (3, 80)').run();
+  db.prepare('INSERT OR REPLACE INTO batch_students (batch_id, student_id) VALUES (3, 81)').run();
+
+  // Ivan (90) and Judy (91) in Deleted Batch 4
+  db.prepare('INSERT OR REPLACE INTO batch_students (batch_id, student_id) VALUES (4, 90)').run();
+  db.prepare('INSERT OR REPLACE INTO batch_students (batch_id, student_id) VALUES (4, 91)').run();
 
   // Student profiles
   db.prepare('INSERT OR REPLACE INTO student_profiles (user_id, full_name, student_id, batch_number) VALUES (?, ?, ?, ?)').run(10, 'Alice Reporter', 'STU10', 'BATCH-01');
   db.prepare('INSERT OR REPLACE INTO student_profiles (user_id, full_name, student_id, batch_number) VALUES (?, ?, ?, ?)').run(20, 'Bob Unrelated', 'STU20', 'BATCH-02');
   db.prepare('INSERT OR REPLACE INTO student_profiles (user_id, full_name, student_id, batch_number) VALUES (?, ?, ?, ?)').run(50, 'Eve Inactive', 'STU50', 'BATCH-01');
-  db.prepare('INSERT OR REPLACE INTO student_profiles (user_id, full_name, student_id, batch_number) VALUES (?, ?, ?, ?)').run(60, 'Frank Batchmate', 'STU60', 'BATCH-01'); // Same batch as Alice!
+  db.prepare('INSERT OR REPLACE INTO student_profiles (user_id, full_name, student_id, batch_number) VALUES (?, ?, ?, ?)').run(60, 'Frank Batchmate', 'STU60', 'BATCH-01');
+  // Mallory has 'BATCH-01' text in profile, but NO entry in batch_students!
+  db.prepare('INSERT OR REPLACE INTO student_profiles (user_id, full_name, student_id, batch_number) VALUES (?, ?, ?, ?)').run(70, 'Mallory Spoof', 'STU70', 'BATCH-01');
 
   // Admin permissions: User 40 has reports permissions; User 30 has none
   db.prepare('INSERT OR REPLACE INTO admin_permissions (user_id, permission) VALUES (?, ?)').run(40, 'reports:view');
@@ -132,7 +198,10 @@ const tokens = {
   unrelated_admin: makeToken({ id: 30, username: 'unrelated_admin', role: 'admin' }, 30),
   moderator_diana: makeToken({ id: 40, username: 'moderator_diana', role: 'admin' }, 40),
   super_admin: makeToken({ id: 1, username: 'superadmin', role: 'admin' }, 1),
-  batchmate_frank: makeToken({ id: 60, username: 'batchmate_frank', role: 'student' })
+  batchmate_frank: makeToken({ id: 60, username: 'batchmate_frank', role: 'student' }),
+  mallory_text_spoof: makeToken({ id: 70, username: 'mallory_text_spoof', role: 'student' }),
+  grace_archived: makeToken({ id: 80, username: 'grace_archived', role: 'student' }),
+  ivan_deleted: makeToken({ id: 90, username: 'ivan_deleted', role: 'student' })
 };
 
 function requestUrl(urlPath, token = null) {
@@ -140,23 +209,28 @@ function requestUrl(urlPath, token = null) {
     const url = new URL(urlPath, BASE_URL);
     const headers = {};
     if (token) headers['Authorization'] = `Bearer ${token}`;
-    const req = http.request(url, { method: 'GET', headers, timeout: 5000 }, (res) => {
+
+    const req = http.request(url, { method: 'GET', headers }, (res) => {
       let data = '';
-      res.on('data', chunk => { data += chunk; });
-      res.on('end', () => {
-        let json = null;
-        try { json = JSON.parse(data); } catch {}
-        resolve({
-          status: res.statusCode,
-          contentType: res.headers['content-type'],
-          body: data,
-          json
-        });
-      });
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: data }));
     });
+
     req.on('error', reject);
-    req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
     req.end();
+  });
+}
+
+function connectSocket(token) {
+  return new Promise((resolve, reject) => {
+    const socket = ioClient(BASE_URL, {
+      auth: { token },
+      transports: ['websocket'],
+      reconnection: false,
+      timeout: 5000
+    });
+    socket.on('connect', () => resolve(socket));
+    socket.on('connect_error', reject);
   });
 }
 
@@ -166,53 +240,42 @@ async function main() {
   console.log('================================================================\n');
 
   await setupDatabase();
-  console.log('✅ Synthetic database initialized at', TEST_DB_PATH);
+  console.log(`✅ Synthetic database initialized at ${TEST_DB_PATH}`);
 
-  const env = {
-    ...process.env,
-    PORT: String(TEST_PORT),
-    HOST: '127.0.0.1',
-    DATABASE_PATH: TEST_DB_PATH,
-    JWT_SECRET,
-    JWT_REFRESH_SECRET,
-    IS_TEST_SERVER: 'true',
-    NODE_ENV: 'test',
-    DISABLE_OUTBOUND_NOTIFICATIONS: 'true'
-  };
-
+  // Start test server process
   const serverProc = spawn('node', ['server/server.js'], {
     cwd: path.resolve(__dirname, '..'),
-    env,
-    stdio: ['ignore', 'pipe', 'pipe']
+    env: {
+      ...process.env,
+      PORT: TEST_PORT,
+      DATABASE_PATH: TEST_DB_PATH,
+      JWT_SECRET,
+      JWT_REFRESH_SECRET,
+      NODE_ENV: 'test'
+    },
+    stdio: 'inherit'
   });
 
-  serverProc.stdout.on('data', (d) => {
-    const s = d.toString();
-    if (s.includes('API Gateway running')) console.log('[Server]', s.trim());
+  // Wait for server to listen
+  await new Promise((resolve, reject) => {
+    const start = Date.now();
+    const interval = setInterval(() => {
+      const probe = http.get(`${BASE_URL}/health`, (res) => {
+        clearInterval(interval);
+        probe.destroy();
+        resolve();
+      });
+      probe.on('error', () => {
+        if (Date.now() - start > 10000) {
+          clearInterval(interval);
+          reject(new Error('Server failed to start within 10 seconds'));
+        }
+      });
+    }, 200);
   });
-  serverProc.stderr.on('data', (d) => {
-    // console.error('[Server Err]', d.toString());
-  });
 
-  // Wait for server ready
-  let ready = false;
-  for (let i = 0; i < 30; i++) {
-    try {
-      await requestUrl('/api/health');
-      ready = true;
-      break;
-    } catch {
-      await new Promise(r => setTimeout(r, 200));
-    }
-  }
-
-  if (!ready) {
-    serverProc.kill();
-    throw new Error('Test server failed to start within 6 seconds.');
-  }
-
-  let passedAssertions = 0;
   let totalAssertions = 0;
+  let passedAssertions = 0;
 
   function assertCheck(desc, actual, expected) {
     totalAssertions++;
@@ -220,15 +283,13 @@ async function main() {
       passedAssertions++;
       console.log(`  ✅ [PASS] ${desc}`);
     } else {
-      console.error(`  ❌ [FAIL] ${desc} (Expected: ${expected}, Got: ${actual})`);
-      throw new Error(`Assertion failed: ${desc}`);
+      console.error(`  ❌ [FAIL] ${desc}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
+      process.exitCode = 1;
     }
   }
 
-  // ────────────────────────────────────────────────────────────────────
-  // SUITE 1: REPORT SCREENSHOT ALIASES & ACCESS CONTROL MATRIX
-  // ────────────────────────────────────────────────────────────────────
-  console.log('\n--- SUITE 1: Report Screenshot Lockdown Matrix (All 8 Aliases) ---');
+  // ── SUITE 1: Report Screenshot Lockdown Matrix (All 8 Aliases) ────────
+  console.log('\n--- SUITE 1: Report Screenshot Lockdown Matrix (All 8 Aliases) ---\n');
 
   const aliases = [
     `/uploads/report-screenshots/${SYNTHETIC_FILENAME}`,
@@ -242,7 +303,7 @@ async function main() {
   ];
 
   for (const alias of aliases) {
-    console.log(`\nEvaluating Alias: ${alias}`);
+    console.log(`Evaluating Alias: ${alias}`);
 
     // A. Unauthenticated
     const resUnauth = await requestUrl(alias, tokens.unauthenticated);
@@ -254,63 +315,73 @@ async function main() {
     assertCheck(`${alias} unrelated student returns 403`, resBob.status, 403);
     assertCheck(`${alias} unrelated student does not leak content`, resBob.body.includes(SYNTHETIC_PAYLOAD), false);
 
-    // C. Unrelated Admin without reports permission (Charlie)
-    const resCharlie = await requestUrl(alias, tokens.unrelated_admin);
-    assertCheck(`${alias} admin without reports permission returns 403`, resCharlie.status, 403);
-    assertCheck(`${alias} admin without reports permission does not leak content`, resCharlie.body.includes(SYNTHETIC_PAYLOAD), false);
+    // C. Unrelated Admin (Charlie - no reports permission)
+    const resAdmin = await requestUrl(alias, tokens.unrelated_admin);
+    assertCheck(`${alias} admin without reports permission returns 403`, resAdmin.status, 403);
+    assertCheck(`${alias} admin without reports permission does not leak content`, resAdmin.body.includes(SYNTHETIC_PAYLOAD), false);
 
-    // D. Owner (Alice, Reporter)
+    // D. Reporter Owner (Alice)
     const resAlice = await requestUrl(alias, tokens.reporter_alice);
     assertCheck(`${alias} reporter owner returns 200`, resAlice.status, 200);
     assertCheck(`${alias} reporter owner receives valid content`, resAlice.body.includes(SYNTHETIC_PAYLOAD), true);
 
-    // E. Moderator Admin with reports:view (Diana)
-    const resDiana = await requestUrl(alias, tokens.moderator_diana);
-    assertCheck(`${alias} moderator admin returns 200`, resDiana.status, 200);
-    assertCheck(`${alias} moderator admin receives valid content`, resDiana.body.includes(SYNTHETIC_PAYLOAD), true);
+    // E. Moderator Admin (Diana - reports:view permission)
+    const resMod = await requestUrl(alias, tokens.moderator_diana);
+    assertCheck(`${alias} moderator admin returns 200`, resMod.status, 200);
+    assertCheck(`${alias} moderator admin receives valid content`, resMod.body.includes(SYNTHETIC_PAYLOAD), true);
 
     // F. Super Admin
     const resSuper = await requestUrl(alias, tokens.super_admin);
     assertCheck(`${alias} super admin returns 200`, resSuper.status, 200);
     assertCheck(`${alias} super admin receives valid content`, resSuper.body.includes(SYNTHETIC_PAYLOAD), true);
+
+    console.log('');
   }
 
-  // Path traversal and non-matching filename checks
-  console.log('\n--- Path Traversal & Invalid Filename Defense ---');
-  const traversal1 = await requestUrl('/media/report-screenshots/../package.json', tokens.super_admin);
-  console.log('traversal1 status:', traversal1.status, traversal1.body);
-  assertCheck('Path traversal attempt with dots returns 404 or 401', [401, 404].includes(traversal1.status), true);
+  // Path Traversal & Invalid Extension Checks
+  console.log('--- Path Traversal & Invalid Filename Defense ---');
+  const traversal1 = await requestUrl('/uploads/report-screenshots/..%2F..%2Fpackage.json', tokens.super_admin);
+  console.log('traversal1 status:', traversal1.status);
+  assertCheck('Path traversal attempt with dots returns 404 or 401', traversal1.status === 404 || traversal1.status === 401, true);
 
-  const invalidExt = await requestUrl('/media/report-screenshots/report-screenshot-10-1234.sh', tokens.super_admin);
-  assertCheck('Non-whitelisted image extension (.sh) returns 404 or 401', [401, 404].includes(invalidExt.status), true);
+  const nonImage = await requestUrl('/uploads/report-screenshots/malicious.sh', tokens.super_admin);
+  assertCheck('Non-whitelisted image extension (.sh) returns 404 or 401', nonImage.status === 404 || nonImage.status === 401, true);
 
-  // Private inbox attachments checks
+  // Private Inbox Attachments Static Block Checks
   console.log('\n--- Private Inbox Attachments Static Block Checks ---');
-  const inboxMedia1 = await requestUrl('/media/inbox-attachments/test.pdf', tokens.unauthenticated);
-  assertCheck('/media/inbox-attachments unauthenticated returns 401 or 403', [401, 403].includes(inboxMedia1.status), true);
+  const inboxMedia = await requestUrl('/media/inbox-attachments/secret.png', tokens.unauthenticated);
+  assertCheck('/media/inbox-attachments unauthenticated returns 401 or 403', inboxMedia.status === 401 || inboxMedia.status === 403, true);
 
-  const inboxMedia2 = await requestUrl('/bfi-classroom/media/inbox-attachments/test.pdf', tokens.unauthenticated);
-  assertCheck('/bfi-classroom/media/inbox-attachments unauthenticated returns 401 or 403', [401, 403].includes(inboxMedia2.status), true);
+  const bfiInboxMedia = await requestUrl('/bfi-classroom/media/inbox-attachments/secret.png', tokens.unauthenticated);
+  assertCheck('/bfi-classroom/media/inbox-attachments unauthenticated returns 401 or 403', bfiInboxMedia.status === 401 || bfiInboxMedia.status === 403, true);
 
-  // ────────────────────────────────────────────────────────────────────
-  // SUITE 2: SOCKET.IO CALL & GROUP-CALL SIGNALING GOVERNANCE
-  // ────────────────────────────────────────────────────────────────────
-  console.log('\n--- SUITE 2: Socket.IO Call & Group-Call Signaling Governance ---');
+  // ── SUITE 2: Socket.IO Call & Group-Call Signaling Governance ────────
+  console.log('\n--- SUITE 2: Socket.IO Call & Group-Call Signaling Governance ---\n');
 
-  const aliceSocket = ioClient(BASE_URL, { auth: { token: tokens.reporter_alice }, transports: ['websocket'] });
-  const bobSocket = ioClient(BASE_URL, { auth: { token: tokens.unrelated_bob }, transports: ['websocket'] });
-  const frankSocket = ioClient(BASE_URL, { auth: { token: tokens.batchmate_frank }, transports: ['websocket'] });
-  const superSocket = ioClient(BASE_URL, { auth: { token: tokens.super_admin }, transports: ['websocket'] });
-
-  await Promise.all([
-    new Promise(res => aliceSocket.on('connect', res)),
-    new Promise(res => bobSocket.on('connect', res)),
-    new Promise(res => frankSocket.on('connect', res)),
-    new Promise(res => superSocket.on('connect', res))
+  const [aliceSocket, bobSocket, frankSocket, superSocket, mallorySocket, graceSocket, ivanSocket] = await Promise.all([
+    connectSocket(tokens.reporter_alice),
+    connectSocket(tokens.unrelated_bob),
+    connectSocket(tokens.batchmate_frank),
+    connectSocket(tokens.super_admin),
+    connectSocket(tokens.mallory_text_spoof),
+    connectSocket(tokens.grace_archived),
+    connectSocket(tokens.ivan_deleted)
   ]);
-  console.log('✅ Connected 4 test sockets: Alice (10), Bob (20), Frank (60), SuperAdmin (1)');
+  // Explicitly ensure Mallory (70) has 'BATCH-01' profile text but NO row in batch_students or student_course_enrollments
+  const dbForSetup = (await import('../server/db/database.js')).default;
+  dbForSetup.prepare('DELETE FROM batch_students WHERE student_id = 70').run();
+  dbForSetup.prepare('DELETE FROM student_course_enrollments WHERE user_id = 70').run();
 
-  // 2.1 Negative Control: Arbitrary 1:1 Call Request across unrelated batches (Alice -> Bob)
+  console.log('✅ Connected test sockets: Alice (10), Bob (20), Frank (60), SuperAdmin (1), Mallory (70), Grace (80), Ivan (90)');
+
+  // 2.1 Negative Control: Arbitrary call-rejected by authenticated user with no active pending call
+  let aliceReceivedSpuriousRejection = null;
+  aliceSocket.on('call-rejected', d => { aliceReceivedSpuriousRejection = d; });
+  bobSocket.emit('call-rejected', { callerId: 10, reason: 'Arbitrary unprompted rejection' });
+  await new Promise(r => setTimeout(r, 400));
+  assertCheck('Arbitrary call-rejected without pending call is dropped: target receives nothing', aliceReceivedSpuriousRejection, null);
+
+  // 2.2 Negative Control: Arbitrary 1:1 Call Request across unrelated batches (Alice -> Bob)
   let bobReceivedCall = null;
   let aliceRejected = null;
   bobSocket.on('call-request', d => { bobReceivedCall = d; });
@@ -321,28 +392,77 @@ async function main() {
   assertCheck('Alice cannot call Bob (unrelated batch) - Bob receives nothing', bobReceivedCall, null);
   assertCheck('Alice receives call-rejected with CALL_DISALLOWED code', aliceRejected?.code, 'CALL_DISALLOWED');
 
-  // 2.2 Negative Control: Signaling without active call session
+  // 2.3 Negative Control: Call eligibility enforces actual active batch membership rather than profile text
+  // Mallory (70) has student_profiles.batch_number = 'BATCH-01' matching Alice's text, but NO batch_students row!
+  let aliceReceivedMalloryCall = null;
+  let malloryRejected = null;
+  aliceSocket.on('call-request', d => { aliceReceivedMalloryCall = d; });
+  mallorySocket.on('call-rejected', d => { malloryRejected = d; });
+
+  mallorySocket.emit('call-request', { receiverId: 10, callerData: { name: 'Mallory Spoof' }, hasVideo: false });
+  await new Promise(r => setTimeout(r, 400));
+  assertCheck('Profile text match without active batch_students assignment is rejected (Mallory -> Alice)', aliceReceivedMalloryCall, null);
+  assertCheck('Mallory receives CALL_DISALLOWED rejection code', malloryRejected?.code, 'CALL_DISALLOWED');
+
+  // 2.4 Negative Control: Students enrolled in archived batch cannot initiate calls
+  // Grace (80) attempts to call Heidi (81) in Batch 3 (archived)
+  let graceRejected = null;
+  graceSocket.on('call-rejected', d => { graceRejected = d; });
+  graceSocket.emit('call-request', { receiverId: 81, callerData: { name: 'Grace' }, hasVideo: false });
+  await new Promise(r => setTimeout(r, 400));
+  assertCheck('Call in archived batch is rejected with CALL_DISALLOWED', graceRejected?.code, 'CALL_DISALLOWED');
+
+  // 2.5 Negative Control: Students enrolled in soft-deleted batch cannot initiate calls
+  // Ivan (90) attempts to call Judy (91) in Batch 4 (deleted)
+  let ivanRejected = null;
+  ivanSocket.on('call-rejected', d => { ivanRejected = d; });
+  ivanSocket.emit('call-request', { receiverId: 91, callerData: { name: 'Ivan' }, hasVideo: false });
+  await new Promise(r => setTimeout(r, 400));
+  assertCheck('Call in deleted batch is rejected with CALL_DISALLOWED', ivanRejected?.code, 'CALL_DISALLOWED');
+
+  // 2.6 Negative Control: Signaling without active call session
   let bobReceivedOffer = null;
   bobSocket.on('webrtc-offer', d => { bobReceivedOffer = d; });
   aliceSocket.emit('webrtc-offer', { receiverId: 20, offer: { sdp: 'fake-sdp' } });
   await new Promise(r => setTimeout(r, 400));
   assertCheck('Unauthenticated webrtc-offer without active call is dropped', bobReceivedOffer, null);
 
-  // 2.3 Negative Control: Group-call invite from user not in an active call
+  // 2.7 Negative Control: Group-call invite from user not in an active call
   let bobReceivedGroupInvite = null;
   bobSocket.on('group-call-invite', d => { bobReceivedGroupInvite = d; });
   aliceSocket.emit('group-call-invite', { receiverId: 20, callerData: { id: 1, name: 'Forged Admin' } });
   await new Promise(r => setTimeout(r, 400));
   assertCheck('group-call-invite dropped when caller is not in an active connected call', bobReceivedGroupInvite, null);
 
-  // 2.4 Positive Control: Legitimate 1:1 Call between Batchmates (Alice <-> Frank)
+  // 2.8 Positive Control: Legitimate 1:1 Call Request between Active Batchmates (Alice -> Frank)
   let frankReceivedCall = null;
   frankSocket.on('call-request', d => { frankReceivedCall = d; });
 
   aliceSocket.emit('call-request', { receiverId: 60, callerData: { name: 'Alice' }, hasVideo: false });
   await new Promise(r => setTimeout(r, 400));
-  assertCheck('Frank (batchmate) successfully receives legitimate call-request', Boolean(frankReceivedCall), true);
+  assertCheck('Frank (batchmate in active batch 1) receives legitimate call-request', Boolean(frankReceivedCall), true);
   assertCheck('call-request callerId is authoritatively set to Alice (ID 10)', frankReceivedCall?.callerId, 10);
+
+  // 2.9 Negative Control: Third-party (Bob) attempts to reject Alice's pending call to Frank
+  let aliceReceivedBobRejection = null;
+  aliceSocket.on('call-rejected', d => { aliceReceivedBobRejection = d; });
+  bobSocket.emit('call-rejected', { callerId: 10, reason: 'Malicious third-party rejection attempt' });
+  await new Promise(r => setTimeout(r, 400));
+  assertCheck('Third-party non-recipient cannot reject pending call: caller receives nothing', aliceReceivedBobRejection, null);
+
+  // 2.10 Positive Control: Frank (designated recipient) legitimately rejects the call
+  let aliceReceivedFrankRejection = null;
+  aliceSocket.on('call-rejected', d => { aliceReceivedFrankRejection = d; });
+  frankSocket.emit('call-rejected', { callerId: 10, reason: 'Busy right now' });
+  await new Promise(r => setTimeout(r, 400));
+  assertCheck('Alice receives legitimate call-rejected from designated recipient Frank', Boolean(aliceReceivedFrankRejection), true);
+  assertCheck('call-rejected rejecterId is authoritatively Frank (ID 60)', aliceReceivedFrankRejection?.rejecterId, 60);
+
+  // 2.11 Positive Control: Second legitimate 1:1 Call (Alice -> Frank) followed by Answering
+  frankReceivedCall = null;
+  aliceSocket.emit('call-request', { receiverId: 60, callerData: { name: 'Alice' }, hasVideo: false });
+  await new Promise(r => setTimeout(r, 400));
+  assertCheck('Second call request received by Frank', Boolean(frankReceivedCall), true);
 
   // Frank answers call
   let aliceReceivedAnswer = null;
@@ -380,11 +500,70 @@ async function main() {
   await new Promise(r => setTimeout(r, 400));
   assertCheck('Post-termination signaling is strictly dropped', frankPostOffer, null);
 
+  // ── SUITE 3: In-Process Service Verification (TTL & Capacity Enforcement) ───
+  console.log('\n--- SUITE 3: Service-Level Pending Call Expiry & Group Ceiling Tests ---\n');
+
+  const signalingModule = await import('../server/services/callSignalingService.js');
+  const dbModule = await import('../server/db/database.js');
+  const activeDb = dbModule.default;
+
+  signalingModule.resetCallSignalingState();
+
+  // 3.1 60-Second Pending Call Expiry Enforcement
+  assertCheck('PENDING_CALL_TTL_MS is strictly 60,000ms', signalingModule.PENDING_CALL_TTL_MS, 60000);
+
+  const reqResult = signalingModule.handleCallRequest(10, { receiverId: 60 }, activeDb);
+  assertCheck('handleCallRequest created pending ringing session', reqResult.ok, true);
+
+  // Manually backdate the ringing session to 65 seconds ago
+  reqResult.session.createdAt = Date.now() - 65000;
+  assertCheck('isPendingCallExpired detects expired ringing call', signalingModule.isPendingCallExpired(reqResult.session), true);
+
+  // Attempt to answer expired call
+  const answerExpired = signalingModule.handleCallAnswered(60, { callerId: 10 });
+  assertCheck('handleCallAnswered rejects expired pending call', answerExpired.ok, false);
+  assertCheck('Expired call answer returns CALL_EXPIRED code', answerExpired.code, 'CALL_EXPIRED');
+
+  // Attempt to reject expired call
+  const reqResult2 = signalingModule.handleCallRequest(10, { receiverId: 60 }, activeDb);
+  reqResult2.session.createdAt = Date.now() - 65000;
+  const rejectExpired = signalingModule.handleCallRejected(60, { callerId: 10 });
+  assertCheck('handleCallRejected rejects expired pending call', rejectExpired.ok, false);
+  assertCheck('Expired call reject returns CALL_EXPIRED code', rejectExpired.code, 'CALL_EXPIRED');
+
+  // Global Pruning of Expired Calls
+  const reqResult3 = signalingModule.handleCallRequest(10, { receiverId: 60 }, activeDb);
+  reqResult3.session.createdAt = Date.now() - 65000;
+  const prunedCount = signalingModule.pruneExpiredPendingCalls();
+  assertCheck('pruneExpiredPendingCalls cleanly purged expired session', prunedCount, 1);
+
+  // 3.2 Maximum 9-Person Group Call Ceiling Enforcement
+  assertCheck('MAX_GROUP_PARTICIPANTS is strictly 9', signalingModule.MAX_GROUP_PARTICIPANTS, 9);
+
+  // Connect Alice (10) and Frank (60)
+  signalingModule.resetCallSignalingState();
+  signalingModule.handleCallRequest(10, { receiverId: 60 }, activeDb);
+  signalingModule.handleCallAnswered(60, { callerId: 10 });
+
+  // Invite 7 additional cohort members (Users 101..107), bringing total to 9
+  for (let id = 101; id <= 107; id++) {
+    const invRes = signalingModule.handleGroupInvite(10, { receiverId: id }, activeDb);
+    assertCheck(`Group invite for participant #${id} (capacity ${id - 100 + 2}/9) succeeded`, invRes.ok, true);
+  }
+
+  // Attempt 10th participant invitation (User 108) -> MUST BE REJECTED
+  const overCapacityInvite = signalingModule.handleGroupInvite(10, { receiverId: 108 }, activeDb);
+  assertCheck('Invitation exceeding 9 participants is rejected', overCapacityInvite.ok, false);
+  assertCheck('Exceeded capacity returns MAX_PARTICIPANTS_REACHED code', overCapacityInvite.code, 'MAX_PARTICIPANTS_REACHED');
+
   // Teardown
   aliceSocket.disconnect();
   bobSocket.disconnect();
   frankSocket.disconnect();
   superSocket.disconnect();
+  mallorySocket.disconnect();
+  graceSocket.disconnect();
+  ivanSocket.disconnect();
 
   serverProc.kill();
   if (fs.existsSync(SYNTHETIC_FILEPATH)) fs.unlinkSync(SYNTHETIC_FILEPATH);
@@ -392,6 +571,10 @@ async function main() {
   console.log('\n================================================================');
   console.log(`FINAL OUTCOME: ${passedAssertions} / ${totalAssertions} ASSERTIONS PASSED (100%)`);
   console.log('================================================================\n');
+
+  if (passedAssertions !== totalAssertions) {
+    process.exit(1);
+  }
 }
 
 main().catch(err => {

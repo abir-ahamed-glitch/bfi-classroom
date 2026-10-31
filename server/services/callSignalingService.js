@@ -4,11 +4,21 @@ import db from '../db/database.js';
  * server/services/callSignalingService.js
  *
  * Authoritative WebRTC & Group-Call Signaling Governance:
- * 1. Relationship Validation: Enforces recipient eligibility (admins, existing chats, batchmates, instructors).
+ * 1. Relationship Validation: Enforces recipient eligibility using actual active batch membership
+ *    (batch_students + non-deleted, active batches table rows) or existing chat history, rather
+ *    than unverified student profile text.
  * 2. Active Call State Machine: Tracks 1:1 and group calls from 'ringing' to 'connected' and 'ended'.
- * 3. Call-Membership Verification: Drops signaling (offers, answers, ICE candidates) if sender & receiver are not in the same active call.
- * 4. Client Payload Sanitization: Enforces callerId, answererId, and fromId from authenticated socket session; prevents broadcast flooding.
+ * 3. Exact Pending Call Rejection: Only the designated recipient of an active pending call can reject it.
+ * 4. Pending Call Expiry: Enforces an authoritative 60-second TTL on ringing calls.
+ * 5. Group Call Capacity: Enforces an authoritative maximum ceiling of 9 participants per group call.
+ * 6. Call-Membership Verification: Drops signaling (offers, answers, ICE candidates) if sender & receiver
+ *    are not actively connected peers in the same session.
+ * 7. Client Payload Sanitization: Enforces callerId, answererId, and fromId from authenticated socket session;
+ *    prevents broadcast flooding.
  */
+
+export const PENDING_CALL_TTL_MS = 60 * 1000; // 60-second pending call expiry
+export const MAX_GROUP_PARTICIPANTS = 9;      // Maximum 9 participants in a group call
 
 // In-memory call sessions
 // callId -> CallSession
@@ -21,7 +31,45 @@ const userActiveCall = new Map();
 const pendingCallsByCaller = new Map();
 
 /**
+ * Helper to clean up a pending call session from all tracking maps.
+ */
+function cleanupPendingCall(session) {
+  if (!session) return;
+  callSessions.delete(session.callId);
+  userActiveCall.delete(session.callerId);
+  if (session.targetReceiverId) {
+    userActiveCall.delete(session.targetReceiverId);
+  }
+  pendingCallsByCaller.delete(session.callerId);
+}
+
+/**
+ * Checks whether a pending ringing call session has exceeded its 60-second TTL.
+ */
+export function isPendingCallExpired(session, now = Date.now()) {
+  if (!session || session.state !== 'ringing') return false;
+  return (now - session.createdAt) > PENDING_CALL_TTL_MS;
+}
+
+/**
+ * Sweeps and removes all expired pending ringing calls.
+ */
+export function pruneExpiredPendingCalls(now = Date.now()) {
+  const expired = [];
+  for (const session of pendingCallsByCaller.values()) {
+    if (isPendingCallExpired(session, now)) {
+      expired.push(session);
+    }
+  }
+  for (const session of expired) {
+    cleanupPendingCall(session);
+  }
+  return expired.length;
+}
+
+/**
  * Validate whether caller is permitted to initiate a call to receiver.
+ * Enforces actual active batch membership rather than free-form profile text.
  */
 export function canCommunicate(callerId, receiverId, database = db) {
   if (!Number.isInteger(callerId) || !Number.isInteger(receiverId)) return false;
@@ -67,15 +115,45 @@ export function canCommunicate(callerId, receiverId, database = db) {
       return true;
     }
 
-    // Students enrolled in the same batch can call each other
+    // Instructor and student in the same assigned batch
+    if ((caller.role === 'instructor' && receiver.role === 'student') ||
+        (caller.role === 'student' && receiver.role === 'instructor')) {
+      const instructorId = caller.role === 'instructor' ? callerId : receiverId;
+      const studentId = caller.role === 'student' ? callerId : receiverId;
+      const instructorBatchMatch = database.prepare(`
+        SELECT 1
+        FROM batch_students bs
+        JOIN batches b ON b.id = bs.batch_id
+        LEFT JOIN batch_moderators bm ON bm.batch_id = b.id
+        WHERE bs.student_id = ?
+          AND (b.created_by = ? OR bm.user_id = ?)
+          AND b.deleted_at IS NULL
+          AND (b.status IS NULL OR LOWER(b.status) != 'archived')
+        LIMIT 1
+      `).get(studentId, instructorId, instructorId);
+      if (instructorBatchMatch) return true;
+    }
+
+    // Students enrolled in the same active batch can call each other
+    // Enforces actual active batch membership via batch_students or student_course_enrollments
+    // joined to non-deleted, non-archived batches, rather than free-form student_profiles.batch_number text.
     const sameBatch = database.prepare(`
       SELECT 1
-      FROM student_profiles sp1
-      JOIN student_profiles sp2 ON sp1.batch_number = sp2.batch_number
-      WHERE sp1.user_id = ? AND sp2.user_id = ?
-        AND sp1.batch_number IS NOT NULL AND sp1.batch_number != ''
+      FROM (
+        SELECT batch_id FROM batch_students WHERE student_id = ? AND batch_id IS NOT NULL
+        UNION
+        SELECT batch_id FROM student_course_enrollments WHERE user_id = ? AND batch_id IS NOT NULL
+      ) s1
+      JOIN (
+        SELECT batch_id FROM batch_students WHERE student_id = ? AND batch_id IS NOT NULL
+        UNION
+        SELECT batch_id FROM student_course_enrollments WHERE user_id = ? AND batch_id IS NOT NULL
+      ) s2 ON s1.batch_id = s2.batch_id
+      JOIN batches b ON b.id = s1.batch_id
+      WHERE b.deleted_at IS NULL
+        AND (b.status IS NULL OR LOWER(b.status) != 'archived')
       LIMIT 1
-    `).get(callerId, receiverId);
+    `).get(callerId, callerId, receiverId, receiverId);
 
     if (sameBatch) {
       return true;
@@ -97,18 +175,36 @@ export function handleCallRequest(callerId, data, database = db) {
     return { ok: false, error: 'Recipient is not eligible to receive calls from this account.', code: 'CALL_DISALLOWED' };
   }
 
+  // Prune any globally expired ringing calls first
+  pruneExpiredPendingCalls();
+
   // Check if caller is already in an active connected call
   const existingCall = userActiveCall.get(callerId);
-  if (existingCall && existingCall.state === 'connected') {
-    return { ok: false, error: 'You are already in an active call.', code: 'CALLER_BUSY' };
+  if (existingCall) {
+    if (existingCall.state === 'connected') {
+      return { ok: false, error: 'You are already in an active call.', code: 'CALLER_BUSY' };
+    }
+    // Clean up stale expired ringing call
+    if (existingCall.state === 'ringing' && isPendingCallExpired(existingCall)) {
+      cleanupPendingCall(existingCall);
+    }
   }
 
-  // Clear any stale ringing call initiated by caller
+  // Check if receiver is already in a connected call
+  const receiverActive = userActiveCall.get(receiverId);
+  if (receiverActive) {
+    if (receiverActive.state === 'connected') {
+      return { ok: false, error: 'Recipient is currently busy on another call.', code: 'RECIPIENT_BUSY' };
+    }
+    if (receiverActive.state === 'ringing' && isPendingCallExpired(receiverActive)) {
+      cleanupPendingCall(receiverActive);
+    }
+  }
+
+  // Clear any existing pending ringing call initiated by this caller
   const stale = pendingCallsByCaller.get(callerId);
   if (stale) {
-    callSessions.delete(stale.callId);
-    userActiveCall.delete(callerId);
-    pendingCallsByCaller.delete(callerId);
+    cleanupPendingCall(stale);
   }
 
   const callId = `call_${callerId}_${receiverId}_${Date.now()}`;
@@ -126,6 +222,7 @@ export function handleCallRequest(callerId, data, database = db) {
 
   callSessions.set(callId, session);
   userActiveCall.set(callerId, session);
+  userActiveCall.set(receiverId, session);
   pendingCallsByCaller.set(callerId, session);
 
   const sanitizedPayload = {
@@ -153,11 +250,18 @@ export function handleCallAnswered(answererId, data) {
     return { ok: false, error: 'No active ringing call found from this caller.' };
   }
 
+  // Enforce 60-second TTL
+  if (isPendingCallExpired(session)) {
+    cleanupPendingCall(session);
+    return { ok: false, error: 'Call invitation has expired.', code: 'CALL_EXPIRED' };
+  }
+
   session.state = 'connected';
   session.participants.add(answererId);
   session.invitedParticipants.delete(answererId);
   session.lastActivity = Date.now();
 
+  userActiveCall.set(callerId, session);
   userActiveCall.set(answererId, session);
   pendingCallsByCaller.delete(callerId);
 
@@ -176,25 +280,33 @@ export function handleCallAnswered(answererId, data) {
 
 /**
  * Rejecting a 1:1 call request.
+ * Enforces that only the designated recipient of that exact pending call can reject it.
  */
 export function handleCallRejected(rejecterId, data) {
   const callerId = Number(data?.callerId);
-  if (!callerId) return { ok: false };
+  if (!callerId) return { ok: false, error: 'Missing callerId.' };
 
   const session = pendingCallsByCaller.get(callerId);
-  if (session && session.targetReceiverId === rejecterId) {
-    callSessions.delete(session.callId);
-    userActiveCall.delete(callerId);
-    userActiveCall.delete(rejecterId);
-    pendingCallsByCaller.delete(callerId);
+  if (!session || session.targetReceiverId !== rejecterId || session.state !== 'ringing') {
+    return { ok: false, error: 'No matching pending call found for this recipient to reject.' };
   }
+
+  // Enforce 60-second TTL
+  if (isPendingCallExpired(session)) {
+    cleanupPendingCall(session);
+    return { ok: false, error: 'Call invitation has expired.', code: 'CALL_EXPIRED' };
+  }
+
+  cleanupPendingCall(session);
 
   return {
     ok: true,
     callerId,
     sanitizedPayload: {
-      ...data,
-      rejecterId
+      callId: session.callId,
+      callerId,
+      rejecterId,
+      reason: data?.reason || 'Call rejected'
     }
   };
 }
@@ -227,15 +339,13 @@ export function handleCallEnded(senderId, data) {
     // Tear down session
     callSessions.delete(session.callId);
     session.participants.forEach(pid => userActiveCall.delete(pid));
+    session.invitedParticipants.forEach(pid => userActiveCall.delete(pid));
     pendingCallsByCaller.delete(session.callerId);
   } else if (targetId) {
     // Check if there was a pending call between sender and target
     const pending = pendingCallsByCaller.get(senderId) || pendingCallsByCaller.get(targetId);
     if (pending && (pending.callerId === senderId || pending.targetReceiverId === senderId)) {
-      callSessions.delete(pending.callId);
-      userActiveCall.delete(pending.callerId);
-      userActiveCall.delete(pending.targetReceiverId);
-      pendingCallsByCaller.delete(pending.callerId);
+      cleanupPendingCall(pending);
       peersToNotify.add(targetId);
     }
   }
@@ -252,6 +362,7 @@ export function handleCallEnded(senderId, data) {
 
 /**
  * Group Call: Inviting a new participant into an ongoing call.
+ * Enforces maximum 9-person group call ceiling.
  */
 export function handleGroupInvite(inviterId, data, database = db) {
   const receiverId = Number(data?.receiverId);
@@ -266,6 +377,16 @@ export function handleGroupInvite(inviterId, data, database = db) {
 
   if (session.participants.has(receiverId)) {
     return { ok: false, error: 'User is already in this call.', code: 'ALREADY_PARTICIPANT' };
+  }
+
+  // Enforce max 9-person group call ceiling
+  const totalParticipants = session.participants.size + session.invitedParticipants.size;
+  if (totalParticipants >= MAX_GROUP_PARTICIPANTS) {
+    return {
+      ok: false,
+      error: `Group call has reached the maximum capacity of ${MAX_GROUP_PARTICIPANTS} participants.`,
+      code: 'MAX_PARTICIPANTS_REACHED'
+    };
   }
 
   session.invitedParticipants.add(receiverId);
@@ -294,9 +415,9 @@ export function handleGroupInvite(inviterId, data, database = db) {
 
 /**
  * Group Call: Accepting an invitation to an ongoing call.
+ * Enforces maximum 9-person group call ceiling.
  */
 export function handleGroupAccepted(joinerId, data) {
-  // Find session where joiner has a pending invitation
   let session = null;
   for (const s of callSessions.values()) {
     if (s.invitedParticipants.has(joinerId)) {
@@ -307,6 +428,16 @@ export function handleGroupAccepted(joinerId, data) {
 
   if (!session || session.state !== 'connected') {
     return { ok: false, error: 'No active group call invitation found for your account.' };
+  }
+
+  // Enforce max 9-person group limit on accept
+  if (session.participants.size >= MAX_GROUP_PARTICIPANTS) {
+    session.invitedParticipants.delete(joinerId);
+    return {
+      ok: false,
+      error: `Group call has reached the maximum capacity of ${MAX_GROUP_PARTICIPANTS} participants.`,
+      code: 'MAX_PARTICIPANTS_REACHED'
+    };
   }
 
   session.participants.add(joinerId);
@@ -370,12 +501,9 @@ export function handleUserDisconnect(userId) {
   const peersToNotify = [];
 
   if (session.state === 'ringing') {
-    if (session.callerId === userId) {
-      callSessions.delete(session.callId);
-      userActiveCall.delete(session.callerId);
-      pendingCallsByCaller.delete(session.callerId);
-      if (session.targetReceiverId) peersToNotify.push(session.targetReceiverId);
-    }
+    const otherId = session.callerId === userId ? session.targetReceiverId : session.callerId;
+    cleanupPendingCall(session);
+    if (otherId) peersToNotify.push(otherId);
   } else if (session.state === 'connected') {
     session.participants.delete(userId);
     userActiveCall.delete(userId);
