@@ -298,11 +298,26 @@ async function main() {
     );
   `);
 
+  // Dynamic import of real auth.js router.
+  // CRITICAL INTEGRITY NOTE:
+  // Importing auth.js triggers server/bootstrap.js which runs dotenv.config({ override: true })
+  // in production mode. To prevent host .env from clobbering test secrets, we import auth.js
+  // first, then explicitly re-assert our dedicated test sentinels so that encryption during
+  // seeding matches decryption in the real auth route runtime.
+  const authModule = await import('../server/routes/auth.js');
+  const authRouter = authModule.default;
+
+  const testJwtSecret = 'test_integration_jwt_secret_1234567890';
+  const testRefreshSecret = 'test_integration_refresh_secret_1234567890';
+  process.env.JWT_SECRET = testJwtSecret;
+  process.env.JWT_REFRESH_SECRET = testRefreshSecret;
+  process.env.MFA_ENCRYPTION_KEY = testJwtSecret;
+
   // Seed User 1 (Super Admin, MFA enabled)
   const saHash = bcrypt.hashSync('SuperPass@123', 8);
   const totpModule = await import('../server/utils/totp.js');
   const base32TotpSecret = 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP';
-  const twoFactorSecret = totpModule.encryptSecret(base32TotpSecret);
+  const twoFactorSecret = totpModule.encryptSecret(base32TotpSecret, testJwtSecret);
 
   db.prepare(`
     INSERT INTO users (id, username, email, password_hash, role, first_name, last_name, is_super_admin, two_factor_enabled, two_factor_secret, token_version)
@@ -340,10 +355,6 @@ async function main() {
     rollbackCompleted: false
   };
   fs.writeFileSync(stateFilePath, JSON.stringify(defaultState, null, 2));
-
-  // Dynamic import of real auth.js router
-  const authModule = await import('../server/routes/auth.js');
-  const authRouter = authModule.default;
 
   // Helper to configure capability file
   function setCapability(payload) {

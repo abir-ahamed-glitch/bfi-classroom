@@ -2,7 +2,7 @@
 /**
  * scripts/test_pdf_browser.cjs
  *
- * Real Browser PDF.js 3.11.174 & Web Worker Regression Test Suite.
+ * Real Browser PDF.js Web Worker Regression Test Suite.
  * Exercises PdfViewer and all three PDF import components in Chromium via Playwright:
  * 1. src/components/PdfViewer.jsx
  * 2. src/components/admin/BulkRegisteredStudentImport.jsx
@@ -10,8 +10,8 @@
  * 4. src/components/admin/UploadResultsModal.jsx
  *
  * Verifies:
- * - Worker loading with genuine pdf.worker.min.js (confirming zero requests to non-existent .min.mjs)
- * - isEvalSupported: false reaches the real PDF loading operation (getDocument)
+ * - Worker loading with genuine pdf.worker.min.mjs (confirming zero requests to legacy .min.js)
+ * - isEvalSupported: false and enableXfa: false reach the real PDF loading operation (getDocument)
  * - Real browser rendering and text extraction
  * - Resilient error handling on malformed/corrupted PDF fixtures
  */
@@ -86,19 +86,23 @@ startxref
 }
 
 async function main() {
+  const pdfDistPkgPath = require.resolve('pdfjs-dist/package.json');
+  const pdfDistDir = path.join(path.dirname(pdfDistPkgPath), 'build');
+  const pdfDistPkg = JSON.parse(fs.readFileSync(pdfDistPkgPath, 'utf8'));
+  const pdfDistVersion = pdfDistPkg.version;
+
   console.log('================================================================');
   console.log('REAL BROWSER PDF.JS & WORKER REGRESSION SUITE');
-  console.log('Testing Engine: Chromium (via Playwright) + PDF.js 3.11.174');
+  console.log(`Testing Engine: Chromium (via Playwright) + PDF.js ${pdfDistVersion}`);
   console.log('================================================================\n');
 
-  const pdfDistDir = path.resolve(__dirname, '..', 'node_modules', 'pdfjs-dist', 'build');
-  const pdfJsPath = path.join(pdfDistDir, 'pdf.js');
-  const pdfWorkerPath = path.join(pdfDistDir, 'pdf.worker.min.js');
+  const pdfMjsPath = path.join(pdfDistDir, 'pdf.min.mjs');
+  const pdfWorkerPath = path.join(pdfDistDir, 'pdf.worker.min.mjs');
 
-  assert.ok(fs.existsSync(pdfJsPath), 'node_modules/pdfjs-dist/build/pdf.js must exist');
-  assert.ok(fs.existsSync(pdfWorkerPath), 'node_modules/pdfjs-dist/build/pdf.worker.min.js must exist');
+  assert.ok(fs.existsSync(pdfMjsPath), `pdfjs-dist/build/pdf.min.mjs must exist in ${pdfDistVersion}`);
+  assert.ok(fs.existsSync(pdfWorkerPath), `pdfjs-dist/build/pdf.worker.min.mjs must exist in ${pdfDistVersion}`);
 
-  const pdfJsCode = fs.readFileSync(pdfJsPath, 'utf8');
+  const pdfJsCode = fs.readFileSync(pdfMjsPath, 'utf8');
   const pdfWorkerCode = fs.readFileSync(pdfWorkerPath, 'utf8');
   const validPdfBytes = createValidPdfBuffer();
   const corruptPdfBytes = Buffer.from('%PDF-1.4\ncorrupted_data_not_valid_pdf_structure_trailer_missing');
@@ -110,21 +114,21 @@ async function main() {
     const url = new URL(req.url, 'http://127.0.0.1');
     requestedUrls.push(url.pathname);
 
-    if (url.pathname === '/pdfjs/pdf.js') {
+    if (url.pathname === '/pdfjs/pdf.mjs' || url.pathname === '/pdfjs/pdf.min.mjs') {
       res.writeHead(200, { 'Content-Type': 'application/javascript; charset=utf-8' });
       return res.end(pdfJsCode);
     }
-    if (url.pathname.endsWith('/pdf.worker.min.js') || url.pathname === '/pdf.worker.min.js') {
+    if (url.pathname.endsWith('/pdf.worker.min.mjs') || url.pathname === '/pdf.worker.min.mjs') {
       res.writeHead(200, { 'Content-Type': 'application/javascript; charset=utf-8' });
       return res.end(pdfWorkerCode);
     }
-    if (url.pathname.endsWith('.min.mjs')) {
+    if (url.pathname.endsWith('.min.js')) {
       res.writeHead(404, { 'Content-Type': 'text/plain' });
-      return res.end('404 Not Found - .mjs does not exist in 3.11.174');
+      return res.end(`404 Not Found - legacy .js does not exist in ${pdfDistVersion}`);
     }
 
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-    res.end(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>PDF Test Harness</title></head><body><h1>PDF Harness</h1></body></html>`);
+    res.end('<!DOCTYPE html><html><head><meta charset="utf-8"><title>PDF Test Harness</title></head><body><h1>PDF Harness</h1></body></html>');
   });
 
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -132,14 +136,14 @@ async function main() {
   const baseUrl = `http://127.0.0.1:${serverPort}`;
 
   console.log(`Local test server running at: ${baseUrl}`);
-  console.log(`Serving local PDF.js 3.11.174 & pdf.worker.min.js\n`);
+  console.log(`Serving local PDF.js ${pdfDistVersion} & pdf.worker.min.mjs\n`);
 
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext();
   const page = await context.newPage();
 
   // Intercept any unpkg or cdnjs requests to route to local server
-  await page.route('**/*pdf.worker.min.js*', route => {
+  await page.route('**/*pdf.worker.min.mjs*', route => {
     route.fulfill({
       status: 200,
       contentType: 'application/javascript; charset=utf-8',
@@ -150,22 +154,33 @@ async function main() {
   await page.goto(baseUrl);
 
   try {
-    // 1. Worker Filename Regression: verify no components request .min.mjs
-    await runTest('Worker Filenames: verify source files request pdf.worker.min.js (NOT .min.mjs)', () => {
+    // 1. Worker Filename Regression: verify components request pdf.worker.min.mjs (NOT legacy .min.js)
+    await runTest('Worker Filenames: verify source files request pdf.worker.min.mjs (NOT legacy .min.js)', () => {
       const srcDir = path.resolve(__dirname, '..', 'src', 'components');
       const import1 = fs.readFileSync(path.join(srcDir, 'admin', 'BulkRegisteredStudentImport.jsx'), 'utf8');
       const import2 = fs.readFileSync(path.join(srcDir, 'admin', 'BulkStudentImport.jsx'), 'utf8');
       const import3 = fs.readFileSync(path.join(srcDir, 'admin', 'UploadResultsModal.jsx'), 'utf8');
       const viewer = fs.readFileSync(path.join(srcDir, 'PdfViewer.jsx'), 'utf8');
 
-      assert.match(import1, /pdf\.worker\.min\.js/, 'BulkRegisteredStudentImport must specify pdf.worker.min.js');
-      assert.strictEqual(import1.includes('pdf.worker.min.mjs'), false, 'BulkRegisteredStudentImport must NOT reference .min.mjs');
+      assert.match(import1, /pdf\.worker\.min\.mjs/, 'BulkRegisteredStudentImport must specify pdf.worker.min.mjs');
+      assert.strictEqual(import1.includes('pdf.worker.min.js'), false, 'BulkRegisteredStudentImport must NOT reference legacy .min.js');
+      assert.match(import1, /isEvalSupported:\s*false/, 'BulkRegisteredStudentImport must specify isEvalSupported: false');
+      assert.match(import1, /enableXfa:\s*false/, 'BulkRegisteredStudentImport must specify enableXfa: false');
 
-      assert.match(import2, /pdf\.worker\.min\.js/, 'BulkStudentImport must specify pdf.worker.min.js');
-      assert.strictEqual(import2.includes('pdf.worker.min.mjs'), false, 'BulkStudentImport must NOT reference .min.mjs');
+      assert.match(import2, /pdf\.worker\.min\.mjs/, 'BulkStudentImport must specify pdf.worker.min.mjs');
+      assert.strictEqual(import2.includes('pdf.worker.min.js'), false, 'BulkStudentImport must NOT reference legacy .min.js');
+      assert.match(import2, /isEvalSupported:\s*false/, 'BulkStudentImport must specify isEvalSupported: false');
+      assert.match(import2, /enableXfa:\s*false/, 'BulkStudentImport must specify enableXfa: false');
 
-      assert.match(import3, /pdf\.worker\.min\.js/, 'UploadResultsModal must specify pdf.worker.min.js');
-      assert.match(viewer, /pdf\.worker\.min\.js/, 'PdfViewer must specify pdf.worker.min.js');
+      assert.match(import3, /pdf\.worker\.min\.mjs/, 'UploadResultsModal must specify pdf.worker.min.mjs');
+      assert.strictEqual(import3.includes('pdf.worker.min.js'), false, 'UploadResultsModal must NOT reference legacy .min.js');
+      assert.match(import3, /isEvalSupported:\s*false/, 'UploadResultsModal must specify isEvalSupported: false');
+      assert.match(import3, /enableXfa:\s*false/, 'UploadResultsModal must specify enableXfa: false');
+
+      assert.match(viewer, /pdf\.worker\.min\.mjs/, 'PdfViewer must specify pdf.worker.min.mjs');
+      assert.strictEqual(viewer.includes('pdf.worker.min.js'), false, 'PdfViewer must NOT reference legacy .min.js');
+      assert.match(viewer, /isEvalSupported:\s*false/, 'PdfViewer must specify isEvalSupported: false');
+      assert.match(viewer, /enableXfa:\s*false/, 'PdfViewer must specify enableXfa: false');
     });
 
     // Setup browser page with PDF.js library loaded
@@ -175,13 +190,10 @@ async function main() {
       <head>
         <meta charset="utf-8">
         <title>PDF Browser Evaluation Harness</title>
-        <script src="${baseUrl}/pdfjs/pdf.js"></script>
-      </head>
-      <body>
-        <div id="pdf-viewer-root"></div>
-        <script>
+        <script type="module">
+          import * as pdfjsLib from '${baseUrl}/pdfjs/pdf.min.mjs';
           window.__getDocumentCalls = [];
-          const origLib = window.pdfjsLib;
+          const origLib = pdfjsLib;
           const origGetDocument = origLib.getDocument.bind(origLib);
           window.pdfjsLib = new Proxy(origLib, {
             get(target, prop) {
@@ -189,6 +201,7 @@ async function main() {
                 return function(src) {
                   window.__getDocumentCalls.push({
                     isEvalSupported: typeof src === 'object' ? src.isEvalSupported : undefined,
+                    enableXfa: typeof src === 'object' ? src.enableXfa : undefined,
                     srcType: typeof src,
                     hasData: Boolean(typeof src === 'object' && src.data)
                   });
@@ -200,22 +213,22 @@ async function main() {
           });
           window.__harnessReady = Boolean(window.pdfjsLib);
         </script>
+      </head>
+      <body>
+        <div id="pdf-viewer-root"></div>
       </body>
       </html>
     `);
 
     await page.waitForFunction(() => window.__harnessReady === true, { timeout: 10000 });
 
-    // 2. Real Browser Worker Loading: loads pdf.worker.min.js into dedicated Worker
-    await runTest('Real Browser Worker: initializes Web Worker with pdf.worker.min.js without 404', async () => {
-      const workerUrl = `${baseUrl}/pdf.worker.min.js`;
+    // 2. Real Browser Worker Loading: loads pdf.worker.min.mjs into dedicated Worker
+    await runTest('Real Browser Worker: initializes Web Worker with pdf.worker.min.mjs without 404', async () => {
+      const workerUrl = `${baseUrl}/pdf.worker.min.mjs`;
       const result = await page.evaluate(async (url) => {
         window.pdfjsLib.GlobalWorkerOptions.workerSrc = url;
-        const validBytes = new Uint8Array([
-          0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34 // %PDF-1.4 header
-        ]);
-        // Trigger worker creation probe
-        const worker = new Worker(url);
+        // Trigger worker creation probe using module worker
+        const worker = new Worker(url, { type: 'module' });
         return new Promise((resolve) => {
           worker.onerror = (e) => resolve({ ok: false, error: e.message });
           // If worker script loaded without syntax or 404 errors, worker stays alive
@@ -229,24 +242,25 @@ async function main() {
       assert.strictEqual(result.ok, true, 'Worker must initialize cleanly');
     });
 
-    // 3. PdfViewer Param Transformation: proves transformGetDocumentParams sets isEvalSupported: false
+    // 3. PdfViewer Param Transformation: proves transformGetDocumentParams sets isEvalSupported: false and enableXfa: false
     await runTest('PdfViewer: transformGetDocumentParams injects isEvalSupported: false into getDocument', async () => {
       const result = await page.evaluate(async (pdfBytes) => {
         // Simulate PdfViewer's exact transformGetDocumentParams callback
         const transformGetDocumentParams = (params) => ({
           ...params,
           isEvalSupported: false,
+          enableXfa: false,
         });
 
         const initialParams = {
           data: new Uint8Array(pdfBytes),
-          cMapUrl: 'https://unpkg.com/pdfjs-dist@3.11.174/cmaps/',
+          cMapUrl: 'https://unpkg.com/pdfjs-dist@6.4.299/cmaps/',
           cMapPacked: true
         };
 
         const finalParams = transformGetDocumentParams(initialParams);
 
-        // Pass to pdfjsLib.getDocument exactly as @react-pdf-viewer/core does
+        // Pass to pdfjsLib.getDocument exactly as PdfViewer does
         const task = window.pdfjsLib.getDocument(finalParams);
         const doc = await task.promise;
         const page1 = await doc.getPage(1);
@@ -255,12 +269,14 @@ async function main() {
 
         return {
           finalParamsEvalSupported: finalParams.isEvalSupported,
+          finalParamsEnableXfa: finalParams.enableXfa,
           numPages: doc.numPages,
           text: extracted
         };
       }, Array.from(validPdfBytes));
 
       assert.strictEqual(result.finalParamsEvalSupported, false, 'isEvalSupported must be explicitly false');
+      assert.strictEqual(result.finalParamsEnableXfa, false, 'enableXfa must be explicitly false');
       assert.strictEqual(result.numPages, 1);
       assert.match(result.text, /BFI Classroom PDF Test/);
     });
@@ -271,6 +287,7 @@ async function main() {
         const transformGetDocumentParams = (params) => ({
           ...params,
           isEvalSupported: false,
+          enableXfa: false,
         });
 
         const params = transformGetDocumentParams({
@@ -298,13 +315,13 @@ async function main() {
     // 5. BulkRegisteredStudentImport parsing flow
     await runTest('BulkRegisteredStudentImport: parses valid PDF with isEvalSupported: false and groups rows', async () => {
       const result = await page.evaluate(async (pdfBytes) => {
-        window.pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${window.pdfjsLib.version}/pdf.worker.min.js`;
+        window.pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${window.pdfjsLib.version}/pdf.worker.min.mjs`;
 
         const evt = { target: { result: new Uint8Array(pdfBytes).buffer } };
         let data2D = [];
 
-        // Exact logic from src/components/admin/BulkRegisteredStudentImport.jsx lines 174-193:
-        const loadingTask = window.pdfjsLib.getDocument({ data: new Uint8Array(evt.target.result), isEvalSupported: false });
+        // Exact logic from src/components/admin/BulkRegisteredStudentImport.jsx:
+        const loadingTask = window.pdfjsLib.getDocument({ data: new Uint8Array(evt.target.result), isEvalSupported: false, enableXfa: false });
         const pdf = await loadingTask.promise;
         for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
           const p = await pdf.getPage(pageNum);
@@ -332,8 +349,9 @@ async function main() {
         };
       }, Array.from(validPdfBytes));
 
-      assert.match(result.workerSrc, /pdf\.worker\.min\.js$/, 'WorkerSrc must use pdf.worker.min.js');
+      assert.match(result.workerSrc, /pdf\.worker\.min\.mjs$/, 'WorkerSrc must use pdf.worker.min.mjs');
       assert.strictEqual(result.callRecord.isEvalSupported, false, 'isEvalSupported must be passed to getDocument');
+      assert.strictEqual(result.callRecord.enableXfa, false, 'enableXfa must be passed to getDocument');
       assert.ok(result.rows.length > 0, 'Extracted rows must be non-empty');
       assert.strictEqual(result.rows[0][0], 'BFI Classroom PDF Test');
     });
@@ -346,7 +364,7 @@ async function main() {
         let loggedError = null;
 
         try {
-          const loadingTask = window.pdfjsLib.getDocument({ data: new Uint8Array(evt.target.result), isEvalSupported: false });
+          const loadingTask = window.pdfjsLib.getDocument({ data: new Uint8Array(evt.target.result), isEvalSupported: false, enableXfa: false });
           await loadingTask.promise;
         } catch (parseErr) {
           errorCaught = true;
@@ -363,13 +381,13 @@ async function main() {
     // 7. BulkStudentImport parsing flow
     await runTest('BulkStudentImport: parses valid PDF with isEvalSupported: false', async () => {
       const result = await page.evaluate(async (pdfBytes) => {
-        window.pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${window.pdfjsLib.version}/pdf.worker.min.js`;
+        window.pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${window.pdfjsLib.version}/pdf.worker.min.mjs`;
 
         const evt = { target: { result: new Uint8Array(pdfBytes).buffer } };
         let data2D = [];
 
-        // Exact logic from src/components/admin/BulkStudentImport.jsx lines 192-211:
-        const loadingTask = window.pdfjsLib.getDocument({ data: new Uint8Array(evt.target.result), isEvalSupported: false });
+        // Exact logic from src/components/admin/BulkStudentImport.jsx:
+        const loadingTask = window.pdfjsLib.getDocument({ data: new Uint8Array(evt.target.result), isEvalSupported: false, enableXfa: false });
         const pdf = await loadingTask.promise;
         for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
           const p = await pdf.getPage(pageNum);
@@ -397,21 +415,22 @@ async function main() {
         };
       }, Array.from(validPdfBytes));
 
-      assert.match(result.workerSrc, /pdf\.worker\.min\.js$/, 'WorkerSrc must use pdf.worker.min.js');
+      assert.match(result.workerSrc, /pdf\.worker\.min\.mjs$/, 'WorkerSrc must use pdf.worker.min.mjs');
       assert.strictEqual(result.callRecord.isEvalSupported, false, 'isEvalSupported must be false');
+      assert.strictEqual(result.callRecord.enableXfa, false, 'enableXfa must be false');
       assert.ok(result.rows.length > 0);
     });
 
     // 8. UploadResultsModal parsing flow
     await runTest('UploadResultsModal: parses valid PDF with isEvalSupported: false', async () => {
       const result = await page.evaluate(async (pdfBytes) => {
-        window.pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${window.pdfjsLib.version}/pdf.worker.min.js`;
+        window.pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${window.pdfjsLib.version}/pdf.worker.min.mjs`;
 
         const evt = { target: { result: new Uint8Array(pdfBytes).buffer } };
         let data2D = [];
 
-        // Exact logic from src/components/admin/UploadResultsModal.jsx lines 61-80:
-        const loadingTask = window.pdfjsLib.getDocument({ data: new Uint8Array(evt.target.result), isEvalSupported: false });
+        // Exact logic from src/components/admin/UploadResultsModal.jsx:
+        const loadingTask = window.pdfjsLib.getDocument({ data: new Uint8Array(evt.target.result), isEvalSupported: false, enableXfa: false });
         const pdf = await loadingTask.promise;
         for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
           const p = await pdf.getPage(pageNum);
@@ -439,8 +458,9 @@ async function main() {
         };
       }, Array.from(validPdfBytes));
 
-      assert.match(result.workerSrc, /pdf\.worker\.min\.js$/, 'WorkerSrc must use pdf.worker.min.js');
+      assert.match(result.workerSrc, /pdf\.worker\.min\.mjs$/, 'WorkerSrc must use pdf.worker.min.mjs');
       assert.strictEqual(result.callRecord.isEvalSupported, false, 'isEvalSupported must be false');
+      assert.strictEqual(result.callRecord.enableXfa, false, 'enableXfa must be false');
       assert.ok(result.rows.length > 0);
     });
 
@@ -450,7 +470,8 @@ async function main() {
         try {
           const task = window.pdfjsLib.getDocument({
             data: new Uint8Array([]),
-            isEvalSupported: false
+            isEvalSupported: false,
+            enableXfa: false
           });
           await task.promise;
           return { caught: false };
@@ -470,7 +491,8 @@ async function main() {
         try {
           const task = window.pdfjsLib.getDocument({
             data: fakePdfBytes,
-            isEvalSupported: false
+            isEvalSupported: false,
+            enableXfa: false
           });
           await task.promise;
           return { caught: false };
@@ -488,9 +510,9 @@ async function main() {
     server.close();
   }
 
-  console.log(`\n================================================================`);
+  console.log('\n================================================================');
   console.log(`PDF Browser Regression Results: ${passedTests}/${totalTests} Passed`);
-  console.log(`================================================================`);
+  console.log('================================================================');
 
   if (passedTests !== totalTests) {
     process.exit(1);
