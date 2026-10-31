@@ -605,6 +605,86 @@ async function main() {
   await new Promise(r => setTimeout(r, 400));
   assertCheck('Alice & Frank session remains connected after group invite decline', frankReceivedOffer?.offer?.sdp, 'still-connected-sdp');
 
+  // ── 2.13 Socket-level Group-Call Invite Cancellation (Wire Verification) ─
+  let user101ReceivedCancel = null;
+  student101Socket.on('group-invite-cancelled', d => { user101ReceivedCancel = d; });
+
+  // Alice re-invites User 101 to test wire cancellation
+  let user101SecondInvite = null;
+  student101Socket.on('group-call-invite', d => { user101SecondInvite = d; });
+  aliceSocket.emit('group-call-invite', { receiverId: 101, callerData: { id: 10, name: 'Alice' } });
+  await new Promise(r => setTimeout(r, 400));
+  assertCheck('User 101 receives second group-call-invite over the wire', Boolean(user101SecondInvite?.callId), true);
+
+  // Negative: Third-party (Bob, not in call) emits group-invite-cancelled
+  bobSocket.emit('group-invite-cancelled', { callId: user101SecondInvite.callId, receiverId: 101 });
+  await new Promise(r => setTimeout(r, 400));
+  assertCheck('Unauthorized third-party cancel dropped over the wire', user101ReceivedCancel, null);
+
+  // Negative: Alice emits group-invite-cancelled with mismatched callId
+  aliceSocket.emit('group-invite-cancelled', { callId: 'call_mismatched_wire_id', receiverId: 101 });
+  await new Promise(r => setTimeout(r, 400));
+  assertCheck('Mismatched callId cancel dropped over the wire', user101ReceivedCancel, null);
+
+  // Positive: Alice emits legitimate group-invite-cancelled
+  aliceSocket.emit('group-invite-cancelled', { callId: user101SecondInvite.callId, receiverId: 101 });
+  await new Promise(r => setTimeout(r, 400));
+  assertCheck('User 101 receives legitimate group-invite-cancelled over the wire', user101ReceivedCancel?.callId, user101SecondInvite.callId);
+
+  // ── 2.14 Socket-level Stale Event & Missing callId Wire Rejection ────────
+  // Alice invites User 101 a third time
+  let wireInvite = null;
+  student101Socket.on('group-call-invite', d => { wireInvite = d; });
+  aliceSocket.emit('group-call-invite', { receiverId: 101, callerData: { id: 10, name: 'Alice' } });
+  await new Promise(r => setTimeout(r, 400));
+  assertCheck('User 101 receives third group-call-invite for wire stale tests', Boolean(wireInvite?.callId), true);
+
+  // Wire Negative A: Missing callId on group-call-accepted -> dropped by server
+  let wireJoinReceived = null;
+  aliceSocket.on('group-call-accepted', d => { wireJoinReceived = d; });
+  frankSocket.on('group-call-accepted', d => { wireJoinReceived = d; });
+  student101Socket.emit('group-call-accepted', { joinerData: { id: 101 } });
+  await new Promise(r => setTimeout(r, 400));
+  assertCheck('group-call-accepted with missing callId dropped over wire', wireJoinReceived, null);
+
+  // Wire Negative B: Stale callId on group-call-accepted -> dropped by server
+  student101Socket.emit('group-call-accepted', { callId: 'stale_call_ended_wire', joinerData: { id: 101 } });
+  await new Promise(r => setTimeout(r, 400));
+  assertCheck('group-call-accepted with stale callId dropped over wire', wireJoinReceived, null);
+
+  // Wire Negative C: Missing callId on group-call-declined -> dropped by server
+  let wireDeclineReceived = null;
+  aliceSocket.on('group-call-declined', d => { wireDeclineReceived = d; });
+  frankSocket.on('group-call-declined', d => { wireDeclineReceived = d; });
+  student101Socket.emit('group-call-declined', { inviterId: 10 });
+  await new Promise(r => setTimeout(r, 400));
+  assertCheck('group-call-declined with missing callId dropped over wire', wireDeclineReceived, null);
+
+  // Wire Negative D: Stale callId on group-call-declined -> dropped by server
+  student101Socket.emit('group-call-declined', { callId: 'stale_call_ended_wire', inviterId: 10 });
+  await new Promise(r => setTimeout(r, 400));
+  assertCheck('group-call-declined with stale callId dropped over wire', wireDeclineReceived, null);
+
+  // Wire Positive: Legitimate group-call-accepted with matching callId
+  let aliceReceivedWireJoin = null;
+  let frankReceivedWireJoin = null;
+  aliceSocket.on('group-call-accepted', d => { aliceReceivedWireJoin = d; });
+  frankSocket.on('group-call-accepted', d => { frankReceivedWireJoin = d; });
+  student101Socket.emit('group-call-accepted', {
+    callId: wireInvite.callId,
+    joinerData: { id: 101, name: 'Student 101' }
+  });
+  await new Promise(r => setTimeout(r, 400));
+  assertCheck('Alice receives legitimate group-call-accepted over the wire', aliceReceivedWireJoin?.joinerData?.id, 101);
+  assertCheck('Frank receives legitimate group-call-accepted over the wire', frankReceivedWireJoin?.joinerData?.id, 101);
+
+  // Wire signaling check: newly joined User 101 sends offer to Frank
+  let frankReceivedWireOffer = null;
+  frankSocket.on('group-webrtc-offer', d => { frankReceivedWireOffer = d; });
+  student101Socket.emit('group-webrtc-offer', { receiverId: 60, offer: { sdp: 'user101-group-sdp' } });
+  await new Promise(r => setTimeout(r, 400));
+  assertCheck('Frank receives group-webrtc-offer from User 101 over the wire', frankReceivedWireOffer?.offer?.sdp, 'user101-group-sdp');
+
   // Frank ends call
   let aliceReceivedEnded = null;
   aliceSocket.on('call-ended', d => { aliceReceivedEnded = d; });
@@ -903,7 +983,7 @@ async function main() {
   const staleCallId = callA.callId;
   // End Call A
   signalingModule.handleCallEnded(10, { targetId: 60 });
-  assertCheck('Call A cleanly ended and removed from callSessions', signalingModule.callSessions.has(staleCallId), false);
+  assertCheck('Call A cleanly ended and removed from callSessions', signalingModule.__testing.hasSession(staleCallId), false);
 
   // Step B: Wait 15ms so timestamp advances, start new Call B (Alice & Frank) and invite User 107
   await new Promise(r => setTimeout(r, 15));
@@ -935,7 +1015,7 @@ async function main() {
   // Step E: Stale cancellation with staleCallId by Alice -> rejected, does NOT alter Call B
   const staleCancel = signalingModule.handleGroupInviteCancelled(10, { receiverId: 107, callId: staleCallId });
   assertCheck('Stale cancellation with old callId fails', staleCancel.ok, false);
-  assertCheck('Stale cancellation returns CALL_MISMATCH', staleCancel.code, 'CALL_MISMATCH');
+  assertCheck('Stale cancellation returns CALL_NOT_FOUND', staleCancel.code, 'CALL_NOT_FOUND');
   assertCheck('User 107 remains pending in Call B after stale cancellation', callB.invitedParticipants.has(107), true);
   assertCheck('User 107 busy state remains invited after stale cancellation', signalingModule.userBusyState(107)?.state, 'invited');
 
@@ -945,13 +1025,13 @@ async function main() {
   assertCheck('User 107 remains pending in Call B after stale handleCallRejected', callB.invitedParticipants.has(107), true);
 
   // Step G: Stale decline with another existing session's callId that did not invite User 107
-  const callC = { callId: 'call_concurrent_dummy', state: 'connected', participants: new Set([80, 81]), invitedParticipants: new Set() };
-  signalingModule.callSessions.set(callC.callId, callC);
+  const callC = signalingModule.handleCallRequest(105, { receiverId: 106 }, activeDb).session;
+  signalingModule.handleCallAnswered(106, { callerId: 105 });
   const mismatchedDecline = signalingModule.handleGroupInviteDeclined(107, { callId: callC.callId });
   assertCheck('Decline with mismatched concurrent callId fails', mismatchedDecline.ok, false);
   assertCheck('Mismatched decline returns NOT_INVITED', mismatchedDecline.code, 'NOT_INVITED');
   assertCheck('User 107 remains pending in Call B after mismatched decline', callB.invitedParticipants.has(107), true);
-  signalingModule.callSessions.delete(callC.callId);
+  signalingModule.handleCallEnded(105, { targetId: 106 });
 
   // Step H: Legitimate acceptance with the exact matching activeCallId succeeds
   const legitAccept = signalingModule.handleGroupAccepted(107, { callId: activeCallId });
@@ -959,6 +1039,46 @@ async function main() {
   assertCheck('User 107 added to Call B participants', callB.participants.has(107), true);
   assertCheck('User 107 removed from Call B invitedParticipants', callB.invitedParticipants.has(107), false);
   assertCheck('User 107 busy state is now connected', signalingModule.userBusyState(107)?.state, 'connected');
+
+  // ── 3.4.7 Error Contract & Non-Connected Decline Controls ─────────────────
+  console.log('\n--- SUITE 3.4.7: Error Contract & Non-Connected State Controls ---\n');
+
+  // Five failure branches of handleGroupInviteCancelled:
+  // Branch 1: INVALID_CALL_ID
+  const cancelInvCallId = signalingModule.handleGroupInviteCancelled(10, { receiverId: 107, callId: '' });
+  assertCheck('Cancel missing callId returns INVALID_CALL_ID', cancelInvCallId.code, 'INVALID_CALL_ID');
+
+  // Branch 2: INVALID_RECEIVER_ID
+  const cancelInvRecId = signalingModule.handleGroupInviteCancelled(10, { callId: callB.callId, receiverId: 'invalid' });
+  assertCheck('Cancel invalid receiverId returns INVALID_RECEIVER_ID', cancelInvRecId.code, 'INVALID_RECEIVER_ID');
+
+  // Branch 3: CALL_NOT_FOUND (session does not exist or not connected)
+  const cancelNotFound = signalingModule.handleGroupInviteCancelled(10, { callId: 'non_existent_call_123', receiverId: 107 });
+  assertCheck('Cancel nonexistent session returns CALL_NOT_FOUND', cancelNotFound.code, 'CALL_NOT_FOUND');
+
+  // Branch 4: CALL_MISMATCH (canceller is active in a different call than the provided callId)
+  const callD = signalingModule.handleCallRequest(105, { receiverId: 106 }, activeDb).session;
+  signalingModule.handleCallAnswered(106, { callerId: 105 });
+  const cancelMismatch = signalingModule.handleGroupInviteCancelled(105, { callId: callB.callId, receiverId: 107 });
+  assertCheck('Canceller in different call returns CALL_MISMATCH', cancelMismatch.code, 'CALL_MISMATCH');
+  signalingModule.handleCallEnded(105, { targetId: 106 });
+
+  // Branch 5: NOT_IN_CALL (canceller is not in any active connected call, but calls a valid session)
+  const cancelNotInCall = signalingModule.handleGroupInviteCancelled(20, { callId: callB.callId, receiverId: 107 });
+  assertCheck('Canceller not in call returns NOT_IN_CALL', cancelNotInCall.code, 'NOT_IN_CALL');
+
+  // Branch 6: NOT_INVITED (canceller is in callB, but receiver was not invited)
+  const cancelNotInvited = signalingModule.handleGroupInviteCancelled(10, { callId: callB.callId, receiverId: 20 });
+  assertCheck('Canceller targeting uninvited user returns NOT_INVITED', cancelNotInvited.code, 'NOT_INVITED');
+
+  // Non-connected state check on decline (Correction 3):
+  const ringingSession = signalingModule.handleCallRequest(105, { receiverId: 106 }, activeDb).session;
+  ringingSession.invitedParticipants.add(107); // simulate invite on ringing session
+  const declineNonConnected = signalingModule.handleGroupInviteDeclined(107, { callId: ringingSession.callId });
+  assertCheck('Decline against non-connected ringing session fails', declineNonConnected.ok, false);
+  assertCheck('Decline against non-connected session returns CALL_NOT_FOUND', declineNonConnected.code, 'CALL_NOT_FOUND');
+  assertCheck('Ringing session invitedParticipants not mutated', ringingSession.invitedParticipants.has(107), true);
+  signalingModule.handleCallEnded(105, { targetId: 106 });
 
   // Teardown
   for (const s of [student101Socket, aliceSocket, bobSocket, frankSocket, superSocket, mallorySocket, graceSocket, ivanSocket]) {

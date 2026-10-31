@@ -150,9 +150,23 @@ function isProxyDomainAllowed(hostname) {
 }
 
 
-// Lightweight health readiness probe endpoint for deployment, monitoring, and automated test harnesses
+// Correlation ID Middleware for end-to-end request tracing & audit logs
+app.use((req, res, next) => {
+  const incoming = req.headers['x-correlation-id'];
+  req.correlationId = (typeof incoming === 'string' && incoming.trim()) ? incoming.trim() : (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 15));
+  res.setHeader('X-Correlation-ID', req.correlationId);
+  next();
+});
+
+// Genuine health readiness probe endpoint for deployment, monitoring, and automated test harnesses
+// Verifies HTTP gateway liveness and active database connectivity
 app.get(['/health', '/api/health', '/bfi-classroom/health', '/bfi-classroom/api/health'], (_req, res) => {
-  res.status(200).json({ status: 'ok', timestamp: Date.now() });
+  try {
+    db.prepare('SELECT 1').get();
+    res.status(200).json({ status: 'ok', timestamp: Date.now() });
+  } catch (err) {
+    res.status(503).json({ status: 'degraded', error: 'Database unreachable', timestamp: Date.now() });
+  }
 });
 
 // SEC-02 & SEC-05: Dedicated rate limiter for public proxy and link preview endpoints
@@ -442,14 +456,6 @@ app.use(cors(corsOptions));
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use(cookieParser());
-
-// Correlation ID Middleware for end-to-end request tracing & audit logs
-app.use((req, res, next) => {
-  const incoming = req.headers['x-correlation-id'];
-  req.correlationId = (typeof incoming === 'string' && incoming.trim()) ? incoming.trim() : (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 15));
-  res.setHeader('X-Correlation-ID', req.correlationId);
-  next();
-});
 
 // Inbox attachments are private. Use /api/inbox/attachments/:filename so the
 // API can verify the requesting user belongs to that conversation.

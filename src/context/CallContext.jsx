@@ -28,6 +28,7 @@ export const CallProvider = ({ children }) => {
   const [isMuted, setIsMuted]         = useState(false);
   const [isVideoOff, setIsVideoOff]   = useState(false);
   const [showAddPerson, setShowAddPerson] = useState(false);
+  const [pendingInvites, setPendingInvites] = useState(new Set()); // Set<number(userId)>
 
   // Group call participants: Map<string(id), { id, data, stream }>
   const [participants, setParticipants] = useState(new Map());
@@ -136,6 +137,7 @@ export const CallProvider = ({ children }) => {
     setIsVideoOff(false);
     setParticipants(new Map());
     setShowAddPerson(false);
+    setPendingInvites(new Set());
   }, []);
 
   const postCallLog = useCallback(async (call, status, durationSeconds) => {
@@ -281,6 +283,9 @@ export const CallProvider = ({ children }) => {
       callStartTimeRef.current = Date.now();
       callStatusRef.current = 'answered';
       setCallState('connected');
+      if (data?.callId) {
+        setActiveCall(prev => (prev ? { ...prev, callId: data.callId } : prev));
+      }
 
       // Add the callee as a participant
       const calleeId = String(activeCallRef.current?.targetId);
@@ -386,7 +391,7 @@ export const CallProvider = ({ children }) => {
     socket.on('group-invite-cancelled', (data) => {
       console.log('[GroupCall] group-invite-cancelled', data);
       if (incomingCallRef.current?.isGroupInvite &&
-          (!data.callId || incomingCallRef.current.callId === data.callId)) {
+          incomingCallRef.current.callId === data?.callId) {
         soundManager.stopAll();
         setIncomingCall(null);
         setCallState('idle');
@@ -395,6 +400,13 @@ export const CallProvider = ({ children }) => {
 
     socket.on('group-call-declined', (data) => {
       console.log('[GroupCall] group-call-declined by user', data?.declinerId);
+      if (data?.declinerId) {
+        setPendingInvites(prev => {
+          const next = new Set(prev);
+          next.delete(Number(data.declinerId));
+          return next;
+        });
+      }
     });
 
     socket.on('group-call-accepted', async (data) => {
@@ -403,6 +415,11 @@ export const CallProvider = ({ children }) => {
       
       const joiner = data.joinerData;
       const joinerId = String(joiner.id);
+      setPendingInvites(prev => {
+        const next = new Set(prev);
+        next.delete(Number(joiner.id));
+        return next;
+      });
 
       // Add joiner to participants
       setParticipants(prev => {
@@ -765,6 +782,7 @@ export const CallProvider = ({ children }) => {
         targetData: incoming.callerData,
         hasVideo: incoming.callerData.hasVideo || hasVideo,
         isCaller: false,
+        callId: incoming.callId,
       });
       setCallState('connected');
       setupPeerConnection(callerId);
@@ -795,8 +813,24 @@ export const CallProvider = ({ children }) => {
       hasVideo: activeCallRef.current?.hasVideo || false,
     });
 
+    setPendingInvites(prev => new Set(prev).add(Number(userId)));
     setShowAddPerson(false);
   }, [getMyCallerData]);
+
+  const cancelGroupInvite = useCallback((receiverId) => {
+    const numReceiverId = Number(receiverId);
+    const callId = activeCallRef.current?.callId;
+    if (!socketRef.current?.connected || callStateRef.current !== 'connected' || !callId || !numReceiverId) return;
+    socketRef.current.emit('group-invite-cancelled', {
+      callId,
+      receiverId: numReceiverId
+    });
+    setPendingInvites(prev => {
+      const next = new Set(prev);
+      next.delete(numReceiverId);
+      return next;
+    });
+  }, []);
 
   const toggleMute = useCallback(() => {
     if (!localStreamRef.current) return;
@@ -837,6 +871,8 @@ export const CallProvider = ({ children }) => {
       showAddPerson,
       setShowAddPerson,
       addParticipant,
+      cancelGroupInvite,
+      pendingInvites,
     }}>
       {children}
     </CallContext.Provider>

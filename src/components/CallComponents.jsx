@@ -184,7 +184,7 @@ export function IncomingCallAlert() {
 /* ─── Active Call Screen ──────────────────────────────────────────── */
 /* ─── Add Person Modal ────────────────────────────────────────────── */
 function AddPersonModal({ onClose }) {
-  const { addParticipant, participants, onlineUsers } = useCall();
+  const { addParticipant, cancelGroupInvite, pendingInvites, participants, onlineUsers } = useCall();
   const { currentUser } = useAuth();
   const [users, setUsers] = useState([]);
   const [query, setQuery] = useState('');
@@ -272,18 +272,33 @@ function AddPersonModal({ onClose }) {
                   <div style={{ color: 'white', fontWeight: 600, fontSize: '0.88rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{u.name || u.username}</div>
                   <div style={{ color: isOnline ? '#10b981' : 'rgba(255,255,255,0.35)', fontSize: '0.75rem' }}>{isOnline ? 'Online' : 'Offline'}</div>
                 </div>
-                <button
-                  onClick={() => addParticipant(u.id, u)}
-                  disabled={atCapacity}
-                  title={atCapacity ? `Max ${MAX_PARTICIPANTS} participants` : 'Invite to call'}
-                  style={{
-                    background: atCapacity ? 'rgba(255,255,255,0.08)' : 'linear-gradient(135deg,#6366f1,#8b5cf6)',
-                    border: 'none', borderRadius: '8px',
-                    color: atCapacity ? 'rgba(255,255,255,0.3)' : 'white',
-                    padding: '6px 12px', fontSize: '0.8rem',
-                    cursor: atCapacity ? 'not-allowed' : 'pointer', flexShrink: 0,
-                  }}
-                >Invite</button>
+                {pendingInvites?.has(Number(u.id)) ? (
+                  <button
+                    onClick={() => cancelGroupInvite(u.id)}
+                    title="Cancel invitation"
+                    style={{
+                      background: 'rgba(239,68,68,0.2)',
+                      border: '1px solid rgba(239,68,68,0.5)',
+                      borderRadius: '8px',
+                      color: '#fca5a5',
+                      padding: '6px 12px', fontSize: '0.8rem',
+                      cursor: 'pointer', flexShrink: 0,
+                    }}
+                  >Cancel</button>
+                ) : (
+                  <button
+                    onClick={() => addParticipant(u.id, u)}
+                    disabled={atCapacity}
+                    title={atCapacity ? `Max ${MAX_PARTICIPANTS} participants` : 'Invite to call'}
+                    style={{
+                      background: atCapacity ? 'rgba(255,255,255,0.08)' : 'linear-gradient(135deg,#6366f1,#8b5cf6)',
+                      border: 'none', borderRadius: '8px',
+                      color: atCapacity ? 'rgba(255,255,255,0.3)' : 'white',
+                      padding: '6px 12px', fontSize: '0.8rem',
+                      cursor: atCapacity ? 'not-allowed' : 'pointer', flexShrink: 0,
+                    }}
+                  >Invite</button>
+                )}
               </div>
             );
           })}

@@ -3,7 +3,12 @@
 /**
  * scripts/reproduce_security_issues.cjs
  *
- * Isolated reproduction test suite:
+ * HISTORICAL SECURITY REPRODUCTION ARTIFACT
+ * Note: This script was authored to isolate and reproduce the vulnerabilities discovered in
+ * release 6784547 prior to the hardened defenses implemented in commits 806832b and 88d274e.
+ * In the hardened codebase, group-call-accepted strictly requires an exact matching callId
+ * and active invitation membership; client-controlled participant broadcasts fail closed.
+ *
  * 1. Test every report screenshot URL alias (/uploads, /bfi-classroom/uploads, /media, /bfi-classroom/media, and /view)
  *    across unauthenticated, unrelated user, unrelated admin, owner, moderator, and Super Admin.
  * 2. Test Socket.IO 1:1 and group-call signaling across arbitrary recipients, inactive users, and forged payloads.
@@ -310,7 +315,10 @@ async function run() {
     bReceivedGroupAccepted = data;
   });
 
+  // Note: Post-hardening, handleGroupAccepted rejects missing callId (INVALID_CALL_ID).
+  // Passing exploratory callId verifies that client-specified arbitrary participantIds fail closed.
   clientA.emit('group-call-accepted', {
+    callId: 'call_test_exploratory_broadcast',
     participantIds: [20], // Client specifies arbitrary target user IDs
     joinerData: { id: 10, name: 'Spam Joiner' }
   });

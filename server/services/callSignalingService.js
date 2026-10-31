@@ -36,15 +36,15 @@ export const MAX_GROUP_PARTICIPANTS = 9;       // Maximum 9 participants per gro
 
 // In-memory call sessions
 // callId -> CallSession
-export const callSessions = new Map();
+const callSessions = new Map();
 
 // userId -> CallSession (current active or ringing call)
 // A user appears here as soon as a call is initiated (as caller OR receiver),
 // and is removed when the call ends, is rejected, or expires.
-export const userActiveCall = new Map();
+const userActiveCall = new Map();
 
 // Pending ringing calls by callerId -> CallSession
-export const pendingCallsByCaller = new Map();
+const pendingCallsByCaller = new Map();
 
 // ─── Internal helpers ────────────────────────────────────────────────────────
 
@@ -462,7 +462,7 @@ export function handleCallRejected(rejecterId, data) {
   // 2. Fallback: check if rejecterId is declining an invited group call with exact callId
   if (callId && typeof callId === 'string' && callId.trim()) {
     const s = callSessions.get(callId);
-    if (s && s.invitedParticipants?.has(rejecterId)) {
+    if (s && s.state === 'connected' && s.invitedParticipants?.has(rejecterId)) {
       const result = handleGroupInviteDeclined(rejecterId, { callId: s.callId, reason: data?.reason });
       if (result.ok) {
         result.isGroupInvite = true;
@@ -678,8 +678,8 @@ export function handleGroupInviteDeclined(declinerId, data) {
   }
 
   const session = callSessions.get(callId);
-  if (!session) {
-    return { ok: false, error: 'No matching call session found for this callId.', code: 'CALL_NOT_FOUND' };
+  if (!session || session.state !== 'connected') {
+    return { ok: false, error: 'No active connected call found for this callId.', code: 'CALL_NOT_FOUND' };
   }
 
   if (!session.invitedParticipants?.has(declinerId)) {
@@ -724,15 +724,24 @@ export function handleGroupInviteCancelled(cancellerId, data) {
   }
 
   const receiverId = Number(data?.receiverId);
-  if (!receiverId) return { ok: false, error: 'Missing receiverId.' };
-
-  const session = userActiveCall.get(cancellerId);
-  if (!session || session.state !== 'connected' || !session.participants?.has(cancellerId)) {
-    return { ok: false, error: 'You are not in an active connected call.' };
+  if (!receiverId || !Number.isInteger(receiverId)) {
+    return { ok: false, error: 'Missing or invalid receiverId.', code: 'INVALID_RECEIVER_ID' };
   }
 
-  if (session.callId !== callId) {
-    return { ok: false, error: 'Mismatched callId.', code: 'CALL_MISMATCH' };
+  // Resolve session from callSessions.get(callId) first
+  const session = callSessions.get(callId);
+  if (!session || session.state !== 'connected') {
+    return { ok: false, error: 'No active connected call found for this callId.', code: 'CALL_NOT_FOUND' };
+  }
+
+  // Check if canceller is active in another call vs this call
+  const activeCall = userActiveCall.get(cancellerId);
+  if (activeCall && activeCall !== session) {
+    return { ok: false, error: 'Mismatched callId: you are active in a different call.', code: 'CALL_MISMATCH' };
+  }
+
+  if (!session.participants?.has(cancellerId)) {
+    return { ok: false, error: 'You are not an active participant in this call.', code: 'NOT_IN_CALL' };
   }
 
   if (!session.invitedParticipants?.has(receiverId)) {
@@ -859,3 +868,15 @@ export function resetCallSignalingState() {
   userActiveCall.clear();
   pendingCallsByCaller.clear();
 }
+
+/**
+ * Read-only test interface for test state inspection without exposing mutable Map references.
+ */
+export const __testing = Object.freeze({
+  getSession: (callId) => callSessions.get(callId),
+  hasSession: (callId) => callSessions.has(callId),
+  listSessionIds: () => Array.from(callSessions.keys()),
+  getActiveCall: (userId) => userActiveCall.get(userId),
+  getPendingCall: (callerId) => pendingCallsByCaller.get(callerId),
+  reset: () => resetCallSignalingState()
+});
