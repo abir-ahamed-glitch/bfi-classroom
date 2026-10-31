@@ -33,7 +33,7 @@ async function runLoopbackTests() {
 
   if (process.platform !== 'linux') {
     console.log(`⚠️ Current platform is '${process.platform}'. Native 'ss' requires Linux.`);
-    console.log('Skipping live ss execution on non-Linux host (verified via SSH on target host).');
+    console.log('Skipping live ss execution on a non-Linux host — 0 assertions executed.');
     return;
   }
 
