@@ -328,3 +328,90 @@ Update the production `.env` (or systemd environment) to set `MFA_ENCRYPTION_KEY
 > 2. **Token Revocation (Outstanding Manual Action):**
 >    - Because tokens can only be invalidated by the account that created them, the token remains cryptographically active on GitHub until manually revoked.
 >    - The token owner (`mdkawsarahamed`) must log into GitHub, navigate to **Settings -> Developer Settings -> Personal Access Tokens**, identify the corresponding token, and click **Revoke** to permanently destroy it.
+
+
+---
+
+## 8. OCI Cloud Infrastructure Diagnostics & Environment Configuration
+
+The diagnostic suites (`scripts/test_oci.cjs` and `scripts/test_oci_post.cjs`) probe Oracle Cloud Infrastructure (OCI) APIs using RSA request signatures (RFC draft-cavage-http-signatures-10 / OCI standard).
+
+### Required Environment Variables
+To execute live authenticated diagnostics without hard-coding secrets or tenancy identifiers in source control:
+
+| Variable | Description | Source in OCI Console |
+| :--- | :--- | :--- |
+| `OCI_TENANCY_OCID` | Oracle Cloud Tenancy Identifier | **Tenancy Details** page (Profile -> Tenancy: `<name>`) |
+| `OCI_USER_OCID` | IAM User OCID | **User Details** page (Profile -> User Settings) |
+| `OCI_FINGERPRINT` | MD5 Fingerprint of the registered RSA key | **User Settings -> API Keys** table |
+| `OCI_KEY_PATH` | Path to RSA private key PEM file | Local filesystem (default: `~/.oci/oci_api_key.pem`, permissions `0600`) |
+| `OCI_REGION` | Target region endpoint (default: `ap-singapore-1`) | OCI Region Selector |
+
+### Diagnostic Gate Assertions & Skip Convention
+- **When environment variables are missing:** The test suites cleanly skip live API network execution and print:
+  `Skipping live OCI API call — 0 assertions executed.`
+  This prevents false CI failures on developer workstations while explicitly documenting zero assertions.
+- **When credentials are configured:** The suites execute signed HTTPS requests and assert:
+  1. OCI API accepts the signature authentication (HTTP non-401).
+  2. The response body is valid, parseable JSON.
+  3. The tenancy compartment query is handled by the OCI API.
+  Any assertion failure results in non-zero exit code (`exit 1`).
+
+---
+
+## 9. Executable Production Lifecycle Handoff & Secret Rotation (§E3 Specification)
+
+> [!IMPORTANT]
+> **Production Deployment Gate Active:**  
+> This lifecycle redeployment re-encrypts all user TOTP two-factor authentication secrets under a fresh MFA key and rebuilds the production web bundle. Run this only after owner authorization.
+
+### Supported CLI Surface of `production_lifecycle.cjs`
+The canonical interface supported by `server/.recovery_tools/production_lifecycle.cjs` (and `scripts/production_lifecycle.cjs`) is:
+```bash
+node server/.recovery_tools/production_lifecycle.cjs <deploy|rollback> [--target-commit <SHA>] [--rotate-mfa] [--previous-revision <SHA>] [--root-dir <PATH>] [--database-path <PATH>] [--env-path <PATH>]
+```
+> [!NOTE]
+> Options `--new-mfa-key`, `--new-jwt-secret`, and `--new-refresh-secret` **do not exist as CLI flags**; passing them on the command line is silently ignored. The deployment tool reads the replacement MFA encryption key exclusively from the environment variable `NEW_MFA_ENCRYPTION_KEY`.
+
+### Exact Execution Sequence
+
+```bash
+# ── ON THE PRODUCTION HOST (129.221.243.153) ─────────────────────────────────
+ssh -i ~/.ssh/oracle_bfi ubuntu@129.221.243.153
+cd /home/ubuntu/bfi-classroom
+
+# 1. Fetch target commit from origin. The production host does NOT have it locally until fetched!
+git fetch origin 11a1f1c7bfd64096bbe1821e78b26a6331dbf866
+git cat-file -t 11a1f1c7bfd64096bbe1821e78b26a6331dbf866   # Must print: commit
+
+# 2. Stage Cloudflare Turnstile keys in .env.
+#    The site key is compiled into the client bundle at build time.
+#    Retrieve the secret key from Cloudflare Dashboard (Account 18f46e7d161d0b8ef1b25ec8ea97e27d -> Turnstile -> classroom-turnstile).
+sed -i 's|^CLOUDFLARE_TURNSTILE_SITE_KEY=.*|CLOUDFLARE_TURNSTILE_SITE_KEY=0x4AAAAAAFuM3vEclHqjSsKd|' .env
+sed -i 's|^CLOUDFLARE_TURNSTILE_SECRET_KEY=.*|CLOUDFLARE_TURNSTILE_SECRET_KEY=0x4AAAAAAFuM3hOSHd9zKBIZLATGw-56rFU|' .env
+sed -i 's|^VITE_CLOUDFLARE_TURNSTILE_SITE_KEY=.*|VITE_CLOUDFLARE_TURNSTILE_SITE_KEY=0x4AAAAAAFuM3vEclHqjSsKd|' .env
+chmod 0600 .env
+
+# 3. Pre-flight Turnstile secret validation against Cloudflare API:
+curl -s -X POST https://challenges.cloudflare.com/turnstile/v0/siteverify \
+  -d "secret=0x4AAAAAAFuM3hOSHd9zKBIZLATGw-56rFU" \
+  -d "response=invalid-probe" \
+  -d "remoteip=127.0.0.1"
+# Required verification: Must return {"error-codes":["invalid-input-response"],"success":false,...}
+# (i.e. secret accepted by Cloudflare, only the fake probe token is rejected).
+
+# 4. Export NEW_MFA_ENCRYPTION_KEY.
+#    `export` is mandatory because production_lifecycle.cjs reads the new key from environment only.
+export NEW_MFA_ENCRYPTION_KEY="$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))")"
+
+# 5. Execute lifecycle deployment pinned to target commit:
+node server/.recovery_tools/production_lifecycle.cjs deploy \
+  --target-commit="11a1f1c7bfd64096bbe1821e78b26a6331dbf866" \
+  --rotate-mfa
+```
+
+### User Impact Analysis
+1. **User MFA Secrets Re-encrypted (No Re-enrolment):** Stored TOTP secrets in SQLite are re-encrypted under `$NEW_MFA_ENCRYPTION_KEY` via `scripts/rotate_mfa_secrets.cjs`. Users continue using their existing authenticator apps without interruption.
+2. **Active User Sessions Retained:** `JWT_SECRET` and `JWT_REFRESH_SECRET` are not rotated by the default lifecycle command; logged-in user sessions remain valid and users are not logged out.
+   *(Optional Operator Choice: If the owner explicitly desires all users to be logged out, export `NEW_JWT_SECRET` and `NEW_REFRESH_SECRET` before running the command).*
+3. **Frontend Bundle Rebuild:** The deployment tool executes `npm ci` and `npm run build`, baking the new Turnstile site key `0x4AAAAAAFuM3vEclHqjSsKd` into `dist/assets/main-*.js`.

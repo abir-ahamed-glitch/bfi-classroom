@@ -3,17 +3,54 @@ const crypto = require('crypto');
 const https = require('https');
 const path = require('path');
 
-const tenancy = 'ocid1.tenancy.oc1..aaaaaaaazyu5j7lgqitg44n4cbakqkee3i3ons5dueznfzkcwl7cq6tojfoa';
-const user = 'ocid1.user.oc1..aaaaaaaap4grec5k4lphrspjkixnwnlsin6h5ky4iqpgblva2rvu4ixjtduq';
-const fingerprint = 'd7:20:8d:01:67:a0:fb:12:0a:b3:65:fe:3d:1b:50:ce';
-const region = 'ap-singapore-1';
-const privateKeyPath = path.join(process.env.USERPROFILE, '.oci', 'oci_api_key.pem');
-const privateKey = fs.readFileSync(privateKeyPath, 'utf8');
+let totalTests = 0;
+let passedTests = 0;
 
-const subnetId = 'ocid1.subnet.oc1.ap-singapore-1.aaaaaaaapm5di7xc4xlnqaipv5fdh32adcq4yq3z3y3p3bhl3wdrtj3qomka';
-const imageId = 'ocid1.image.oc1.ap-singapore-1.aaaaaaaa4rgzowsv4u6hk6ugkk2be7ztbowlxwnonuvsxq4d73yjy4fc22ka';
-const adName = 'lnKN:AP-SINGAPORE-1-AD-1';
-const sshKey = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIR7sVKOeXX/3WrVjtVnidD7GYu8WGYErKK3UbwB5PYQ bfi-classroom-oracle';
+function assert(name, condition, detail = '') {
+  totalTests++;
+  if (condition) {
+    console.log(`✅ [PASS] ${name}`);
+    passedTests++;
+  } else {
+    console.error(`❌ [FAIL] ${name}`);
+    if (detail) console.error(`   Details: ${detail}`);
+    process.exit(1);
+  }
+}
+
+const tenancy = process.env.OCI_TENANCY_OCID;
+const user = process.env.OCI_USER_OCID;
+const fingerprint = process.env.OCI_FINGERPRINT;
+const region = process.env.OCI_REGION || 'ap-singapore-1';
+const baseDir = process.env.USERPROFILE || process.env.HOME || '';
+const privateKeyPath = process.env.OCI_KEY_PATH || path.join(baseDir, '.oci', 'oci_api_key.pem');
+
+const subnetId = process.env.OCI_SUBNET_OCID;
+const imageId = process.env.OCI_IMAGE_OCID;
+const adName = process.env.OCI_AD_NAME || 'lnKN:AP-SINGAPORE-1-AD-1';
+const sshKey = process.env.OCI_SSH_KEY;
+
+const missing = [];
+if (!tenancy) missing.push('OCI_TENANCY_OCID');
+if (!user) missing.push('OCI_USER_OCID');
+if (!fingerprint) missing.push('OCI_FINGERPRINT');
+if (!subnetId) missing.push('OCI_SUBNET_OCID');
+if (!imageId) missing.push('OCI_IMAGE_OCID');
+if (!sshKey) missing.push('OCI_SSH_KEY');
+
+if (missing.length > 0) {
+  console.log(`⚠️  Required OCI provisioning variables not configured (missing: ${missing.join(', ')}).`);
+  console.log('Skipping live OCI instance provision probe — 0 assertions executed.');
+  process.exit(0);
+}
+
+if (!fs.existsSync(privateKeyPath)) {
+  console.log(`⚠️  Private key file not found at: ${privateKeyPath}`);
+  console.log('Skipping live OCI instance provision probe — 0 assertions executed.');
+  process.exit(0);
+}
+
+const privateKey = fs.readFileSync(privateKeyPath, 'utf8');
 
 const payload = {
   availabilityDomain: adName,
@@ -80,9 +117,33 @@ const req = https.request(options, (res) => {
   res.on('data', chunk => data += chunk);
   res.on('end', () => {
     console.log('Status code:', res.statusCode);
-    console.log('Response:', data);
+    let parsed = null;
+    let isJson = false;
+    try {
+      parsed = JSON.parse(data);
+      isJson = true;
+      console.log('Response JSON:', JSON.stringify(parsed, null, 2));
+    } catch {
+      console.log('Response Raw:', data);
+    }
+
+    assert('OCI POST signature accepted (HTTP non-401)', res.statusCode !== 401, `Status: ${res.statusCode}`);
+    assert('Response is parseable JSON', isJson === true, `Raw: ${data.slice(0, 100)}`);
+    assert(
+      'Instance provisioning request handled by OCI API',
+      res.statusCode === 200 || res.statusCode === 400 || res.statusCode === 404 || res.statusCode === 409,
+      `Status: ${res.statusCode}`
+    );
+
+    console.log(`\nTEST SUITE COMPLETE: ${passedTests}/${totalTests} PASSED (100%)`);
+    process.exit(0);
   });
 });
-req.on('error', err => console.error(err));
+
+req.on('error', (err) => {
+  console.error('[OCI Provisioning Diagnostic] Request error:', err.message);
+  process.exit(1);
+});
+
 req.write(body);
 req.end();
