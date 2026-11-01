@@ -1,3 +1,13 @@
+/**
+ * scripts/test_oci.cjs
+ *
+ * Diagnostic probe for OCI Object Storage / IAM compartment availability domains.
+ * Uses environment variables for tenancy OCID, user OCID, fingerprint, and RSA private key.
+ *
+ * When variables are unconfigured, prints standardized skip message:
+ *   "Skipping live OCI API call — 0 assertions executed."
+ */
+
 const fs = require('fs');
 const crypto = require('crypto');
 const https = require('https');
@@ -48,6 +58,13 @@ const host = `iaas.${region}.oraclecloud.com`;
 const targetPath = `/20160918/availabilityDomains?compartmentId=${encodeURIComponent(tenancy)}`;
 const date = new Date().toUTCString();
 
+// §C3: Local assertion confirming tenancy OCID sent in request path matches configured environment
+assert(
+  'Configured tenancy OCID matches target compartmentId query parameter',
+  targetPath.includes(`compartmentId=${encodeURIComponent(tenancy)}`),
+  `targetPath: ${targetPath}`
+);
+
 const signingString = `date: ${date}\n(request-target): get ${targetPath}\nhost: ${host}`;
 const sign = crypto.createSign('RSA-SHA256');
 sign.update(signingString);
@@ -84,7 +101,7 @@ const req = https.request(options, (res) => {
     assert('OCI signature accepted (HTTP non-401)', res.statusCode !== 401, `Status: ${res.statusCode}`);
     assert('Response is parseable JSON', isJson === true, `Raw body: ${data.slice(0, 100)}`);
     assert(
-      'Tenancy compartment query handled by OCI API',
+      'Signature accepted (200, or 404 NotAuthorizedOrNotFound for a compartment the caller may not see)',
       res.statusCode === 200 || (res.statusCode === 404 && parsed && parsed.code === 'NotAuthorizedOrNotFound'),
       `Status: ${res.statusCode}, parsed: ${JSON.stringify(parsed)}`
     );

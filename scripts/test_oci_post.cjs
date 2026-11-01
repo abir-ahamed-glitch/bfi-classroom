@@ -1,3 +1,13 @@
+/**
+ * scripts/test_oci_post.cjs
+ *
+ * Diagnostic probe for OCI compute instance provisioning API.
+ * Requires explicit opt-in via `--provision` flag to prevent accidental billable instance creation.
+ *
+ * When unconfigured or run without `--provision`, prints standardized skip message:
+ *   "Skipping live OCI instance provision probe — 0 assertions executed."
+ */
+
 const fs = require('fs');
 const crypto = require('crypto');
 const https = require('https');
@@ -16,6 +26,16 @@ function assert(name, condition, detail = '') {
     if (detail) console.error(`   Details: ${detail}`);
     process.exit(1);
   }
+}
+
+// §C2: Explicit opt-in flag required to prevent unintended billable provisioning
+const args = process.argv.slice(2);
+const allowProvision = args.includes('--provision');
+
+if (!allowProvision) {
+  console.log('⚠️  Notice: Real instance provisioning requires explicit opt-in via `--provision` flag.');
+  console.log('Skipping live OCI instance provision probe — 0 assertions executed.');
+  process.exit(0);
 }
 
 const tenancy = process.env.OCI_TENANCY_OCID;
@@ -50,12 +70,15 @@ if (!fs.existsSync(privateKeyPath)) {
   process.exit(0);
 }
 
+// §C2: Print prominent warning before executing billable provisioning call
+console.log('⚠️  WARNING: This creates a real, billable OCI compute instance.');
+
 const privateKey = fs.readFileSync(privateKeyPath, 'utf8');
 
 const payload = {
   availabilityDomain: adName,
   compartmentId: tenancy,
-  displayName: 'bfi-classroom-server',
+  displayName: 'bfi-classroom-server-probe',
   shape: 'VM.Standard.A1.Flex',
   shapeConfig: {
     ocpus: 2,
@@ -127,13 +150,32 @@ const req = https.request(options, (res) => {
       console.log('Response Raw:', data);
     }
 
+    // §C1: Disallow blanket status code acceptance
     assert('OCI POST signature accepted (HTTP non-401)', res.statusCode !== 401, `Status: ${res.statusCode}`);
     assert('Response is parseable JSON', isJson === true, `Raw: ${data.slice(0, 100)}`);
-    assert(
-      'Instance provisioning request handled by OCI API',
-      res.statusCode === 200 || res.statusCode === 400 || res.statusCode === 404 || res.statusCode === 409,
-      `Status: ${res.statusCode}`
-    );
+
+    if (res.statusCode === 200 || res.statusCode === 201) {
+      assert(
+        'Instance created successfully with valid OCID',
+        parsed && parsed.id && parsed.id.startsWith('ocid1.instance.'),
+        `Instance ID: ${parsed ? parsed.id : 'none'}`
+      );
+      // §C2: Output exact termination command on success for immediate cleanup
+      console.log('\n================================================================');
+      console.log('CLEANUP REQUIRED FOR BILLABLE OCI INSTANCE:');
+      console.log(`Instance OCID: ${parsed.id}`);
+      console.log('Terminate command (via OCI CLI):');
+      console.log(`  oci compute instance terminate --instance-id "${parsed.id}" --preserve-boot-volume false --force`);
+      console.log('================================================================\n');
+    } else {
+      const recognizedCodes = ['InvalidParameter', 'NotAuthorizedOrNotFound', 'Conflict', 'LimitExceeded', 'QuotaExceeded', 'CannotParseRequest'];
+      const hasRecognizedCode = parsed && recognizedCodes.includes(parsed.code);
+      assert(
+        'Non-2xx response carries a recognized OCI error code',
+        hasRecognizedCode,
+        `Status: ${res.statusCode}, Error Code: ${parsed ? parsed.code : 'unknown'}`
+      );
+    }
 
     console.log(`\nTEST SUITE COMPLETE: ${passedTests}/${totalTests} PASSED (100%)`);
     process.exit(0);

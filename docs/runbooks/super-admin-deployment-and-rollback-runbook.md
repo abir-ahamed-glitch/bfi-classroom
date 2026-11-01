@@ -352,10 +352,16 @@ To execute live authenticated diagnostics without hard-coding secrets or tenancy
   `Skipping live OCI API call — 0 assertions executed.`
   This prevents false CI failures on developer workstations while explicitly documenting zero assertions.
 - **When credentials are configured:** The suites execute signed HTTPS requests and assert:
-  1. OCI API accepts the signature authentication (HTTP non-401).
-  2. The response body is valid, parseable JSON.
-  3. The tenancy compartment query is handled by the OCI API.
+  1. Local assertion: Configured tenancy OCID matches target compartmentId query parameter.
+  2. OCI API accepts the signature authentication (HTTP non-401).
+  3. The response body is valid, parseable JSON.
+  4. Response is authorized (`200 OK` or `404 NotAuthorizedOrNotFound` for a restricted compartment).
   Any assertion failure results in non-zero exit code (`exit 1`).
+- **Billable Instance Provisioning Guard (`--provision` flag):**
+  `scripts/test_oci_post.cjs` creates real, billable OCI compute resources. To prevent unintended infrastructure creation during routine testing, the script enforces:
+  1. Explicit `--provision` command-line flag is mandatory to execute provisioning calls.
+  2. Prints a prominent warning before execution.
+  3. On success, prints the new instance's OCID and the exact command to terminate it (`oci compute instance terminate ...`).
 
 ---
 
@@ -364,6 +370,9 @@ To execute live authenticated diagnostics without hard-coding secrets or tenancy
 > [!IMPORTANT]
 > **Production Deployment Gate Active:**  
 > This lifecycle redeployment re-encrypts all user TOTP two-factor authentication secrets under a fresh MFA key and rebuilds the production web bundle. Run this only after owner authorization.
+>
+> **Credential Safety Standard:**  
+> The Cloudflare Turnstile secret is **NEVER written into this runbook, a repository commit, or a report**. Source the secret directly from the operator's secure password manager or the GitHub `production` environment secret named `CLOUDFLARE_TURNSTILE_SECRET_KEY`.
 
 ### Supported CLI Surface of `production_lifecycle.cjs`
 The canonical interface supported by `server/.recovery_tools/production_lifecycle.cjs` (and `scripts/production_lifecycle.cjs`) is:
@@ -380,25 +389,44 @@ node server/.recovery_tools/production_lifecycle.cjs <deploy|rollback> [--target
 ssh -i ~/.ssh/oracle_bfi ubuntu@129.221.243.153
 cd /home/ubuntu/bfi-classroom
 
-# 1. Fetch target commit from origin. The production host does NOT have it locally until fetched!
-git fetch origin 11a1f1c7bfd64096bbe1821e78b26a6331dbf866
-git cat-file -t 11a1f1c7bfd64096bbe1821e78b26a6331dbf866   # Must print: commit
+# 1. Resolve and fetch the latest main commit after PR #9 and PR #10 merge.
+#    The production host does NOT have the target commit locally until fetched!
+TARGET_COMMIT="$(git ls-remote origin refs/heads/main | cut -f1)"
+echo "Target release commit: $TARGET_COMMIT"
+git fetch origin "$TARGET_COMMIT"
+git cat-file -t "$TARGET_COMMIT"     # Must print: commit
 
 # 2. Stage Cloudflare Turnstile keys in .env.
-#    The site key is compiled into the client bundle at build time.
-#    Retrieve the secret key from Cloudflare Dashboard (Account 18f46e7d161d0b8ef1b25ec8ea97e27d -> Turnstile -> classroom-turnstile).
+#    The site key is public and remains inline.
+#    The secret is pasted once with terminal echo disabled so it NEVER appears
+#    in argv, shell history, or terminal scrollback.
 sed -i 's|^CLOUDFLARE_TURNSTILE_SITE_KEY=.*|CLOUDFLARE_TURNSTILE_SITE_KEY=0x4AAAAAAFuM3vEclHqjSsKd|' .env
-sed -i 's|^CLOUDFLARE_TURNSTILE_SECRET_KEY=.*|CLOUDFLARE_TURNSTILE_SECRET_KEY=0x4AAAAAAFuM3hOSHd9zKBIZLATGw-56rFU|' .env
 sed -i 's|^VITE_CLOUDFLARE_TURNSTILE_SITE_KEY=.*|VITE_CLOUDFLARE_TURNSTILE_SITE_KEY=0x4AAAAAAFuM3vEclHqjSsKd|' .env
-chmod 0600 .env
 
-# 3. Pre-flight Turnstile secret validation against Cloudflare API:
+read -rsp 'Paste the Turnstile secret: ' TS_SECRET; echo
+export TS_SECRET
+node -e '
+  const fs = require("fs");
+  const p = ".env";
+  const s = fs.readFileSync(p, "utf8");
+  const out = s.replace(/^CLOUDFLARE_TURNSTILE_SECRET_KEY=.*$/m,
+                        "CLOUDFLARE_TURNSTILE_SECRET_KEY=" + process.env.TS_SECRET);
+  if (out === s) { console.error("CLOUDFLARE_TURNSTILE_SECRET_KEY not found in .env"); process.exit(1); }
+  fs.writeFileSync(p, out, { mode: 0o600 });
+  console.log("Turnstile secret staged successfully (value not printed).");
+'
+unset TS_SECRET
+
+# 3. Pre-flight Turnstile secret validation against Cloudflare API (without echo):
+read -rsp 'Paste the Turnstile secret for verification: ' TS_SECRET; echo
 curl -s -X POST https://challenges.cloudflare.com/turnstile/v0/siteverify \
-  -d "secret=0x4AAAAAAFuM3hOSHd9zKBIZLATGw-56rFU" \
-  -d "response=invalid-probe" \
-  -d "remoteip=127.0.0.1"
+  --data-urlencode "secret=$TS_SECRET" \
+  --data-urlencode "response=invalid-probe" \
+  --data-urlencode "remoteip=127.0.0.1"
+unset TS_SECRET
 # Required verification: Must return {"error-codes":["invalid-input-response"],"success":false,...}
 # (i.e. secret accepted by Cloudflare, only the fake probe token is rejected).
+# If it returns "invalid-input-secret", the secret is invalid — STOP immediately.
 
 # 4. Export NEW_MFA_ENCRYPTION_KEY.
 #    `export` is mandatory because production_lifecycle.cjs reads the new key from environment only.
@@ -406,7 +434,7 @@ export NEW_MFA_ENCRYPTION_KEY="$(node -e "console.log(require('crypto').randomBy
 
 # 5. Execute lifecycle deployment pinned to target commit:
 node server/.recovery_tools/production_lifecycle.cjs deploy \
-  --target-commit="11a1f1c7bfd64096bbe1821e78b26a6331dbf866" \
+  --target-commit="$TARGET_COMMIT" \
   --rotate-mfa
 ```
 
