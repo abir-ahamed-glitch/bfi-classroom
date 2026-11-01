@@ -373,6 +373,16 @@ To execute live authenticated diagnostics without hard-coding secrets or tenancy
 >
 > **Credential Safety Standard:**  
 > The Cloudflare Turnstile secret is **NEVER written into this runbook, a repository commit, or a report**. Source the secret directly from the operator's secure password manager or the GitHub `production` environment secret named `CLOUDFLARE_TURNSTILE_SECRET_KEY`.
+>
+> **Turnstile Site Key Policy:**  
+> **Never reuse a Turnstile site key.** Create a fresh widget for every deployment cycle, keep the secret in the GitHub `production` environment secret and the owner's password manager, and never write a secret value into a repository, a document, a report, a command line or a chat message.
+
+### Pre-Deployment Preconditions (§E3 Checklist)
+Before executing this lifecycle redeployment sequence, verify that:
+1. A **brand-new** Turnstile widget exists, and its site key is **not** `0x4AAAAAAFuM3vEclHqjSsKd`.
+2. Its secret is stored strictly in the GitHub `production` environment secret `CLOUDFLARE_TURNSTILE_SECRET_KEY` and in the owner's password manager — and nowhere else.
+3. PR #9 and PR #10 are merged, and `TARGET_COMMIT` is read dynamically from `origin/main` at run time.
+4. The System Owner has given explicit written deployment authorization.
 
 ### Supported CLI Surface of `production_lifecycle.cjs`
 The canonical interface supported by `server/.recovery_tools/production_lifecycle.cjs` (and `scripts/production_lifecycle.cjs`) is:
@@ -397,12 +407,25 @@ git fetch origin "$TARGET_COMMIT"
 git cat-file -t "$TARGET_COMMIT"     # Must print: commit
 
 # 2. Stage Cloudflare Turnstile keys in .env.
-#    The site key is public and remains inline.
-#    The secret is pasted once with terminal echo disabled so it NEVER appears
-#    in argv, shell history, or terminal scrollback.
-sed -i 's|^CLOUDFLARE_TURNSTILE_SITE_KEY=.*|CLOUDFLARE_TURNSTILE_SITE_KEY=0x4AAAAAAFuM3vEclHqjSsKd|' .env
-sed -i 's|^VITE_CLOUDFLARE_TURNSTILE_SITE_KEY=.*|VITE_CLOUDFLARE_TURNSTILE_SITE_KEY=0x4AAAAAAFuM3vEclHqjSsKd|' .env
+# ── Blacklisted site keys ────────────────────────────────────────────────────
+# Site key 0x4AAAAAAFuM3vEclHqjSsKd was published in error on 2026-11-01 and its
+# secret is permanently public. The widget is deleted, so no challenge token can be
+# minted for it, but this key must NEVER be deployed again. If it is ever deployed,
+# the leaked secret becomes a working captcha bypass for it.
+BLACKLISTED_SITEKEYS="0x4AAAAAAFuM3vEclHqjSsKd"
 
+read -rsp 'Paste the NEW Turnstile site key: ' TS_SITEKEY; echo
+case " $BLACKLISTED_SITEKEYS " in
+  *" $TS_SITEKEY "*)
+    echo "REFUSING: this site key is blacklisted. Create a brand-new widget." >&2
+    exit 1 ;;
+esac
+
+sed -i "s|^CLOUDFLARE_TURNSTILE_SITE_KEY=.*|CLOUDFLARE_TURNSTILE_SITE_KEY=$TS_SITEKEY|" .env
+sed -i "s|^VITE_CLOUDFLARE_TURNSTILE_SITE_KEY=.*|VITE_CLOUDFLARE_TURNSTILE_SITE_KEY=$TS_SITEKEY|" .env
+
+# The secret is pasted once with terminal echo disabled so it NEVER appears
+# in argv, shell history, or terminal scrollback.
 read -rsp 'Paste the Turnstile secret: ' TS_SECRET; echo
 export TS_SECRET
 node -e '
@@ -442,4 +465,4 @@ node server/.recovery_tools/production_lifecycle.cjs deploy \
 1. **User MFA Secrets Re-encrypted (No Re-enrolment):** Stored TOTP secrets in SQLite are re-encrypted under `$NEW_MFA_ENCRYPTION_KEY` via `scripts/rotate_mfa_secrets.cjs`. Users continue using their existing authenticator apps without interruption.
 2. **Active User Sessions Retained:** `JWT_SECRET` and `JWT_REFRESH_SECRET` are not rotated by the default lifecycle command; logged-in user sessions remain valid and users are not logged out.
    *(Optional Operator Choice: If the owner explicitly desires all users to be logged out, export `NEW_JWT_SECRET` and `NEW_REFRESH_SECRET` before running the command).*
-3. **Frontend Bundle Rebuild:** The deployment tool executes `npm ci` and `npm run build`, baking the new Turnstile site key `0x4AAAAAAFuM3vEclHqjSsKd` into `dist/assets/main-*.js`.
+3. **Frontend Bundle Rebuild:** The deployment tool executes `npm ci` and `npm run build`, baking the newly configured Turnstile site key into `dist/assets/main-*.js`.
