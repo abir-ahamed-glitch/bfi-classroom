@@ -2578,7 +2578,7 @@ export default function CourseMaker() {
                   type="button"
                   onClick={() => setAuditRoutineList([
                     ...auditRoutineList,
-                    { weekday: 'Saturday', startTime: '18:00', endTime: '20:00', timezone: 'Asia/Dhaka' }
+                    { date: '', weekday: 'Saturday', startTime: '18:00', endTime: '20:00', timezone: 'Asia/Dhaka' }
                   ])}
                   className="cm-btn cm-btn-secondary cm-btn-sm"
                 >
@@ -2590,11 +2590,32 @@ export default function CourseMaker() {
                 {auditRoutineList.map((slot, sIdx) => (
                   <div key={sIdx} className="cm-modal-routine-slot">
                     <div className="cm-routine-slot-row">
+                      <input
+                        type="date"
+                        value={slot.date || ''}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          const updated = [...auditRoutineList];
+                          const nextSlot = { ...updated[sIdx], date: val };
+                          if (val && /^\d{4}-\d{2}-\d{2}$/.test(val)) {
+                            const [year, month, day] = val.split('-').map(Number);
+                            const dateObj = new Date(year, month - 1, day);
+                            if (!isNaN(dateObj.getTime())) {
+                              const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+                              nextSlot.weekday = dayNames[dateObj.getDay()];
+                            }
+                          }
+                          updated[sIdx] = nextSlot;
+                          setAuditRoutineList(updated);
+                        }}
+                        className="cm-routine-date-input"
+                        aria-label="Slot Date"
+                      />
                       <select
                         value={slot.weekday}
                         onChange={(e) => {
                           const updated = [...auditRoutineList];
-                          updated[sIdx].weekday = e.target.value;
+                          updated[sIdx] = { ...updated[sIdx], weekday: e.target.value };
                           setAuditRoutineList(updated);
                         }}
                         className="cm-select"
