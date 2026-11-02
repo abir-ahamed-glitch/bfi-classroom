@@ -624,6 +624,18 @@
   box-sizing: border-box;
 }
 
+.cm-routine-date-input {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--glass-border);
+  border-radius: 6px;
+  padding: 0.4rem 0.55rem;
+  color: var(--text-primary);
+  font-size: 0.85rem;
+  min-height: 44px;
+  box-sizing: border-box;
+  color-scheme: dark;
+}
+
 .cm-routine-time-input {
   background: rgba(255, 255, 255, 0.05);
   border: 1px solid var(--glass-border);

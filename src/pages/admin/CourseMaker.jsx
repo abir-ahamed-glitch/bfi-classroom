@@ -62,7 +62,7 @@ function buildDefaultPhase(index) {
       completionRequired: true
     },
     routine: [
-      { weekday: 'Saturday', startTime: '18:00', endTime: '20:00', timezone: 'Asia/Dhaka' }
+      { date: '', weekday: 'Saturday', startTime: '18:00', endTime: '20:00', timezone: 'Asia/Dhaka' }
     ],
     classes: [
       {
@@ -675,6 +675,7 @@ export default function CourseMaker() {
   const addRoutineToPhase = () => {
     const cur = form.phases[activePhaseTab];
     const newSlot = {
+      date: '',
       weekday: 'Saturday',
       startTime: '18:00',
       endTime: '20:00',
@@ -691,7 +692,22 @@ export default function CourseMaker() {
 
   const updateRoutineField = (index, field, val) => {
     const cur = form.phases[activePhaseTab];
-    const updated = (cur.routine || []).map((r, i) => i === index ? { ...r, [field]: val } : r);
+    const updated = (cur.routine || []).map((r, i) => {
+      if (i !== index) return r;
+      if (field === 'date') {
+        const next = { ...r, date: val };
+        if (val && typeof val === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(val.trim())) {
+          const parts = val.trim().split('-').map(Number);
+          const dObj = new Date(parts[0], parts[1] - 1, parts[2]);
+          if (!isNaN(dObj.getTime())) {
+            const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+            next.weekday = dayNames[dObj.getDay()];
+          }
+        }
+        return next;
+      }
+      return { ...r, [field]: val };
+    });
     updateCurrentPhase({ routine: updated });
   };
 
@@ -1665,6 +1681,14 @@ export default function CourseMaker() {
                           className="cm-routine-slot"
                         >
                           <div className="cm-routine-slot-row">
+                            <input
+                              type="date"
+                              value={rt.date || ''}
+                              onChange={(e) => updateRoutineField(rIdx, 'date', e.target.value)}
+                              className="cm-routine-date-input"
+                              title="Class Date (Optional)"
+                              aria-label="Class Date"
+                            />
                             <select
                               value={rt.weekday}
                               onChange={(e) => updateRoutineField(rIdx, 'weekday', e.target.value)}
