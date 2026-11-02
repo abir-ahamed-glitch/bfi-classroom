@@ -37,6 +37,14 @@ function isValidTime(timeStr) {
   return /^([01]\d|2[0-3]):([0-5]\d)$/.test(timeStr.trim());
 }
 
+function isValidDate(dateStr) {
+  if (!dateStr) return true;
+  if (typeof dateStr !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(dateStr.trim())) return false;
+  const parts = dateStr.trim().split('-').map(Number);
+  const d = new Date(parts[0], parts[1] - 1, parts[2]);
+  return d.getFullYear() === parts[0] && (d.getMonth() + 1) === parts[1] && d.getDate() === parts[2];
+}
+
 function timeToMinutes(timeStr) {
   const [h, m] = timeStr.trim().split(':').map(Number);
   return h * 60 + m;
@@ -100,10 +108,15 @@ function validateCourseDefinitionPayload(data, isPublishing = false) {
 
     // Schedule / Routine validation
     if (Array.isArray(phase.routine)) {
-      const daySlots = new Map();
+      const scheduleSlots = new Map();
       phase.routine.forEach((slot, rIdx) => {
         if (!ALLOWED_WEEKDAYS.includes(slot.weekday)) {
           errors.push(`Phase ${phaseNum}, Routine slot ${rIdx + 1}: Invalid weekday "${slot.weekday}".`);
+        }
+        if (slot.date !== undefined && slot.date !== null && String(slot.date).trim() !== '') {
+          if (!isValidDate(String(slot.date))) {
+            errors.push(`Phase ${phaseNum}, Routine slot ${rIdx + 1}: Invalid date format "${slot.date}", expected YYYY-MM-DD.`);
+          }
         }
         if (!isValidTime(slot.startTime) || !isValidTime(slot.endTime)) {
           errors.push(`Phase ${phaseNum}, Routine slot ${rIdx + 1}: Times must be valid 24-hour HH:MM format.`);
@@ -113,15 +126,18 @@ function validateCourseDefinitionPayload(data, isPublishing = false) {
           if (endM <= startM) {
             errors.push(`Phase ${phaseNum}, Routine slot ${rIdx + 1}: End time (${slot.endTime}) must be strictly after start time (${slot.startTime}).`);
           } else {
-            const slotsForDay = daySlots.get(slot.weekday) || [];
-            for (const prev of slotsForDay) {
+            const conflictKey = (slot.date && String(slot.date).trim())
+              ? `date:${String(slot.date).trim()}`
+              : `weekday:${slot.weekday}`;
+            const slotsForKey = scheduleSlots.get(conflictKey) || [];
+            for (const prev of slotsForKey) {
               if (Math.max(startM, prev.start) < Math.min(endM, prev.end)) {
-                errors.push(`Phase ${phaseNum}: Overlapping routine schedule detected on ${slot.weekday} (${slot.startTime}-${slot.endTime} overlaps with ${prev.startTime}-${prev.endTime}).`);
+                errors.push(`Phase ${phaseNum}: Overlapping routine schedule detected on ${slot.date || slot.weekday} (${slot.startTime}-${slot.endTime} overlaps with ${prev.startTime}-${prev.endTime}).`);
                 break;
               }
             }
-            slotsForDay.push({ start: startM, end: endM, startTime: slot.startTime, endTime: slot.endTime });
-            daySlots.set(slot.weekday, slotsForDay);
+            slotsForKey.push({ start: startM, end: endM, startTime: slot.startTime, endTime: slot.endTime });
+            scheduleSlots.set(conflictKey, slotsForKey);
           }
         }
       });
@@ -823,7 +839,7 @@ router.put('/:id/routine', authenticateToken, (req, res) => {
     }
 
     // Validate routine slots
-    const daySlots = new Map();
+    const scheduleSlots = new Map();
     for (let rIdx = 0; rIdx < routine.length; rIdx++) {
       const slot = routine[rIdx];
       if (!slot || typeof slot !== 'object' || Array.isArray(slot)) {
@@ -831,6 +847,11 @@ router.put('/:id/routine', authenticateToken, (req, res) => {
       }
       if (!ALLOWED_WEEKDAYS.includes(slot.weekday)) {
         return res.status(400).json({ error: `Invalid weekday "${slot.weekday}" in routine.` });
+      }
+      if (slot.date !== undefined && slot.date !== null && String(slot.date).trim() !== '') {
+        if (!isValidDate(String(slot.date))) {
+          return res.status(400).json({ error: `Routine slot ${rIdx + 1} has invalid date format "${slot.date}". Expected YYYY-MM-DD.` });
+        }
       }
       if (!isValidTime(slot.startTime) || !isValidTime(slot.endTime)) {
         return res.status(400).json({ error: 'Routine times must be valid 24-hour HH:MM format.' });
@@ -840,12 +861,15 @@ router.put('/:id/routine', authenticateToken, (req, res) => {
       }
       const start = timeToMinutes(slot.startTime);
       const end = timeToMinutes(slot.endTime);
-      const previousSlots = daySlots.get(slot.weekday) || [];
+      const conflictKey = (slot.date && String(slot.date).trim())
+        ? `date:${String(slot.date).trim()}`
+        : `weekday:${slot.weekday}`;
+      const previousSlots = scheduleSlots.get(conflictKey) || [];
       if (previousSlots.some(previous => Math.max(start, previous.start) < Math.min(end, previous.end))) {
-        return res.status(400).json({ error: `Overlapping routine schedule detected on ${slot.weekday}.` });
+        return res.status(400).json({ error: `Overlapping routine schedule detected on ${slot.date || slot.weekday}.` });
       }
       previousSlots.push({ start, end });
-      daySlots.set(slot.weekday, previousSlots);
+      scheduleSlots.set(conflictKey, previousSlots);
     }
 
     // Determine old routine: check if there was a previous override or take base phase routine
