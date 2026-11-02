@@ -328,3 +328,141 @@ Update the production `.env` (or systemd environment) to set `MFA_ENCRYPTION_KEY
 > 2. **Token Revocation (Outstanding Manual Action):**
 >    - Because tokens can only be invalidated by the account that created them, the token remains cryptographically active on GitHub until manually revoked.
 >    - The token owner (`mdkawsarahamed`) must log into GitHub, navigate to **Settings -> Developer Settings -> Personal Access Tokens**, identify the corresponding token, and click **Revoke** to permanently destroy it.
+
+
+---
+
+## 8. OCI Cloud Infrastructure Diagnostics & Environment Configuration
+
+The diagnostic suites (`scripts/test_oci.cjs` and `scripts/test_oci_post.cjs`) probe Oracle Cloud Infrastructure (OCI) APIs using RSA request signatures (RFC draft-cavage-http-signatures-10 / OCI standard).
+
+### Required Environment Variables
+To execute live authenticated diagnostics without hard-coding secrets or tenancy identifiers in source control:
+
+| Variable | Description | Source in OCI Console |
+| :--- | :--- | :--- |
+| `OCI_TENANCY_OCID` | Oracle Cloud Tenancy Identifier | **Tenancy Details** page (Profile -> Tenancy: `<name>`) |
+| `OCI_USER_OCID` | IAM User OCID | **User Details** page (Profile -> User Settings) |
+| `OCI_FINGERPRINT` | MD5 Fingerprint of the registered RSA key | **User Settings -> API Keys** table |
+| `OCI_KEY_PATH` | Path to RSA private key PEM file | Local filesystem (default: `~/.oci/oci_api_key.pem`, permissions `0600`) |
+| `OCI_REGION` | Target region endpoint (default: `ap-singapore-1`) | OCI Region Selector |
+
+### Diagnostic Gate Assertions & Skip Convention
+- **When environment variables are missing:** The test suites cleanly skip live API network execution and print:
+  `Skipping live OCI API call — 0 assertions executed.`
+  This prevents false CI failures on developer workstations while explicitly documenting zero assertions.
+- **When credentials are configured:** The suites execute signed HTTPS requests and assert:
+  1. Local assertion: Configured tenancy OCID matches target compartmentId query parameter.
+  2. OCI API accepts the signature authentication (HTTP non-401).
+  3. The response body is valid, parseable JSON.
+  4. Response is authorized (`200 OK` or `404 NotAuthorizedOrNotFound` for a restricted compartment).
+  Any assertion failure results in non-zero exit code (`exit 1`).
+- **Billable Instance Provisioning Guard (`--provision` flag):**
+  `scripts/test_oci_post.cjs` creates real, billable OCI compute resources. To prevent unintended infrastructure creation during routine testing, the script enforces:
+  1. Explicit `--provision` command-line flag is mandatory to execute provisioning calls.
+  2. Prints a prominent warning before execution.
+  3. On success, prints the new instance's OCID and the exact command to terminate it (`oci compute instance terminate ...`).
+
+---
+
+## 9. Executable Production Lifecycle Handoff & Secret Rotation (§E3 Specification)
+
+> [!IMPORTANT]
+> **Production Deployment Gate Active:**  
+> This lifecycle redeployment re-encrypts all user TOTP two-factor authentication secrets under a fresh MFA key and rebuilds the production web bundle. Run this only after owner authorization.
+>
+> **Credential Safety Standard:**  
+> The Cloudflare Turnstile secret is **NEVER written into this runbook, a repository commit, or a report**. Source the secret directly from the operator's secure password manager or the GitHub `production` environment secret named `CLOUDFLARE_TURNSTILE_SECRET_KEY`.
+>
+> **Turnstile Site Key Policy:**  
+> **Never reuse a Turnstile site key.** Create a fresh widget for every deployment cycle, keep the secret in the GitHub `production` environment secret and the owner's password manager, and never write a secret value into a repository, a document, a report, a command line or a chat message.
+
+### Pre-Deployment Preconditions (§E3 Checklist)
+Before executing this lifecycle redeployment sequence, verify that:
+1. A **brand-new** Turnstile widget exists, and its site key is **not** `0x4AAAAAAFuM3vEclHqjSsKd`.
+2. Its secret is stored strictly in the GitHub `production` environment secret `CLOUDFLARE_TURNSTILE_SECRET_KEY` and in the owner's password manager — and nowhere else.
+3. PR #9 and PR #10 are merged, and `TARGET_COMMIT` is read dynamically from `origin/main` at run time.
+4. The System Owner has given explicit written deployment authorization.
+
+### Supported CLI Surface of `production_lifecycle.cjs`
+The canonical interface supported by `server/.recovery_tools/production_lifecycle.cjs` (and `scripts/production_lifecycle.cjs`) is:
+```bash
+node server/.recovery_tools/production_lifecycle.cjs <deploy|rollback> [--target-commit <SHA>] [--rotate-mfa] [--previous-revision <SHA>] [--root-dir <PATH>] [--database-path <PATH>] [--env-path <PATH>]
+```
+> [!NOTE]
+> Options `--new-mfa-key`, `--new-jwt-secret`, and `--new-refresh-secret` **do not exist as CLI flags**; passing them on the command line is silently ignored. The deployment tool reads the replacement MFA encryption key exclusively from the environment variable `NEW_MFA_ENCRYPTION_KEY`.
+
+### Exact Execution Sequence
+
+```bash
+# ── ON THE PRODUCTION HOST (129.221.243.153) ─────────────────────────────────
+ssh -i ~/.ssh/oracle_bfi ubuntu@129.221.243.153
+cd /home/ubuntu/bfi-classroom
+
+# 1. Resolve and fetch the latest main commit after PR #9 and PR #10 merge.
+#    The production host does NOT have the target commit locally until fetched!
+TARGET_COMMIT="$(git ls-remote origin refs/heads/main | cut -f1)"
+echo "Target release commit: $TARGET_COMMIT"
+git fetch origin "$TARGET_COMMIT"
+git cat-file -t "$TARGET_COMMIT"     # Must print: commit
+
+# 2. Stage Cloudflare Turnstile keys in .env.
+# ── Blacklisted site keys ────────────────────────────────────────────────────
+# Site key 0x4AAAAAAFuM3vEclHqjSsKd was published in error on 2026-11-01 and its
+# secret is permanently public. The widget is deleted, so no challenge token can be
+# minted for it, but this key must NEVER be deployed again. If it is ever deployed,
+# the leaked secret becomes a working captcha bypass for it.
+BLACKLISTED_SITEKEYS="0x4AAAAAAFuM3vEclHqjSsKd"
+
+read -rsp 'Paste the NEW Turnstile site key: ' TS_SITEKEY; echo
+case " $BLACKLISTED_SITEKEYS " in
+  *" $TS_SITEKEY "*)
+    echo "REFUSING: this site key is blacklisted. Create a brand-new widget." >&2
+    exit 1 ;;
+esac
+
+sed -i "s|^CLOUDFLARE_TURNSTILE_SITE_KEY=.*|CLOUDFLARE_TURNSTILE_SITE_KEY=$TS_SITEKEY|" .env
+sed -i "s|^VITE_CLOUDFLARE_TURNSTILE_SITE_KEY=.*|VITE_CLOUDFLARE_TURNSTILE_SITE_KEY=$TS_SITEKEY|" .env
+
+# The secret is pasted once with terminal echo disabled so it NEVER appears
+# in argv, shell history, or terminal scrollback.
+read -rsp 'Paste the Turnstile secret: ' TS_SECRET; echo
+export TS_SECRET
+node -e '
+  const fs = require("fs");
+  const p = ".env";
+  const s = fs.readFileSync(p, "utf8");
+  const out = s.replace(/^CLOUDFLARE_TURNSTILE_SECRET_KEY=.*$/m,
+                        "CLOUDFLARE_TURNSTILE_SECRET_KEY=" + process.env.TS_SECRET);
+  if (out === s) { console.error("CLOUDFLARE_TURNSTILE_SECRET_KEY not found in .env"); process.exit(1); }
+  fs.writeFileSync(p, out, { mode: 0o600 });
+  console.log("Turnstile secret staged successfully (value not printed).");
+'
+unset TS_SECRET
+
+# 3. Pre-flight Turnstile secret validation against Cloudflare API (without echo):
+read -rsp 'Paste the Turnstile secret for verification: ' TS_SECRET; echo
+curl -s -X POST https://challenges.cloudflare.com/turnstile/v0/siteverify \
+  --data-urlencode "secret=$TS_SECRET" \
+  --data-urlencode "response=invalid-probe" \
+  --data-urlencode "remoteip=127.0.0.1"
+unset TS_SECRET
+# Required verification: Must return {"error-codes":["invalid-input-response"],"success":false,...}
+# (i.e. secret accepted by Cloudflare, only the fake probe token is rejected).
+# If it returns "invalid-input-secret", the secret is invalid — STOP immediately.
+
+# 4. Export NEW_MFA_ENCRYPTION_KEY.
+#    `export` is mandatory because production_lifecycle.cjs reads the new key from environment only.
+export NEW_MFA_ENCRYPTION_KEY="$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))")"
+
+# 5. Execute lifecycle deployment pinned to target commit:
+node server/.recovery_tools/production_lifecycle.cjs deploy \
+  --target-commit="$TARGET_COMMIT" \
+  --rotate-mfa
+```
+
+### User Impact Analysis
+1. **User MFA Secrets Re-encrypted (No Re-enrolment):** Stored TOTP secrets in SQLite are re-encrypted under `$NEW_MFA_ENCRYPTION_KEY` via `scripts/rotate_mfa_secrets.cjs`. Users continue using their existing authenticator apps without interruption.
+2. **Active User Sessions Retained:** `JWT_SECRET` and `JWT_REFRESH_SECRET` are not rotated by the default lifecycle command; logged-in user sessions remain valid and users are not logged out.
+   *(Optional Operator Choice: If the owner explicitly desires all users to be logged out, export `NEW_JWT_SECRET` and `NEW_REFRESH_SECRET` before running the command).*
+3. **Frontend Bundle Rebuild:** The deployment tool executes `npm ci` and `npm run build`, baking the newly configured Turnstile site key into `dist/assets/main-*.js`.
