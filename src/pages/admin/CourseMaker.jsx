@@ -55,7 +55,7 @@ function buildDefaultPhase(index) {
     title: `Phase ${pNum}`,
     description: '',
     duration: { value: 4, unit: 'weeks' },
-    classCount: 2,
+    classCount: 1,
     requirements: {
       attendanceRequired: true,
       minAttendancePercent: 75,

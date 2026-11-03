@@ -7,7 +7,7 @@ import { resolvePhaseRoutine } from '../services/courseProgressService.js';
 const router = express.Router();
 
 const ALLOWED_WEEKDAYS = ['Saturday', 'Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
-const ALLOWED_DELIVERY_MODES = ['live', 'recorded', 'recorded_plus_live_discussion', 'online', 'offline', 'hybrid'];
+const ALLOWED_DELIVERY_MODES = ['live', 'recorded', 'recorded_plus_live_discussion', 'online', 'offline', 'hybrid', 'self_paced'];
 const ALLOWED_CATEGORIES = ['theory', 'shooting', 'editing', 'practical', 'review', 'other'];
 const ALLOWED_EXAM_TYPES = ['written', 'practical', 'viva', 'mcq', 'hybrid'];
 const ALLOWED_COURSE_TYPES = [
@@ -19,6 +19,16 @@ const ALLOWED_COURSE_TYPES = [
   'masterclass',
   'short_course'
 ];
+
+// classCount is derived data: always reconcile it with the classes actually defined.
+function reconcileClassCounts(phases) {
+  if (!Array.isArray(phases)) return phases;
+  return phases.map(phase => (
+    phase && Array.isArray(phase.classes)
+      ? { ...phase, classCount: phase.classes.length }
+      : phase
+  ));
+}
 
 function slugify(text) {
   return text
@@ -504,9 +514,9 @@ router.post('/', authenticateToken, requireRole('admin'), requirePermission('cou
       duration_value = 1,
       duration_unit = 'months',
       phase_count = 1,
-      phases = [],
       completionPolicy = {}
     } = req.body;
+    const phases = reconcileClassCounts(req.body.phases || []);
 
     const slug = slugify(name);
 
@@ -607,9 +617,9 @@ router.put('/:id', authenticateToken, requireRole('admin'), requirePermission('c
       duration_value = 1,
       duration_unit = 'months',
       phase_count = 1,
-      phases = [],
       completionPolicy = {}
     } = req.body;
+    const phases = reconcileClassCounts(req.body.phases || []);
 
     const fullDefinition = {
       basics: { name, type: course_type, description, duration: { value: duration_value, unit: duration_unit }, phaseCount: phase_count },
@@ -724,6 +734,9 @@ router.post('/:id/publish', authenticateToken, requireRole('admin'), requirePerm
       return res.status(400).json({ error: 'Corrupt definition JSON.' });
     }
 
+    // Reconcile derived classCount with the classes actually defined (fixes stale drafts)
+    parsed.phases = reconcileClassCounts(parsed.phases || []);
+
     // Run strict publishing validation
     const validationData = {
       name: existing.name,
@@ -746,10 +759,11 @@ router.post('/:id/publish', authenticateToken, requireRole('admin'), requirePerm
         UPDATE course_definitions SET
           status = 'published',
           version = ?,
+          definition_json = ?,
           updated_by = ?,
           updated_at = datetime('now', 'localtime')
         WHERE id = ?
-      `).run(publishedVersion, req.user.id, id);
+      `).run(publishedVersion, JSON.stringify(parsed), req.user.id, id);
 
       const afterState = { id: existing.id, status: 'published', version: publishedVersion };
 
