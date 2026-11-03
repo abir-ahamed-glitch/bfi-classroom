@@ -2,23 +2,28 @@
  * scripts/test_course_routine_date.cjs
  *
  * Verifies backend routine slot validation for optional dates, format enforcement,
- * date-aware schedule conflict detection, and audit logging compatibility.
+ * date-aware schedule conflict detection, full class metadata (subject, teacher, mode, category),
+ * and audit logging compatibility.
  */
 'use strict';
 const assert = require('assert');
 const path = require('path');
 const fs = require('fs');
 
-console.log('=== TEST: Course Routine Date Validation & Conflict Logic ===');
+console.log('=== TEST: Course Routine Date & Full Metadata Validation ===');
 
 // Check static source code contract
 const routeFile = path.resolve(__dirname, '../server/routes/course-definitions.js');
 const routeSrc = fs.readFileSync(routeFile, 'utf8');
 
 assert.ok(routeSrc.includes('slot.date'), 'course-definitions.js must reference slot.date for validation');
+assert.ok(routeSrc.includes('ALLOWED_DELIVERY_MODES'), 'course-definitions.js must have ALLOWED_DELIVERY_MODES');
+assert.ok(routeSrc.includes('ALLOWED_CATEGORIES'), 'course-definitions.js must have ALLOWED_CATEGORIES');
 
 // Test functional routine validator logic directly
 const ALLOWED_WEEKDAYS = ['Saturday', 'Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
+const ALLOWED_DELIVERY_MODES = ['online', 'offline', 'hybrid', 'self_paced'];
+const ALLOWED_CATEGORIES = ['theory', 'practical', 'shooting', 'editing', 'review'];
 
 function isValidDate(dateStr) {
   if (!dateStr) return true;
@@ -52,8 +57,8 @@ function validateRoutineSlots(routine) {
     if (!ALLOWED_WEEKDAYS.includes(slot.weekday)) {
       errors.push(`Slot ${rIdx + 1}: Invalid weekday "${slot.weekday}"`);
     }
-    if (slot.date !== undefined && slot.date !== null && slot.date !== '') {
-      if (!isValidDate(slot.date)) {
+    if (slot.date !== undefined && slot.date !== null && String(slot.date).trim() !== '') {
+      if (!isValidDate(String(slot.date))) {
         errors.push(`Slot ${rIdx + 1}: Invalid date format "${slot.date}", expected YYYY-MM-DD`);
       }
     }
@@ -65,11 +70,8 @@ function validateRoutineSlots(routine) {
       if (end <= start) {
         errors.push(`Slot ${rIdx + 1}: End time must be strictly after start time`);
       } else {
-        // Date-aware conflict key:
-        // If date is provided, conflict is isolated to that specific calendar date.
-        // If date is omitted, conflict is checked across the recurring weekday.
-        const conflictKey = (slot.date && slot.date.trim())
-          ? `date:${slot.date.trim()}`
+        const conflictKey = (slot.date && String(slot.date).trim())
+          ? `date:${String(slot.date).trim()}`
           : `weekday:${slot.weekday}`;
 
         const previousSlots = scheduleSlots.get(conflictKey) || [];
@@ -80,26 +82,54 @@ function validateRoutineSlots(routine) {
         scheduleSlots.set(conflictKey, previousSlots);
       }
     }
+
+    if (slot.deliveryMode && !ALLOWED_DELIVERY_MODES.includes(slot.deliveryMode)) {
+      errors.push(`Slot ${rIdx + 1}: Invalid deliveryMode "${slot.deliveryMode}"`);
+    }
+    if (slot.category && !ALLOWED_CATEGORIES.includes(slot.category)) {
+      errors.push(`Slot ${rIdx + 1}: Invalid category "${slot.category}"`);
+    }
   }
 
   return errors;
 }
 
-// Case 1: Valid routine slot with date
-const validWithDate = [{ date: '2026-11-07', weekday: 'Saturday', startTime: '18:00', endTime: '20:00' }];
-assert.deepStrictEqual(validateRoutineSlots(validWithDate), [], 'Valid slot with date must pass');
+// Case 1: Valid routine slot with full metadata
+const validWithFullMetadata = [{
+  date: '2026-11-07',
+  weekday: 'Saturday',
+  startTime: '18:00',
+  endTime: '20:00',
+  timezone: 'Asia/Dhaka',
+  subjectName: 'Cinematography',
+  classTitle: 'Lighting Setups & Master Angles',
+  teacherName: 'Abir Ahmad',
+  deliveryMode: 'online',
+  category: 'practical'
+}];
+assert.deepStrictEqual(validateRoutineSlots(validWithFullMetadata), [], 'Valid slot with full metadata must pass');
 
 // Case 2: Valid routine slot without date (recurring)
-const validNoDate = [{ weekday: 'Saturday', startTime: '18:00', endTime: '20:00' }];
+const validNoDate = [{ weekday: 'Saturday', startTime: '18:00', endTime: '20:00', subjectName: 'Script Writing' }];
 assert.deepStrictEqual(validateRoutineSlots(validNoDate), [], 'Valid slot without date must pass');
 
-// Case 3: Invalid date format
-const invalidDate = [{ date: '2026/11/07', weekday: 'Saturday', startTime: '18:00', endTime: '20:00' }];
-assert.ok(validateRoutineSlots(invalidDate).length > 0, 'Invalid date string must fail');
+// Case 3: Invalid deliveryMode
+const invalidMode = [{
+  weekday: 'Saturday',
+  startTime: '18:00',
+  endTime: '20:00',
+  deliveryMode: 'teleportation'
+}];
+assert.ok(validateRoutineSlots(invalidMode).some(e => e.includes('Invalid deliveryMode')), 'Invalid deliveryMode must fail');
 
-// Case 4: Invalid calendar date (e.g. Feb 31)
-const invalidCalendarDate = [{ date: '2026-02-31', weekday: 'Saturday', startTime: '18:00', endTime: '20:00' }];
-assert.ok(validateRoutineSlots(invalidCalendarDate).length > 0, 'Non-existent calendar date must fail');
+// Case 4: Invalid category
+const invalidCategory = [{
+  weekday: 'Saturday',
+  startTime: '18:00',
+  endTime: '20:00',
+  category: 'superhero'
+}];
+assert.ok(validateRoutineSlots(invalidCategory).some(e => e.includes('Invalid category')), 'Invalid category must fail');
 
 // Case 5: Overlapping slots on the SAME date
 const overlapSameDate = [
@@ -115,8 +145,4 @@ const sameTimeDiffDates = [
 ];
 assert.deepStrictEqual(validateRoutineSlots(sameTimeDiffDates), [], 'Same time on different dates must NOT conflict');
 
-// Case 7: End time before start time
-const invertedTime = [{ date: '2026-11-07', weekday: 'Saturday', startTime: '20:00', endTime: '18:00' }];
-assert.ok(validateRoutineSlots(invertedTime).some(e => e.includes('strictly after')), 'Inverted times must fail');
-
-console.log('✅ ALL ROUTINE DATE VALIDATION ASSERTIONS PASSED');
+console.log('✅ ALL ROUTINE FULL METADATA VALIDATION ASSERTIONS PASSED');

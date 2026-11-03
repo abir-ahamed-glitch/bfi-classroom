@@ -140,6 +140,12 @@ function validateCourseDefinitionPayload(data, isPublishing = false) {
             scheduleSlots.set(conflictKey, slotsForKey);
           }
         }
+        if (slot.deliveryMode && !ALLOWED_DELIVERY_MODES.includes(slot.deliveryMode)) {
+          errors.push(`Phase ${phaseNum}, Routine slot ${rIdx + 1}: Invalid deliveryMode "${slot.deliveryMode}".`);
+        }
+        if (slot.category && !ALLOWED_CATEGORIES.includes(slot.category)) {
+          errors.push(`Phase ${phaseNum}, Routine slot ${rIdx + 1}: Invalid category "${slot.category}".`);
+        }
       });
     }
 
@@ -870,7 +876,28 @@ router.put('/:id/routine', authenticateToken, (req, res) => {
       }
       previousSlots.push({ start, end });
       scheduleSlots.set(conflictKey, previousSlots);
+
+      if (slot.deliveryMode && !ALLOWED_DELIVERY_MODES.includes(slot.deliveryMode)) {
+        return res.status(400).json({ error: `Invalid deliveryMode "${slot.deliveryMode}" in routine slot ${rIdx + 1}.` });
+      }
+      if (slot.category && !ALLOWED_CATEGORIES.includes(slot.category)) {
+        return res.status(400).json({ error: `Invalid category "${slot.category}" in routine slot ${rIdx + 1}.` });
+      }
     }
+
+    // Sanitize routine slots to preserve full metadata
+    const sanitizedRoutine = routine.map(slot => ({
+      date: slot.date ? String(slot.date).trim() : '',
+      weekday: slot.weekday,
+      startTime: slot.startTime,
+      endTime: slot.endTime,
+      timezone: slot.timezone || 'Asia/Dhaka',
+      subjectName: slot.subjectName ? String(slot.subjectName).trim() : '',
+      classTitle: slot.classTitle ? String(slot.classTitle).trim() : '',
+      teacherName: slot.teacherName ? String(slot.teacherName).trim() : '',
+      deliveryMode: slot.deliveryMode ? String(slot.deliveryMode).trim() : 'online',
+      category: slot.category ? String(slot.category).trim() : 'theory'
+    }));
 
     // Determine old routine: check if there was a previous override or take base phase routine
     const existingOverride = db.prepare(`
@@ -893,7 +920,7 @@ router.put('/:id/routine', authenticateToken, (req, res) => {
         resolvedBatchId,
         phase_id,
         JSON.stringify(oldRoutine),
-        JSON.stringify(routine),
+        JSON.stringify(sanitizedRoutine),
         req.user.id,
         reason.trim()
       );
@@ -909,11 +936,11 @@ router.put('/:id/routine', authenticateToken, (req, res) => {
           routine_json = excluded.routine_json,
           updated_by = excluded.updated_by,
           updated_at = excluded.updated_at
-      `).run(id, resolvedBatchId, phase_id, JSON.stringify(routine), req.user.id);
+      `).run(id, resolvedBatchId, phase_id, JSON.stringify(sanitizedRoutine), req.user.id);
 
       // If definition is still a draft, update draft definition_json as well
       if (definition.status === 'draft') {
-        phase.routine = routine;
+        phase.routine = sanitizedRoutine;
         db.prepare(`
           UPDATE course_definitions SET
             definition_json = ?,
