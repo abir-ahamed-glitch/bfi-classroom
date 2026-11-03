@@ -148,6 +148,8 @@ export default function BatchDetail() {
   const [routineAuditReason, setRoutineAuditReason] = useState('');
   const [routineSaving, setRoutineSaving] = useState(false);
   const [routineError, setRoutineError] = useState('');
+  const [catalogSubjects, setCatalogSubjects] = useState([]);
+  const [catalogTeachers, setCatalogTeachers] = useState([]);
 
   // Defined Course Progress Modal State
   const [definedProgressModal, setDefinedProgressModal] = useState({
@@ -808,6 +810,40 @@ export default function BatchDetail() {
   };
 
   const WEEKDAYS = ['Saturday', 'Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
+  const DELIVERY_MODES = [
+    { value: 'online', label: 'Live Online' },
+    { value: 'offline', label: 'In-Person Studio' },
+    { value: 'hybrid', label: 'Hybrid' },
+    { value: 'self_paced', label: 'Self Paced' }
+  ];
+  const CLASS_CATEGORIES = [
+    { value: 'theory', label: 'Theory' },
+    { value: 'practical', label: 'Practical' },
+    { value: 'shooting', label: 'Shooting Session' },
+    { value: 'editing', label: 'Editing Session' },
+    { value: 'review', label: 'Review & Q&A' }
+  ];
+
+  const fetchRoutineCatalogs = async () => {
+    try {
+      const token = localStorage.getItem('token');
+      const headers = { 'Authorization': `Bearer ${token}` };
+      const [sRes, tRes] = await Promise.all([
+        fetch('/api/admin/custom-subjects', { headers }),
+        fetch('/api/admin/teachers', { headers })
+      ]);
+      if (sRes.ok) {
+        const sData = await sRes.json();
+        setCatalogSubjects(sData.subjects || sData || []);
+      }
+      if (tRes.ok) {
+        const tData = await tRes.json();
+        setCatalogTeachers(tData.teachers || []);
+      }
+    } catch (err) {
+      console.error('Failed to fetch routine catalogs in BatchDetail:', err);
+    }
+  };
 
   const fetchAllData = async () => {
     if (!slug) return;
@@ -852,14 +888,27 @@ export default function BatchDetail() {
 
   useEffect(() => {
     fetchAllData();
+    fetchRoutineCatalogs();
   }, [slug]);
 
   const handleOpenRoutineModal = (phase) => {
+    fetchRoutineCatalogs();
     setEditingRoutinePhase(phase);
     setBatchRoutineSlots(
       Array.isArray(phase.routine) && phase.routine.length > 0
         ? JSON.parse(JSON.stringify(phase.routine))
-        : [{ date: '', weekday: 'Saturday', startTime: '18:00', endTime: '20:00', timezone: 'Asia/Dhaka' }]
+        : [{
+            date: '',
+            weekday: 'Saturday',
+            startTime: '18:00',
+            endTime: '20:00',
+            timezone: 'Asia/Dhaka',
+            subjectName: '',
+            classTitle: '',
+            teacherName: '',
+            deliveryMode: 'online',
+            category: 'theory'
+          }]
     );
     setRoutineAuditReason('');
     setRoutineError('');
@@ -876,8 +925,37 @@ export default function BatchDetail() {
   const handleAddRoutineSlot = () => {
     setBatchRoutineSlots(prev => [
       ...prev,
-      { date: '', weekday: 'Saturday', startTime: '18:00', endTime: '20:00', timezone: 'Asia/Dhaka' }
+      {
+        date: '',
+        weekday: 'Saturday',
+        startTime: '18:00',
+        endTime: '20:00',
+        timezone: 'Asia/Dhaka',
+        subjectName: '',
+        classTitle: '',
+        teacherName: '',
+        deliveryMode: 'online',
+        category: 'theory'
+      }
     ]);
+  };
+
+  const handleCopyFromPhaseClass = (slotIdx, classId) => {
+    if (!classId || !editingRoutinePhase) return;
+    const cls = (editingRoutinePhase.classes || []).find(c => String(c.id) === String(classId));
+    if (!cls) return;
+    setBatchRoutineSlots(prev => {
+      const updated = [...prev];
+      updated[slotIdx] = {
+        ...updated[slotIdx],
+        classTitle: cls.title || '',
+        subjectName: cls.subjectName || '',
+        teacherName: cls.teacherName || '',
+        deliveryMode: cls.deliveryMode || 'online',
+        category: cls.category || 'theory'
+      };
+      return updated;
+    });
   };
 
   const handleRemoveRoutineSlot = (index) => {
@@ -1475,13 +1553,34 @@ export default function BatchDetail() {
                 </div>
                 <div style={{ flex: 1 }}>
                   {p.routine && p.routine.length > 0 ? (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
                       {p.routine.map((slot, rIdx) => (
-                        <div key={rIdx} style={{ fontSize: '0.75rem', color: slot.date ? '#93c5fd' : 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '0.35rem', background: 'rgba(255,255,255,0.02)', padding: '0.2rem 0.4rem', borderRadius: '4px' }}>
-                          <Calendar size={12} style={{ flexShrink: 0 }} />
-                          <span>
-                            {slot.date ? `${slot.date} (${slot.weekday})` : `Every ${slot.weekday}`}: {slot.startTime}–{slot.endTime}
-                          </span>
+                        <div key={rIdx} style={{ fontSize: '0.75rem', color: slot.date ? '#93c5fd' : 'var(--text-muted)', display: 'flex', flexDirection: 'column', gap: '0.2rem', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', padding: '0.35rem 0.5rem', borderRadius: '6px' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', fontWeight: 600 }}>
+                            <Calendar size={12} style={{ flexShrink: 0 }} />
+                            <span>
+                              {slot.date ? `${slot.date} (${slot.weekday})` : `Every ${slot.weekday}`}: {slot.startTime}–{slot.endTime}
+                            </span>
+                          </div>
+                          {(slot.subjectName || slot.classTitle) && (
+                            <div style={{ fontSize: '0.72rem', color: 'var(--text-primary)', paddingLeft: '1rem' }}>
+                              {slot.subjectName && <strong style={{ color: '#60a5fa' }}>{slot.subjectName}</strong>}
+                              {slot.subjectName && slot.classTitle && ' — '}
+                              {slot.classTitle && <span>{slot.classTitle}</span>}
+                            </div>
+                          )}
+                          {(slot.teacherName || slot.deliveryMode || slot.category) && (
+                            <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', paddingLeft: '1rem', display: 'flex', gap: '0.35rem', flexWrap: 'wrap' }}>
+                              {slot.teacherName && <span>👨‍🏫 {slot.teacherName}</span>}
+                              {slot.teacherName && (slot.deliveryMode || slot.category) && <span>•</span>}
+                              {slot.deliveryMode && (
+                                <span style={{ textTransform: 'capitalize' }}>
+                                  {slot.deliveryMode === 'online' ? 'Live Online' : slot.deliveryMode === 'offline' ? 'In-Person Studio' : slot.deliveryMode}
+                                </span>
+                              )}
+                              {slot.category && <span style={{ textTransform: 'capitalize' }}>({slot.category})</span>}
+                            </div>
+                          )}
                         </div>
                       ))}
                     </div>
@@ -2767,124 +2866,278 @@ export default function BatchDetail() {
                     </button>
                   </div>
 
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
+                  <datalist id="batch-subject-suggestions">
+                    {catalogSubjects.map(s => <option key={s.id || s.name} value={s.name} />)}
+                  </datalist>
+                  <datalist id="batch-teacher-suggestions">
+                    {catalogTeachers.map(t => <option key={t.id} value={t.full_name || `${t.first_name} ${t.last_name}`} />)}
+                  </datalist>
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.65rem' }}>
                     {batchRoutineSlots.length === 0 ? (
                       <div style={{ padding: '1rem', textAlign: 'center', background: 'rgba(255,255,255,0.02)', borderRadius: '6px', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
                         No routine slots scheduled. Click "+ Add Slot" to add one.
                       </div>
                     ) : (
-                      batchRoutineSlots.map((slot, sIdx) => (
-                        <div
-                          key={sIdx}
-                          style={{
-                            background: 'rgba(255,255,255,0.03)',
-                            border: '1px solid rgba(255,255,255,0.08)',
-                            borderRadius: '8px',
-                            padding: '0.75rem',
-                            display: 'flex',
-                            flexDirection: 'column',
-                            gap: '0.5rem'
-                          }}
-                        >
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
-                            <div style={{ flex: '1 1 160px', display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
-                              <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Class Date (Optional)</label>
-                              <input
-                                type="date"
-                                value={slot.date || ''}
-                                onChange={(e) => handleUpdateRoutineSlot(sIdx, 'date', e.target.value)}
-                                style={{
-                                  background: 'rgba(255,255,255,0.05)',
-                                  border: '1px solid rgba(255,255,255,0.12)',
-                                  borderRadius: '6px',
-                                  padding: '0.4rem 0.5rem',
-                                  color: 'var(--text-primary)',
-                                  fontSize: '0.85rem',
-                                  minHeight: '44px'
-                                }}
-                                aria-label="Class Date"
-                              />
+                      batchRoutineSlots.map((slot, sIdx) => {
+                        const phaseClasses = editingRoutinePhase?.classes || [];
+                        return (
+                          <div
+                            key={sIdx}
+                            style={{
+                              background: 'rgba(255,255,255,0.03)',
+                              border: '1px solid rgba(255,255,255,0.08)',
+                              borderRadius: '8px',
+                              padding: '0.75rem',
+                              display: 'flex',
+                              flexDirection: 'column',
+                              gap: '0.5rem'
+                            }}
+                          >
+                            {/* Slot Header & Quick-Fill */}
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.4rem', flexWrap: 'wrap', borderBottom: '1px solid rgba(255,255,255,0.06)', paddingBottom: '0.35rem' }}>
+                              <span style={{ fontSize: '0.78rem', fontWeight: 600, color: 'var(--text-secondary)' }}>
+                                Slot #{sIdx + 1}
+                              </span>
+                              {phaseClasses.length > 0 && (
+                                <select
+                                  onChange={(e) => {
+                                    handleCopyFromPhaseClass(sIdx, e.target.value);
+                                    e.target.value = '';
+                                  }}
+                                  style={{
+                                    background: 'rgba(255,255,255,0.05)',
+                                    border: '1px solid rgba(255,255,255,0.12)',
+                                    color: 'var(--text-primary)',
+                                    fontSize: '0.72rem',
+                                    padding: '2px 6px',
+                                    borderRadius: '4px',
+                                    minHeight: '28px',
+                                    maxWidth: '210px'
+                                  }}
+                                  title="Autofill from a phase class"
+                                >
+                                  <option value="">⚡ Autofill from Class...</option>
+                                  {phaseClasses.map((c, i) => (
+                                    <option key={c.id || i} value={c.id} style={{ background: '#1e293b' }}>
+                                      {c.title || `Class ${i + 1}`} ({c.subjectName || 'No Subject'})
+                                    </option>
+                                  ))}
+                                </select>
+                              )}
                             </div>
-                            <div style={{ flex: '1 1 140px', display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
-                              <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Day of Week</label>
-                              <select
-                                value={slot.weekday}
-                                onChange={(e) => handleUpdateRoutineSlot(sIdx, 'weekday', e.target.value)}
+
+                            {/* Row 1: Date, Day, Time, Delete */}
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                              <div style={{ flex: '1 1 150px', display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                                <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Class Date (Optional)</label>
+                                <input
+                                  type="date"
+                                  value={slot.date || ''}
+                                  onChange={(e) => handleUpdateRoutineSlot(sIdx, 'date', e.target.value)}
+                                  style={{
+                                    background: 'rgba(255,255,255,0.05)',
+                                    border: '1px solid rgba(255,255,255,0.12)',
+                                    borderRadius: '6px',
+                                    padding: '0.4rem 0.5rem',
+                                    color: 'var(--text-primary)',
+                                    fontSize: '0.85rem',
+                                    minHeight: '44px'
+                                  }}
+                                  aria-label="Class Date"
+                                />
+                              </div>
+                              <div style={{ flex: '1 1 130px', display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                                <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Day of Week</label>
+                                <select
+                                  value={slot.weekday}
+                                  onChange={(e) => handleUpdateRoutineSlot(sIdx, 'weekday', e.target.value)}
+                                  style={{
+                                    background: 'rgba(255,255,255,0.05)',
+                                    border: '1px solid rgba(255,255,255,0.12)',
+                                    borderRadius: '6px',
+                                    padding: '0.4rem 0.5rem',
+                                    color: 'var(--text-primary)',
+                                    fontSize: '0.85rem',
+                                    minHeight: '44px'
+                                  }}
+                                >
+                                  {WEEKDAYS.map(w => <option key={w} value={w} style={{ background: '#1e293b' }}>{w}</option>)}
+                                </select>
+                              </div>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', flex: '1 1 160px' }}>
+                                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                                  <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Start Time</label>
+                                  <input
+                                    type="time"
+                                    value={slot.startTime}
+                                    onChange={(e) => handleUpdateRoutineSlot(sIdx, 'startTime', e.target.value)}
+                                    style={{
+                                      background: 'rgba(255,255,255,0.05)',
+                                      border: '1px solid rgba(255,255,255,0.12)',
+                                      borderRadius: '6px',
+                                      padding: '0.4rem 0.5rem',
+                                      color: 'var(--text-primary)',
+                                      fontSize: '0.85rem',
+                                      minHeight: '44px',
+                                      width: '100%'
+                                    }}
+                                  />
+                                </div>
+                                <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '1.2rem' }}>to</span>
+                                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                                  <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>End Time</label>
+                                  <input
+                                    type="time"
+                                    value={slot.endTime}
+                                    onChange={(e) => handleUpdateRoutineSlot(sIdx, 'endTime', e.target.value)}
+                                    style={{
+                                      background: 'rgba(255,255,255,0.05)',
+                                      border: '1px solid rgba(255,255,255,0.12)',
+                                      borderRadius: '6px',
+                                      padding: '0.4rem 0.5rem',
+                                      color: 'var(--text-primary)',
+                                      fontSize: '0.85rem',
+                                      minHeight: '44px',
+                                      width: '100%'
+                                    }}
+                                  />
+                                </div>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => handleRemoveRoutineSlot(sIdx)}
                                 style={{
-                                  background: 'rgba(255,255,255,0.05)',
-                                  border: '1px solid rgba(255,255,255,0.12)',
+                                  alignSelf: 'flex-end',
+                                  minHeight: '44px',
+                                  width: '44px',
+                                  background: 'rgba(239,68,68,0.1)',
+                                  border: '1px solid rgba(239,68,68,0.25)',
                                   borderRadius: '6px',
-                                  padding: '0.4rem 0.5rem',
-                                  color: 'var(--text-primary)',
-                                  fontSize: '0.85rem',
-                                  minHeight: '44px'
+                                  color: '#ef4444',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  cursor: 'pointer'
                                 }}
+                                title="Delete Slot"
                               >
-                                {WEEKDAYS.map(w => <option key={w} value={w} style={{ background: '#1e293b' }}>{w}</option>)}
-                              </select>
+                                <Trash2 size={16} />
+                              </button>
                             </div>
-                            <button
-                              type="button"
-                              onClick={() => handleRemoveRoutineSlot(sIdx)}
-                              style={{
-                                alignSelf: 'flex-end',
-                                minHeight: '44px',
-                                width: '44px',
-                                background: 'rgba(239,68,68,0.1)',
-                                border: '1px solid rgba(239,68,68,0.25)',
-                                borderRadius: '6px',
-                                color: '#ef4444',
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                                cursor: 'pointer'
-                              }}
-                              title="Delete Slot"
-                            >
-                              <Trash2 size={16} />
-                            </button>
+
+                            {/* Row 2: Subject & Class Title */}
+                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 180px), 1fr))', gap: '0.4rem', width: '100%' }}>
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                                <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Subject (Live Catalog)</label>
+                                <input
+                                  type="text"
+                                  list="batch-subject-suggestions"
+                                  value={slot.subjectName || ''}
+                                  onChange={(e) => handleUpdateRoutineSlot(sIdx, 'subjectName', e.target.value)}
+                                  placeholder="Select or enter subject"
+                                  style={{
+                                    background: 'rgba(255,255,255,0.05)',
+                                    border: '1px solid rgba(255,255,255,0.12)',
+                                    borderRadius: '6px',
+                                    padding: '0.35rem 0.55rem',
+                                    color: 'var(--text-primary)',
+                                    fontSize: '0.82rem',
+                                    minHeight: '38px',
+                                    width: '100%'
+                                  }}
+                                  title="Subject from Custom Subjects or custom name"
+                                />
+                              </div>
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                                <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Class / Topic Title</label>
+                                <input
+                                  type="text"
+                                  value={slot.classTitle || ''}
+                                  onChange={(e) => handleUpdateRoutineSlot(sIdx, 'classTitle', e.target.value)}
+                                  placeholder="Class Title or Topic"
+                                  style={{
+                                    background: 'rgba(255,255,255,0.05)',
+                                    border: '1px solid rgba(255,255,255,0.12)',
+                                    borderRadius: '6px',
+                                    padding: '0.35rem 0.55rem',
+                                    color: 'var(--text-primary)',
+                                    fontSize: '0.82rem',
+                                    minHeight: '38px',
+                                    width: '100%'
+                                  }}
+                                  title="Class or Topic Title"
+                                />
+                              </div>
+                            </div>
+
+                            {/* Row 3: Teacher, Mode & Category */}
+                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 130px), 1fr))', gap: '0.4rem', width: '100%' }}>
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                                <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Teacher</label>
+                                <input
+                                  type="text"
+                                  list="batch-teacher-suggestions"
+                                  value={slot.teacherName || ''}
+                                  onChange={(e) => handleUpdateRoutineSlot(sIdx, 'teacherName', e.target.value)}
+                                  placeholder="Select or enter teacher"
+                                  style={{
+                                    background: 'rgba(255,255,255,0.05)',
+                                    border: '1px solid rgba(255,255,255,0.12)',
+                                    borderRadius: '6px',
+                                    padding: '0.35rem 0.55rem',
+                                    color: 'var(--text-primary)',
+                                    fontSize: '0.82rem',
+                                    minHeight: '38px',
+                                    width: '100%'
+                                  }}
+                                  title="Assigned Teacher"
+                                />
+                              </div>
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                                <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Mode</label>
+                                <select
+                                  value={slot.deliveryMode || 'online'}
+                                  onChange={(e) => handleUpdateRoutineSlot(sIdx, 'deliveryMode', e.target.value)}
+                                  style={{
+                                    background: 'rgba(255,255,255,0.05)',
+                                    border: '1px solid rgba(255,255,255,0.12)',
+                                    borderRadius: '6px',
+                                    padding: '0.35rem 0.4rem',
+                                    color: 'var(--text-primary)',
+                                    fontSize: '0.78rem',
+                                    minHeight: '38px',
+                                    width: '100%'
+                                  }}
+                                  title="Delivery Mode"
+                                >
+                                  {DELIVERY_MODES.map(m => <option key={m.value} value={m.value} style={{ background: '#1e293b' }}>{m.label}</option>)}
+                                </select>
+                              </div>
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                                <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Category</label>
+                                <select
+                                  value={slot.category || 'theory'}
+                                  onChange={(e) => handleUpdateRoutineSlot(sIdx, 'category', e.target.value)}
+                                  style={{
+                                    background: 'rgba(255,255,255,0.05)',
+                                    border: '1px solid rgba(255,255,255,0.12)',
+                                    borderRadius: '6px',
+                                    padding: '0.35rem 0.4rem',
+                                    color: 'var(--text-primary)',
+                                    fontSize: '0.78rem',
+                                    minHeight: '38px',
+                                    width: '100%'
+                                  }}
+                                  title="Class Category"
+                                >
+                                  {CLASS_CATEGORIES.map(cat => <option key={cat.value} value={cat.value} style={{ background: '#1e293b' }}>{cat.label}</option>)}
+                                </select>
+                              </div>
+                            </div>
                           </div>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
-                              <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Start Time</label>
-                              <input
-                                type="time"
-                                value={slot.startTime}
-                                onChange={(e) => handleUpdateRoutineSlot(sIdx, 'startTime', e.target.value)}
-                                style={{
-                                  background: 'rgba(255,255,255,0.05)',
-                                  border: '1px solid rgba(255,255,255,0.12)',
-                                  borderRadius: '6px',
-                                  padding: '0.4rem 0.5rem',
-                                  color: 'var(--text-primary)',
-                                  fontSize: '0.85rem',
-                                  minHeight: '38px',
-                                  width: '100%'
-                                }}
-                              />
-                            </div>
-                            <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '1rem' }}>to</span>
-                            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
-                              <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>End Time</label>
-                              <input
-                                type="time"
-                                value={slot.endTime}
-                                onChange={(e) => handleUpdateRoutineSlot(sIdx, 'endTime', e.target.value)}
-                                style={{
-                                  background: 'rgba(255,255,255,0.05)',
-                                  border: '1px solid rgba(255,255,255,0.12)',
-                                  borderRadius: '6px',
-                                  padding: '0.4rem 0.5rem',
-                                  color: 'var(--text-primary)',
-                                  fontSize: '0.85rem',
-                                  minHeight: '38px',
-                                  width: '100%'
-                                }}
-                              />
-                            </div>
-                          </div>
-                        </div>
-                      ))
+                        );
+                      })
                     )}
                   </div>
                 </div>
