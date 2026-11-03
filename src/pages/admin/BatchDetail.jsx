@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { DELIVERY_MODE_OPTIONS, normalizeDeliveryMode, deliveryModeLabel, deliveryModeFromSubject } from '../../utils/deliveryModes';
 import PlatformSelector from '../../components/admin/PlatformSelector';
@@ -7,7 +7,7 @@ import {
   ArrowLeft, Calendar, Users, Clock, CheckCircle2, XCircle, 
   FileText, Film, Award, UserCheck, Camera, Video, Wallet,
   Search, ExternalLink, Trash2, UserPlus, Pencil, CheckSquare,
-  History, RefreshCw, Zap, Loader2, GraduationCap, Clapperboard, Edit, Square, X, Lock
+  History, RefreshCw, Zap, Loader2, GraduationCap, Clapperboard, Edit, Square, X, Lock, Plus
 } from 'lucide-react';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell 
@@ -148,6 +148,8 @@ export default function BatchDetail() {
   const [editingRoutinePhase, setEditingRoutinePhase] = useState(null);
   const [batchRoutineSlots, setBatchRoutineSlots] = useState([]);
   const [routineAuditReason, setRoutineAuditReason] = useState('');
+  const [routineAuditTouched, setRoutineAuditTouched] = useState(false);
+  const routineAuditInputRef = useRef(null);
   const [routineSaving, setRoutineSaving] = useState(false);
   const [routineError, setRoutineError] = useState('');
   const [catalogSubjects, setCatalogSubjects] = useState([]);
@@ -906,18 +908,19 @@ export default function BatchDetail() {
         : [{
             date: '',
             weekday: 'Saturday',
-            startTime: '18:00',
-            endTime: '20:00',
+            startTime: '19:00',
+            endTime: '21:00',
             timezone: 'Asia/Dhaka',
             subjectName: '',
             classTitle: '',
             teacherName: '',
-            deliveryMode: 'live',
+            deliveryMode: 'recorded',
             category: 'theory',
-            platform: ''
+            platform: 'Zoom'
           }]
     );
     setRoutineAuditReason('');
+    setRoutineAuditTouched(false);
     setRoutineError('');
   };
 
@@ -925,6 +928,7 @@ export default function BatchDetail() {
     setEditingRoutinePhase(null);
     setBatchRoutineSlots([]);
     setRoutineAuditReason('');
+    setRoutineAuditTouched(false);
     setRoutineError('');
     setRoutineSaving(false);
   };
@@ -935,15 +939,15 @@ export default function BatchDetail() {
       {
         date: '',
         weekday: 'Saturday',
-        startTime: '18:00',
-        endTime: '20:00',
-        timezone: 'Asia/Dhaka',
-        subjectName: '',
-        classTitle: '',
-        teacherName: '',
-        deliveryMode: 'live',
-        category: 'theory',
-        platform: ''
+        startTime: '19:00',
+            endTime: '21:00',
+            timezone: 'Asia/Dhaka',
+            subjectName: '',
+            classTitle: '',
+            teacherName: '',
+            deliveryMode: 'recorded',
+            category: 'theory',
+            platform: 'Zoom'
       }
     ]);
   };
@@ -1003,7 +1007,12 @@ export default function BatchDetail() {
     if (e && e.preventDefault) e.preventDefault();
     if (!editingRoutinePhase || !batchData?.course_definition?.id) return;
     if (!routineAuditReason.trim()) {
-      setRoutineError('Reason for routine adjustment is required for the audit trail.');
+      setRoutineAuditTouched(true);
+      setRoutineError('Reason for routine adjustment is required before saving. Please provide a brief explanation below (Required for Audit Log).');
+      if (routineAuditInputRef.current) {
+        routineAuditInputRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        routineAuditInputRef.current.focus();
+      }
       return;
     }
     try {
@@ -2695,8 +2704,8 @@ export default function BatchDetail() {
               >
                 {isAcademicSaving ? 'Saving...' : (academicStudent.enrollment?.course_name !== 'Online Filmmaking Course' ? 'Save Result' : 'Save Records')}
               </button>
-            </div>
-          </form>
+                </div>
+            </form>
         </div>,
         document.body
       )}
@@ -3181,29 +3190,80 @@ export default function BatchDetail() {
                       })
                     )}
                   </div>
+
+                  {/* BOTTOM ADD SLOT BUTTON */}
+                  {batchRoutineSlots.length > 0 && (
+                    <div style={{ marginTop: '0.65rem' }}>
+                      <button
+                        type="button"
+                        onClick={handleAddRoutineSlot}
+                        style={{
+                          width: '100%',
+                          padding: '0.6rem 1rem',
+                          fontSize: '0.82rem',
+                          fontWeight: 600,
+                          borderRadius: '6px',
+                          background: 'rgba(59,130,246,0.08)',
+                          border: '1px dashed rgba(59,130,246,0.35)',
+                          color: '#93c5fd',
+                          cursor: 'pointer',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: '0.4rem',
+                          transition: 'all 0.15s ease'
+                        }}
+                        onMouseEnter={(e) => {
+                          e.currentTarget.style.background = 'rgba(59,130,246,0.16)';
+                          e.currentTarget.style.borderColor = 'rgba(59,130,246,0.6)';
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.background = 'rgba(59,130,246,0.08)';
+                          e.currentTarget.style.borderColor = 'rgba(59,130,246,0.35)';
+                        }}
+                      >
+                        <Plus size={16} /> + Add Slot
+                      </button>
+                    </div>
+                  )}
                 </div>
 
-                <div>
-                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '0.35rem' }}>
-                    Reason for Batch Routine Adjustment (Required for Audit Log) *
+                <div style={{ marginTop: '0.25rem' }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '0.35rem' }}>
+                    <span>Reason for Batch Routine Adjustment</span>
+                    <span style={{ color: '#ef4444', fontWeight: 'bold' }}>* (Required / আবশ্যক)</span>
                   </label>
                   <input
+                    ref={routineAuditInputRef}
                     type="text"
-                    required
                     value={routineAuditReason}
-                    onChange={(e) => setRoutineAuditReason(e.target.value)}
+                    onChange={(e) => {
+                      setRoutineAuditReason(e.target.value);
+                      if (e.target.value.trim()) {
+                        setRoutineAuditTouched(false);
+                        if (routineError && routineError.includes('Reason')) setRoutineError('');
+                      }
+                    }}
                     placeholder="e.g. Adjusted shooting schedule, rescheduled Friday class for holiday..."
                     style={{
                       width: '100%',
                       background: 'rgba(255,255,255,0.05)',
-                      border: '1px solid rgba(255,255,255,0.12)',
+                      border: routineAuditTouched && !routineAuditReason.trim() ? '1.5px solid #ef4444' : '1px solid rgba(255,255,255,0.12)',
                       borderRadius: '6px',
                       padding: '0.55rem 0.75rem',
                       color: 'var(--text-primary)',
                       fontSize: '0.85rem',
-                      minHeight: '44px'
+                      minHeight: '44px',
+                      outline: 'none',
+                      boxShadow: routineAuditTouched && !routineAuditReason.trim() ? '0 0 0 2px rgba(239,68,68,0.2)' : 'none',
+                      transition: 'border-color 0.2s ease, box-shadow 0.2s ease'
                     }}
                   />
+                  {routineAuditTouched && !routineAuditReason.trim() && (
+                    <div style={{ color: '#ef4444', fontSize: '0.78rem', marginTop: '0.35rem', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                      <span>⚠️ এই তথ্যটি পূরণ করা আবশ্যক — শিডিউল সেভ করার জন্য পরিবর্তনের কারণটি উল্লেখ করুন।</span>
+                    </div>
+                  )}
                 </div>
 
                 {routineError && (
@@ -3218,15 +3278,22 @@ export default function BatchDetail() {
                   padding: '1rem 1.5rem',
                   borderTop: '1px solid rgba(255,255,255,0.06)',
                   display: 'flex',
-                  justifyContent: 'flex-end',
+                  justifyContent: 'space-between',
                   alignItems: 'center',
                   gap: '0.75rem',
                   background: 'rgba(0,0,0,0.1)'
                 }}
               >
-                <button
-                  type="button"
-                  onClick={handleCloseRoutineModal}
+                {!routineAuditReason.trim() ? (
+                  <span style={{ fontSize: '0.78rem', color: '#f59e0b', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                    💡 সেভ করতে উপরের লাল চিহ্নিত কারণটি (Reason) লিখুন
+                  </span>
+                ) : <span />}
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                  <button
+                    type="button"
+                    onClick={handleCloseRoutineModal}
                   disabled={routineSaving}
                   style={{
                     padding: '0.5rem 1rem',
@@ -3243,16 +3310,16 @@ export default function BatchDetail() {
                 </button>
                 <button
                   type="submit"
-                  disabled={routineSaving || !routineAuditReason.trim()}
+                  disabled={routineSaving}
                   style={{
                     padding: '0.5rem 1.25rem',
                     borderRadius: '6px',
-                    background: routineSaving || !routineAuditReason.trim() ? 'rgba(59,130,246,0.3)' : '#2563eb',
+                    background: routineSaving ? 'rgba(59,130,246,0.3)' : '#2563eb',
                     border: 'none',
                     color: '#fff',
                     fontWeight: 600,
                     fontSize: '0.85rem',
-                    cursor: routineSaving || !routineAuditReason.trim() ? 'not-allowed' : 'pointer',
+                    cursor: routineSaving ? 'not-allowed' : 'pointer',
                     minHeight: '40px',
                     display: 'flex',
                     alignItems: 'center',
@@ -3268,6 +3335,7 @@ export default function BatchDetail() {
                     'Save Batch Schedule'
                   )}
                 </button>
+              </div>
               </div>
             </form>
           </div>
