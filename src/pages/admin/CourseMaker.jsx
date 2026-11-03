@@ -375,6 +375,15 @@ export default function CourseMaker() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Window focus listener: dynamically refresh custom subjects & teachers when returning from other tabs
+  useEffect(() => {
+    const handleFocus = () => {
+      fetchCatalogs();
+    };
+    window.addEventListener('focus', handleFocus);
+    return () => window.removeEventListener('focus', handleFocus);
+  }, []);
+
   // Back/Forward navigation listener
   useEffect(() => {
     if (!isInitializedRef.current) return;
@@ -667,7 +676,22 @@ export default function CourseMaker() {
 
   const updateClassField = (clsId, field, val) => {
     const cur = form.phases[activePhaseTab];
-    const updated = (cur.classes || []).map(c => c.id === clsId ? { ...c, [field]: val } : c);
+    const updated = (cur.classes || []).map(c => {
+      if (c.id !== clsId) return c;
+      const next = { ...c, [field]: val };
+      if (field === 'subjectName' && val && typeof val === 'string') {
+        const match = subjects.find(s => s.name?.trim().toLowerCase() === val.trim().toLowerCase());
+        if (match) {
+          if (!next.teacherName && match.teacher_name) {
+            next.teacherName = match.teacher_name;
+          }
+          if (!next.deliveryMode && match.class_type) {
+            next.deliveryMode = match.class_type === 'live' ? 'online' : (match.class_type === 'recorded' ? 'recorded' : 'online');
+          }
+        }
+      }
+      return next;
+    });
     updateCurrentPhase({ classes: updated });
   };
 
@@ -726,6 +750,21 @@ export default function CourseMaker() {
           if (!isNaN(dObj.getTime())) {
             const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
             next.weekday = dayNames[dObj.getDay()];
+          }
+        }
+        return next;
+      }
+      if (field === 'subjectName') {
+        const next = { ...r, subjectName: val };
+        if (val && typeof val === 'string') {
+          const match = subjects.find(s => s.name?.trim().toLowerCase() === val.trim().toLowerCase());
+          if (match) {
+            if (!next.teacherName && match.teacher_name) {
+              next.teacherName = match.teacher_name;
+            }
+            if (!next.deliveryMode && match.class_type) {
+              next.deliveryMode = match.class_type === 'live' ? 'online' : (match.class_type === 'recorded' ? 'recorded' : 'online');
+            }
           }
         }
         return next;
@@ -983,6 +1022,7 @@ export default function CourseMaker() {
   // Open Routine Audit Modal
   const openRoutineAuditModal = async (courseDef) => {
     try {
+      fetchCatalogs();
       setAuditModalDef(courseDef);
       const parsed = parseDefObject(courseDef);
       const firstPhase = parsed.phases?.[0];
@@ -2840,8 +2880,15 @@ export default function CourseMaker() {
                             list="subject-suggestions"
                             value={slot.subjectName || ''}
                             onChange={(e) => {
+                              const val = e.target.value;
                               const updated = [...auditRoutineList];
-                              updated[sIdx] = { ...updated[sIdx], subjectName: e.target.value };
+                              const match = subjects.find(s => s.name?.trim().toLowerCase() === val.trim().toLowerCase());
+                              updated[sIdx] = {
+                                ...updated[sIdx],
+                                subjectName: val,
+                                ...(match && !updated[sIdx].teacherName && match.teacher_name ? { teacherName: match.teacher_name } : {}),
+                                ...(match && !updated[sIdx].deliveryMode && match.class_type ? { deliveryMode: match.class_type === 'live' ? 'online' : (match.class_type === 'recorded' ? 'recorded' : 'online') } : {})
+                              };
                               setAuditRoutineList(updated);
                             }}
                             placeholder="Subject (Select or type)"
@@ -3041,6 +3088,14 @@ export default function CourseMaker() {
           }}
         />
       )}
+
+      {/* Global Datalists for custom subjects and teachers auto-suggestions */}
+      <datalist id="subject-suggestions">
+        {subjects.map(s => <option key={s.id || s.name} value={s.name} />)}
+      </datalist>
+      <datalist id="teacher-suggestions">
+        {teachers.map(t => <option key={t.id} value={t.full_name || `${t.first_name} ${t.last_name}`} />)}
+      </datalist>
     </div>
   );
 }

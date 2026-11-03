@@ -891,6 +891,15 @@ export default function BatchDetail() {
     fetchRoutineCatalogs();
   }, [slug]);
 
+  // Window focus listener: dynamically refresh custom subjects & teachers when returning from other tabs
+  useEffect(() => {
+    const handleFocus = () => {
+      fetchRoutineCatalogs();
+    };
+    window.addEventListener('focus', handleFocus);
+    return () => window.removeEventListener('focus', handleFocus);
+  }, []);
+
   const handleOpenRoutineModal = (phase) => {
     fetchRoutineCatalogs();
     setEditingRoutinePhase(phase);
@@ -972,6 +981,17 @@ export default function BatchDetail() {
         if (!isNaN(dateObj.getTime())) {
           const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
           nextSlot.weekday = dayNames[dateObj.getDay()];
+        }
+      }
+      if (field === 'subjectName' && value && typeof value === 'string') {
+        const match = catalogSubjects.find(s => s.name?.trim().toLowerCase() === value.trim().toLowerCase());
+        if (match) {
+          if (!nextSlot.teacherName && match.teacher_name) {
+            nextSlot.teacherName = match.teacher_name;
+          }
+          if (!nextSlot.deliveryMode && match.class_type) {
+            nextSlot.deliveryMode = match.class_type === 'live' ? 'online' : (match.class_type === 'recorded' ? 'recorded' : 'online');
+          }
         }
       }
       updated[index] = nextSlot;
