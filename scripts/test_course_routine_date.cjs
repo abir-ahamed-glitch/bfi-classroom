@@ -20,6 +20,13 @@ assert.ok(routeSrc.includes('slot.date'), 'course-definitions.js must reference 
 assert.ok(routeSrc.includes('ALLOWED_DELIVERY_MODES'), 'course-definitions.js must have ALLOWED_DELIVERY_MODES');
 assert.ok(routeSrc.includes('ALLOWED_CATEGORIES'), 'course-definitions.js must have ALLOWED_CATEGORIES');
 
+// Publish regression: classCount is derived and must be reconciled, never block publishing
+assert.ok(routeSrc.includes('function reconcileClassCounts'), 'reconcileClassCounts helper must exist');
+assert.ok((routeSrc.match(/reconcileClassCounts\(/g) || []).length >= 4, 'classCount must be reconciled on create, update and publish');
+assert.ok(routeSrc.includes("'self_paced'"), 'self_paced delivery mode used by BatchDetail UI must be allowed');
+const cmSrc = fs.readFileSync(path.resolve(__dirname, '../src/pages/admin/CourseMaker.jsx'), 'utf8');
+assert.ok(/classCount: 1,/.test(cmSrc), 'default phase classCount must match its single default class');
+
 // Test functional routine validator logic directly
 const ALLOWED_WEEKDAYS = ['Saturday', 'Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
 const ALLOWED_DELIVERY_MODES = ['online', 'offline', 'hybrid', 'self_paced'];
