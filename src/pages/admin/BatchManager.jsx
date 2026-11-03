@@ -92,6 +92,7 @@ export default function BatchManager() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCourse, setSelectedCourse] = useState('all');
   const [activeStatusTab, setActiveStatusTab] = useState('all');
+  const [definedCourses, setDefinedCourses] = useState([]);
   const [activeDropdownId, setActiveDropdownId] = useState(null);
   const [popoverAction, setPopoverAction] = useState(null); // { type: 'archive'|'delete', batchId }
   const [actionLoading, setActionLoading] = useState(false);
@@ -356,7 +357,28 @@ export default function BatchManager() {
     setTimeout(() => setToastMsg(''), 3000);
   };
 
-  // Standard registered courses + any dynamic ones in database
+  // Fetch all defined courses from CourseMaker
+  const fetchCourseDefinitions = async () => {
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch('/api/admin/course-definitions', {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const list = Array.isArray(data) ? data : (data.definitions || []);
+        setDefinedCourses(list);
+      }
+    } catch (err) {
+      console.error('Failed to load course definitions in BatchManager:', err);
+    }
+  };
+
+  useEffect(() => {
+    fetchCourseDefinitions();
+  }, []);
+
+  // Standard registered courses + CourseMaker defined courses + existing database batches
   const courseOptions = useMemo(() => {
     const courses = new Set([
       'Online Filmmaking Course',
@@ -365,11 +387,21 @@ export default function BatchManager() {
       'Cinematography',
       'Acting'
     ]);
+    definedCourses.forEach(c => {
+      if (c && c.name && c.status !== 'archived') {
+        courses.add(c.name);
+      }
+    });
     allBatches.forEach(b => {
-      if (b.course_name) courses.add(b.course_name);
+      if (b && b.course_name) courses.add(b.course_name);
     });
     return Array.from(courses);
-  }, [allBatches]);
+  }, [allBatches, definedCourses]);
+
+  const selectedCourseDef = useMemo(() => {
+    if (!selectedCourse || selectedCourse === 'all') return null;
+    return definedCourses.find(c => c.name === selectedCourse) || null;
+  }, [selectedCourse, definedCourses]);
 
   // Fetch batch details, students, and progress for Details View
   const fetchBatchDetailsData = async (id) => {
@@ -1339,14 +1371,18 @@ export default function BatchManager() {
           ) : filteredBatches.length === 0 ? (
             <div className="batch-empty-state glass-panel">
               <Users size={48} className="empty-icon" />
-              <h3 style={{ margin: '0 0 0.5rem 0', fontSize: '1.25rem', color: 'var(--text-primary)' }}>No batches found</h3>
+              <h3 style={{ margin: '0 0 0.5rem 0', fontSize: '1.25rem', color: 'var(--text-primary)' }}>
+                {selectedCourse !== 'all' ? `No batches found for "${selectedCourse}"` : 'No batches found'}
+              </h3>
               <p style={{ margin: '0 0 1.5rem 0', fontSize: '0.95rem', color: 'var(--text-muted)' }}>
-                {allBatches.length === 0 
-                  ? 'Create your first batch to get started.' 
-                  : 'Try adjusting your filters.'}
+                {selectedCourse !== 'all'
+                  ? `No batches have been created for this course yet. Create the first batch now!`
+                  : allBatches.length === 0 
+                    ? 'Create your first batch to get started.' 
+                    : 'Try adjusting your filters.'}
               </p>
               <button onClick={handleCreateNewBatchClick} className="modern-btn modern-btn--primary" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <Plus size={16} /> Create New Batch
+                <Plus size={16} /> {selectedCourse !== 'all' ? `Create Batch for ${selectedCourse}` : 'Create New Batch'}
               </button>
             </div>
           ) : (
@@ -1366,8 +1402,13 @@ export default function BatchManager() {
                 let badgeLabel = b.course_name || 'COURSE';
                 if (isFilmmaking) {
                   badgeClass = 'filmmaking';
+                  badgeLabel = 'Online Filmmaking Course';
                 } else if (isWorkshop) {
                   badgeClass = 'workshop';
+                  badgeLabel = b.course_name;
+                } else if (b.course_definition_id) {
+                  badgeClass = 'defined';
+                  badgeLabel = b.course_name;
                 }
 
                 return (
@@ -1578,6 +1619,9 @@ export default function BatchManager() {
         mode={editingBatch ? "edit" : "create"}
         batch={editingBatch}
         isOpen={showBatchModal}
+        initialCourseDef={editingBatch ? null : selectedCourseDef}
+        initialCourseName={editingBatch ? null : (selectedCourse !== 'all' ? selectedCourse : null)}
+        courseDefinitions={definedCourses}
         onClose={() => {
           setShowBatchModal(false);
           setEditingBatch(null);
@@ -1604,6 +1648,7 @@ export default function BatchManager() {
           }
           
           setEditingBatch(null);
+          fetchCourseDefinitions();
           if (selectedBatchId && editingBatch) {
             fetchBatchDetailsData(selectedBatchId);
           }

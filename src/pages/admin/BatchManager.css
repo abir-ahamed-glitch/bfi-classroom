@@ -239,6 +239,12 @@
   border: 1px solid rgba(14, 165, 233, 0.3);
 }
 
+.batch-course-badge.defined {
+  background: rgba(168, 85, 247, 0.15);
+  color: #c084fc;
+  border: 1px solid rgba(168, 85, 247, 0.3);
+}
+
 .batch-course-badge.other {
   background: rgba(156, 163, 175, 0.15);
   color: #d1d5db;

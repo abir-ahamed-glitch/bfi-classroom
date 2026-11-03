@@ -19,6 +19,42 @@ const FeeTracker = () => {
   // Filters
   const [statusFilter, setStatusFilter] = useState(''); // '', 'paid', 'partial', 'due', 'overdue'
   const [courseFilter, setCourseFilter] = useState('');
+  const [courseDefs, setCourseDefs] = useState([]);
+
+  useEffect(() => {
+    const fetchCourseDefs = async () => {
+      try {
+        const token = localStorage.getItem('token');
+        const res = await fetch('/api/admin/course-definitions', {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (res.ok) {
+          const d = await res.json();
+          setCourseDefs(Array.isArray(d) ? d : (d.definitions || []));
+        }
+      } catch { /* ignore */ }
+    };
+    fetchCourseDefs();
+  }, []);
+
+  const courseOptions = useMemo(() => {
+    const set = new Set([
+      'Online Filmmaking Course',
+      'Film Appreciation Course',
+      'Script Writing',
+      'Cinematography',
+      'Acting'
+    ]);
+    courseDefs.forEach(d => {
+      if (d && d.name && d.status !== 'archived') set.add(d.name);
+    });
+    if (data && data.students) {
+      data.students.forEach(s => {
+        if (s.course_name) set.add(s.course_name);
+      });
+    }
+    return Array.from(set);
+  }, [courseDefs, data]);
   const [batchFilter, setBatchFilter] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   
@@ -431,8 +467,9 @@ const FeeTracker = () => {
 
           <select value={courseFilter} onChange={e => setCourseFilter(e.target.value)} className="ft-select">
             <option value="">All Courses</option>
-            <option value="Online Filmmaking Course">Online Filmmaking Course</option>
-            <option value="Film Appreciation Course">Film Appreciation Course</option>
+            {courseOptions.map(c => (
+              <option key={c} value={c}>{c}</option>
+            ))}
           </select>
 
           <select value={batchFilter} onChange={e => setBatchFilter(e.target.value)} className="ft-select">
