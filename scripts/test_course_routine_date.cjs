@@ -27,6 +27,13 @@ assert.ok(routeSrc.includes("'self_paced'"), 'self_paced delivery mode used by B
 const cmSrc = fs.readFileSync(path.resolve(__dirname, '../src/pages/admin/CourseMaker.jsx'), 'utf8');
 assert.ok(/classCount: 1,/.test(cmSrc), 'default phase classCount must match its single default class');
 
+// Delivery mode & platform medium assertions
+assert.ok(routeSrc.includes("'recorded_plus_live_discussion'"), 'server must allow recorded_plus_live_discussion');
+assert.ok(routeSrc.includes('platform: slot.platform'), 'server must sanitize slot.platform');
+const psSrc = fs.readFileSync(path.resolve(__dirname, '../src/components/admin/PlatformSelector.jsx'), 'utf8');
+assert.ok(psSrc.includes('Zoom') && psSrc.includes('Google Meet'), 'PlatformSelector must include Zoom and Google Meet');
+assert.ok(psSrc.includes('__custom__'), 'PlatformSelector must support custom medium input');
+
 // Test functional routine validator logic directly
 const ALLOWED_WEEKDAYS = ['Saturday', 'Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
 const ALLOWED_DELIVERY_MODES = ['online', 'offline', 'hybrid', 'self_paced'];

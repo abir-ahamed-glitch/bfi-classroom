@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
+import { deliveryModeLabel } from '../../utils/deliveryModes';
 import { 
   X, CheckCircle2, Clock, AlertTriangle, Lock, Award, 
   CheckSquare, Square, Save, RefreshCw, XCircle, Tag,
@@ -837,7 +838,12 @@ export default function DefinedCourseProgressModal({
                             </span>
                             {cls.deliveryMode && (
                               <span style={{ fontSize: '0.72rem', padding: '1px 6px', borderRadius: '4px', background: 'rgba(255, 255, 255, 0.06)', color: 'var(--text-muted, #94a3b8)' }}>
-                                {cls.deliveryMode}
+                                {deliveryModeLabel(cls.deliveryMode)}
+                              </span>
+                            )}
+                            {cls.platform && (
+                              <span style={{ fontSize: '0.72rem', padding: '1px 6px', borderRadius: '4px', background: 'rgba(99, 102, 241, 0.15)', color: '#818cf8', fontWeight: 500 }}>
+                                🎥 {cls.platform}
                               </span>
                             )}
                           </div>

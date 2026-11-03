@@ -909,8 +909,9 @@ router.put('/:id/routine', authenticateToken, (req, res) => {
       subjectName: slot.subjectName ? String(slot.subjectName).trim() : '',
       classTitle: slot.classTitle ? String(slot.classTitle).trim() : '',
       teacherName: slot.teacherName ? String(slot.teacherName).trim() : '',
-      deliveryMode: slot.deliveryMode ? String(slot.deliveryMode).trim() : 'online',
-      category: slot.category ? String(slot.category).trim() : 'theory'
+      deliveryMode: slot.deliveryMode ? String(slot.deliveryMode).trim() : 'live',
+      category: slot.category ? String(slot.category).trim() : 'theory',
+      platform: slot.platform ? String(slot.platform).trim() : ''
     }));
 
     // Determine old routine: check if there was a previous override or take base phase routine

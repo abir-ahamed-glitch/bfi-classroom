@@ -27,11 +27,8 @@ function getCourseTypeLabel(type) {
   return found ? found.label : (type || 'Course');
 }
 
-const DELIVERY_MODES = [
-  { value: 'live', label: 'Live Online' },
-  { value: 'recorded', label: 'Recorded' },
-  { value: 'recorded_plus_live_discussion', label: 'Recorded + Live Discussion' }
-];
+import { DELIVERY_MODE_OPTIONS as DELIVERY_MODES, normalizeDeliveryMode, deliveryModeFromSubject } from '../../utils/deliveryModes';
+import PlatformSelector from '../../components/admin/PlatformSelector';
 
 const CLASS_CATEGORIES = [
   { value: 'theory', label: 'Theory & Lecture' },
@@ -62,7 +59,7 @@ function buildDefaultPhase(index) {
       completionRequired: true
     },
     routine: [
-      { date: '', weekday: 'Saturday', startTime: '18:00', endTime: '20:00', timezone: 'Asia/Dhaka' }
+      { date: '', weekday: 'Saturday', startTime: '18:00', endTime: '20:00', timezone: 'Asia/Dhaka', platform: '' }
     ],
     classes: [
       {
@@ -72,6 +69,7 @@ function buildDefaultPhase(index) {
         teacherName: '',
         deliveryMode: 'live',
         category: 'theory',
+        platform: '',
         durationMinutes: 120,
         mandatory: true
       }
@@ -656,6 +654,7 @@ export default function CourseMaker() {
       teacherName: '',
       deliveryMode: 'live',
       category: 'theory',
+      platform: '',
       durationMinutes: 120,
       mandatory: true
     };
@@ -685,8 +684,8 @@ export default function CourseMaker() {
           if (!next.teacherName && match.teacher_name) {
             next.teacherName = match.teacher_name;
           }
-          if (!next.deliveryMode && match.class_type) {
-            next.deliveryMode = match.class_type === 'live' ? 'online' : (match.class_type === 'recorded' ? 'recorded' : 'online');
+          if ((!next.deliveryMode || next.deliveryMode === 'live') && match.class_type) {
+            next.deliveryMode = deliveryModeFromSubject(match);
           }
         }
       }
@@ -707,8 +706,9 @@ export default function CourseMaker() {
       subjectName: '',
       classTitle: '',
       teacherName: '',
-      deliveryMode: 'online',
-      category: 'theory'
+      deliveryMode: 'live',
+      category: 'theory',
+      platform: ''
     };
     updateCurrentPhase({ routine: [...(cur.routine || []), newSlot] });
   };
@@ -725,8 +725,9 @@ export default function CourseMaker() {
         classTitle: cls.title || '',
         subjectName: cls.subjectName || '',
         teacherName: cls.teacherName || '',
-        deliveryMode: cls.deliveryMode || 'online',
-        category: cls.category || 'theory'
+        deliveryMode: cls.deliveryMode || 'live',
+        category: cls.category || 'theory',
+        platform: cls.platform || ''
       };
     });
     updateCurrentPhase({ routine: updated });
@@ -762,8 +763,8 @@ export default function CourseMaker() {
             if (!next.teacherName && match.teacher_name) {
               next.teacherName = match.teacher_name;
             }
-            if (!next.deliveryMode && match.class_type) {
-              next.deliveryMode = match.class_type === 'live' ? 'online' : (match.class_type === 'recorded' ? 'recorded' : 'online');
+            if ((!next.deliveryMode || next.deliveryMode === 'live') && match.class_type) {
+              next.deliveryMode = deliveryModeFromSubject(match);
             }
           }
         }
@@ -1867,7 +1868,7 @@ export default function CourseMaker() {
                             </div>
                             <div>
                               <select
-                                value={rt.deliveryMode || 'online'}
+                                value={normalizeDeliveryMode(rt.deliveryMode)}
                                 onChange={(e) => updateRoutineField(rIdx, 'deliveryMode', e.target.value)}
                                 className="cm-select"
                                 style={{ minHeight: '38px', padding: '0.35rem 0.4rem', fontSize: '0.78rem', width: '100%' }}
@@ -1886,6 +1887,12 @@ export default function CourseMaker() {
                               >
                                 {CLASS_CATEGORIES.map(cat => <option key={cat.value} value={cat.value}>{cat.label}</option>)}
                               </select>
+                            </div>
+                            <div>
+                              <PlatformSelector
+                                value={rt.platform || ''}
+                                onChange={(val) => updateRoutineField(rIdx, 'platform', val)}
+                              />
                             </div>
                           </div>
                         </div>
@@ -1970,14 +1977,14 @@ export default function CourseMaker() {
 
                         <div>
                           <label className="cm-label" style={{ fontSize: '0.75rem', marginBottom: '0.2rem' }}>
-                            Mode & Category
+                            Mode, Category & Medium
                           </label>
-                          <div style={{ display: 'flex', gap: '0.4rem' }}>
+                          <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
                             <select
-                              value={cls.deliveryMode}
+                              value={normalizeDeliveryMode(cls.deliveryMode)}
                               onChange={(e) => updateClassField(cls.id, 'deliveryMode', e.target.value)}
                               className="cm-select"
-                              style={{ flex: 1, minHeight: '44px', padding: '0.45rem 0.4rem', fontSize: '0.8rem' }}
+                              style={{ flex: 1, minWidth: '120px', minHeight: '44px', padding: '0.45rem 0.4rem', fontSize: '0.8rem' }}
                             >
                               {DELIVERY_MODES.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
                             </select>
@@ -1985,10 +1992,17 @@ export default function CourseMaker() {
                               value={cls.category || 'theory'}
                               onChange={(e) => updateClassField(cls.id, 'category', e.target.value)}
                               className="cm-select"
-                              style={{ flex: 1, minHeight: '44px', padding: '0.45rem 0.4rem', fontSize: '0.8rem' }}
+                              style={{ flex: 1, minWidth: '120px', minHeight: '44px', padding: '0.45rem 0.4rem', fontSize: '0.8rem' }}
                             >
                               {CLASS_CATEGORIES.map(cat => <option key={cat.value} value={cat.value}>{cat.label}</option>)}
                             </select>
+                            <div style={{ flex: 1, minWidth: '130px' }}>
+                              <PlatformSelector
+                                value={cls.platform || ''}
+                                onChange={(val) => updateClassField(cls.id, 'platform', val)}
+                                selectStyle={{ minHeight: '44px', padding: '0.45rem 0.4rem', fontSize: '0.8rem' }}
+                              />
+                            </div>
                           </div>
                         </div>
 
@@ -2742,8 +2756,9 @@ export default function CourseMaker() {
                       subjectName: '',
                       classTitle: '',
                       teacherName: '',
-                      deliveryMode: 'online',
-                      category: 'theory'
+                      deliveryMode: 'live',
+                      category: 'theory',
+                      platform: ''
                     }
                   ])}
                   className="cm-btn cm-btn-secondary cm-btn-sm"
@@ -2781,8 +2796,9 @@ export default function CourseMaker() {
                                   classTitle: matchCls.title || '',
                                   subjectName: matchCls.subjectName || '',
                                   teacherName: matchCls.teacherName || '',
-                                  deliveryMode: matchCls.deliveryMode || 'online',
-                                  category: matchCls.category || 'theory'
+                                  deliveryMode: matchCls.deliveryMode || 'live',
+                                  category: matchCls.category || 'theory',
+                                  platform: matchCls.platform || ''
                                 };
                                 setAuditRoutineList(updated);
                               }
@@ -2887,7 +2903,7 @@ export default function CourseMaker() {
                                 ...updated[sIdx],
                                 subjectName: val,
                                 ...(match && !updated[sIdx].teacherName && match.teacher_name ? { teacherName: match.teacher_name } : {}),
-                                ...(match && !updated[sIdx].deliveryMode && match.class_type ? { deliveryMode: match.class_type === 'live' ? 'online' : (match.class_type === 'recorded' ? 'recorded' : 'online') } : {})
+                                ...(match && (!updated[sIdx].deliveryMode || updated[sIdx].deliveryMode === 'live') && match.class_type ? { deliveryMode: deliveryModeFromSubject(match) } : {})
                               };
                               setAuditRoutineList(updated);
                             }}
@@ -2934,7 +2950,7 @@ export default function CourseMaker() {
                         </div>
                         <div>
                           <select
-                            value={slot.deliveryMode || 'online'}
+                            value={normalizeDeliveryMode(slot.deliveryMode)}
                             onChange={(e) => {
                               const updated = [...auditRoutineList];
                               updated[sIdx] = { ...updated[sIdx], deliveryMode: e.target.value };
@@ -2961,6 +2977,16 @@ export default function CourseMaker() {
                           >
                             {CLASS_CATEGORIES.map(cat => <option key={cat.value} value={cat.value}>{cat.label}</option>)}
                           </select>
+                        </div>
+                        <div>
+                          <PlatformSelector
+                            value={slot.platform || ''}
+                            onChange={(val) => {
+                              const updated = [...auditRoutineList];
+                              updated[sIdx] = { ...updated[sIdx], platform: val };
+                              setAuditRoutineList(updated);
+                            }}
+                          />
                         </div>
                       </div>
                     </div>
