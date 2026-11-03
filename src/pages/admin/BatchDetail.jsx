@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
+import { DELIVERY_MODE_OPTIONS, normalizeDeliveryMode, deliveryModeLabel, deliveryModeFromSubject } from '../../utils/deliveryModes';
+import PlatformSelector from '../../components/admin/PlatformSelector';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { 
   ArrowLeft, Calendar, Users, Clock, CheckCircle2, XCircle, 
@@ -810,12 +812,7 @@ export default function BatchDetail() {
   };
 
   const WEEKDAYS = ['Saturday', 'Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
-  const DELIVERY_MODES = [
-    { value: 'online', label: 'Live Online' },
-    { value: 'offline', label: 'In-Person Studio' },
-    { value: 'hybrid', label: 'Hybrid' },
-    { value: 'self_paced', label: 'Self Paced' }
-  ];
+  const DELIVERY_MODES = DELIVERY_MODE_OPTIONS;
   const CLASS_CATEGORIES = [
     { value: 'theory', label: 'Theory' },
     { value: 'practical', label: 'Practical' },
@@ -915,8 +912,9 @@ export default function BatchDetail() {
             subjectName: '',
             classTitle: '',
             teacherName: '',
-            deliveryMode: 'online',
-            category: 'theory'
+            deliveryMode: 'live',
+            category: 'theory',
+            platform: ''
           }]
     );
     setRoutineAuditReason('');
@@ -943,8 +941,9 @@ export default function BatchDetail() {
         subjectName: '',
         classTitle: '',
         teacherName: '',
-        deliveryMode: 'online',
-        category: 'theory'
+        deliveryMode: 'live',
+        category: 'theory',
+        platform: ''
       }
     ]);
   };
@@ -960,8 +959,9 @@ export default function BatchDetail() {
         classTitle: cls.title || '',
         subjectName: cls.subjectName || '',
         teacherName: cls.teacherName || '',
-        deliveryMode: cls.deliveryMode || 'online',
-        category: cls.category || 'theory'
+        deliveryMode: cls.deliveryMode || 'live',
+        category: cls.category || 'theory',
+        platform: cls.platform || ''
       };
       return updated;
     });
@@ -989,8 +989,8 @@ export default function BatchDetail() {
           if (!nextSlot.teacherName && match.teacher_name) {
             nextSlot.teacherName = match.teacher_name;
           }
-          if (!nextSlot.deliveryMode && match.class_type) {
-            nextSlot.deliveryMode = match.class_type === 'live' ? 'online' : (match.class_type === 'recorded' ? 'recorded' : 'online');
+          if ((!nextSlot.deliveryMode || nextSlot.deliveryMode === 'live') && match.class_type) {
+            nextSlot.deliveryMode = deliveryModeFromSubject(match);
           }
         }
       }
@@ -1589,16 +1589,28 @@ export default function BatchDetail() {
                               {slot.classTitle && <span>{slot.classTitle}</span>}
                             </div>
                           )}
-                          {(slot.teacherName || slot.deliveryMode || slot.category) && (
-                            <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', paddingLeft: '1rem', display: 'flex', gap: '0.35rem', flexWrap: 'wrap' }}>
+                          {(slot.teacherName || slot.deliveryMode || slot.category || slot.platform) && (
+                            <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', paddingLeft: '1rem', display: 'flex', gap: '0.35rem', flexWrap: 'wrap', alignItems: 'center' }}>
                               {slot.teacherName && <span>👨‍🏫 {slot.teacherName}</span>}
-                              {slot.teacherName && (slot.deliveryMode || slot.category) && <span>•</span>}
+                              {slot.teacherName && (slot.deliveryMode || slot.category || slot.platform) && <span>•</span>}
                               {slot.deliveryMode && (
                                 <span style={{ textTransform: 'capitalize' }}>
-                                  {slot.deliveryMode === 'online' ? 'Live Online' : slot.deliveryMode === 'offline' ? 'In-Person Studio' : slot.deliveryMode}
+                                  {deliveryModeLabel(slot.deliveryMode)}
                                 </span>
                               )}
                               {slot.category && <span style={{ textTransform: 'capitalize' }}>({slot.category})</span>}
+                              {slot.platform && (
+                                <span style={{
+                                  padding: '1px 5px',
+                                  borderRadius: '4px',
+                                  background: 'rgba(99, 102, 241, 0.15)',
+                                  color: '#818cf8',
+                                  fontWeight: 500,
+                                  fontSize: '0.68rem'
+                                }}>
+                                  🎥 {slot.platform}
+                                </span>
+                              )}
                             </div>
                           )}
                         </div>
@@ -3117,7 +3129,7 @@ export default function BatchDetail() {
                               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
                                 <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Mode</label>
                                 <select
-                                  value={slot.deliveryMode || 'online'}
+                                  value={normalizeDeliveryMode(slot.deliveryMode)}
                                   onChange={(e) => handleUpdateRoutineSlot(sIdx, 'deliveryMode', e.target.value)}
                                   style={{
                                     background: 'rgba(255,255,255,0.05)',
@@ -3153,6 +3165,15 @@ export default function BatchDetail() {
                                 >
                                   {CLASS_CATEGORIES.map(cat => <option key={cat.value} value={cat.value} style={{ background: '#1e293b' }}>{cat.label}</option>)}
                                 </select>
+                              </div>
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                                <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Medium / App</label>
+                                <PlatformSelector
+                                  value={slot.platform || ''}
+                                  onChange={(val) => handleUpdateRoutineSlot(sIdx, 'platform', val)}
+                                  selectStyle={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.12)', color: 'var(--text-primary)' }}
+                                  inputStyle={{ background: 'rgba(255,255,255,0.05)', color: 'var(--text-primary)' }}
+                                />
                               </div>
                             </div>
                           </div>

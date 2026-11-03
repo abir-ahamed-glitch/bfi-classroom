@@ -71,8 +71,9 @@ try {
               subjectName: testSubjectName,
               classTitle: 'Introduction to Direction & Staging',
               teacherName: 'Abir Ahmad',
-              deliveryMode: 'online',
-              category: 'theory'
+              deliveryMode: 'recorded_plus_live_discussion',
+              category: 'theory',
+              platform: 'Zoom'
             }
           ],
           classes: [
@@ -136,7 +137,8 @@ try {
       classTitle: 'Practical Studio Shooting Workshop',
       teacherName: 'Guest Master Director',
       deliveryMode: 'offline',
-      category: 'shooting'
+      category: 'shooting',
+      platform: 'Custom Stream Hub'
     }
   ];
 
@@ -178,6 +180,7 @@ try {
   assert.strictEqual(resolvedSlot.teacherName, 'Guest Master Director', 'Teacher name must match');
   assert.strictEqual(resolvedSlot.deliveryMode, 'offline', 'Delivery mode must match');
   assert.strictEqual(resolvedSlot.category, 'shooting', 'Category must match');
+  assert.strictEqual(resolvedSlot.platform, 'Custom Stream Hub', 'Platform must match');
   console.log('✅ resolvePhaseRoutine preserved all metadata fields with 100% fidelity');
 
   // 6. Verify audit trail retrieval

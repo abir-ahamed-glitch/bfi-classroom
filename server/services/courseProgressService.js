@@ -298,6 +298,7 @@ export function getEnrollmentProgressSync(enrollmentId, customDb = null, options
         teacherName: cls.teacherName,
         deliveryMode: cls.deliveryMode,
         category: cls.category,
+        platform: cls.platform || '',
         durationMinutes: cls.durationMinutes,
         mandatory: cls.mandatory !== false,
         attended,
