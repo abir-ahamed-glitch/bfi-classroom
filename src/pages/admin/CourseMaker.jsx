@@ -2693,7 +2693,18 @@ export default function CourseMaker() {
                   type="button"
                   onClick={() => setAuditRoutineList([
                     ...auditRoutineList,
-                    { date: '', weekday: 'Saturday', startTime: '18:00', endTime: '20:00', timezone: 'Asia/Dhaka' }
+                    {
+                      date: '',
+                      weekday: 'Saturday',
+                      startTime: '18:00',
+                      endTime: '20:00',
+                      timezone: 'Asia/Dhaka',
+                      subjectName: '',
+                      classTitle: '',
+                      teacherName: '',
+                      deliveryMode: 'online',
+                      category: 'theory'
+                    }
                   ])}
                   className="cm-btn cm-btn-secondary cm-btn-sm"
                 >
@@ -2701,79 +2712,213 @@ export default function CourseMaker() {
                 </button>
               </div>
 
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                {auditRoutineList.map((slot, sIdx) => (
-                  <div key={sIdx} className="cm-modal-routine-slot">
-                    <div className="cm-routine-slot-row">
-                      <input
-                        type="date"
-                        value={slot.date || ''}
-                        onChange={(e) => {
-                          const val = e.target.value;
-                          const updated = [...auditRoutineList];
-                          const nextSlot = { ...updated[sIdx], date: val };
-                          if (val && /^\d{4}-\d{2}-\d{2}$/.test(val)) {
-                            const [year, month, day] = val.split('-').map(Number);
-                            const dateObj = new Date(year, month - 1, day);
-                            if (!isNaN(dateObj.getTime())) {
-                              const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-                              nextSlot.weekday = dayNames[dateObj.getDay()];
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.65rem' }}>
+                {(() => {
+                  let phaseClasses = [];
+                  try {
+                    const parsed = parseDefObject(auditModalDef);
+                    const pObj = (parsed.phases || []).find(p => p.id === auditSelectedPhaseId);
+                    phaseClasses = pObj?.classes || [];
+                  } catch { /* empty */ }
+
+                  return auditRoutineList.map((slot, sIdx) => (
+                    <div key={sIdx} className="cm-modal-routine-slot" style={{ display: 'flex', flexDirection: 'column', gap: '0.45rem', padding: '0.75rem', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--glass-border)', borderRadius: '8px' }}>
+                      {/* Slot Header & Quick-Fill */}
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.4rem', flexWrap: 'wrap', borderBottom: '1px solid rgba(255,255,255,0.06)', paddingBottom: '0.3rem' }}>
+                        <span style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)' }}>
+                          Slot #{sIdx + 1}
+                        </span>
+                        {phaseClasses.length > 0 && (
+                          <select
+                            onChange={(e) => {
+                              const selId = e.target.value;
+                              if (!selId) return;
+                              const matchCls = phaseClasses.find(c => String(c.id) === String(selId));
+                              if (matchCls) {
+                                const updated = [...auditRoutineList];
+                                updated[sIdx] = {
+                                  ...updated[sIdx],
+                                  classTitle: matchCls.title || '',
+                                  subjectName: matchCls.subjectName || '',
+                                  teacherName: matchCls.teacherName || '',
+                                  deliveryMode: matchCls.deliveryMode || 'online',
+                                  category: matchCls.category || 'theory'
+                                };
+                                setAuditRoutineList(updated);
+                              }
+                              e.target.value = '';
+                            }}
+                            className="cm-select"
+                            style={{ fontSize: '0.72rem', padding: '2px 6px', height: 'auto', minHeight: '28px', maxWidth: '210px' }}
+                            title="Quick-fill from defined phase class"
+                          >
+                            <option value="">⚡ Autofill from Class...</option>
+                            {phaseClasses.map((c, i) => (
+                              <option key={c.id || i} value={c.id}>
+                                {c.title || `Class ${i + 1}`} ({c.subjectName || 'No Subject'})
+                              </option>
+                            ))}
+                          </select>
+                        )}
+                      </div>
+
+                      {/* Row 1: Date, Day, Time, Delete */}
+                      <div className="cm-routine-slot-row">
+                        <input
+                          type="date"
+                          value={slot.date || ''}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            const updated = [...auditRoutineList];
+                            const nextSlot = { ...updated[sIdx], date: val };
+                            if (val && /^\d{4}-\d{2}-\d{2}$/.test(val)) {
+                              const [year, month, day] = val.split('-').map(Number);
+                              const dateObj = new Date(year, month - 1, day);
+                              if (!isNaN(dateObj.getTime())) {
+                                const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+                                nextSlot.weekday = dayNames[dateObj.getDay()];
+                              }
                             }
-                          }
-                          updated[sIdx] = nextSlot;
-                          setAuditRoutineList(updated);
-                        }}
-                        className="cm-routine-date-input"
-                        aria-label="Slot Date"
-                      />
-                      <select
-                        value={slot.weekday}
-                        onChange={(e) => {
-                          const updated = [...auditRoutineList];
-                          updated[sIdx] = { ...updated[sIdx], weekday: e.target.value };
-                          setAuditRoutineList(updated);
-                        }}
-                        className="cm-select"
-                        style={{ width: 'auto', minHeight: '44px', padding: '2px 4px' }}
-                      >
-                        {WEEKDAYS.map(w => <option key={w} value={w}>{w}</option>)}
-                      </select>
-                      <button
-                        type="button"
-                        onClick={() => setAuditRoutineList(auditRoutineList.filter((_, i) => i !== sIdx))}
-                        className="cm-btn-danger-icon"
-                        title="Delete Slot"
-                      >
-                        <Trash2 size={15} />
-                      </button>
+                            updated[sIdx] = nextSlot;
+                            setAuditRoutineList(updated);
+                          }}
+                          className="cm-routine-date-input"
+                          aria-label="Slot Date"
+                        />
+                        <select
+                          value={slot.weekday}
+                          onChange={(e) => {
+                            const updated = [...auditRoutineList];
+                            updated[sIdx] = { ...updated[sIdx], weekday: e.target.value };
+                            setAuditRoutineList(updated);
+                          }}
+                          className="cm-select"
+                          style={{ width: 'auto', minHeight: '44px', padding: '2px 4px' }}
+                        >
+                          {WEEKDAYS.map(w => <option key={w} value={w}>{w}</option>)}
+                        </select>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', flex: 1, minWidth: '160px' }}>
+                          <input
+                            type="time"
+                            value={slot.startTime}
+                            onChange={(e) => {
+                              const updated = [...auditRoutineList];
+                              updated[sIdx] = { ...updated[sIdx], startTime: e.target.value };
+                              setAuditRoutineList(updated);
+                            }}
+                            className="cm-routine-time-input"
+                            style={{ flex: 1 }}
+                          />
+                          <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>to</span>
+                          <input
+                            type="time"
+                            value={slot.endTime}
+                            onChange={(e) => {
+                              const updated = [...auditRoutineList];
+                              updated[sIdx] = { ...updated[sIdx], endTime: e.target.value };
+                              setAuditRoutineList(updated);
+                            }}
+                            className="cm-routine-time-input"
+                            style={{ flex: 1 }}
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setAuditRoutineList(auditRoutineList.filter((_, i) => i !== sIdx))}
+                          className="cm-btn-danger-icon"
+                          title="Delete Slot"
+                        >
+                          <Trash2 size={15} />
+                        </button>
+                      </div>
+
+                      {/* Row 2: Subject & Class Title */}
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 180px), 1fr))', gap: '0.4rem', width: '100%' }}>
+                        <div>
+                          <input
+                            type="text"
+                            list="subject-suggestions"
+                            value={slot.subjectName || ''}
+                            onChange={(e) => {
+                              const updated = [...auditRoutineList];
+                              updated[sIdx] = { ...updated[sIdx], subjectName: e.target.value };
+                              setAuditRoutineList(updated);
+                            }}
+                            placeholder="Subject (Select or type)"
+                            className="cm-input"
+                            style={{ minHeight: '38px', padding: '0.35rem 0.55rem', fontSize: '0.82rem', width: '100%' }}
+                            title="Class Subject"
+                          />
+                        </div>
+                        <div>
+                          <input
+                            type="text"
+                            value={slot.classTitle || ''}
+                            onChange={(e) => {
+                              const updated = [...auditRoutineList];
+                              updated[sIdx] = { ...updated[sIdx], classTitle: e.target.value };
+                              setAuditRoutineList(updated);
+                            }}
+                            placeholder="Class / Topic Title"
+                            className="cm-input"
+                            style={{ minHeight: '38px', padding: '0.35rem 0.55rem', fontSize: '0.82rem', width: '100%' }}
+                            title="Class or Topic Title"
+                          />
+                        </div>
+                      </div>
+
+                      {/* Row 3: Teacher, Mode & Category */}
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 130px), 1fr))', gap: '0.4rem', width: '100%' }}>
+                        <div>
+                          <input
+                            type="text"
+                            list="teacher-suggestions"
+                            value={slot.teacherName || ''}
+                            onChange={(e) => {
+                              const updated = [...auditRoutineList];
+                              updated[sIdx] = { ...updated[sIdx], teacherName: e.target.value };
+                              setAuditRoutineList(updated);
+                            }}
+                            placeholder="Teacher / Mentor"
+                            className="cm-input"
+                            style={{ minHeight: '38px', padding: '0.35rem 0.55rem', fontSize: '0.82rem', width: '100%' }}
+                            title="Assigned Teacher"
+                          />
+                        </div>
+                        <div>
+                          <select
+                            value={slot.deliveryMode || 'online'}
+                            onChange={(e) => {
+                              const updated = [...auditRoutineList];
+                              updated[sIdx] = { ...updated[sIdx], deliveryMode: e.target.value };
+                              setAuditRoutineList(updated);
+                            }}
+                            className="cm-select"
+                            style={{ minHeight: '38px', padding: '0.35rem 0.4rem', fontSize: '0.78rem', width: '100%' }}
+                            title="Delivery Mode"
+                          >
+                            {DELIVERY_MODES.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
+                          </select>
+                        </div>
+                        <div>
+                          <select
+                            value={slot.category || 'theory'}
+                            onChange={(e) => {
+                              const updated = [...auditRoutineList];
+                              updated[sIdx] = { ...updated[sIdx], category: e.target.value };
+                              setAuditRoutineList(updated);
+                            }}
+                            className="cm-select"
+                            style={{ minHeight: '38px', padding: '0.35rem 0.4rem', fontSize: '0.78rem', width: '100%' }}
+                            title="Class Category"
+                          >
+                            {CLASS_CATEGORIES.map(cat => <option key={cat.value} value={cat.value}>{cat.label}</option>)}
+                          </select>
+                        </div>
+                      </div>
                     </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', width: '100%' }}>
-                      <input
-                        type="time"
-                        value={slot.startTime}
-                        onChange={(e) => {
-                          const updated = [...auditRoutineList];
-                          updated[sIdx].startTime = e.target.value;
-                          setAuditRoutineList(updated);
-                        }}
-                        className="cm-routine-time-input"
-                        style={{ flex: 1 }}
-                      />
-                      <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>to</span>
-                      <input
-                        type="time"
-                        value={slot.endTime}
-                        onChange={(e) => {
-                          const updated = [...auditRoutineList];
-                          updated[sIdx].endTime = e.target.value;
-                          setAuditRoutineList(updated);
-                        }}
-                        className="cm-routine-time-input"
-                        style={{ flex: 1 }}
-                      />
-                    </div>
-                  </div>
-                ))}
+                  ));
+                })()}
               </div>
             </div>
 
