@@ -7,8 +7,8 @@ import { resolvePhaseRoutine } from '../services/courseProgressService.js';
 const router = express.Router();
 
 const ALLOWED_WEEKDAYS = ['Saturday', 'Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
-const ALLOWED_DELIVERY_MODES = ['live', 'recorded', 'recorded_plus_live_discussion'];
-const ALLOWED_CATEGORIES = ['theory', 'shooting', 'editing', 'practical', 'other'];
+const ALLOWED_DELIVERY_MODES = ['live', 'recorded', 'recorded_plus_live_discussion', 'online', 'offline', 'hybrid'];
+const ALLOWED_CATEGORIES = ['theory', 'shooting', 'editing', 'practical', 'review', 'other'];
 const ALLOWED_EXAM_TYPES = ['written', 'practical', 'viva', 'mcq', 'hybrid'];
 const ALLOWED_COURSE_TYPES = [
   'workshop',
