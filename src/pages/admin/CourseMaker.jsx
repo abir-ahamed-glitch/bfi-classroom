@@ -679,9 +679,33 @@ export default function CourseMaker() {
       weekday: 'Saturday',
       startTime: '18:00',
       endTime: '20:00',
-      timezone: 'Asia/Dhaka'
+      timezone: 'Asia/Dhaka',
+      subjectName: '',
+      classTitle: '',
+      teacherName: '',
+      deliveryMode: 'online',
+      category: 'theory'
     };
     updateCurrentPhase({ routine: [...(cur.routine || []), newSlot] });
+  };
+
+  const copyFromPhaseClass = (routineIndex, classId) => {
+    if (!classId) return;
+    const cur = form.phases[activePhaseTab];
+    const cls = (cur.classes || []).find(c => String(c.id) === String(classId));
+    if (!cls) return;
+    const updated = (cur.routine || []).map((r, i) => {
+      if (i !== routineIndex) return r;
+      return {
+        ...r,
+        classTitle: cls.title || '',
+        subjectName: cls.subjectName || '',
+        teacherName: cls.teacherName || '',
+        deliveryMode: cls.deliveryMode || 'online',
+        category: cls.category || 'theory'
+      };
+    });
+    updateCurrentPhase({ routine: updated });
   };
 
   const removeRoutineFromPhase = (index) => {
@@ -1680,6 +1704,32 @@ export default function CourseMaker() {
                           key={rIdx}
                           className="cm-routine-slot"
                         >
+                          {/* Slot Header & Phase Class Quick-Fill */}
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.4rem', flexWrap: 'wrap', borderBottom: '1px solid rgba(255,255,255,0.06)', paddingBottom: '0.35rem' }}>
+                            <span style={{ fontSize: '0.78rem', fontWeight: 600, color: 'var(--text-secondary)' }}>
+                              Slot #{rIdx + 1}
+                            </span>
+                            {(curPhase.classes || []).length > 0 && (
+                              <select
+                                onChange={(e) => {
+                                  copyFromPhaseClass(rIdx, e.target.value);
+                                  e.target.value = '';
+                                }}
+                                className="cm-select"
+                                style={{ fontSize: '0.72rem', padding: '2px 6px', height: 'auto', minHeight: '28px', maxWidth: '210px' }}
+                                title="Quick-fill details from an existing Phase Class"
+                              >
+                                <option value="">⚡ Autofill from Class...</option>
+                                {curPhase.classes.map((c, i) => (
+                                  <option key={c.id || i} value={c.id}>
+                                    {c.title || `Class ${i + 1}`} ({c.subjectName || 'No Subject'})
+                                  </option>
+                                ))}
+                              </select>
+                            )}
+                          </div>
+
+                          {/* Row 1: Date, Day, Time, Delete */}
                           <div className="cm-routine-slot-row">
                             <input
                               type="date"
@@ -1707,6 +1757,23 @@ export default function CourseMaker() {
                                 <option key={w} value={w}>{w}</option>
                               ))}
                             </select>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', flex: 1, minWidth: '160px' }}>
+                              <input
+                                type="time"
+                                value={rt.startTime}
+                                onChange={(e) => updateRoutineField(rIdx, 'startTime', e.target.value)}
+                                className="cm-routine-time-input"
+                                style={{ flex: 1 }}
+                              />
+                              <span style={{ color: 'var(--text-secondary)', fontSize: '0.8rem' }}>to</span>
+                              <input
+                                type="time"
+                                value={rt.endTime}
+                                onChange={(e) => updateRoutineField(rIdx, 'endTime', e.target.value)}
+                                className="cm-routine-time-input"
+                                style={{ flex: 1 }}
+                              />
+                            </div>
                             <button
                               type="button"
                               onClick={() => removeRoutineFromPhase(rIdx)}
@@ -1716,22 +1783,70 @@ export default function CourseMaker() {
                               <Trash2 size={15} />
                             </button>
                           </div>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', width: '100%' }}>
-                            <input
-                              type="time"
-                              value={rt.startTime}
-                              onChange={(e) => updateRoutineField(rIdx, 'startTime', e.target.value)}
-                              className="cm-routine-time-input"
-                              style={{ flex: 1 }}
-                            />
-                            <span style={{ color: 'var(--text-secondary)', fontSize: '0.8rem' }}>to</span>
-                            <input
-                              type="time"
-                              value={rt.endTime}
-                              onChange={(e) => updateRoutineField(rIdx, 'endTime', e.target.value)}
-                              className="cm-routine-time-input"
-                              style={{ flex: 1 }}
-                            />
+
+                          {/* Row 2: Subject & Class Title */}
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 180px), 1fr))', gap: '0.4rem', width: '100%' }}>
+                            <div>
+                              <input
+                                type="text"
+                                list="subject-suggestions"
+                                value={rt.subjectName || ''}
+                                onChange={(e) => updateRoutineField(rIdx, 'subjectName', e.target.value)}
+                                placeholder="Subject (Select or type)"
+                                className="cm-input"
+                                style={{ minHeight: '38px', padding: '0.35rem 0.55rem', fontSize: '0.82rem', width: '100%' }}
+                                title="Class Subject"
+                              />
+                            </div>
+                            <div>
+                              <input
+                                type="text"
+                                value={rt.classTitle || ''}
+                                onChange={(e) => updateRoutineField(rIdx, 'classTitle', e.target.value)}
+                                placeholder="Class / Topic Title"
+                                className="cm-input"
+                                style={{ minHeight: '38px', padding: '0.35rem 0.55rem', fontSize: '0.82rem', width: '100%' }}
+                                title="Class or Topic Title"
+                              />
+                            </div>
+                          </div>
+
+                          {/* Row 3: Teacher, Mode & Category */}
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 130px), 1fr))', gap: '0.4rem', width: '100%' }}>
+                            <div>
+                              <input
+                                type="text"
+                                list="teacher-suggestions"
+                                value={rt.teacherName || ''}
+                                onChange={(e) => updateRoutineField(rIdx, 'teacherName', e.target.value)}
+                                placeholder="Teacher / Mentor"
+                                className="cm-input"
+                                style={{ minHeight: '38px', padding: '0.35rem 0.55rem', fontSize: '0.82rem', width: '100%' }}
+                                title="Assigned Teacher"
+                              />
+                            </div>
+                            <div>
+                              <select
+                                value={rt.deliveryMode || 'online'}
+                                onChange={(e) => updateRoutineField(rIdx, 'deliveryMode', e.target.value)}
+                                className="cm-select"
+                                style={{ minHeight: '38px', padding: '0.35rem 0.4rem', fontSize: '0.78rem', width: '100%' }}
+                                title="Delivery Mode"
+                              >
+                                {DELIVERY_MODES.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
+                              </select>
+                            </div>
+                            <div>
+                              <select
+                                value={rt.category || 'theory'}
+                                onChange={(e) => updateRoutineField(rIdx, 'category', e.target.value)}
+                                className="cm-select"
+                                style={{ minHeight: '38px', padding: '0.35rem 0.4rem', fontSize: '0.78rem', width: '100%' }}
+                                title="Class Category"
+                              >
+                                {CLASS_CATEGORIES.map(cat => <option key={cat.value} value={cat.value}>{cat.label}</option>)}
+                              </select>
+                            </div>
                           </div>
                         </div>
                       ))}
