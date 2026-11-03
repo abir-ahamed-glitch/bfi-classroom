@@ -142,6 +142,15 @@ export default function BatchDetail() {
   const [isPhase2Saving, setIsPhase2Saving] = useState(false);
   const [phase2Error, setPhase2Error] = useState('');
 
+  // Batch Routine Adjustment Modal State
+  const [editingRoutinePhase, setEditingRoutinePhase] = useState(null);
+  const [batchRoutineSlots, setBatchRoutineSlots] = useState([]);
+  const [routineAuditReason, setRoutineAuditReason] = useState('');
+  const [routineSaving, setRoutineSaving] = useState(false);
+  const [routineError, setRoutineError] = useState('');
+  const [catalogSubjects, setCatalogSubjects] = useState([]);
+  const [catalogTeachers, setCatalogTeachers] = useState([]);
+
   // Defined Course Progress Modal State
   const [definedProgressModal, setDefinedProgressModal] = useState({
     isOpen: false,
@@ -800,52 +809,236 @@ export default function BatchDetail() {
     }
   };
 
-  useEffect(() => {
-    const fetchAllData = async () => {
-      try {
-        setLoading(true);
-        setError('');
-        const token = localStorage.getItem('token');
-        const headers = { 'Authorization': `Bearer ${token}` };
+  const WEEKDAYS = ['Saturday', 'Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
+  const DELIVERY_MODES = [
+    { value: 'online', label: 'Live Online' },
+    { value: 'offline', label: 'In-Person Studio' },
+    { value: 'hybrid', label: 'Hybrid' },
+    { value: 'self_paced', label: 'Self Paced' }
+  ];
+  const CLASS_CATEGORIES = [
+    { value: 'theory', label: 'Theory' },
+    { value: 'practical', label: 'Practical' },
+    { value: 'shooting', label: 'Shooting Session' },
+    { value: 'editing', label: 'Editing Session' },
+    { value: 'review', label: 'Review & Q&A' }
+  ];
 
-
-        const [batchRes, progressRes, studentsRes, transitionsRes] = await Promise.all([
-          fetch(`/api/admin/batches/${slug}`, { headers }),
-          fetch(`/api/admin/batches/${slug}/progress`, { headers }),
-          fetch(`/api/admin/batches/${slug}/students`, { headers }),
-          fetch(`/api/admin/batches/${slug}/transitions`, { headers })
-        ]);
-
-        if (batchRes.status === 404) {
-          setError('Batch not found');
-          return;
-        }
-
-        if (!batchRes.ok || !progressRes.ok || !studentsRes.ok) {
-          throw new Error('Failed to fetch one or more resources');
-        }
-
-        const bData = await batchRes.json();
-        const pData = await progressRes.json();
-        const sData = await studentsRes.json();
-        const tData = transitionsRes.ok ? await transitionsRes.json() : [];
-
-        setBatchData(bData);
-        setProgressData(pData);
-        setStudentsData(sData || []);
-        setTransitionsData(tData || []);
-      } catch (err) {
-        console.error('Error fetching batch detail:', err);
-        setError('Error loading batch details');
-      } finally {
-        setLoading(false);
+  const fetchRoutineCatalogs = async () => {
+    try {
+      const token = localStorage.getItem('token');
+      const headers = { 'Authorization': `Bearer ${token}` };
+      const [sRes, tRes] = await Promise.all([
+        fetch('/api/admin/custom-subjects', { headers }),
+        fetch('/api/admin/teachers', { headers })
+      ]);
+      if (sRes.ok) {
+        const sData = await sRes.json();
+        setCatalogSubjects(sData.subjects || sData || []);
       }
-    };
-
-    if (slug) {
-      fetchAllData();
+      if (tRes.ok) {
+        const tData = await tRes.json();
+        setCatalogTeachers(tData.teachers || []);
+      }
+    } catch (err) {
+      console.error('Failed to fetch routine catalogs in BatchDetail:', err);
     }
+  };
+
+  const fetchAllData = async () => {
+    if (!slug) return;
+    try {
+      setLoading(true);
+      setError('');
+      const token = localStorage.getItem('token');
+      const headers = { 'Authorization': `Bearer ${token}` };
+
+      const [batchRes, progressRes, studentsRes, transitionsRes] = await Promise.all([
+        fetch(`/api/admin/batches/${slug}`, { headers }),
+        fetch(`/api/admin/batches/${slug}/progress`, { headers }),
+        fetch(`/api/admin/batches/${slug}/students`, { headers }),
+        fetch(`/api/admin/batches/${slug}/transitions`, { headers })
+      ]);
+
+      if (batchRes.status === 404) {
+        setError('Batch not found');
+        return;
+      }
+
+      if (!batchRes.ok || !progressRes.ok || !studentsRes.ok) {
+        throw new Error('Failed to fetch one or more resources');
+      }
+
+      const bData = await batchRes.json();
+      const pData = await progressRes.json();
+      const sData = await studentsRes.json();
+      const tData = transitionsRes.ok ? await transitionsRes.json() : [];
+
+      setBatchData(bData);
+      setProgressData(pData);
+      setStudentsData(sData || []);
+      setTransitionsData(tData || []);
+    } catch (err) {
+      console.error('Error fetching batch detail:', err);
+      setError('Error loading batch details');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchAllData();
+    fetchRoutineCatalogs();
   }, [slug]);
+
+  // Window focus listener: dynamically refresh custom subjects & teachers when returning from other tabs
+  useEffect(() => {
+    const handleFocus = () => {
+      fetchRoutineCatalogs();
+    };
+    window.addEventListener('focus', handleFocus);
+    return () => window.removeEventListener('focus', handleFocus);
+  }, []);
+
+  const handleOpenRoutineModal = (phase) => {
+    fetchRoutineCatalogs();
+    setEditingRoutinePhase(phase);
+    setBatchRoutineSlots(
+      Array.isArray(phase.routine) && phase.routine.length > 0
+        ? JSON.parse(JSON.stringify(phase.routine))
+        : [{
+            date: '',
+            weekday: 'Saturday',
+            startTime: '18:00',
+            endTime: '20:00',
+            timezone: 'Asia/Dhaka',
+            subjectName: '',
+            classTitle: '',
+            teacherName: '',
+            deliveryMode: 'online',
+            category: 'theory'
+          }]
+    );
+    setRoutineAuditReason('');
+    setRoutineError('');
+  };
+
+  const handleCloseRoutineModal = () => {
+    setEditingRoutinePhase(null);
+    setBatchRoutineSlots([]);
+    setRoutineAuditReason('');
+    setRoutineError('');
+    setRoutineSaving(false);
+  };
+
+  const handleAddRoutineSlot = () => {
+    setBatchRoutineSlots(prev => [
+      ...prev,
+      {
+        date: '',
+        weekday: 'Saturday',
+        startTime: '18:00',
+        endTime: '20:00',
+        timezone: 'Asia/Dhaka',
+        subjectName: '',
+        classTitle: '',
+        teacherName: '',
+        deliveryMode: 'online',
+        category: 'theory'
+      }
+    ]);
+  };
+
+  const handleCopyFromPhaseClass = (slotIdx, classId) => {
+    if (!classId || !editingRoutinePhase) return;
+    const cls = (editingRoutinePhase.classes || []).find(c => String(c.id) === String(classId));
+    if (!cls) return;
+    setBatchRoutineSlots(prev => {
+      const updated = [...prev];
+      updated[slotIdx] = {
+        ...updated[slotIdx],
+        classTitle: cls.title || '',
+        subjectName: cls.subjectName || '',
+        teacherName: cls.teacherName || '',
+        deliveryMode: cls.deliveryMode || 'online',
+        category: cls.category || 'theory'
+      };
+      return updated;
+    });
+  };
+
+  const handleRemoveRoutineSlot = (index) => {
+    setBatchRoutineSlots(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const handleUpdateRoutineSlot = (index, field, value) => {
+    setBatchRoutineSlots(prev => {
+      const updated = [...prev];
+      const nextSlot = { ...updated[index], [field]: value };
+      if (field === 'date' && value && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
+        const [y, m, d] = value.split('-').map(Number);
+        const dateObj = new Date(y, m - 1, d);
+        if (!isNaN(dateObj.getTime())) {
+          const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+          nextSlot.weekday = dayNames[dateObj.getDay()];
+        }
+      }
+      if (field === 'subjectName' && value && typeof value === 'string') {
+        const match = catalogSubjects.find(s => s.name?.trim().toLowerCase() === value.trim().toLowerCase());
+        if (match) {
+          if (!nextSlot.teacherName && match.teacher_name) {
+            nextSlot.teacherName = match.teacher_name;
+          }
+          if (!nextSlot.deliveryMode && match.class_type) {
+            nextSlot.deliveryMode = match.class_type === 'live' ? 'online' : (match.class_type === 'recorded' ? 'recorded' : 'online');
+          }
+        }
+      }
+      updated[index] = nextSlot;
+      return updated;
+    });
+  };
+
+  const handleSaveBatchRoutine = async (e) => {
+    if (e && e.preventDefault) e.preventDefault();
+    if (!editingRoutinePhase || !batchData?.course_definition?.id) return;
+    if (!routineAuditReason.trim()) {
+      setRoutineError('Reason for routine adjustment is required for the audit trail.');
+      return;
+    }
+    try {
+      setRoutineSaving(true);
+      setRoutineError('');
+      const token = localStorage.getItem('token');
+      const res = await fetch(`/api/course-definitions/${batchData.course_definition.id}/routine`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          phase_id: editingRoutinePhase.id,
+          batch_id: batchData.id,
+          routine: batchRoutineSlots,
+          reason: routineAuditReason.trim()
+        })
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to update batch routine.');
+      }
+
+      showToast('Batch class routine updated successfully!');
+      handleCloseRoutineModal();
+      await fetchAllData();
+    } catch (err) {
+      console.error('Error saving batch routine:', err);
+      setRoutineError(err.message || 'Error updating batch routine');
+    } finally {
+      setRoutineSaving(false);
+    }
+  };
 
   const handleRemoveStudentClick = (studentId) => {
     setRemovePopoverId(studentId);
@@ -1362,7 +1555,7 @@ export default function BatchDetail() {
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 240px), 1fr))', gap: '1rem' }}>
             {batchData.course_definition.definition?.phases?.map((p, idx) => (
-              <div key={idx} style={{ background: 'rgba(255,255,255,0.03)', padding: '0.85rem', borderRadius: '8px', border: '1px solid var(--glass-border)' }}>
+              <div key={idx} style={{ background: 'rgba(255,255,255,0.03)', padding: '0.85rem', borderRadius: '8px', border: '1px solid var(--glass-border)', display: 'flex', flexDirection: 'column' }}>
                 <div style={{ fontWeight: '600', color: 'var(--text-primary)', fontSize: '0.9rem', marginBottom: '0.35rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.3rem' }}>
                   <span>Phase {idx + 1}: {p.title || p.name}</span>
                   {p.routineSource === 'batch_override' ? (
@@ -1378,19 +1571,70 @@ export default function BatchDetail() {
                 <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '0.4rem' }}>
                   {p.classes ? `${p.classes.length} Classes` : `${p.classCount || 0} Classes`}
                 </div>
-                {p.routine && p.routine.length > 0 ? (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
-                    {p.routine.map((slot, rIdx) => (
-                      <div key={rIdx} style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
-                        <Calendar size={11} /> {slot.weekday}: {slot.startTime}–{slot.endTime}
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontStyle: 'italic' }}>
-                    No routine scheduled
-                  </div>
-                )}
+                <div style={{ flex: 1 }}>
+                  {p.routine && p.routine.length > 0 ? (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                      {p.routine.map((slot, rIdx) => (
+                        <div key={rIdx} style={{ fontSize: '0.75rem', color: slot.date ? '#93c5fd' : 'var(--text-muted)', display: 'flex', flexDirection: 'column', gap: '0.2rem', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', padding: '0.35rem 0.5rem', borderRadius: '6px' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', fontWeight: 600 }}>
+                            <Calendar size={12} style={{ flexShrink: 0 }} />
+                            <span>
+                              {slot.date ? `${slot.date} (${slot.weekday})` : `Every ${slot.weekday}`}: {slot.startTime}–{slot.endTime}
+                            </span>
+                          </div>
+                          {(slot.subjectName || slot.classTitle) && (
+                            <div style={{ fontSize: '0.72rem', color: 'var(--text-primary)', paddingLeft: '1rem' }}>
+                              {slot.subjectName && <strong style={{ color: '#60a5fa' }}>{slot.subjectName}</strong>}
+                              {slot.subjectName && slot.classTitle && ' — '}
+                              {slot.classTitle && <span>{slot.classTitle}</span>}
+                            </div>
+                          )}
+                          {(slot.teacherName || slot.deliveryMode || slot.category) && (
+                            <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', paddingLeft: '1rem', display: 'flex', gap: '0.35rem', flexWrap: 'wrap' }}>
+                              {slot.teacherName && <span>👨‍🏫 {slot.teacherName}</span>}
+                              {slot.teacherName && (slot.deliveryMode || slot.category) && <span>•</span>}
+                              {slot.deliveryMode && (
+                                <span style={{ textTransform: 'capitalize' }}>
+                                  {slot.deliveryMode === 'online' ? 'Live Online' : slot.deliveryMode === 'offline' ? 'In-Person Studio' : slot.deliveryMode}
+                                </span>
+                              )}
+                              {slot.category && <span style={{ textTransform: 'capitalize' }}>({slot.category})</span>}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontStyle: 'italic' }}>
+                      No routine scheduled
+                    </div>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleOpenRoutineModal(p)}
+                  style={{
+                    marginTop: '0.75rem',
+                    width: '100%',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '0.35rem',
+                    fontSize: '0.78rem',
+                    fontWeight: 500,
+                    padding: '0.4rem 0.6rem',
+                    borderRadius: '6px',
+                    background: 'rgba(59,130,246,0.12)',
+                    color: '#60a5fa',
+                    border: '1px solid rgba(59,130,246,0.25)',
+                    cursor: 'pointer',
+                    minHeight: '38px',
+                    transition: 'border-color 0.15s, background-color 0.15s'
+                  }}
+                  title="Adjust routine dates, days, and times specifically for this batch"
+                >
+                  <Pencil size={12} /> Adjust Routine
+                </button>
               </div>
             ))}
           </div>
@@ -2550,6 +2794,465 @@ export default function BatchDetail() {
           fetchProgress(batchData.id);
         }}
       />
+
+      {/* Batch Routine Adjustment Modal */}
+      {editingRoutinePhase && typeof document !== 'undefined' && createPortal(
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: 'rgba(0,0,0,0.7)',
+            backdropFilter: 'blur(4px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 9999,
+            padding: '1rem'
+          }}
+          onClick={handleCloseRoutineModal}
+        >
+          <div
+            style={{
+              background: 'var(--glass-bg, #0f172a)',
+              border: '1px solid var(--glass-border, rgba(255,255,255,0.1))',
+              borderRadius: '14px',
+              width: '100%',
+              maxWidth: '620px',
+              maxHeight: '90vh',
+              display: 'flex',
+              flexDirection: 'column',
+              overflow: 'hidden',
+              boxShadow: '0 25px 50px -12px rgba(0,0,0,0.5)'
+            }}
+            onClick={e => e.stopPropagation()}
+          >
+            <div
+              style={{
+                padding: '1.25rem 1.5rem',
+                borderBottom: '1px solid rgba(255,255,255,0.06)',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center'
+              }}
+            >
+              <div>
+                <h3 style={{ margin: 0, fontSize: '1.15rem', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <Calendar size={18} className="text-accent" />
+                  Adjust Batch Routine — {editingRoutinePhase.title || editingRoutinePhase.name || 'Phase'}
+                </h3>
+                <p style={{ margin: '0.25rem 0 0 0', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                  Batch: {batchData?.batch_name} • Specific schedule overrides for this batch
+                </p>
+              </div>
+              <button
+                type="button"
+                className="icon-btn-ghost"
+                onClick={handleCloseRoutineModal}
+                aria-label="Close"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveBatchRoutine} style={{ display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden' }}>
+              <div style={{ padding: '1.25rem 1.5rem', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '1rem', flex: 1 }}>
+                <div style={{ background: 'rgba(59,130,246,0.08)', border: '1px solid rgba(59,130,246,0.2)', padding: '0.75rem', borderRadius: '8px', fontSize: '0.8rem', color: '#93c5fd', lineHeight: 1.4 }}>
+                  💡 <strong>Per-Batch Flexibility:</strong> Assign exact calendar dates for upcoming classes (e.g. holidays, special shooting days) or leave the date blank for recurring weekdays. Selecting a date auto-fills the weekday, but you can manually adjust any field as needed.
+                </div>
+
+                <div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem', flexWrap: 'wrap', gap: '0.4rem' }}>
+                    <span style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-primary)' }}>Batch Routine Slots</span>
+                    <button
+                      type="button"
+                      onClick={handleAddRoutineSlot}
+                      style={{
+                        padding: '0.35rem 0.65rem',
+                        fontSize: '0.78rem',
+                        borderRadius: '6px',
+                        background: 'rgba(255,255,255,0.06)',
+                        border: '1px solid rgba(255,255,255,0.12)',
+                        color: 'var(--text-primary)',
+                        cursor: 'pointer',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '0.3rem'
+                      }}
+                    >
+                      + Add Slot
+                    </button>
+                  </div>
+
+                  <datalist id="batch-subject-suggestions">
+                    {catalogSubjects.map(s => <option key={s.id || s.name} value={s.name} />)}
+                  </datalist>
+                  <datalist id="batch-teacher-suggestions">
+                    {catalogTeachers.map(t => <option key={t.id} value={t.full_name || `${t.first_name} ${t.last_name}`} />)}
+                  </datalist>
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.65rem' }}>
+                    {batchRoutineSlots.length === 0 ? (
+                      <div style={{ padding: '1rem', textAlign: 'center', background: 'rgba(255,255,255,0.02)', borderRadius: '6px', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                        No routine slots scheduled. Click "+ Add Slot" to add one.
+                      </div>
+                    ) : (
+                      batchRoutineSlots.map((slot, sIdx) => {
+                        const phaseClasses = editingRoutinePhase?.classes || [];
+                        return (
+                          <div
+                            key={sIdx}
+                            style={{
+                              background: 'rgba(255,255,255,0.03)',
+                              border: '1px solid rgba(255,255,255,0.08)',
+                              borderRadius: '8px',
+                              padding: '0.75rem',
+                              display: 'flex',
+                              flexDirection: 'column',
+                              gap: '0.5rem'
+                            }}
+                          >
+                            {/* Slot Header & Quick-Fill */}
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.4rem', flexWrap: 'wrap', borderBottom: '1px solid rgba(255,255,255,0.06)', paddingBottom: '0.35rem' }}>
+                              <span style={{ fontSize: '0.78rem', fontWeight: 600, color: 'var(--text-secondary)' }}>
+                                Slot #{sIdx + 1}
+                              </span>
+                              {phaseClasses.length > 0 && (
+                                <select
+                                  onChange={(e) => {
+                                    handleCopyFromPhaseClass(sIdx, e.target.value);
+                                    e.target.value = '';
+                                  }}
+                                  style={{
+                                    background: 'rgba(255,255,255,0.05)',
+                                    border: '1px solid rgba(255,255,255,0.12)',
+                                    color: 'var(--text-primary)',
+                                    fontSize: '0.72rem',
+                                    padding: '2px 6px',
+                                    borderRadius: '4px',
+                                    minHeight: '28px',
+                                    maxWidth: '210px'
+                                  }}
+                                  title="Autofill from a phase class"
+                                >
+                                  <option value="">⚡ Autofill from Class...</option>
+                                  {phaseClasses.map((c, i) => (
+                                    <option key={c.id || i} value={c.id} style={{ background: '#1e293b' }}>
+                                      {c.title || `Class ${i + 1}`} ({c.subjectName || 'No Subject'})
+                                    </option>
+                                  ))}
+                                </select>
+                              )}
+                            </div>
+
+                            {/* Row 1: Date, Day, Time, Delete */}
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                              <div style={{ flex: '1 1 150px', display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                                <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Class Date (Optional)</label>
+                                <input
+                                  type="date"
+                                  value={slot.date || ''}
+                                  onChange={(e) => handleUpdateRoutineSlot(sIdx, 'date', e.target.value)}
+                                  style={{
+                                    background: 'rgba(255,255,255,0.05)',
+                                    border: '1px solid rgba(255,255,255,0.12)',
+                                    borderRadius: '6px',
+                                    padding: '0.4rem 0.5rem',
+                                    color: 'var(--text-primary)',
+                                    fontSize: '0.85rem',
+                                    minHeight: '44px'
+                                  }}
+                                  aria-label="Class Date"
+                                />
+                              </div>
+                              <div style={{ flex: '1 1 130px', display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                                <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Day of Week</label>
+                                <select
+                                  value={slot.weekday}
+                                  onChange={(e) => handleUpdateRoutineSlot(sIdx, 'weekday', e.target.value)}
+                                  style={{
+                                    background: 'rgba(255,255,255,0.05)',
+                                    border: '1px solid rgba(255,255,255,0.12)',
+                                    borderRadius: '6px',
+                                    padding: '0.4rem 0.5rem',
+                                    color: 'var(--text-primary)',
+                                    fontSize: '0.85rem',
+                                    minHeight: '44px'
+                                  }}
+                                >
+                                  {WEEKDAYS.map(w => <option key={w} value={w} style={{ background: '#1e293b' }}>{w}</option>)}
+                                </select>
+                              </div>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', flex: '1 1 160px' }}>
+                                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                                  <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Start Time</label>
+                                  <input
+                                    type="time"
+                                    value={slot.startTime}
+                                    onChange={(e) => handleUpdateRoutineSlot(sIdx, 'startTime', e.target.value)}
+                                    style={{
+                                      background: 'rgba(255,255,255,0.05)',
+                                      border: '1px solid rgba(255,255,255,0.12)',
+                                      borderRadius: '6px',
+                                      padding: '0.4rem 0.5rem',
+                                      color: 'var(--text-primary)',
+                                      fontSize: '0.85rem',
+                                      minHeight: '44px',
+                                      width: '100%'
+                                    }}
+                                  />
+                                </div>
+                                <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '1.2rem' }}>to</span>
+                                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                                  <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>End Time</label>
+                                  <input
+                                    type="time"
+                                    value={slot.endTime}
+                                    onChange={(e) => handleUpdateRoutineSlot(sIdx, 'endTime', e.target.value)}
+                                    style={{
+                                      background: 'rgba(255,255,255,0.05)',
+                                      border: '1px solid rgba(255,255,255,0.12)',
+                                      borderRadius: '6px',
+                                      padding: '0.4rem 0.5rem',
+                                      color: 'var(--text-primary)',
+                                      fontSize: '0.85rem',
+                                      minHeight: '44px',
+                                      width: '100%'
+                                    }}
+                                  />
+                                </div>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => handleRemoveRoutineSlot(sIdx)}
+                                style={{
+                                  alignSelf: 'flex-end',
+                                  minHeight: '44px',
+                                  width: '44px',
+                                  background: 'rgba(239,68,68,0.1)',
+                                  border: '1px solid rgba(239,68,68,0.25)',
+                                  borderRadius: '6px',
+                                  color: '#ef4444',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  cursor: 'pointer'
+                                }}
+                                title="Delete Slot"
+                              >
+                                <Trash2 size={16} />
+                              </button>
+                            </div>
+
+                            {/* Row 2: Subject & Class Title */}
+                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 180px), 1fr))', gap: '0.4rem', width: '100%' }}>
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                                <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Subject (Live Catalog)</label>
+                                <input
+                                  type="text"
+                                  list="batch-subject-suggestions"
+                                  value={slot.subjectName || ''}
+                                  onChange={(e) => handleUpdateRoutineSlot(sIdx, 'subjectName', e.target.value)}
+                                  placeholder="Select or enter subject"
+                                  style={{
+                                    background: 'rgba(255,255,255,0.05)',
+                                    border: '1px solid rgba(255,255,255,0.12)',
+                                    borderRadius: '6px',
+                                    padding: '0.35rem 0.55rem',
+                                    color: 'var(--text-primary)',
+                                    fontSize: '0.82rem',
+                                    minHeight: '38px',
+                                    width: '100%'
+                                  }}
+                                  title="Subject from Custom Subjects or custom name"
+                                />
+                              </div>
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                                <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Class / Topic Title</label>
+                                <input
+                                  type="text"
+                                  value={slot.classTitle || ''}
+                                  onChange={(e) => handleUpdateRoutineSlot(sIdx, 'classTitle', e.target.value)}
+                                  placeholder="Class Title or Topic"
+                                  style={{
+                                    background: 'rgba(255,255,255,0.05)',
+                                    border: '1px solid rgba(255,255,255,0.12)',
+                                    borderRadius: '6px',
+                                    padding: '0.35rem 0.55rem',
+                                    color: 'var(--text-primary)',
+                                    fontSize: '0.82rem',
+                                    minHeight: '38px',
+                                    width: '100%'
+                                  }}
+                                  title="Class or Topic Title"
+                                />
+                              </div>
+                            </div>
+
+                            {/* Row 3: Teacher, Mode & Category */}
+                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 130px), 1fr))', gap: '0.4rem', width: '100%' }}>
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                                <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Teacher</label>
+                                <input
+                                  type="text"
+                                  list="batch-teacher-suggestions"
+                                  value={slot.teacherName || ''}
+                                  onChange={(e) => handleUpdateRoutineSlot(sIdx, 'teacherName', e.target.value)}
+                                  placeholder="Select or enter teacher"
+                                  style={{
+                                    background: 'rgba(255,255,255,0.05)',
+                                    border: '1px solid rgba(255,255,255,0.12)',
+                                    borderRadius: '6px',
+                                    padding: '0.35rem 0.55rem',
+                                    color: 'var(--text-primary)',
+                                    fontSize: '0.82rem',
+                                    minHeight: '38px',
+                                    width: '100%'
+                                  }}
+                                  title="Assigned Teacher"
+                                />
+                              </div>
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                                <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Mode</label>
+                                <select
+                                  value={slot.deliveryMode || 'online'}
+                                  onChange={(e) => handleUpdateRoutineSlot(sIdx, 'deliveryMode', e.target.value)}
+                                  style={{
+                                    background: 'rgba(255,255,255,0.05)',
+                                    border: '1px solid rgba(255,255,255,0.12)',
+                                    borderRadius: '6px',
+                                    padding: '0.35rem 0.4rem',
+                                    color: 'var(--text-primary)',
+                                    fontSize: '0.78rem',
+                                    minHeight: '38px',
+                                    width: '100%'
+                                  }}
+                                  title="Delivery Mode"
+                                >
+                                  {DELIVERY_MODES.map(m => <option key={m.value} value={m.value} style={{ background: '#1e293b' }}>{m.label}</option>)}
+                                </select>
+                              </div>
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                                <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Category</label>
+                                <select
+                                  value={slot.category || 'theory'}
+                                  onChange={(e) => handleUpdateRoutineSlot(sIdx, 'category', e.target.value)}
+                                  style={{
+                                    background: 'rgba(255,255,255,0.05)',
+                                    border: '1px solid rgba(255,255,255,0.12)',
+                                    borderRadius: '6px',
+                                    padding: '0.35rem 0.4rem',
+                                    color: 'var(--text-primary)',
+                                    fontSize: '0.78rem',
+                                    minHeight: '38px',
+                                    width: '100%'
+                                  }}
+                                  title="Class Category"
+                                >
+                                  {CLASS_CATEGORIES.map(cat => <option key={cat.value} value={cat.value} style={{ background: '#1e293b' }}>{cat.label}</option>)}
+                                </select>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
+
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '0.35rem' }}>
+                    Reason for Batch Routine Adjustment (Required for Audit Log) *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={routineAuditReason}
+                    onChange={(e) => setRoutineAuditReason(e.target.value)}
+                    placeholder="e.g. Adjusted shooting schedule, rescheduled Friday class for holiday..."
+                    style={{
+                      width: '100%',
+                      background: 'rgba(255,255,255,0.05)',
+                      border: '1px solid rgba(255,255,255,0.12)',
+                      borderRadius: '6px',
+                      padding: '0.55rem 0.75rem',
+                      color: 'var(--text-primary)',
+                      fontSize: '0.85rem',
+                      minHeight: '44px'
+                    }}
+                  />
+                </div>
+
+                {routineError && (
+                  <div style={{ padding: '0.65rem 0.85rem', borderRadius: '6px', background: 'rgba(239,68,68,0.15)', color: '#ef4444', border: '1px solid rgba(239,68,68,0.3)', fontSize: '0.85rem' }}>
+                    {routineError}
+                  </div>
+                )}
+              </div>
+
+              <div
+                style={{
+                  padding: '1rem 1.5rem',
+                  borderTop: '1px solid rgba(255,255,255,0.06)',
+                  display: 'flex',
+                  justifyContent: 'flex-end',
+                  alignItems: 'center',
+                  gap: '0.75rem',
+                  background: 'rgba(0,0,0,0.1)'
+                }}
+              >
+                <button
+                  type="button"
+                  onClick={handleCloseRoutineModal}
+                  disabled={routineSaving}
+                  style={{
+                    padding: '0.5rem 1rem',
+                    borderRadius: '6px',
+                    background: 'transparent',
+                    border: '1px solid rgba(255,255,255,0.15)',
+                    color: 'var(--text-secondary)',
+                    fontSize: '0.85rem',
+                    cursor: 'pointer',
+                    minHeight: '40px'
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={routineSaving || !routineAuditReason.trim()}
+                  style={{
+                    padding: '0.5rem 1.25rem',
+                    borderRadius: '6px',
+                    background: routineSaving || !routineAuditReason.trim() ? 'rgba(59,130,246,0.3)' : '#2563eb',
+                    border: 'none',
+                    color: '#fff',
+                    fontWeight: 600,
+                    fontSize: '0.85rem',
+                    cursor: routineSaving || !routineAuditReason.trim() ? 'not-allowed' : 'pointer',
+                    minHeight: '40px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.4rem'
+                  }}
+                >
+                  {routineSaving ? (
+                    <>
+                      <Loader2 size={16} className="animate-spin" />
+                      Saving Routine...
+                    </>
+                  ) : (
+                    'Save Batch Schedule'
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>,
+        document.body
+      )}
     </div>
   );
 }

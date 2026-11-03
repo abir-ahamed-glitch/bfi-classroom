@@ -62,7 +62,7 @@ function buildDefaultPhase(index) {
       completionRequired: true
     },
     routine: [
-      { weekday: 'Saturday', startTime: '18:00', endTime: '20:00', timezone: 'Asia/Dhaka' }
+      { date: '', weekday: 'Saturday', startTime: '18:00', endTime: '20:00', timezone: 'Asia/Dhaka' }
     ],
     classes: [
       {
@@ -375,6 +375,15 @@ export default function CourseMaker() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Window focus listener: dynamically refresh custom subjects & teachers when returning from other tabs
+  useEffect(() => {
+    const handleFocus = () => {
+      fetchCatalogs();
+    };
+    window.addEventListener('focus', handleFocus);
+    return () => window.removeEventListener('focus', handleFocus);
+  }, []);
+
   // Back/Forward navigation listener
   useEffect(() => {
     if (!isInitializedRef.current) return;
@@ -667,7 +676,22 @@ export default function CourseMaker() {
 
   const updateClassField = (clsId, field, val) => {
     const cur = form.phases[activePhaseTab];
-    const updated = (cur.classes || []).map(c => c.id === clsId ? { ...c, [field]: val } : c);
+    const updated = (cur.classes || []).map(c => {
+      if (c.id !== clsId) return c;
+      const next = { ...c, [field]: val };
+      if (field === 'subjectName' && val && typeof val === 'string') {
+        const match = subjects.find(s => s.name?.trim().toLowerCase() === val.trim().toLowerCase());
+        if (match) {
+          if (!next.teacherName && match.teacher_name) {
+            next.teacherName = match.teacher_name;
+          }
+          if (!next.deliveryMode && match.class_type) {
+            next.deliveryMode = match.class_type === 'live' ? 'online' : (match.class_type === 'recorded' ? 'recorded' : 'online');
+          }
+        }
+      }
+      return next;
+    });
     updateCurrentPhase({ classes: updated });
   };
 
@@ -675,12 +699,37 @@ export default function CourseMaker() {
   const addRoutineToPhase = () => {
     const cur = form.phases[activePhaseTab];
     const newSlot = {
+      date: '',
       weekday: 'Saturday',
       startTime: '18:00',
       endTime: '20:00',
-      timezone: 'Asia/Dhaka'
+      timezone: 'Asia/Dhaka',
+      subjectName: '',
+      classTitle: '',
+      teacherName: '',
+      deliveryMode: 'online',
+      category: 'theory'
     };
     updateCurrentPhase({ routine: [...(cur.routine || []), newSlot] });
+  };
+
+  const copyFromPhaseClass = (routineIndex, classId) => {
+    if (!classId) return;
+    const cur = form.phases[activePhaseTab];
+    const cls = (cur.classes || []).find(c => String(c.id) === String(classId));
+    if (!cls) return;
+    const updated = (cur.routine || []).map((r, i) => {
+      if (i !== routineIndex) return r;
+      return {
+        ...r,
+        classTitle: cls.title || '',
+        subjectName: cls.subjectName || '',
+        teacherName: cls.teacherName || '',
+        deliveryMode: cls.deliveryMode || 'online',
+        category: cls.category || 'theory'
+      };
+    });
+    updateCurrentPhase({ routine: updated });
   };
 
   const removeRoutineFromPhase = (index) => {
@@ -691,7 +740,37 @@ export default function CourseMaker() {
 
   const updateRoutineField = (index, field, val) => {
     const cur = form.phases[activePhaseTab];
-    const updated = (cur.routine || []).map((r, i) => i === index ? { ...r, [field]: val } : r);
+    const updated = (cur.routine || []).map((r, i) => {
+      if (i !== index) return r;
+      if (field === 'date') {
+        const next = { ...r, date: val };
+        if (val && typeof val === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(val.trim())) {
+          const parts = val.trim().split('-').map(Number);
+          const dObj = new Date(parts[0], parts[1] - 1, parts[2]);
+          if (!isNaN(dObj.getTime())) {
+            const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+            next.weekday = dayNames[dObj.getDay()];
+          }
+        }
+        return next;
+      }
+      if (field === 'subjectName') {
+        const next = { ...r, subjectName: val };
+        if (val && typeof val === 'string') {
+          const match = subjects.find(s => s.name?.trim().toLowerCase() === val.trim().toLowerCase());
+          if (match) {
+            if (!next.teacherName && match.teacher_name) {
+              next.teacherName = match.teacher_name;
+            }
+            if (!next.deliveryMode && match.class_type) {
+              next.deliveryMode = match.class_type === 'live' ? 'online' : (match.class_type === 'recorded' ? 'recorded' : 'online');
+            }
+          }
+        }
+        return next;
+      }
+      return { ...r, [field]: val };
+    });
     updateCurrentPhase({ routine: updated });
   };
 
@@ -943,6 +1022,7 @@ export default function CourseMaker() {
   // Open Routine Audit Modal
   const openRoutineAuditModal = async (courseDef) => {
     try {
+      fetchCatalogs();
       setAuditModalDef(courseDef);
       const parsed = parseDefObject(courseDef);
       const firstPhase = parsed.phases?.[0];
@@ -1664,7 +1744,41 @@ export default function CourseMaker() {
                           key={rIdx}
                           className="cm-routine-slot"
                         >
+                          {/* Slot Header & Phase Class Quick-Fill */}
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.4rem', flexWrap: 'wrap', borderBottom: '1px solid rgba(255,255,255,0.06)', paddingBottom: '0.35rem' }}>
+                            <span style={{ fontSize: '0.78rem', fontWeight: 600, color: 'var(--text-secondary)' }}>
+                              Slot #{rIdx + 1}
+                            </span>
+                            {(curPhase.classes || []).length > 0 && (
+                              <select
+                                onChange={(e) => {
+                                  copyFromPhaseClass(rIdx, e.target.value);
+                                  e.target.value = '';
+                                }}
+                                className="cm-select"
+                                style={{ fontSize: '0.72rem', padding: '2px 6px', height: 'auto', minHeight: '28px', maxWidth: '210px' }}
+                                title="Quick-fill details from an existing Phase Class"
+                              >
+                                <option value="">⚡ Autofill from Class...</option>
+                                {curPhase.classes.map((c, i) => (
+                                  <option key={c.id || i} value={c.id}>
+                                    {c.title || `Class ${i + 1}`} ({c.subjectName || 'No Subject'})
+                                  </option>
+                                ))}
+                              </select>
+                            )}
+                          </div>
+
+                          {/* Row 1: Date, Day, Time, Delete */}
                           <div className="cm-routine-slot-row">
+                            <input
+                              type="date"
+                              value={rt.date || ''}
+                              onChange={(e) => updateRoutineField(rIdx, 'date', e.target.value)}
+                              className="cm-routine-date-input"
+                              title="Class Date (Optional)"
+                              aria-label="Class Date"
+                            />
                             <select
                               value={rt.weekday}
                               onChange={(e) => updateRoutineField(rIdx, 'weekday', e.target.value)}
@@ -1683,6 +1797,23 @@ export default function CourseMaker() {
                                 <option key={w} value={w}>{w}</option>
                               ))}
                             </select>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', flex: 1, minWidth: '160px' }}>
+                              <input
+                                type="time"
+                                value={rt.startTime}
+                                onChange={(e) => updateRoutineField(rIdx, 'startTime', e.target.value)}
+                                className="cm-routine-time-input"
+                                style={{ flex: 1 }}
+                              />
+                              <span style={{ color: 'var(--text-secondary)', fontSize: '0.8rem' }}>to</span>
+                              <input
+                                type="time"
+                                value={rt.endTime}
+                                onChange={(e) => updateRoutineField(rIdx, 'endTime', e.target.value)}
+                                className="cm-routine-time-input"
+                                style={{ flex: 1 }}
+                              />
+                            </div>
                             <button
                               type="button"
                               onClick={() => removeRoutineFromPhase(rIdx)}
@@ -1692,22 +1823,70 @@ export default function CourseMaker() {
                               <Trash2 size={15} />
                             </button>
                           </div>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', width: '100%' }}>
-                            <input
-                              type="time"
-                              value={rt.startTime}
-                              onChange={(e) => updateRoutineField(rIdx, 'startTime', e.target.value)}
-                              className="cm-routine-time-input"
-                              style={{ flex: 1 }}
-                            />
-                            <span style={{ color: 'var(--text-secondary)', fontSize: '0.8rem' }}>to</span>
-                            <input
-                              type="time"
-                              value={rt.endTime}
-                              onChange={(e) => updateRoutineField(rIdx, 'endTime', e.target.value)}
-                              className="cm-routine-time-input"
-                              style={{ flex: 1 }}
-                            />
+
+                          {/* Row 2: Subject & Class Title */}
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 180px), 1fr))', gap: '0.4rem', width: '100%' }}>
+                            <div>
+                              <input
+                                type="text"
+                                list="subject-suggestions"
+                                value={rt.subjectName || ''}
+                                onChange={(e) => updateRoutineField(rIdx, 'subjectName', e.target.value)}
+                                placeholder="Subject (Select or type)"
+                                className="cm-input"
+                                style={{ minHeight: '38px', padding: '0.35rem 0.55rem', fontSize: '0.82rem', width: '100%' }}
+                                title="Class Subject"
+                              />
+                            </div>
+                            <div>
+                              <input
+                                type="text"
+                                value={rt.classTitle || ''}
+                                onChange={(e) => updateRoutineField(rIdx, 'classTitle', e.target.value)}
+                                placeholder="Class / Topic Title"
+                                className="cm-input"
+                                style={{ minHeight: '38px', padding: '0.35rem 0.55rem', fontSize: '0.82rem', width: '100%' }}
+                                title="Class or Topic Title"
+                              />
+                            </div>
+                          </div>
+
+                          {/* Row 3: Teacher, Mode & Category */}
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 130px), 1fr))', gap: '0.4rem', width: '100%' }}>
+                            <div>
+                              <input
+                                type="text"
+                                list="teacher-suggestions"
+                                value={rt.teacherName || ''}
+                                onChange={(e) => updateRoutineField(rIdx, 'teacherName', e.target.value)}
+                                placeholder="Teacher / Mentor"
+                                className="cm-input"
+                                style={{ minHeight: '38px', padding: '0.35rem 0.55rem', fontSize: '0.82rem', width: '100%' }}
+                                title="Assigned Teacher"
+                              />
+                            </div>
+                            <div>
+                              <select
+                                value={rt.deliveryMode || 'online'}
+                                onChange={(e) => updateRoutineField(rIdx, 'deliveryMode', e.target.value)}
+                                className="cm-select"
+                                style={{ minHeight: '38px', padding: '0.35rem 0.4rem', fontSize: '0.78rem', width: '100%' }}
+                                title="Delivery Mode"
+                              >
+                                {DELIVERY_MODES.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
+                              </select>
+                            </div>
+                            <div>
+                              <select
+                                value={rt.category || 'theory'}
+                                onChange={(e) => updateRoutineField(rIdx, 'category', e.target.value)}
+                                className="cm-select"
+                                style={{ minHeight: '38px', padding: '0.35rem 0.4rem', fontSize: '0.78rem', width: '100%' }}
+                                title="Class Category"
+                              >
+                                {CLASS_CATEGORIES.map(cat => <option key={cat.value} value={cat.value}>{cat.label}</option>)}
+                              </select>
+                            </div>
                           </div>
                         </div>
                       ))}
@@ -2554,7 +2733,18 @@ export default function CourseMaker() {
                   type="button"
                   onClick={() => setAuditRoutineList([
                     ...auditRoutineList,
-                    { weekday: 'Saturday', startTime: '18:00', endTime: '20:00', timezone: 'Asia/Dhaka' }
+                    {
+                      date: '',
+                      weekday: 'Saturday',
+                      startTime: '18:00',
+                      endTime: '20:00',
+                      timezone: 'Asia/Dhaka',
+                      subjectName: '',
+                      classTitle: '',
+                      teacherName: '',
+                      deliveryMode: 'online',
+                      category: 'theory'
+                    }
                   ])}
                   className="cm-btn cm-btn-secondary cm-btn-sm"
                 >
@@ -2562,58 +2752,220 @@ export default function CourseMaker() {
                 </button>
               </div>
 
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                {auditRoutineList.map((slot, sIdx) => (
-                  <div key={sIdx} className="cm-modal-routine-slot">
-                    <div className="cm-routine-slot-row">
-                      <select
-                        value={slot.weekday}
-                        onChange={(e) => {
-                          const updated = [...auditRoutineList];
-                          updated[sIdx].weekday = e.target.value;
-                          setAuditRoutineList(updated);
-                        }}
-                        className="cm-select"
-                        style={{ width: 'auto', minHeight: '44px', padding: '2px 4px' }}
-                      >
-                        {WEEKDAYS.map(w => <option key={w} value={w}>{w}</option>)}
-                      </select>
-                      <button
-                        type="button"
-                        onClick={() => setAuditRoutineList(auditRoutineList.filter((_, i) => i !== sIdx))}
-                        className="cm-btn-danger-icon"
-                        title="Delete Slot"
-                      >
-                        <Trash2 size={15} />
-                      </button>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.65rem' }}>
+                {(() => {
+                  let phaseClasses = [];
+                  try {
+                    const parsed = parseDefObject(auditModalDef);
+                    const pObj = (parsed.phases || []).find(p => p.id === auditSelectedPhaseId);
+                    phaseClasses = pObj?.classes || [];
+                  } catch { /* empty */ }
+
+                  return auditRoutineList.map((slot, sIdx) => (
+                    <div key={sIdx} className="cm-modal-routine-slot" style={{ display: 'flex', flexDirection: 'column', gap: '0.45rem', padding: '0.75rem', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--glass-border)', borderRadius: '8px' }}>
+                      {/* Slot Header & Quick-Fill */}
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.4rem', flexWrap: 'wrap', borderBottom: '1px solid rgba(255,255,255,0.06)', paddingBottom: '0.3rem' }}>
+                        <span style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)' }}>
+                          Slot #{sIdx + 1}
+                        </span>
+                        {phaseClasses.length > 0 && (
+                          <select
+                            onChange={(e) => {
+                              const selId = e.target.value;
+                              if (!selId) return;
+                              const matchCls = phaseClasses.find(c => String(c.id) === String(selId));
+                              if (matchCls) {
+                                const updated = [...auditRoutineList];
+                                updated[sIdx] = {
+                                  ...updated[sIdx],
+                                  classTitle: matchCls.title || '',
+                                  subjectName: matchCls.subjectName || '',
+                                  teacherName: matchCls.teacherName || '',
+                                  deliveryMode: matchCls.deliveryMode || 'online',
+                                  category: matchCls.category || 'theory'
+                                };
+                                setAuditRoutineList(updated);
+                              }
+                              e.target.value = '';
+                            }}
+                            className="cm-select"
+                            style={{ fontSize: '0.72rem', padding: '2px 6px', height: 'auto', minHeight: '28px', maxWidth: '210px' }}
+                            title="Quick-fill from defined phase class"
+                          >
+                            <option value="">⚡ Autofill from Class...</option>
+                            {phaseClasses.map((c, i) => (
+                              <option key={c.id || i} value={c.id}>
+                                {c.title || `Class ${i + 1}`} ({c.subjectName || 'No Subject'})
+                              </option>
+                            ))}
+                          </select>
+                        )}
+                      </div>
+
+                      {/* Row 1: Date, Day, Time, Delete */}
+                      <div className="cm-routine-slot-row">
+                        <input
+                          type="date"
+                          value={slot.date || ''}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            const updated = [...auditRoutineList];
+                            const nextSlot = { ...updated[sIdx], date: val };
+                            if (val && /^\d{4}-\d{2}-\d{2}$/.test(val)) {
+                              const [year, month, day] = val.split('-').map(Number);
+                              const dateObj = new Date(year, month - 1, day);
+                              if (!isNaN(dateObj.getTime())) {
+                                const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+                                nextSlot.weekday = dayNames[dateObj.getDay()];
+                              }
+                            }
+                            updated[sIdx] = nextSlot;
+                            setAuditRoutineList(updated);
+                          }}
+                          className="cm-routine-date-input"
+                          aria-label="Slot Date"
+                        />
+                        <select
+                          value={slot.weekday}
+                          onChange={(e) => {
+                            const updated = [...auditRoutineList];
+                            updated[sIdx] = { ...updated[sIdx], weekday: e.target.value };
+                            setAuditRoutineList(updated);
+                          }}
+                          className="cm-select"
+                          style={{ width: 'auto', minHeight: '44px', padding: '2px 4px' }}
+                        >
+                          {WEEKDAYS.map(w => <option key={w} value={w}>{w}</option>)}
+                        </select>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', flex: 1, minWidth: '160px' }}>
+                          <input
+                            type="time"
+                            value={slot.startTime}
+                            onChange={(e) => {
+                              const updated = [...auditRoutineList];
+                              updated[sIdx] = { ...updated[sIdx], startTime: e.target.value };
+                              setAuditRoutineList(updated);
+                            }}
+                            className="cm-routine-time-input"
+                            style={{ flex: 1 }}
+                          />
+                          <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>to</span>
+                          <input
+                            type="time"
+                            value={slot.endTime}
+                            onChange={(e) => {
+                              const updated = [...auditRoutineList];
+                              updated[sIdx] = { ...updated[sIdx], endTime: e.target.value };
+                              setAuditRoutineList(updated);
+                            }}
+                            className="cm-routine-time-input"
+                            style={{ flex: 1 }}
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setAuditRoutineList(auditRoutineList.filter((_, i) => i !== sIdx))}
+                          className="cm-btn-danger-icon"
+                          title="Delete Slot"
+                        >
+                          <Trash2 size={15} />
+                        </button>
+                      </div>
+
+                      {/* Row 2: Subject & Class Title */}
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 180px), 1fr))', gap: '0.4rem', width: '100%' }}>
+                        <div>
+                          <input
+                            type="text"
+                            list="subject-suggestions"
+                            value={slot.subjectName || ''}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              const updated = [...auditRoutineList];
+                              const match = subjects.find(s => s.name?.trim().toLowerCase() === val.trim().toLowerCase());
+                              updated[sIdx] = {
+                                ...updated[sIdx],
+                                subjectName: val,
+                                ...(match && !updated[sIdx].teacherName && match.teacher_name ? { teacherName: match.teacher_name } : {}),
+                                ...(match && !updated[sIdx].deliveryMode && match.class_type ? { deliveryMode: match.class_type === 'live' ? 'online' : (match.class_type === 'recorded' ? 'recorded' : 'online') } : {})
+                              };
+                              setAuditRoutineList(updated);
+                            }}
+                            placeholder="Subject (Select or type)"
+                            className="cm-input"
+                            style={{ minHeight: '38px', padding: '0.35rem 0.55rem', fontSize: '0.82rem', width: '100%' }}
+                            title="Class Subject"
+                          />
+                        </div>
+                        <div>
+                          <input
+                            type="text"
+                            value={slot.classTitle || ''}
+                            onChange={(e) => {
+                              const updated = [...auditRoutineList];
+                              updated[sIdx] = { ...updated[sIdx], classTitle: e.target.value };
+                              setAuditRoutineList(updated);
+                            }}
+                            placeholder="Class / Topic Title"
+                            className="cm-input"
+                            style={{ minHeight: '38px', padding: '0.35rem 0.55rem', fontSize: '0.82rem', width: '100%' }}
+                            title="Class or Topic Title"
+                          />
+                        </div>
+                      </div>
+
+                      {/* Row 3: Teacher, Mode & Category */}
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 130px), 1fr))', gap: '0.4rem', width: '100%' }}>
+                        <div>
+                          <input
+                            type="text"
+                            list="teacher-suggestions"
+                            value={slot.teacherName || ''}
+                            onChange={(e) => {
+                              const updated = [...auditRoutineList];
+                              updated[sIdx] = { ...updated[sIdx], teacherName: e.target.value };
+                              setAuditRoutineList(updated);
+                            }}
+                            placeholder="Teacher / Mentor"
+                            className="cm-input"
+                            style={{ minHeight: '38px', padding: '0.35rem 0.55rem', fontSize: '0.82rem', width: '100%' }}
+                            title="Assigned Teacher"
+                          />
+                        </div>
+                        <div>
+                          <select
+                            value={slot.deliveryMode || 'online'}
+                            onChange={(e) => {
+                              const updated = [...auditRoutineList];
+                              updated[sIdx] = { ...updated[sIdx], deliveryMode: e.target.value };
+                              setAuditRoutineList(updated);
+                            }}
+                            className="cm-select"
+                            style={{ minHeight: '38px', padding: '0.35rem 0.4rem', fontSize: '0.78rem', width: '100%' }}
+                            title="Delivery Mode"
+                          >
+                            {DELIVERY_MODES.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
+                          </select>
+                        </div>
+                        <div>
+                          <select
+                            value={slot.category || 'theory'}
+                            onChange={(e) => {
+                              const updated = [...auditRoutineList];
+                              updated[sIdx] = { ...updated[sIdx], category: e.target.value };
+                              setAuditRoutineList(updated);
+                            }}
+                            className="cm-select"
+                            style={{ minHeight: '38px', padding: '0.35rem 0.4rem', fontSize: '0.78rem', width: '100%' }}
+                            title="Class Category"
+                          >
+                            {CLASS_CATEGORIES.map(cat => <option key={cat.value} value={cat.value}>{cat.label}</option>)}
+                          </select>
+                        </div>
+                      </div>
                     </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', width: '100%' }}>
-                      <input
-                        type="time"
-                        value={slot.startTime}
-                        onChange={(e) => {
-                          const updated = [...auditRoutineList];
-                          updated[sIdx].startTime = e.target.value;
-                          setAuditRoutineList(updated);
-                        }}
-                        className="cm-routine-time-input"
-                        style={{ flex: 1 }}
-                      />
-                      <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>to</span>
-                      <input
-                        type="time"
-                        value={slot.endTime}
-                        onChange={(e) => {
-                          const updated = [...auditRoutineList];
-                          updated[sIdx].endTime = e.target.value;
-                          setAuditRoutineList(updated);
-                        }}
-                        className="cm-routine-time-input"
-                        style={{ flex: 1 }}
-                      />
-                    </div>
-                  </div>
-                ))}
+                  ));
+                })()}
               </div>
             </div>
 
@@ -2736,6 +3088,14 @@ export default function CourseMaker() {
           }}
         />
       )}
+
+      {/* Global Datalists for custom subjects and teachers auto-suggestions */}
+      <datalist id="subject-suggestions">
+        {subjects.map(s => <option key={s.id || s.name} value={s.name} />)}
+      </datalist>
+      <datalist id="teacher-suggestions">
+        {teachers.map(t => <option key={t.id} value={t.full_name || `${t.first_name} ${t.last_name}`} />)}
+      </datalist>
     </div>
   );
 }
