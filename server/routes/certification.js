@@ -237,6 +237,7 @@ router.get('/my-certificates', authenticateToken, async (req, res) => {
         return {
           enrollmentId: course.id,
           batchId: course.batch_id || null,
+          courseDefinitionId: course.course_definition_id || null,
           courseName: course.course_name,
           locked: true,
           reEnrollmentDiscountPercentage: course.reEnrollmentDiscountPercentage || 0
@@ -245,6 +246,7 @@ router.get('/my-certificates', authenticateToken, async (req, res) => {
       return {
         enrollmentId: course.id,
         batchId: course.batch_id || null,
+        courseDefinitionId: course.course_definition_id || null,
         courseName: course.course_name,
         studentDetails: {
           fullName: student.full_name,
@@ -273,19 +275,60 @@ router.get('/my-certificate', authenticateToken, (req, res) => {
 // POST Log Certificate Download
 router.post('/log-download', authenticateToken, (req, res) => {
   try {
-    const { courseName } = req.body;
-    if (!courseName) {
-      return res.status(400).json({ error: 'Course name is required.' });
+    const { courseName, enrollmentId, batchId, courseDefinitionId } = req.body;
+    if (!courseName && !enrollmentId) {
+      return res.status(400).json({ error: 'Course name or enrollment ID is required.' });
+    }
+
+    let resolvedCourseName = courseName;
+    let resolvedEnrollmentId = enrollmentId ? Number(enrollmentId) : null;
+    let resolvedBatchId = batchId ? Number(batchId) : null;
+    let resolvedCourseDefId = courseDefinitionId ? Number(courseDefinitionId) : null;
+
+    if (resolvedEnrollmentId) {
+      const enr = db.prepare(`
+        SELECT id, course_name, batch_id, course_definition_id, user_id
+        FROM student_course_enrollments
+        WHERE id = ?
+      `).get(resolvedEnrollmentId);
+
+      if (enr) {
+        // Enforce ownership: student can only log download for their own enrollment (unless admin)
+        if (enr.user_id !== req.user.id && req.user.role !== 'admin') {
+          return res.status(403).json({ error: 'Unauthorized to log download for another student.' });
+        }
+        resolvedCourseName = enr.course_name;
+        if (!resolvedBatchId) resolvedBatchId = enr.batch_id;
+        if (!resolvedCourseDefId) resolvedCourseDefId = enr.course_definition_id;
+      }
+    } else if (resolvedCourseName) {
+      // If enrollmentId was not provided, look for unambiguous single enrollment for this user
+      const matchingEnrollments = db.prepare(`
+        SELECT id, batch_id, course_definition_id
+        FROM student_course_enrollments
+        WHERE user_id = ? AND LOWER(TRIM(course_name)) = LOWER(TRIM(?))
+      `).all(req.user.id, resolvedCourseName);
+
+      if (matchingEnrollments.length === 1) {
+        resolvedEnrollmentId = matchingEnrollments[0].id;
+        resolvedBatchId = matchingEnrollments[0].batch_id;
+        resolvedCourseDefId = matchingEnrollments[0].course_definition_id;
+      }
     }
 
     db.prepare(`
-      INSERT INTO certificate_downloads (user_id, course_name)
-      VALUES (?, ?)
-    `).run(req.user.id, courseName);
+      INSERT INTO certificate_downloads (user_id, course_name, enrollment_id, batch_id, course_definition_id)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(req.user.id, resolvedCourseName, resolvedEnrollmentId, resolvedBatchId, resolvedCourseDefId);
 
     const io = req.app.get('io');
     if (io) {
-      io.emit('certificate_downloaded', { userId: req.user.id, courseName });
+      io.emit('certificate_downloaded', {
+        userId: req.user.id,
+        courseName: resolvedCourseName,
+        enrollmentId: resolvedEnrollmentId,
+        batchId: resolvedBatchId
+      });
     }
 
     res.json({ message: 'Certificate download logged successfully.' });

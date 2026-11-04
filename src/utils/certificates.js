@@ -1,6 +1,8 @@
 import { jsPDF } from 'jspdf';
 import html2canvas from 'html2canvas';
 
+export { jsPDF };
+
 const backendOrigin = import.meta.env.VITE_API_URL || (window.location.hostname === 'localhost' ? 'http://localhost:3001' : '');
 
 function resolveAssetUrl(url) {
@@ -71,7 +73,7 @@ function ensureFontsLoaded() {
   }
 }
 
-export async function downloadCertificatePdf(certificate, template = {}) {
+export async function downloadCertificatePdf(certificate, template = {}, options = {}) {
   ensureFontsLoaded();
   await document.fonts.ready;
 
@@ -234,5 +236,9 @@ const getOrdinalSuffixHTML = (str) => {
 
   const safeCourseName = certificate.courseName.replace(/[^a-z0-9]+/gi, '-').toLowerCase();
   const safeStudentId  = String(studentId).replace(/[^a-z0-9]+/gi, '-').toLowerCase();
-  doc.save(`bfi-certificate-${safeStudentId}-${safeCourseName}.pdf`);
+  const filename = `bfi-certificate-${safeStudentId}-${safeCourseName}.pdf`;
+  if (!options.skipSave) {
+    doc.save(filename);
+  }
+  return { doc, filename };
 }

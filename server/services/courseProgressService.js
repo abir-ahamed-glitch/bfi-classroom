@@ -555,7 +555,6 @@ export function getEnrollmentProgressSync(enrollmentId, customDb = null, options
     // If this student was explicitly migrated from legacy and student_phase_results recorded is_passed = 1,
     // preserve the historical pass result!
     const isMigratedPhase = !!(migrationRecord && phaseResult && phaseResult.is_passed === 1);
-    const isRecordedPassed = !!(phaseResult && phaseResult.is_passed === 1);
 
     // Evaluate phase gating
     let isLocked = false;
@@ -595,7 +594,7 @@ export function getEnrollmentProgressSync(enrollmentId, customDb = null, options
     }
 
     let isPassed = false;
-    if (isMigratedPhase || isRecordedPassed) {
+    if (isMigratedPhase) {
       isPassed = true;
     } else if (isLocked || (idx > 0 && !isPhaseAdmitted)) {
       isPassed = false;
@@ -629,11 +628,11 @@ export function getEnrollmentProgressSync(enrollmentId, customDb = null, options
       allRequiredPhasesPassed = false;
     }
 
-    if (!isMigratedPhase && !isRecordedPassed && classes.some(c => c.mandatory && !c.attended)) {
+    if (!isMigratedPhase && classes.some(c => c.mandatory && !c.attended)) {
       allMandatoryClassesMet = false;
     }
 
-    if (!isMigratedPhase && !isRecordedPassed && assignments.some(a => a.submissionRequired && !a.isPassed)) {
+    if (!isMigratedPhase && assignments.some(a => a.submissionRequired && !a.isPassed)) {
       allMandatoryAssignmentsMet = false;
     }
 

@@ -46,15 +46,17 @@ function getPendingCertificateRows(feeContext = null) {
       AND NOT EXISTS (
         SELECT 1
         FROM student_course_enrollments issued
-        WHERE issued.user_id = sce.user_id
-          AND LOWER(TRIM(issued.course_name)) = LOWER(TRIM(sce.course_name))
+        WHERE issued.id = sce.id
           AND COALESCE(issued.step4_completed, 0) = 1
       )
       AND NOT EXISTS (
         SELECT 1
         FROM certificate_downloads cd
-        WHERE cd.user_id = sce.user_id
-          AND LOWER(TRIM(cd.course_name)) = LOWER(TRIM(sce.course_name))
+        WHERE cd.enrollment_id = sce.id
+           OR (cd.enrollment_id IS NULL AND cd.batch_id = sce.batch_id AND cd.user_id = sce.user_id)
+           OR (cd.enrollment_id IS NULL AND cd.batch_id IS NULL AND cd.user_id = sce.user_id
+               AND LOWER(TRIM(cd.course_name)) = LOWER(TRIM(sce.course_name))
+               AND (SELECT COUNT(*) FROM student_course_enrollments sce2 WHERE sce2.user_id = sce.user_id AND LOWER(TRIM(sce2.course_name)) = LOWER(TRIM(sce.course_name))) = 1)
       )
     ORDER BY datetime(sp.updated_at) DESC, sce.id DESC
   `).all();
@@ -248,9 +250,15 @@ router.get('/stats', authenticateToken, requireRole('admin'), requirePermission(
 
       // Count defined course certificates issued from actual downloads or step4_completed
       const definedCertsCount = db.prepare(`
-        SELECT COUNT(DISTINCT cd.user_id || '_' || cd.course_name) as count
-        FROM certificate_downloads cd
-        JOIN student_course_enrollments sce ON sce.user_id = cd.user_id AND LOWER(TRIM(sce.course_name)) = LOWER(TRIM(cd.course_name))
+        SELECT COUNT(DISTINCT sce.id) as count
+        FROM student_course_enrollments sce
+        JOIN certificate_downloads cd ON (
+          cd.enrollment_id = sce.id
+          OR (cd.enrollment_id IS NULL AND cd.batch_id = sce.batch_id AND cd.user_id = sce.user_id)
+          OR (cd.enrollment_id IS NULL AND cd.batch_id IS NULL AND cd.user_id = sce.user_id
+              AND LOWER(TRIM(cd.course_name)) = LOWER(TRIM(sce.course_name))
+              AND (SELECT COUNT(*) FROM student_course_enrollments sce2 WHERE sce2.user_id = sce.user_id AND LOWER(TRIM(sce2.course_name)) = LOWER(TRIM(sce.course_name))) = 1)
+        )
         WHERE sce.course_definition_id IS NOT NULL
       `).get()?.count || 0;
 

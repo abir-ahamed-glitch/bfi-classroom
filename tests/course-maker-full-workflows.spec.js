@@ -263,6 +263,8 @@ test.beforeAll(async () => {
   const enr104Res = db.prepare(`INSERT INTO student_course_enrollments (user_id, course_name, course_type, course_definition_id, course_version, batch_id, fee_details) VALUES (104, 'Directing Diploma 3-Phase', 'workshop', ?, 1, ?, ?)`).run(diplomaDefId, testBatchIdIso, fee104);
   enrId104 = enr104Res.lastInsertRowid;
   db.prepare(`INSERT INTO student_phase_results (enrollment_id, phase_id, attendance_classes, attendance_total, attendance_percentage, assignments_completed, assignments_total, exam_marks, is_passed, admitted) VALUES (?, 'phase_1', 1, 1, 100, 1, 1, 60, 1, 1)`).run(enrId104);
+  db.prepare(`INSERT OR REPLACE INTO student_class_attendance (enrollment_id, class_id, attended, updated_by) VALUES (?, 'cls_d1', 1, 1)`).run(enrId104);
+  db.prepare(`INSERT OR REPLACE INTO student_assignment_grades (enrollment_id, assignment_id, marks_obtained, submission_status, graded_by) VALUES (?, 'asg_d1', 18, 'graded', 1)`).run(enrId104);
 
   // Seed 3 synthetic students in Batch 300099:
   // Student 101: Anisur Rahman (All 3 Phases Passed, Fees Fully Paid ৳15,000)
@@ -280,6 +282,13 @@ test.beforeAll(async () => {
   db.prepare(`INSERT INTO student_phase_results (enrollment_id, phase_id, attendance_classes, attendance_total, attendance_percentage, assignments_completed, assignments_total, exam_marks, is_passed, admitted) VALUES (?, 'phase_1', 1, 1, 100, 1, 1, 80, 1, 1)`).run(enrId101);
   db.prepare(`INSERT INTO student_phase_results (enrollment_id, phase_id, attendance_classes, attendance_total, attendance_percentage, assignments_completed, assignments_total, exam_marks, is_passed, admitted) VALUES (?, 'phase_2', 1, 1, 100, 1, 1, 85, 1, 1)`).run(enrId101);
   db.prepare(`INSERT INTO student_phase_results (enrollment_id, phase_id, attendance_classes, attendance_total, attendance_percentage, assignments_completed, assignments_total, exam_marks, is_passed, admitted) VALUES (?, 'phase_3', 1, 1, 100, 1, 1, 90, 1, 1)`).run(enrId101);
+  // Atomic academic attendance and assignment records for Student 101
+  db.prepare(`INSERT OR REPLACE INTO student_class_attendance (enrollment_id, class_id, attended, updated_by) VALUES (?, 'cls_d1', 1, 1)`).run(enrId101);
+  db.prepare(`INSERT OR REPLACE INTO student_assignment_grades (enrollment_id, assignment_id, marks_obtained, submission_status, graded_by) VALUES (?, 'asg_d1', 18, 'graded', 1)`).run(enrId101);
+  db.prepare(`INSERT OR REPLACE INTO student_class_attendance (enrollment_id, class_id, attended, updated_by) VALUES (?, 'cls_d2', 1, 1)`).run(enrId101);
+  db.prepare(`INSERT OR REPLACE INTO student_assignment_grades (enrollment_id, assignment_id, marks_obtained, submission_status, graded_by) VALUES (?, 'asg_d2', 19, 'graded', 1)`).run(enrId101);
+  db.prepare(`INSERT OR REPLACE INTO student_class_attendance (enrollment_id, class_id, attended, updated_by) VALUES (?, 'cls_d3', 1, 1)`).run(enrId101);
+  db.prepare(`INSERT OR REPLACE INTO student_assignment_grades (enrollment_id, assignment_id, marks_obtained, submission_status, graded_by) VALUES (?, 'asg_d3', 20, 'graded', 1)`).run(enrId101);
 
   // Student 102: Farzana Boby (Phase 1 Exam Failed (30 < 40), Fees Partial ৳2,500)
   db.prepare(`INSERT OR REPLACE INTO users (id, username, email, password_hash, role, first_name, last_name, is_active, is_super_admin, token_version) VALUES (102, 'farzana', 'farzana@bfi.edu', 'hash', 'student', 'Farzana', 'Boby', 1, 0, 1)`).run();
@@ -293,6 +302,8 @@ test.beforeAll(async () => {
   const enr102 = db.prepare(`INSERT INTO student_course_enrollments (user_id, course_name, course_type, course_definition_id, course_version, batch_id, fee_details) VALUES (102, 'Directing Diploma 3-Phase', 'workshop', ?, 1, ?, ?)`).run(diplomaDefId, testBatchId3P, fee102);
   enrId102 = enr102.lastInsertRowid;
   db.prepare(`INSERT INTO student_phase_results (enrollment_id, phase_id, attendance_classes, attendance_total, attendance_percentage, assignments_completed, assignments_total, exam_marks, is_passed, admitted) VALUES (?, 'phase_1', 1, 1, 100, 1, 1, 30, 0, 1)`).run(enrId102);
+  db.prepare(`INSERT OR REPLACE INTO student_class_attendance (enrollment_id, class_id, attended, updated_by) VALUES (?, 'cls_d1', 1, 1)`).run(enrId102);
+  db.prepare(`INSERT OR REPLACE INTO student_assignment_grades (enrollment_id, assignment_id, marks_obtained, submission_status, graded_by) VALUES (?, 'asg_d1', 15, 'graded', 1)`).run(enrId102);
 
   // Student 103: Kamal Hossain (Phase 1 Attendance Not Qualified 0%, Fees Unpaid ৳0)
   db.prepare(`INSERT OR REPLACE INTO users (id, username, email, password_hash, role, first_name, last_name, is_active, is_super_admin, token_version) VALUES (103, 'kamal', 'kamal@bfi.edu', 'hash', 'student', 'Kamal', 'Hossain', 1, 0, 1)`).run();
@@ -306,6 +317,8 @@ test.beforeAll(async () => {
   const enr103 = db.prepare(`INSERT INTO student_course_enrollments (user_id, course_name, course_type, course_definition_id, course_version, batch_id, fee_details) VALUES (103, 'Directing Diploma 3-Phase', 'workshop', ?, 1, ?, ?)`).run(diplomaDefId, testBatchId3P, fee103);
   enrId103 = enr103.lastInsertRowid;
   db.prepare(`INSERT INTO student_phase_results (enrollment_id, phase_id, attendance_classes, attendance_total, attendance_percentage, assignments_completed, assignments_total, exam_marks, is_passed, admitted) VALUES (?, 'phase_1', 0, 1, 0, 0, 1, null, 0, 1)`).run(enrId103);
+  db.prepare(`INSERT OR REPLACE INTO student_class_attendance (enrollment_id, class_id, attended, updated_by) VALUES (?, 'cls_d1', 0, 1)`).run(enrId103);
+  db.prepare(`INSERT OR REPLACE INTO student_assignment_grades (enrollment_id, assignment_id, marks_obtained, submission_status, graded_by) VALUES (?, 'asg_d1', 0, 'pending', 1)`).run(enrId103);
 
   // Clean downloads
   db.prepare('DELETE FROM certificate_downloads').run();
@@ -597,11 +610,11 @@ test.describe('Course Maker Extended Verification: Mobile, 3-Phase Stats, Fees, 
     expect(progressDataBefore.certificates.issued).toBe(0);
     expect(progressDataBefore.certificates.pending).toBeGreaterThanOrEqual(1);
 
-    // 2. Insert actual certificate download record for Student 101
+    // 2. Insert actual scoped certificate download record for Student 101
     db.prepare(`
-      INSERT INTO certificate_downloads (user_id, course_name, downloaded_at)
-      VALUES (101, 'Directing Diploma 3-Phase', datetime('now'))
-    `).run();
+      INSERT INTO certificate_downloads (user_id, course_name, enrollment_id, batch_id, course_definition_id, downloaded_at)
+      VALUES (101, 'Directing Diploma 3-Phase', ?, ?, ?, datetime('now'))
+    `).run(enrId101, testBatchId3P, diplomaDefId);
 
     // 3. Re-query Batch 300099 Progress API:
     // Now issued MUST be 1, and pending must reflect the remaining unissued students
@@ -620,7 +633,7 @@ test.describe('Course Maker Extended Verification: Mobile, 3-Phase Stats, Fees, 
 
     await expect(page.locator('text=/1 Certificates Issued/')).toBeVisible({ timeout: 10000 });
 
-    // 5. Client-Side Certificate Generation: Exercise downloadCertificatePdf in browser
+    // 5. Client-Side Certificate Generation: Exercise downloadCertificatePdf in browser & assert real PDF bytes
     await page.goto('admin/certificate-designer');
     await page.waitForLoadState('networkidle');
 
@@ -643,27 +656,140 @@ test.describe('Course Maker Extended Verification: Mobile, 3-Phase Stats, Fees, 
           })
         };
 
-        // Stub doc.save so no physical file download prompt blocks the browser
-        let savedFilename = '';
-        const originalDocSave = window.jspdf?.jsPDF?.prototype?.save;
-        if (window.jspdf?.jsPDF?.prototype) {
-          window.jspdf.jsPDF.prototype.save = function(name) {
-            savedFilename = name;
-          };
-        }
+        const result = await downloadCertificatePdf(certObj, template, { skipSave: true });
+        const pdfBinary = result.doc.output();
+        const pdfArrayBuffer = result.doc.output('arraybuffer');
 
-        await downloadCertificatePdf(certObj, template);
-        if (originalDocSave && window.jspdf?.jsPDF?.prototype) {
-          window.jspdf.jsPDF.prototype.save = originalDocSave;
-        }
-        return { success: true, savedFilename };
+        return {
+          success: true,
+          filename: result.filename,
+          pdfHeader: pdfBinary.slice(0, 5),
+          byteLength: pdfArrayBuffer.byteLength,
+          pageWidth: result.doc.internal.pageSize.getWidth(),
+          pageHeight: result.doc.internal.pageSize.getHeight()
+        };
       } catch (err) {
         return { success: false, error: err.message, stack: err.stack };
       }
     });
 
+    if (!downloadResult.success) {
+      console.error('DOWNLOAD_RESULT_FAILED:', downloadResult.error, downloadResult.stack);
+    }
     expect(downloadResult.success).toBe(true);
-    console.log('✅ Flow 5: Certificate eligibility vs issuance distinction and PDF generation verified successfully');
+    expect(downloadResult.pdfHeader).toBe('%PDF-');
+    expect(downloadResult.byteLength).toBeGreaterThan(10240); // > 10KB
+    expect(Math.round(downloadResult.pageWidth)).toBe(297); // A4 landscape width mm
+    expect(Math.round(downloadResult.pageHeight)).toBe(210); // A4 landscape height mm
+    expect(downloadResult.filename).toContain('bfi01012026');
+    expect(downloadResult.filename).toContain('script-writing-workshop-2026');
+    console.log('✅ Flow 5: Certificate eligibility vs issuance distinction and real PDF byte generation verified successfully');
+  });
+
+  test('Flow 6: Student Portal Certificate Eligibility, Scoped Download & Multi-Batch Isolation', async ({ page }) => {
+    // 1. Issue authentic tokens for synthetic students
+    const student101Session = issueUserSessionToken(101, 'student');
+    const student102Session = issueUserSessionToken(102, 'student');
+
+    // 2. Student 101 (Fully Paid & Passed): Call GET /api/certification/my-certificates
+    const certsRes101 = await page.request.get('api/certification/my-certificates', {
+      headers: { 'Authorization': `Bearer ${student101Session.token}` }
+    });
+    expect(certsRes101.ok()).toBeTruthy();
+    const certsData101 = await certsRes101.json();
+    expect(Array.isArray(certsData101.certificates)).toBe(true);
+    const cert101 = certsData101.certificates.find(c => c.courseName === 'Directing Diploma 3-Phase');
+    expect(cert101).toBeDefined();
+    expect(cert101.locked).toBeFalsy();
+    expect(cert101.enrollmentId).toBe(enrId101);
+    expect(cert101.batchId).toBe(testBatchId3P);
+    expect(cert101.studentDetails.fullName).toBe('Anisur Rahman');
+
+    // 3. Student 102 (Exam Failed & Due Unpaid): Call GET /api/certification/my-certificates
+    const certsRes102 = await page.request.get('api/certification/my-certificates', {
+      headers: { 'Authorization': `Bearer ${student102Session.token}` }
+    });
+    expect(certsRes102.ok()).toBeTruthy();
+    const certsData102 = await certsRes102.json();
+    const cert102 = certsData102.certificates.find(c => c.courseName === 'Directing Diploma 3-Phase');
+    expect(cert102 ? cert102.locked : true).toBeTruthy();
+
+    // 4. Student 101 logs certificate download with exact enrollment and batch identity
+    const logRes = await page.request.post('api/certification/log-download', {
+      headers: {
+        'Authorization': `Bearer ${student101Session.token}`,
+        'Content-Type': 'application/json'
+      },
+      data: {
+        courseName: 'Directing Diploma 3-Phase',
+        enrollmentId: enrId101,
+        batchId: testBatchId3P,
+        courseDefinitionId: diplomaDefId
+      }
+    });
+    expect(logRes.ok()).toBeTruthy();
+
+    // Verify row was inserted with stable identities
+    const downloadRow = db.prepare(`
+      SELECT * FROM certificate_downloads
+      WHERE enrollment_id = ?
+    `).get(enrId101);
+    expect(downloadRow).toBeDefined();
+    expect(downloadRow.batch_id).toBe(testBatchId3P);
+    expect(downloadRow.course_definition_id).toBe(diplomaDefId);
+
+    // 5. Multi-batch isolation: Seed student 201 enrolled in Batch A (300099) AND Batch B (300098)
+    db.prepare(`INSERT OR REPLACE INTO users (id, username, email, password_hash, role, first_name, last_name, is_active, token_version) VALUES (201, 'multibatch_iso', 'multi_iso@bfi.edu', 'hash', 'student', 'Multi', 'Student', 1, 1)`).run();
+    db.prepare(`INSERT OR REPLACE INTO student_profiles (user_id, full_name, student_id, batch_number) VALUES (201, 'Multi Student', 'BFI06012026', '01')`).run();
+    db.prepare(`INSERT OR IGNORE INTO batch_students (batch_id, student_id) VALUES (?, 201)`).run(testBatchId3P);
+    db.prepare(`INSERT OR IGNORE INTO batch_students (batch_id, student_id) VALUES (?, 201)`).run(testBatchIdIso);
+
+    const feePaid = JSON.stringify({
+      phase1: { full_fee: 5000, amount_paid: 5000, status: 'Paid Full', installments: [{ id: 1, amount: 5000, status: 'paid' }] },
+      phase2: { full_fee: 5000, amount_paid: 5000, status: 'Paid Full', installments: [{ id: 1, amount: 5000, status: 'paid' }] },
+      phase3: { full_fee: 5000, amount_paid: 5000, status: 'Paid Full', installments: [{ id: 1, amount: 5000, status: 'paid' }] }
+    });
+    const enrMultiARes = db.prepare(`INSERT INTO student_course_enrollments (user_id, course_name, course_type, course_definition_id, course_version, batch_id, fee_details) VALUES (201, 'Directing Diploma 3-Phase', 'workshop', ?, 1, ?, ?)`).run(diplomaDefId, testBatchId3P, feePaid);
+    const enrMultiA = enrMultiARes.lastInsertRowid;
+    const enrMultiBRes = db.prepare(`INSERT INTO student_course_enrollments (user_id, course_name, course_type, course_definition_id, course_version, batch_id, fee_details) VALUES (201, 'Directing Diploma 3-Phase', 'workshop', ?, 1, ?, ?)`).run(diplomaDefId, testBatchIdIso, feePaid);
+    const enrMultiB = enrMultiBRes.lastInsertRowid;
+
+    for (const eid of [enrMultiA, enrMultiB]) {
+      db.prepare(`INSERT INTO student_phase_results (enrollment_id, phase_id, attendance_classes, attendance_total, attendance_percentage, assignments_completed, assignments_total, exam_marks, is_passed, admitted) VALUES (?, 'phase_1', 1, 1, 100, 1, 1, 80, 1, 1)`).run(eid);
+      db.prepare(`INSERT INTO student_phase_results (enrollment_id, phase_id, attendance_classes, attendance_total, attendance_percentage, assignments_completed, assignments_total, exam_marks, is_passed, admitted) VALUES (?, 'phase_2', 1, 1, 100, 1, 1, 85, 1, 1)`).run(eid);
+      db.prepare(`INSERT INTO student_phase_results (enrollment_id, phase_id, attendance_classes, attendance_total, attendance_percentage, assignments_completed, assignments_total, exam_marks, is_passed, admitted) VALUES (?, 'phase_3', 1, 1, 100, 1, 1, 90, 1, 1)`).run(eid);
+      db.prepare(`INSERT OR REPLACE INTO student_class_attendance (enrollment_id, class_id, attended, updated_by) VALUES (?, 'cls_d1', 1, 1)`).run(eid);
+      db.prepare(`INSERT OR REPLACE INTO student_assignment_grades (enrollment_id, assignment_id, marks_obtained, submission_status, graded_by) VALUES (?, 'asg_d1', 18, 'graded', 1)`).run(eid);
+      db.prepare(`INSERT OR REPLACE INTO student_class_attendance (enrollment_id, class_id, attended, updated_by) VALUES (?, 'cls_d2', 1, 1)`).run(eid);
+      db.prepare(`INSERT OR REPLACE INTO student_assignment_grades (enrollment_id, assignment_id, marks_obtained, submission_status, graded_by) VALUES (?, 'asg_d2', 19, 'graded', 1)`).run(eid);
+      db.prepare(`INSERT OR REPLACE INTO student_class_attendance (enrollment_id, class_id, attended, updated_by) VALUES (?, 'cls_d3', 1, 1)`).run(eid);
+      db.prepare(`INSERT OR REPLACE INTO student_assignment_grades (enrollment_id, assignment_id, marks_obtained, submission_status, graded_by) VALUES (?, 'asg_d3', 20, 'graded', 1)`).run(eid);
+    }
+
+    // Now log download specifically for Batch A (enrMultiA)
+    db.prepare(`
+      INSERT INTO certificate_downloads (user_id, course_name, enrollment_id, batch_id, course_definition_id)
+      VALUES (201, 'Directing Diploma 3-Phase', ?, ?, ?)
+    `).run(enrMultiA, testBatchId3P, diplomaDefId);
+
+    // Query Batch A progress API (Student 101 from Flow 5 + Student 201 from Flow 6 = 2 issued)
+    const resA = await page.request.get(`api/admin/batches/${testBatchId3P}/progress`, {
+      headers: { 'Authorization': `Bearer ${adminToken}` }
+    });
+    const dataA = await resA.json();
+    expect(dataA.certificates.issued).toBe(2);
+
+    // Query Batch B progress API
+    const resB = await page.request.get(`api/admin/batches/${testBatchIdIso}/progress`, {
+      headers: { 'Authorization': `Bearer ${adminToken}` }
+    });
+    const dataB = await resB.json();
+
+    // Assert Batch B did NOT have its issued count incremented!
+    expect(dataB.certificates.issued).toBe(0);
+    expect(dataB.certificates.pending).toBeGreaterThanOrEqual(1);
+
+    console.log('✅ Flow 6: Student portal download logging, certificate eligibility, and multi-batch isolation verified');
   });
 
 });

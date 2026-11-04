@@ -508,6 +508,9 @@ export function initializeDatabase() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER NOT NULL,
       course_name TEXT NOT NULL,
+      enrollment_id INTEGER REFERENCES student_course_enrollments(id) ON DELETE CASCADE,
+      batch_id INTEGER REFERENCES batches(id) ON DELETE SET NULL,
+      course_definition_id INTEGER REFERENCES course_definitions(id) ON DELETE SET NULL,
       downloaded_at TEXT DEFAULT (datetime('now')),
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
@@ -974,6 +977,19 @@ export function initializeDatabase() {
     "ALTER TABLE student_course_enrollments ADD COLUMN fee_details TEXT"
   ];
   for (const migration of enrollmentMigrations) {
+    try {
+      db.prepare(migration).run();
+    } catch {
+      // Column probably already exists
+    }
+  }
+
+  const certificateDownloadMigrations = [
+    "ALTER TABLE certificate_downloads ADD COLUMN enrollment_id INTEGER REFERENCES student_course_enrollments(id) ON DELETE CASCADE",
+    "ALTER TABLE certificate_downloads ADD COLUMN batch_id INTEGER REFERENCES batches(id) ON DELETE SET NULL",
+    "ALTER TABLE certificate_downloads ADD COLUMN course_definition_id INTEGER REFERENCES course_definitions(id) ON DELETE SET NULL"
+  ];
+  for (const migration of certificateDownloadMigrations) {
     try {
       db.prepare(migration).run();
     } catch {

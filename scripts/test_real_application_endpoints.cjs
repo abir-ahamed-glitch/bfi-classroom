@@ -213,6 +213,16 @@ db.exec(`
     details TEXT,
     created_at TEXT DEFAULT (datetime('now', 'localtime'))
   );
+
+  CREATE TABLE certificate_downloads (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    course_name TEXT NOT NULL,
+    enrollment_id INTEGER,
+    batch_id INTEGER,
+    course_definition_id INTEGER,
+    downloaded_at TEXT DEFAULT (datetime('now', 'localtime'))
+  );
 `);
 
 console.log('✅ Real application schema created successfully in isolated SQLite.');
@@ -749,6 +759,255 @@ async function runTests() {
   const progFinal = getEnrollmentProgressSync(enrollmentId, db);
   assert.strictEqual(progFinal.certificateEligible, true, 'Certificate must be eligible once all phases are passed AND all fees are fully paid');
   console.log('✅ 3.6: Dynamic progression engine confirms: certificateEligible = true after all 3 phase fees cleared');
+
+  console.log('\n============================================================');
+  console.log('TEST SUITE 4: Authoritative Academic Evaluation & Dynamic Invalidation');
+  console.log('============================================================');
+
+  // 4.1 Attendance corrected downwards below threshold -> phase isPassed immediately becomes false
+  console.log('--- 4.1 Attendance corrected downwards below threshold ---');
+  // Lower Phase 1 attendance from 2/2 (100%) to 0/2 (0%), minAttendancePercent is 50%
+  db.prepare(`
+    UPDATE student_class_attendance 
+    SET attended = 0 
+    WHERE enrollment_id = ? AND class_id IN ('cls_p1_1', 'cls_p1_2')
+  `).run(enrollmentId);
+
+  // Even though student_phase_results might have is_passed = 1 previously,
+  // authoritative evaluation must recompute from atomic attendance records!
+  const progAfterAttendanceDrop = getEnrollmentProgressSync(enrollmentId, db);
+  assert.strictEqual(progAfterAttendanceDrop.phases[0].isPassed, false, 'Phase 1 must FAIL when attendance drops below minimum threshold');
+  assert.strictEqual(progAfterAttendanceDrop.phases[0].attendance.percentage, 0);
+  assert.strictEqual(progAfterAttendanceDrop.certificateEligible, false, 'Certificate must be invalidated when a required phase fails');
+  console.log('✅ 4.1 Dynamic Invalidation: Attendance corrected downwards -> isPassed=false, certificateEligible=false');
+
+  // Restore attendance for 4.2
+  db.prepare(`
+    UPDATE student_class_attendance 
+    SET attended = 1 
+    WHERE enrollment_id = ? AND class_id IN ('cls_p1_1', 'cls_p1_2')
+  `).run(enrollmentId);
+
+  // 4.2 Mandatory class unmarked -> allMandatoryClassesMet becomes false
+  console.log('--- 4.2 Mandatory class unmarked ---');
+  db.prepare(`
+    UPDATE student_class_attendance 
+    SET attended = 0 
+    WHERE enrollment_id = ? AND class_id = 'cls_p1_1'
+  `).run(enrollmentId);
+
+  const progMandatoryMissing = getEnrollmentProgressSync(enrollmentId, db);
+  assert.strictEqual(progMandatoryMissing.phases[0].classes.find(c => c.id === 'cls_p1_1').attended, false);
+  assert.strictEqual(progMandatoryMissing.phases[0].isPassed, false, 'Phase 1 must FAIL when a mandatory class is not attended');
+  assert.strictEqual(progMandatoryMissing.certificateEligible, false);
+  console.log('✅ 4.2 Dynamic Invalidation: Mandatory class unmarked -> isPassed=false, certificateEligible=false');
+
+  // Restore mandatory class for 4.3
+  db.prepare(`
+    UPDATE student_class_attendance 
+    SET attended = 1 
+    WHERE enrollment_id = ? AND class_id = 'cls_p1_1'
+  `).run(enrollmentId);
+
+  // 4.3 Required assignment becomes failing/missing
+  console.log('--- 4.3 Required assignment updated to failing mark ---');
+  // asg_p1_1 passMarks is 10; set marks to 6
+  db.prepare(`
+    UPDATE student_assignment_grades 
+    SET marks_obtained = 6 
+    WHERE enrollment_id = ? AND assignment_id = 'asg_p1_1'
+  `).run(enrollmentId);
+
+  const progFailingAssignment = getEnrollmentProgressSync(enrollmentId, db);
+  assert.strictEqual(progFailingAssignment.phases[0].assignments.find(a => a.id === 'asg_p1_1').isPassed, false);
+  assert.strictEqual(progFailingAssignment.phases[0].isPassed, false, 'Phase 1 must FAIL when required assignment is below pass mark');
+  assert.strictEqual(progFailingAssignment.certificateEligible, false);
+  console.log('✅ 4.3 Dynamic Invalidation: Required assignment failing -> isPassed=false, certificateEligible=false');
+
+  // Restore assignment to passing mark (18/20)
+  db.prepare(`
+    UPDATE student_assignment_grades 
+    SET marks_obtained = 18 
+    WHERE enrollment_id = ? AND assignment_id = 'asg_p1_1'
+  `).run(enrollmentId);
+
+  // 4.4 Unadmitted Phase 2 gating
+  console.log('--- 4.4 Unadmitted Phase 2 gating ---');
+  // Create a new synthetic enrollment for student 205 in batch 300001
+  const user205 = db.prepare('SELECT id FROM users WHERE id = 205').get();
+  if (!user205) {
+    db.prepare("INSERT INTO users (id, email, role) VALUES (205, 'unadmitted@test.com', 'student')").run();
+  }
+  const enr205Res = db.prepare(`
+    INSERT INTO student_course_enrollments (user_id, course_name, course_type, batch_id, course_definition_id, fee_details)
+    VALUES (205, 'Directing Diploma 3-Phase', 'diploma', ?, ?, ?)
+  `).run(threeBatchId, threeCourseDefId, JSON.stringify(feesAllPaid));
+  const enr205Id = enr205Res.lastInsertRowid;
+
+  // Pass Phase 1 academically
+  await updateDefinedProgressAtomic(
+    enr205Id,
+    {
+      attendance: [{ class_id: 'cls_p1_1', attended: 1 }, { class_id: 'cls_p1_2', attended: 1 }],
+      assignments: [{ assignment_id: 'asg_p1_1', marks: 18, submission_status: 'graded' }],
+      exam_marks: [{ phase_id: 'phase_1', examMarks: 70 }],
+      updatedBy: 1
+    },
+    db
+  );
+
+  // But DO NOT admit student to Phase 2 (no row in student_phase_admissions for phaseIndex 2)
+  const prog205 = getEnrollmentProgressSync(enr205Id, db);
+  assert.strictEqual(prog205.phases[0].isPassed, true, 'Phase 1 passed');
+  assert.strictEqual(prog205.phases[1].isAdmitted, false, 'Phase 2 not admitted');
+  assert.strictEqual(prog205.phases[1].isPassed, false, 'Unadmitted Phase 2 cannot be passed');
+  assert.strictEqual(prog205.phases[1].status, 'pending_admission');
+  console.log('✅ 4.4 Unadmitted Phase 2 correctly gated: isPhaseAdmitted=false, admissionStatus=pending_admission');
+
+  // 4.5 Legitimate legacy migrated graduate exception
+  console.log('--- 4.5 Legitimate legacy migrated graduate exception ---');
+  // Seed an enrollment with legacy migration marker and student_phase_results is_passed = 1
+  const user206 = db.prepare('SELECT id FROM users WHERE id = 206').get();
+  if (!user206) {
+    db.prepare("INSERT INTO users (id, email, role) VALUES (206, 'migrated@test.com', 'student')").run();
+  }
+  const enr206Res = db.prepare(`
+    INSERT INTO student_course_enrollments (user_id, course_name, course_type, batch_id, course_definition_id, fee_details)
+    VALUES (206, 'Directing Diploma 3-Phase', 'diploma', ?, ?, ?)
+  `).run(threeBatchId, threeCourseDefId, JSON.stringify(feesAllPaid));
+  const enr206Id = enr206Res.lastInsertRowid;
+
+  // Mark phase 1 with migration record
+  db.prepare(`
+    INSERT INTO student_phase_results (enrollment_id, phase_id, is_passed)
+    VALUES (?, 'phase_1', 1)
+  `).run(enr206Id);
+
+  db.prepare(`
+    INSERT INTO legacy_enrollment_migrations (enrollment_id, legacy_snapshot_json)
+    VALUES (?, '{}')
+  `).run(enr206Id);
+
+  const prog206 = getEnrollmentProgressSync(enr206Id, db);
+  // Because student has explicit migrationRecord AND phaseResult.is_passed = 1, isMigrated is true
+  assert.strictEqual(prog206.phases[0].isMigrated, true, 'isMigrated must be true for authentic migrated graduate');
+  assert.strictEqual(prog206.phases[0].isPassed, true, 'Migrated phase must be preserved as passed');
+  console.log('✅ 4.5 Explicit legacy migration exception strictly preserved without expanding to ordinary enrollments');
+
+  console.log('\n============================================================');
+  console.log('TEST SUITE 5: Certificate Identity, Scoping & Conservative Ambiguity');
+  console.log('============================================================');
+
+  // 5.1 Same student enrolled in two batches of identically named course
+  console.log('--- 5.1 Multi-batch isolation: Same student, two batches of identical course ---');
+  const user210 = db.prepare('SELECT id FROM users WHERE id = 210').get();
+  if (!user210) {
+    db.prepare("INSERT INTO users (id, email, role) VALUES (210, 'multi@test.com', 'student')").run();
+  }
+
+  // Batch A (threeBatchId = 300001)
+  const enrBatchARes = db.prepare(`
+    INSERT INTO student_course_enrollments (user_id, course_name, course_type, batch_id, course_definition_id, fee_details)
+    VALUES (210, 'Directing Diploma 3-Phase', 'diploma', ?, ?, ?)
+  `).run(threeBatchId, threeCourseDefId, JSON.stringify(feesAllPaid));
+  const enrBatchAId = enrBatchARes.lastInsertRowid;
+  db.prepare('INSERT OR IGNORE INTO batch_students (batch_id, student_id) VALUES (?, 210)').run(threeBatchId);
+
+  // Batch B (new batch 300002)
+  const batchBRes = db.prepare(`
+    INSERT INTO batches (id, course_name, batch_name, batch_number, course_definition_id)
+    VALUES (300002, 'Directing Diploma 3-Phase', 'Batch 02', '02', ?)
+  `).run(threeCourseDefId);
+  const enrBatchBRes = db.prepare(`
+    INSERT INTO student_course_enrollments (user_id, course_name, course_type, batch_id, course_definition_id, fee_details)
+    VALUES (210, 'Directing Diploma 3-Phase', 'diploma', 300002, ?, ?)
+  `).run(threeCourseDefId, JSON.stringify(feesAllPaid));
+  const enrBatchBId = enrBatchBRes.lastInsertRowid;
+  db.prepare('INSERT INTO batch_students (batch_id, student_id) VALUES (300002, 210)').run();
+
+  // Make student academically pass both enrollments step-by-step
+  for (const enrId of [enrBatchAId, enrBatchBId]) {
+    await updateDefinedProgressAtomic(enrId, {
+      attendance: [{ class_id: 'cls_p1_1', attended: 1 }, { class_id: 'cls_p1_2', attended: 1 }],
+      assignments: [{ assignment_id: 'asg_p1_1', marks: 18, submission_status: 'graded' }],
+      exam_marks: [{ phase_id: 'phase_1', examMarks: 75 }],
+      updatedBy: 1
+    }, db);
+
+    await admitStudentToPhase(enrId, 2, db, { batchId: threeBatchId, onCommitAudit: () => {} });
+
+    await updateDefinedProgressAtomic(enrId, {
+      attendance: [{ class_id: 'cls_p2_1', attended: 1 }, { class_id: 'cls_p2_2', attended: 1 }],
+      assignments: [{ assignment_id: 'asg_p2_1', marks: 19, submission_status: 'graded' }],
+      exam_marks: [{ phase_id: 'phase_2', examMarks: 75 }],
+      updatedBy: 1
+    }, db);
+
+    await admitStudentToPhase(enrId, 3, db, { batchId: threeBatchId, onCommitAudit: () => {} });
+
+    await updateDefinedProgressAtomic(enrId, {
+      attendance: [{ class_id: 'cls_p3_1', attended: 1 }, { class_id: 'cls_p3_2', attended: 1 }],
+      assignments: [{ assignment_id: 'asg_p3_1', marks: 20, submission_status: 'graded' }],
+      exam_marks: [{ phase_id: 'phase_3', examMarks: 75 }],
+      updatedBy: 1
+    }, db);
+  }
+
+  // Before download: Both batches should report this student as pending (not issued)
+  const isDownloadedQuery = db.prepare(`
+    SELECT 1 FROM certificate_downloads cd
+    WHERE cd.enrollment_id = ?
+       OR (cd.enrollment_id IS NULL AND cd.batch_id = ? AND cd.user_id = ?)
+       OR (cd.enrollment_id IS NULL AND cd.batch_id IS NULL AND cd.user_id = ? AND LOWER(TRIM(cd.course_name)) = LOWER(TRIM(?))
+           AND (SELECT COUNT(*) FROM student_course_enrollments sce WHERE sce.user_id = ? AND LOWER(TRIM(sce.course_name)) = LOWER(TRIM(?))) = 1)
+    LIMIT 1
+  `);
+
+  assert.strictEqual(!!isDownloadedQuery.get(enrBatchAId, threeBatchId, 210, 210, 'Directing Diploma 3-Phase', 210, 'Directing Diploma 3-Phase'), false);
+  assert.strictEqual(!!isDownloadedQuery.get(enrBatchBId, 300002, 210, 210, 'Directing Diploma 3-Phase', 210, 'Directing Diploma 3-Phase'), false);
+
+  // Now student downloads certificate SPECIFICALLY for Batch A (with enrollment_id = enrBatchAId, batch_id = 300001)
+  db.prepare(`
+    INSERT INTO certificate_downloads (user_id, course_name, enrollment_id, batch_id, course_definition_id)
+    VALUES (210, 'Directing Diploma 3-Phase', ?, ?, ?)
+  `).run(enrBatchAId, threeBatchId, threeCourseDefId);
+
+  // Assert Batch A sees certificate as downloaded / issued
+  const batchADownloaded = !!isDownloadedQuery.get(enrBatchAId, threeBatchId, 210, 210, 'Directing Diploma 3-Phase', 210, 'Directing Diploma 3-Phase');
+  assert.strictEqual(batchADownloaded, true, 'Batch A must detect the certificate download for its specific enrollment');
+
+  // Assert Batch B DOES NOT see certificate as downloaded / issued!
+  const batchBDownloaded = !!isDownloadedQuery.get(enrBatchBId, 300002, 210, 210, 'Directing Diploma 3-Phase', 210, 'Directing Diploma 3-Phase');
+  assert.strictEqual(batchBDownloaded, false, 'Batch B must NOT be affected by a download from Batch A!');
+  console.log('✅ 5.1 Multi-batch isolation verified: Download for Batch A leaves Batch B unissued and pending');
+
+  // 5.2 Conservative ambiguity handling for historical download rows
+  console.log('--- 5.2 Conservative ambiguity handling for historical download rows ---');
+  // Clean up the scoped download from 5.1
+  db.prepare('DELETE FROM certificate_downloads WHERE user_id = 210').run();
+
+  // Insert a legacy historical download row without enrollment_id or batch_id
+  db.prepare(`
+    INSERT INTO certificate_downloads (user_id, course_name, enrollment_id, batch_id, course_definition_id)
+    VALUES (210, 'Directing Diploma 3-Phase', NULL, NULL, NULL)
+  `).run();
+
+  // Because student 210 has 2 enrollments for 'Directing Diploma 3-Phase', the historical row is ambiguous!
+  // Neither Batch A nor Batch B should silently attribute this ambiguous download!
+  const batchAHistorical = !!isDownloadedQuery.get(enrBatchAId, threeBatchId, 210, 210, 'Directing Diploma 3-Phase', 210, 'Directing Diploma 3-Phase');
+  const batchBHistorical = !!isDownloadedQuery.get(enrBatchBId, 300002, 210, 210, 'Directing Diploma 3-Phase', 210, 'Directing Diploma 3-Phase');
+  assert.strictEqual(batchAHistorical, false, 'Historical row with multiple enrollments must be rejected as ambiguous for Batch A');
+  assert.strictEqual(batchBHistorical, false, 'Historical row with multiple enrollments must be rejected as ambiguous for Batch B');
+  console.log('✅ 5.2 Conservative Ambiguity: Legacy un-attributed row with multiple enrollments is not silently attributed');
+
+  // But for a single-enrollment student (e.g. user 206 with only 1 enrollment for 'Directing Diploma 3-Phase'):
+  db.prepare(`
+    INSERT INTO certificate_downloads (user_id, course_name, enrollment_id, batch_id, course_definition_id)
+    VALUES (206, 'Directing Diploma 3-Phase', NULL, NULL, NULL)
+  `).run();
+  const singleEnrollmentMatch = !!isDownloadedQuery.get(enr206Id, threeBatchId, 206, 206, 'Directing Diploma 3-Phase', 206, 'Directing Diploma 3-Phase');
+  assert.strictEqual(singleEnrollmentMatch, true, 'Historical row for a single-enrollment student is safely and deterministically resolved');
+  console.log('✅ 5.3 Deterministic Single-Enrollment: Historical row safely attributes when student has exactly 1 enrollment');
 
   console.log('\n============================================================');
   console.log('🎉 ALL REAL APPLICATION ENDPOINT & SERVICE TESTS PASSED (100%)');

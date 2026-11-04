@@ -1363,17 +1363,27 @@ router.get('/:id/progress', authenticateToken, requireRole('admin'), requirePerm
 
     if (batch.course_definition_id) {
       // Defined course certificate calculation: distinct issuance vs eligibility
-      const downloadedUserIds = new Set(
-        db.prepare(`
-          SELECT DISTINCT cd.user_id
-          FROM certificate_downloads cd
-          JOIN batch_students bs ON bs.student_id = cd.user_id
-          WHERE bs.batch_id = ? AND LOWER(TRIM(cd.course_name)) = LOWER(TRIM(?))
-        `).all(batchId, batch.course_name).map(r => r.user_id)
-      );
+      // Check downloads scoped by exact enrollment, batch, or unambiguous single enrollment
+      const checkEnrollmentDownloaded = db.prepare(`
+        SELECT 1 FROM certificate_downloads cd
+        WHERE cd.enrollment_id = ?
+           OR (cd.enrollment_id IS NULL AND cd.batch_id = ? AND cd.user_id = ?)
+           OR (cd.enrollment_id IS NULL AND cd.batch_id IS NULL AND cd.user_id = ? AND LOWER(TRIM(cd.course_name)) = LOWER(TRIM(?))
+               AND (SELECT COUNT(*) FROM student_course_enrollments sce WHERE sce.user_id = ? AND LOWER(TRIM(sce.course_name)) = LOWER(TRIM(?))) = 1)
+        LIMIT 1
+      `);
 
       for (const s of students) {
-        const isIssued = downloadedUserIds.has(s.user_id) || (s.step4_completed === 1);
+        const isDownloaded = !!checkEnrollmentDownloaded.get(
+          s.enrollment_id,
+          batchId,
+          s.user_id,
+          s.user_id,
+          batch.course_name,
+          s.user_id,
+          batch.course_name
+        );
+        const isIssued = isDownloaded || (s.step4_completed === 1);
         if (isIssued) {
           certificatesIssued++;
         } else {
@@ -1394,38 +1404,35 @@ router.get('/:id/progress', authenticateToken, requireRole('admin'), requirePerm
         }
       }
     } else if (batch.course_name === 'Online Filmmaking Course') {
-      const downloadedUserIds = new Set(
-        db.prepare(`
-          SELECT DISTINCT cd.user_id
-          FROM certificate_downloads cd
-          JOIN batch_students bs ON bs.student_id = cd.user_id
-          WHERE bs.batch_id = ? AND LOWER(TRIM(cd.course_name)) = LOWER(TRIM(?))
-        `).all(batchId, batch.course_name).map(r => r.user_id)
-      );
+      const checkLegacyDownloaded = db.prepare(`
+        SELECT 1 FROM certificate_downloads cd
+        WHERE cd.enrollment_id = ?
+           OR (cd.enrollment_id IS NULL AND cd.batch_id = ? AND cd.user_id = ?)
+           OR (cd.enrollment_id IS NULL AND cd.batch_id IS NULL AND cd.user_id = ? AND LOWER(TRIM(cd.course_name)) = LOWER(TRIM(?))
+               AND (SELECT COUNT(*) FROM student_course_enrollments sce WHERE sce.user_id = ? AND LOWER(TRIM(sce.course_name)) = LOWER(TRIM(?))) = 1)
+        LIMIT 1
+      `);
 
-      certificatesIssued = db.prepare(`
-        SELECT COUNT(DISTINCT sce.user_id) as count 
-        FROM student_course_enrollments sce 
-        JOIN batch_students bs ON bs.student_id = sce.user_id 
-        WHERE bs.batch_id = ? AND (sce.batch_id = bs.batch_id OR (sce.batch_id IS NULL AND sce.course_name = ?)) AND sce.step4_completed = 1
-      `).get(batchId, batch.course_name).count || 0;
-
-      for (const uid of downloadedUserIds) {
-        const isAlreadyStep4 = db.prepare('SELECT step4_completed FROM student_course_enrollments WHERE user_id = ? AND batch_id = ?').get(uid, batchId);
-        if (!isAlreadyStep4 || isAlreadyStep4.step4_completed !== 1) {
+      for (const s of students) {
+        const isDownloaded = !!checkLegacyDownloaded.get(
+          s.enrollment_id,
+          batchId,
+          s.user_id,
+          s.user_id,
+          batch.course_name,
+          s.user_id,
+          batch.course_name
+        );
+        const isIssued = isDownloaded || (s.step4_completed === 1);
+        if (isIssued) {
           certificatesIssued++;
+        } else {
+          const sp = db.prepare('SELECT phase2_completed FROM student_profiles WHERE user_id = ?').get(s.user_id);
+          if (sp && sp.phase2_completed === 1) {
+            certificatesPending++;
+          }
         }
       }
-
-      certificatesPending = db.prepare(`
-        SELECT COUNT(DISTINCT sce.user_id) as count 
-        FROM student_course_enrollments sce 
-        JOIN batch_students bs ON bs.student_id = sce.user_id 
-        JOIN student_profiles sp ON sp.user_id = sce.user_id
-        WHERE bs.batch_id = ? AND (sce.batch_id = bs.batch_id OR (sce.batch_id IS NULL AND sce.course_name = ?)) 
-          AND sp.phase2_completed = 1 AND COALESCE(sce.step4_completed, 0) = 0
-          AND sce.user_id NOT IN (SELECT user_id FROM certificate_downloads WHERE LOWER(TRIM(course_name)) = LOWER(TRIM(?)))
-      `).get(batchId, batch.course_name, batch.course_name).count || 0;
     } else {
       certificatesIssued = db.prepare(`
         SELECT COUNT(DISTINCT sce.user_id) as count 
