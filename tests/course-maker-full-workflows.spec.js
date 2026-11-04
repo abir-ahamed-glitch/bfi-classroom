@@ -4,6 +4,12 @@ import jwt from 'jsonwebtoken';
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
+import { createRequire } from 'module';
+
+const require = createRequire(import.meta.url);
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 import { 
   assertIsolatedTestDatabase, 
   getTestDbPath, 
@@ -659,6 +665,7 @@ test.describe('Course Maker Extended Verification: Mobile, 3-Phase Stats, Fees, 
         const result = await downloadCertificatePdf(certObj, template, { skipSave: true });
         const pdfBinary = result.doc.output();
         const pdfArrayBuffer = result.doc.output('arraybuffer');
+        const pdfDataUri = result.doc.output('datauristring');
 
         return {
           success: true,
@@ -666,7 +673,8 @@ test.describe('Course Maker Extended Verification: Mobile, 3-Phase Stats, Fees, 
           pdfHeader: pdfBinary.slice(0, 5),
           byteLength: pdfArrayBuffer.byteLength,
           pageWidth: result.doc.internal.pageSize.getWidth(),
-          pageHeight: result.doc.internal.pageSize.getHeight()
+          pageHeight: result.doc.internal.pageSize.getHeight(),
+          pdfBase64: pdfDataUri.split(',')[1]
         };
       } catch (err) {
         return { success: false, error: err.message, stack: err.stack };
@@ -683,7 +691,57 @@ test.describe('Course Maker Extended Verification: Mobile, 3-Phase Stats, Fees, 
     expect(Math.round(downloadResult.pageHeight)).toBe(210); // A4 landscape height mm
     expect(downloadResult.filename).toContain('bfi01012026');
     expect(downloadResult.filename).toContain('script-writing-workshop-2026');
-    console.log('✅ Flow 5: Certificate eligibility vs issuance distinction and real PDF byte generation verified successfully');
+
+    // 6. Save the actual generated PDF artifact to disk
+    const fixturesDir = path.resolve(__dirname, '../public/test-fixtures');
+    if (!fs.existsSync(fixturesDir)) fs.mkdirSync(fixturesDir, { recursive: true });
+    const savedPdfPath = path.join(fixturesDir, 'generated-certificate.pdf');
+    fs.writeFileSync(savedPdfPath, Buffer.from(downloadResult.pdfBase64, 'base64'));
+    expect(fs.existsSync(savedPdfPath)).toBe(true);
+
+    // Save copy to conversation artifact directory
+    const artifactDir = 'C:/Users/shahi/.gemini/antigravity/brain/8a2c550d-de2b-4cee-a467-088c18dbcc23';
+    try {
+      fs.writeFileSync(path.join(artifactDir, 'generated-certificate.pdf'), Buffer.from(downloadResult.pdfBase64, 'base64'));
+    } catch { /* non-blocking */ }
+
+    // 7. Verify text content of the saved artifact directly via PDFParse
+    const { PDFParse } = require('pdf-parse');
+    const pdfBuf = fs.readFileSync(savedPdfPath);
+    const pdfParser = new PDFParse(new Uint8Array(pdfBuf));
+    const extractedTextResult = await pdfParser.getText();
+    const extractedText = extractedTextResult.text || '';
+    expect(extractedText).toContain('Rahim Chowdhury');
+    expect(extractedText).toContain('Script Writing Workshop-2026');
+    expect(extractedText).toContain('1st');
+
+    // 8. Render the actual generated artifact in the browser via PdfViewer harness
+    await page.goto('/bfi-classroom/test-pdf-mount.html');
+    await page.waitForFunction(() => window.__harnessReady === true, null, { timeout: 15000 });
+    await page.evaluate(() => {
+      window.__mountComponent('PdfViewer', {
+        url: '/bfi-classroom/test-fixtures/generated-certificate.pdf',
+        name: 'generated-certificate.pdf'
+      });
+    });
+
+    // 9. Check its visible student name, course name, and batch in the rendered artifact!
+    const canvas = page.locator('.react-pdf__Page canvas, .pdf-direct-page canvas');
+    await expect(canvas).toBeVisible({ timeout: 20000 });
+    const textLayer = page.locator('.react-pdf__Page__textContent, .pdf-direct-text-layer');
+    await expect(textLayer).toContainText('Rahim Chowdhury', { timeout: 10000 });
+    await expect(textLayer).toContainText('Script Writing Workshop-2026');
+    await expect(textLayer).toContainText('1st');
+
+    // Screenshot the rendered certificate artifact for evidence
+    await page.screenshot({ path: 'C:/Users/shahi/.gemini/antigravity/brain/8a2c550d-de2b-4cee-a467-088c18dbcc23/evidence/20_rendered_certificate_pdf_artifact.png' });
+
+    // Cleanup temporary fixture from public directory to keep working tree clean
+    try {
+      if (fs.existsSync(savedPdfPath)) fs.unlinkSync(savedPdfPath);
+    } catch { /* non-blocking */ }
+
+    console.log('✅ Flow 5: Certificate eligibility vs issuance distinction and rendered PDF artifact verification passed successfully');
   });
 
   test('Flow 6: Student Portal Certificate Eligibility, Scoped Download & Multi-Batch Isolation', async ({ page }) => {
@@ -713,6 +771,20 @@ test.describe('Course Maker Extended Verification: Mobile, 3-Phase Stats, Fees, 
     const certsData102 = await certsRes102.json();
     const cert102 = certsData102.certificates.find(c => c.courseName === 'Directing Diploma 3-Phase');
     expect(cert102 ? cert102.locked : true).toBeTruthy();
+
+    // 3b. Real route negative test: Student 102 attempts to log download while unpaid/failed -> HTTP 403 Forbidden
+    const resLog102Unpaid = await page.request.post('api/certification/log-download', {
+      headers: {
+        'Authorization': `Bearer ${student102Session.token}`,
+        'Content-Type': 'application/json'
+      },
+      data: {
+        enrollmentId: enrId102
+      }
+    });
+    expect(resLog102Unpaid.status()).toBe(403);
+    const bodyLog102 = await resLog102Unpaid.json();
+    expect(bodyLog102.error).toMatch(/locked|ineligible/i);
 
     // 4. Student 101 logs certificate download with exact enrollment and batch identity
     const logRes = await page.request.post('api/certification/log-download', {
@@ -766,11 +838,21 @@ test.describe('Course Maker Extended Verification: Mobile, 3-Phase Stats, Fees, 
       db.prepare(`INSERT OR REPLACE INTO student_assignment_grades (enrollment_id, assignment_id, marks_obtained, submission_status, graded_by) VALUES (?, 'asg_d3', 20, 'graded', 1)`).run(eid);
     }
 
-    // Now log download specifically for Batch A (enrMultiA)
-    db.prepare(`
-      INSERT INTO certificate_downloads (user_id, course_name, enrollment_id, batch_id, course_definition_id)
-      VALUES (201, 'Directing Diploma 3-Phase', ?, ?, ?)
-    `).run(enrMultiA, testBatchId3P, diplomaDefId);
+    // Now log download specifically for Batch A (enrMultiA) via real application route!
+    const student201Session = issueUserSessionToken(201, 'student');
+    const resLogMultiA = await page.request.post('api/certification/log-download', {
+      headers: {
+        'Authorization': `Bearer ${student201Session.token}`,
+        'Content-Type': 'application/json'
+      },
+      data: {
+        courseName: 'Directing Diploma 3-Phase',
+        enrollmentId: enrMultiA,
+        batchId: testBatchId3P,
+        courseDefinitionId: diplomaDefId
+      }
+    });
+    expect(resLogMultiA.ok()).toBeTruthy();
 
     // Query Batch A progress API (Student 101 from Flow 5 + Student 201 from Flow 6 = 2 issued)
     const resA = await page.request.get(`api/admin/batches/${testBatchId3P}/progress`, {

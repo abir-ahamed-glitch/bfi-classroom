@@ -1374,6 +1374,8 @@ router.get('/:id/progress', authenticateToken, requireRole('admin'), requirePerm
       `);
 
       for (const s of students) {
+        const progress = getEnrollmentProgressSync(s.enrollment_id, db);
+        const isEligible = Boolean(progress?.certificateEligible);
         const isDownloaded = !!checkEnrollmentDownloaded.get(
           s.enrollment_id,
           batchId,
@@ -1383,23 +1385,18 @@ router.get('/:id/progress', authenticateToken, requireRole('admin'), requirePerm
           s.user_id,
           batch.course_name
         );
-        const isIssued = isDownloaded || (s.step4_completed === 1);
+        // Telemetry distinction: Download record alone must never grant issuance without authoritative eligibility
+        const isIssued = isEligible && (isDownloaded || s.step4_completed === 1);
         if (isIssued) {
           certificatesIssued++;
+        } else if (isEligible) {
+          certificatesPending++;
         } else {
-          // Check canonical certificate eligibility
-          const progress = getEnrollmentProgressSync(s.enrollment_id, db);
-          if (progress) {
-            if (progress.certificateEligible) {
-              certificatesPending++;
-            } else {
-              // Academically completed (all required phases passed) but blocked by fees or requirements
-              const reqPhasesPassed = Array.isArray(progress.phases) && progress.phases.length > 0 &&
-                progress.phases.every(p => p.isPassed || p.requirements?.completionRequired === false);
-              if (reqPhasesPassed) {
-                certificatesPending++;
-              }
-            }
+          // Academically completed (all required phases passed) but blocked by fees or requirements
+          const reqPhasesPassed = progress && Array.isArray(progress.phases) && progress.phases.length > 0 &&
+            progress.phases.every(p => p.isPassed || p.requirements?.completionRequired === false);
+          if (reqPhasesPassed) {
+            certificatesPending++;
           }
         }
       }
@@ -1423,14 +1420,13 @@ router.get('/:id/progress', authenticateToken, requireRole('admin'), requirePerm
           s.user_id,
           batch.course_name
         );
-        const isIssued = isDownloaded || (s.step4_completed === 1);
+        const sp = db.prepare('SELECT phase2_completed FROM student_profiles WHERE user_id = ?').get(s.user_id);
+        const isEligible = s.step4_completed === 1 || (sp && sp.phase2_completed === 1);
+        const isIssued = isEligible && (isDownloaded || s.step4_completed === 1);
         if (isIssued) {
           certificatesIssued++;
-        } else {
-          const sp = db.prepare('SELECT phase2_completed FROM student_profiles WHERE user_id = ?').get(s.user_id);
-          if (sp && sp.phase2_completed === 1) {
-            certificatesPending++;
-          }
+        } else if (isEligible) {
+          certificatesPending++;
         }
       }
     } else {

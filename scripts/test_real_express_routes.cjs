@@ -153,9 +153,11 @@ async function run() {
       role: user.role,
       is_super_admin: user.is_super_admin ? 1 : 0,
       token_version: 1,
-      type: 'access',
-      sessionId: user.id === 2 ? 101 : 102
+      type: 'access'
     };
+    if (user.role === 'admin') {
+      payload.sessionId = user.id === 2 ? 101 : 102;
+    }
     return jwt.sign(payload, getJwtSecret(), { expiresIn: '1h' });
   }
 
@@ -166,12 +168,14 @@ async function run() {
   const { default: courseDefRouter } = await import('../server/routes/course-definitions.js');
   const { default: batchesRouter } = await import('../server/routes/batches.js');
   const { default: adminRouter } = await import('../server/routes/admin.js');
+  const { default: certificationRouter } = await import('../server/routes/certification.js');
 
   const app = express();
   app.use(express.json());
   app.use('/api/course-definitions', courseDefRouter);
   app.use('/api/admin/batches', batchesRouter);
   app.use('/api/admin', adminRouter);
+  app.use('/api/certification', certificationRouter);
 
   const server = http.createServer(app);
   await new Promise(resolve => server.listen(0, resolve));
@@ -808,8 +812,191 @@ async function run() {
     assert.strictEqual(progFinalEligible.certificateEligible, true, 'Certificate MUST be eligible once all phases are passed AND all phase fees are paid!');
     console.log('✅ 8.6 Dynamic progression engine confirms: certificateEligible = true after final payment through real route');
 
+    // -------------------------------------------------------------
+    // HTTP TEST 9: Certification Log-Download Trust-Boundary Safeguards & Negative Tests
+    // -------------------------------------------------------------
+    console.log('\n--- HTTP TEST 9: Certification Log-Download Trust-Boundary Safeguards & Negative Tests ---');
+    
+    // Ensure Student Jamil (id 50) is enrolled in Batch 300001
+    db.prepare('INSERT OR IGNORE INTO batch_students (batch_id, student_id) VALUES (300001, 50)').run();
+
+    // Seed Student Karim (id 51, unpaid fees)
+    db.prepare(`
+      INSERT OR REPLACE INTO users (id, username, email, password_hash, role, first_name, last_name, is_active, is_super_admin, token_version)
+      VALUES (51, 'karim', 'karim@bfi.edu', 'hash', 'student', 'Karim', 'Uddin', 1, 0, 1)
+    `).run();
+    db.prepare(`
+      INSERT OR REPLACE INTO student_profiles (user_id, full_name, student_id, batch_number)
+      VALUES (51, 'Karim Uddin', 'BFI51', '01')
+    `).run();
+    db.prepare('INSERT OR IGNORE INTO batch_students (batch_id, student_id) VALUES (300001, 51)').run();
+    const unpaidFeeJson = JSON.stringify({
+      phase1: { full_fee: 5000, amount_paid: 0, status: 'unpaid' },
+      phase2: { full_fee: 5000, amount_paid: 0, status: 'unpaid' },
+      phase3: { full_fee: 5000, amount_paid: 0, status: 'unpaid' }
+    });
+    const enrKarimRes = db.prepare(`
+      INSERT INTO student_course_enrollments (user_id, course_name, course_type, batch_id, course_definition_id, fee_details)
+      VALUES (51, 'Directing Diploma 3-Phase', 'diploma', 300001, ?, ?)
+    `).run(diplomaDefId, unpaidFeeJson);
+    const enrIdKarim = enrKarimRes.lastInsertRowid;
+
+    // Seed Student Salim (id 52, 2 enrollments of same course title)
+    db.prepare(`
+      INSERT OR REPLACE INTO users (id, username, email, password_hash, role, first_name, last_name, is_active, is_super_admin, token_version)
+      VALUES (52, 'salim', 'salim@bfi.edu', 'hash', 'student', 'Salim', 'Khan', 1, 0, 1)
+    `).run();
+    db.prepare(`
+      INSERT OR REPLACE INTO student_profiles (user_id, full_name, student_id, batch_number)
+      VALUES (52, 'Salim Khan', 'BFI52', '01')
+    `).run();
+    db.prepare(`
+      INSERT INTO batches (id, slug, batch_name, batch_number, course_name, course_definition_id, created_by)
+      VALUES (300002, 'batch-02-salim', 'Diploma Batch 02', '02', 'Directing Diploma 3-Phase', ?, 1)
+    `).run(diplomaDefId);
+    db.prepare(`
+      INSERT INTO student_course_enrollments (user_id, course_name, course_type, batch_id, course_definition_id, fee_details)
+      VALUES (52, 'Directing Diploma 3-Phase', 'diploma', 300001, ?, '{}')
+    `).run(diplomaDefId);
+    db.prepare(`
+      INSERT INTO student_course_enrollments (user_id, course_name, course_type, batch_id, course_definition_id, fee_details)
+      VALUES (52, 'Directing Diploma 3-Phase', 'diploma', 300002, ?, '{}')
+    `).run(diplomaDefId);
+
+    const jamilToken = createValidToken({ id: 50, username: 'jamil', role: 'student', is_super_admin: 0 });
+    const karimToken = createValidToken({ id: 51, username: 'karim', role: 'student', is_super_admin: 0 });
+    const salimToken = createValidToken({ id: 52, username: 'salim', role: 'student', is_super_admin: 0 });
+
+    const getDownloadsCount = () => db.prepare('SELECT COUNT(*) as count FROM certificate_downloads').get().count;
+    const initialDownloadsCount = getDownloadsCount();
+
+    // 9.1 Nonexistent enrollment
+    console.log('--- 9.1 Nonexistent enrollment ID ---');
+    const resNonexistent = await fetchWithTimeout(`${baseUrl}/api/certification/log-download`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${jamilToken}` },
+      body: JSON.stringify({ enrollmentId: 999999 })
+    });
+    assert.strictEqual(resNonexistent.status, 404);
+    const bodyNonexistent = await resNonexistent.json();
+    assert(bodyNonexistent.error.includes('Enrollment not found'));
+    assert.strictEqual(getDownloadsCount(), initialDownloadsCount);
+    console.log('✅ 9.1 Real route rejected nonexistent enrollment with HTTP 404, 0 DB changes');
+
+    // 9.2 Another student's enrollment
+    console.log('--- 9.2 Another student\'s enrollment ---');
+    const resCrossStudent = await fetchWithTimeout(`${baseUrl}/api/certification/log-download`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${karimToken}` },
+      body: JSON.stringify({ enrollmentId: enrId }) // Karim supplies Jamil's enrollment
+    });
+    assert.strictEqual(resCrossStudent.status, 403);
+    const bodyCross = await resCrossStudent.json();
+    assert(bodyCross.error.includes('Forbidden') || bodyCross.error.includes('own enrollment'));
+    assert.strictEqual(getDownloadsCount(), initialDownloadsCount);
+    console.log('✅ 9.2 Real route rejected cross-student enrollment with HTTP 403, 0 DB changes');
+
+    // 9.3 Forged batch ID
+    console.log('--- 9.3 Forged batch ID ---');
+    const resForgedBatch = await fetchWithTimeout(`${baseUrl}/api/certification/log-download`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${jamilToken}` },
+      body: JSON.stringify({ enrollmentId: enrId, batchId: 999999 })
+    });
+    assert.strictEqual(resForgedBatch.status, 400);
+    const bodyForgedBatch = await resForgedBatch.json();
+    assert(bodyForgedBatch.error.includes('contradicts enrollment batch'));
+    assert.strictEqual(getDownloadsCount(), initialDownloadsCount);
+    console.log('✅ 9.3 Real route rejected forged batchId with HTTP 400, 0 DB changes');
+
+    // 9.4 Forged courseDefinitionId
+    console.log('--- 9.4 Forged courseDefinitionId ---');
+    const resForgedDef = await fetchWithTimeout(`${baseUrl}/api/certification/log-download`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${jamilToken}` },
+      body: JSON.stringify({ enrollmentId: enrId, courseDefinitionId: 888888 })
+    });
+    assert.strictEqual(resForgedDef.status, 400);
+    const bodyForgedDef = await resForgedDef.json();
+    assert(bodyForgedDef.error.includes('contradicts enrollment course definition'));
+    assert.strictEqual(getDownloadsCount(), initialDownloadsCount);
+    console.log('✅ 9.4 Real route rejected forged courseDefinitionId with HTTP 400, 0 DB changes');
+
+    // 9.5 Ambiguous same-title enrollments
+    console.log('--- 9.5 Ambiguous same-title enrollments ---');
+    const resAmbiguous = await fetchWithTimeout(`${baseUrl}/api/certification/log-download`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${salimToken}` },
+      body: JSON.stringify({ courseName: 'Directing Diploma 3-Phase' }) // Salim has 2 enrollments for this title
+    });
+    assert.strictEqual(resAmbiguous.status, 409);
+    const bodyAmbiguous = await resAmbiguous.json();
+    assert(bodyAmbiguous.error.includes('Ambiguous request'));
+    assert.strictEqual(getDownloadsCount(), initialDownloadsCount);
+    console.log('✅ 9.5 Real route rejected ambiguous same-title enrollments with HTTP 409, 0 DB changes');
+
+    // 9.6 Ineligible / unpaid student
+    console.log('--- 9.6 Ineligible / unpaid student ---');
+    const resUnpaid = await fetchWithTimeout(`${baseUrl}/api/certification/log-download`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${karimToken}` },
+      body: JSON.stringify({ enrollmentId: enrIdKarim })
+    });
+    assert.strictEqual(resUnpaid.status, 403);
+    const bodyUnpaid = await resUnpaid.json();
+    assert(bodyUnpaid.error.includes('Certificate locked') || bodyUnpaid.error.includes('ineligible'));
+    assert.strictEqual(getDownloadsCount(), initialDownloadsCount);
+
+    // Verify batch progress certificates.issued is not corrupted
+    const resProgressCheck = await fetchWithTimeout(`${baseUrl}/api/admin/batches/300001/progress`, {
+      headers: { 'Authorization': `Bearer ${batchAdminToken}` }
+    });
+    assert.strictEqual(resProgressCheck.status, 200);
+    const progressData = await resProgressCheck.json();
+    assert.strictEqual(progressData.certificates.issued, 0, 'No certificates must be counted as issued prior to authorized download!');
+    console.log('✅ 9.6 Real route rejected unpaid student with HTTP 403; batch progress certificates.issued remains strictly 0');
+
+    // 9.7 Authorized eligible student download
+    console.log('--- 9.7 Authorized eligible student download ---');
+    const resAuthDownload = await fetchWithTimeout(`${baseUrl}/api/certification/log-download`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${jamilToken}` },
+      body: JSON.stringify({ enrollmentId: enrId })
+    });
+    assert.strictEqual(resAuthDownload.status, 200);
+    assert.strictEqual(getDownloadsCount(), initialDownloadsCount + 1);
+
+    const insertedRow = db.prepare('SELECT * FROM certificate_downloads WHERE enrollment_id = ?').get(enrId);
+    assert.strictEqual(insertedRow.user_id, 50, 'Authoritative recipient user_id must be Jamil (50)');
+    assert.strictEqual(insertedRow.downloaded_by, 50, 'downloaded_by must record Jamil (50)');
+    assert.strictEqual(insertedRow.batch_id, 300001);
+    assert.strictEqual(insertedRow.course_definition_id, diplomaDefId);
+
+    // Check batch progress now reflects 1 issued certificate
+    const resProgressAfter = await fetchWithTimeout(`${baseUrl}/api/admin/batches/300001/progress`, {
+      headers: { 'Authorization': `Bearer ${batchAdminToken}` }
+    });
+    const progressAfter = await resProgressAfter.json();
+    assert.strictEqual(progressAfter.certificates.issued, 1, 'Batch progress must now reflect 1 issued certificate for eligible downloaded student');
+    console.log('✅ 9.7 Authorized download persisted correctly with derived enrollment identity and certificates.issued = 1');
+
+    // 9.8 Admin logging download on behalf of student (recipient vs acting administrator separation)
+    console.log('--- 9.8 Admin logging download on behalf of student ---');
+    // Clear download row so admin can re-log
+    db.prepare('DELETE FROM certificate_downloads WHERE enrollment_id = ?').run(enrId);
+    const resAdminDownload = await fetchWithTimeout(`${baseUrl}/api/certification/log-download`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${batchAdminToken}` },
+      body: JSON.stringify({ enrollmentId: enrId })
+    });
+    assert.strictEqual(resAdminDownload.status, 200);
+    const adminInsertedRow = db.prepare('SELECT * FROM certificate_downloads WHERE enrollment_id = ?').get(enrId);
+    assert.strictEqual(adminInsertedRow.user_id, 50, 'Authoritative recipient MUST be student Jamil (50)');
+    assert.strictEqual(adminInsertedRow.downloaded_by, 2, 'downloaded_by MUST record acting administrator Batch Admin (2)');
+    console.log('✅ 9.8 Admin download verified: recipient user_id (50) is cleanly separated from acting downloaded_by admin (2)');
+
     console.log('\n============================================================');
-    console.log('🎉 ALL 8 REAL EXPRESS ROUTE & PAYMENT LIFECYCLE TESTS PASSED!');
+    console.log('🎉 ALL 9 REAL EXPRESS ROUTE & PAYMENT LIFECYCLE TESTS PASSED!');
     console.log('============================================================');
   } finally {
     if (server) {

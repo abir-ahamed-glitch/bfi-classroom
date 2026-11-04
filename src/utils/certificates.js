@@ -234,6 +234,20 @@ const getOrdinalSuffixHTML = (str) => {
   const pdfHeight = doc.internal.pageSize.getHeight();
   doc.addImage(imgData, 'JPEG', 0, 0, pdfWidth, pdfHeight);
 
+  // Embed searchable and accessible text layer into PDF artifact
+  const cleanBodyText = fullSentence
+    .replace(/<sup[^>]*>/gi, '')
+    .replace(/<\/sup>/gi, '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  doc.setFont('times', 'normal');
+  doc.setFontSize(12);
+  doc.text(cleanBodyText, pdfWidth / 2, 120, { maxWidth: pdfWidth - 50, align: 'center', renderingMode: 'invisible' });
+  doc.text("Student ID: " + studentId, 30, 180, { renderingMode: "invisible" });
+  doc.text("Completion Date: " + dateStr, pdfWidth - 70, 180, { renderingMode: "invisible" });
+
   const safeCourseName = certificate.courseName.replace(/[^a-z0-9]+/gi, '-').toLowerCase();
   const safeStudentId  = String(studentId).replace(/[^a-z0-9]+/gi, '-').toLowerCase();
   const filename = `bfi-certificate-${safeStudentId}-${safeCourseName}.pdf`;

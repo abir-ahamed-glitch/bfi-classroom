@@ -1,8 +1,7 @@
 import { validateExtensionAndMime, validateMagicBytes, CERTIFICATE_ALLOWED_TYPES } from '../utils/file-validator.js';
 import express from 'express';
 import db from '../db/database.js';
-import { authenticateToken, requireRole, requireAnyPermission } from '../middleware/auth.js';
-import { optimizeUploadedImage } from '../utils/imageOptimizer.js';
+import { authenticateToken, requireRole, requireAnyPermission, hasAnyPermission, isSuperAdmin } from '../middleware/auth.js';
 import courseProgressService from '../services/courseProgressService.js';
 import { resolvePhaseFee } from '../utils/feeResolver.js';
 import multer from 'multer';
@@ -272,66 +271,161 @@ router.get('/my-certificate', authenticateToken, (req, res) => {
   res.status(404).json({ error: 'Deprecated. Use /my-certificates' });
 });
 
-// POST Log Certificate Download
-router.post('/log-download', authenticateToken, (req, res) => {
+// POST Log Certificate Download with Authoritative Trust-Boundary Validation
+router.post('/log-download', authenticateToken, async (req, res) => {
   try {
-    const { courseName, enrollmentId, batchId, courseDefinitionId } = req.body;
-    if (!courseName && !enrollmentId) {
+    const { courseName, enrollmentId, batchId, courseDefinitionId, userId, studentId } = req.body;
+    if (!courseName && (enrollmentId === undefined || enrollmentId === null || enrollmentId === '')) {
       return res.status(400).json({ error: 'Course name or enrollment ID is required.' });
     }
 
-    let resolvedCourseName = courseName;
-    let resolvedEnrollmentId = enrollmentId ? Number(enrollmentId) : null;
-    let resolvedBatchId = batchId ? Number(batchId) : null;
-    let resolvedCourseDefId = courseDefinitionId ? Number(courseDefinitionId) : null;
+    let enr = null;
 
-    if (resolvedEnrollmentId) {
-      const enr = db.prepare(`
-        SELECT id, course_name, batch_id, course_definition_id, user_id
-        FROM student_course_enrollments
-        WHERE id = ?
-      `).get(resolvedEnrollmentId);
-
-      if (enr) {
-        // Enforce ownership: student can only log download for their own enrollment (unless admin)
-        if (enr.user_id !== req.user.id && req.user.role !== 'admin') {
-          return res.status(403).json({ error: 'Unauthorized to log download for another student.' });
-        }
-        resolvedCourseName = enr.course_name;
-        if (!resolvedBatchId) resolvedBatchId = enr.batch_id;
-        if (!resolvedCourseDefId) resolvedCourseDefId = enr.course_definition_id;
+    if (enrollmentId !== undefined && enrollmentId !== null && enrollmentId !== '') {
+      const parsedEnrId = Number(enrollmentId);
+      if (!Number.isInteger(parsedEnrId) || parsedEnrId <= 0) {
+        return res.status(400).json({ error: 'Invalid enrollmentId supplied.' });
       }
-    } else if (resolvedCourseName) {
-      // If enrollmentId was not provided, look for unambiguous single enrollment for this user
-      const matchingEnrollments = db.prepare(`
-        SELECT id, batch_id, course_definition_id
-        FROM student_course_enrollments
-        WHERE user_id = ? AND LOWER(TRIM(course_name)) = LOWER(TRIM(?))
-      `).all(req.user.id, resolvedCourseName);
+      enr = db.prepare('SELECT * FROM student_course_enrollments WHERE id = ?').get(parsedEnrId);
+      if (!enr) {
+        return res.status(404).json({ error: 'Enrollment not found.' });
+      }
+    } else if (courseName && typeof courseName === 'string' && courseName.trim()) {
+      let targetUser = req.user.id;
+      if (req.user.role === 'admin' && (userId || studentId)) {
+        if (userId) {
+          targetUser = Number(userId);
+        } else if (studentId) {
+          const prof = db.prepare('SELECT user_id FROM student_profiles WHERE student_id = ?').get(studentId);
+          if (prof) targetUser = prof.user_id;
+        }
+      }
 
-      if (matchingEnrollments.length === 1) {
-        resolvedEnrollmentId = matchingEnrollments[0].id;
-        resolvedBatchId = matchingEnrollments[0].batch_id;
-        resolvedCourseDefId = matchingEnrollments[0].course_definition_id;
+      const matchingEnrollments = db.prepare(`
+        SELECT * FROM student_course_enrollments
+        WHERE user_id = ? AND LOWER(TRIM(course_name)) = LOWER(TRIM(?))
+      `).all(targetUser, courseName.trim());
+
+      if (matchingEnrollments.length === 0) {
+        return res.status(404).json({ error: 'Enrollment not found for the specified course.' });
+      }
+      if (matchingEnrollments.length > 1) {
+        return res.status(409).json({ error: 'Ambiguous request: multiple enrollments exist for this course name. Explicit enrollmentId is required.' });
+      }
+      enr = matchingEnrollments[0];
+    } else {
+      return res.status(400).json({ error: 'Course name or enrollment ID is required.' });
+    }
+
+    // 1. Authoritative Identity Derivation from Enrollment
+    const authoritativeUserId = enr.user_id;
+    const authoritativeCourseName = enr.course_name;
+    const authoritativeBatchId = enr.batch_id || null;
+    const authoritativeCourseDefId = enr.course_definition_id || null;
+
+    // 2. Reject Contradictory Supplied Identifiers
+    if (courseName && typeof courseName === 'string') {
+      if (courseName.trim().toLowerCase() !== authoritativeCourseName.trim().toLowerCase()) {
+        return res.status(400).json({ error: 'Supplied courseName contradicts enrollment course name.' });
+      }
+    }
+    if (batchId !== undefined && batchId !== null && batchId !== '') {
+      const bId = Number(batchId);
+      if (bId !== (authoritativeBatchId || 0)) {
+        return res.status(400).json({ error: 'Supplied batchId contradicts enrollment batch identity.' });
+      }
+    }
+    if (courseDefinitionId !== undefined && courseDefinitionId !== null && courseDefinitionId !== '') {
+      const cDefId = Number(courseDefinitionId);
+      if (cDefId !== (authoritativeCourseDefId || 0)) {
+        return res.status(400).json({ error: 'Supplied courseDefinitionId contradicts enrollment course definition.' });
+      }
+    }
+    if (userId !== undefined && userId !== null && userId !== '') {
+      if (Number(userId) !== authoritativeUserId) {
+        return res.status(400).json({ error: 'Supplied userId contradicts enrollment recipient.' });
       }
     }
 
-    db.prepare(`
-      INSERT INTO certificate_downloads (user_id, course_name, enrollment_id, batch_id, course_definition_id)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(req.user.id, resolvedCourseName, resolvedEnrollmentId, resolvedBatchId, resolvedCourseDefId);
+    // 3. Ownership & Explicit Administrative Permissions
+    const downloadedBy = req.user.id;
+    const recipientUserId = authoritativeUserId;
 
+    if (req.user.role === 'admin') {
+      const hasPerm = isSuperAdmin(req.user) || hasAnyPermission(req.user, 'students:view', 'students:academic_records', 'courses:view', 'batches:view', 'reports:view');
+      if (!hasPerm) {
+        return res.status(403).json({ error: 'Forbidden: Insufficient administrative privileges to log certificate download.' });
+      }
+    } else {
+      if (authoritativeUserId !== req.user.id) {
+        return res.status(403).json({ error: 'Forbidden: You can only log certificate downloads for your own enrollment.' });
+      }
+    }
+
+    // 4. Enforce Authoritative Academic Eligibility & Fee Clearance Rules
+    let batchNumber = null;
+    if (authoritativeBatchId) {
+      const b = db.prepare('SELECT batch_number FROM batches WHERE id = ?').get(authoritativeBatchId);
+      if (b?.batch_number) batchNumber = b.batch_number;
+    }
+    if (!batchNumber) {
+      const sp = db.prepare('SELECT batch_number FROM student_profiles WHERE user_id = ?').get(recipientUserId);
+      if (sp?.batch_number) batchNumber = sp.batch_number;
+    }
+
+    // Fee lock verification
+    const isLocked = hasPendingDueOrPartialPayment(
+      enr.fee_details,
+      enr.course_type,
+      authoritativeCourseName,
+      batchNumber,
+      authoritativeCourseDefId,
+      db,
+      enr
+    );
+    if (isLocked) {
+      return res.status(403).json({ error: 'Certificate locked: Outstanding dues or partial fees exist for this course.' });
+    }
+
+    // Academic eligibility verification
+    if (authoritativeCourseDefId) {
+      const certCheck = await courseProgressService.evaluateCertificateEligibility(enr.id, db);
+      if (!certCheck.eligible) {
+        return res.status(403).json({ error: 'Certificate ineligible: Academic requirements or required fees not fulfilled.' });
+      }
+    } else {
+      if (authoritativeCourseName === 'Online Filmmaking Course') {
+        const sp = db.prepare('SELECT phase2_completed FROM student_profiles WHERE user_id = ?').get(recipientUserId);
+        const legacyCompleted = enr.step4_completed === 1 || (sp && sp.phase2_completed === 1);
+        if (!legacyCompleted) {
+          return res.status(403).json({ error: 'Certificate ineligible: Final course requirements not completed.' });
+        }
+      } else {
+        if (enr.step2_completed !== 1 && enr.step4_completed !== 1) {
+          return res.status(403).json({ error: 'Certificate ineligible: Final course requirements not completed.' });
+        }
+      }
+    }
+
+    // 5. Insert Record with Distinct Recipient vs Downloaded_By Telemetry
+    db.prepare(`
+      INSERT INTO certificate_downloads (user_id, course_name, enrollment_id, batch_id, course_definition_id, downloaded_by)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(recipientUserId, authoritativeCourseName, enr.id, authoritativeBatchId, authoritativeCourseDefId, downloadedBy);
+
+    // 6. Emit Socket Event Only Upon Verified Insertion
     const io = req.app.get('io');
     if (io) {
       io.emit('certificate_downloaded', {
-        userId: req.user.id,
-        courseName: resolvedCourseName,
-        enrollmentId: resolvedEnrollmentId,
-        batchId: resolvedBatchId
+        userId: recipientUserId,
+        downloadedBy,
+        courseName: authoritativeCourseName,
+        enrollmentId: enr.id,
+        batchId: authoritativeBatchId
       });
     }
 
-    res.json({ message: 'Certificate download logged successfully.' });
+    return res.json({ message: 'Certificate download logged successfully.' });
   } catch (error) {
     console.error('Error logging certificate download:', error);
     res.status(500).json({ error: 'Internal server error.' });

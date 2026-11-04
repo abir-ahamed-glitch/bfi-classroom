@@ -511,6 +511,7 @@ export function initializeDatabase() {
       enrollment_id INTEGER REFERENCES student_course_enrollments(id) ON DELETE CASCADE,
       batch_id INTEGER REFERENCES batches(id) ON DELETE SET NULL,
       course_definition_id INTEGER REFERENCES course_definitions(id) ON DELETE SET NULL,
+      downloaded_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
       downloaded_at TEXT DEFAULT (datetime('now')),
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
@@ -987,7 +988,8 @@ export function initializeDatabase() {
   const certificateDownloadMigrations = [
     "ALTER TABLE certificate_downloads ADD COLUMN enrollment_id INTEGER REFERENCES student_course_enrollments(id) ON DELETE CASCADE",
     "ALTER TABLE certificate_downloads ADD COLUMN batch_id INTEGER REFERENCES batches(id) ON DELETE SET NULL",
-    "ALTER TABLE certificate_downloads ADD COLUMN course_definition_id INTEGER REFERENCES course_definitions(id) ON DELETE SET NULL"
+    "ALTER TABLE certificate_downloads ADD COLUMN course_definition_id INTEGER REFERENCES course_definitions(id) ON DELETE SET NULL",
+    "ALTER TABLE certificate_downloads ADD COLUMN downloaded_by INTEGER REFERENCES users(id) ON DELETE SET NULL"
   ];
   for (const migration of certificateDownloadMigrations) {
     try {
