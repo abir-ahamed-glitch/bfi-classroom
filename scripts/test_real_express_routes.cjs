@@ -174,6 +174,7 @@ async function run() {
 
   const app = express();
   app.use(express.json());
+  app.use('/api/admin/course-definitions', courseDefRouter);
   app.use('/api/course-definitions', courseDefRouter);
   app.use('/api/admin/batches', batchesRouter);
   app.use('/api/admin', adminRouter);
@@ -1257,7 +1258,12 @@ async function run() {
     assert(!aggTeacherData.batches.some(b => b.batchId === 300099 || b.batchId === 300098));
     console.log('✅ 10.4c Positive integer ID validation & consistent deleted/archived batch exclusion verified on all routes');
 
-    // 10.5: Stable teacher assignment & two instructors with identical names
+    // 10.5: Stable teacher assignment & regression suite:
+    // - Two instructors with identical names require explicit identity selection
+    // - Select teacher A, change to unmatched free text, save: A loses slot-derived access
+    // - Select teacher B explicitly: B gains access and A loses it
+    // - Clearing and reassigning teachers persists correctly after reopening and refresh
+    // - Invalid, inactive, or deleted instructor IDs do not create assignments
     console.log('--- 10.5 Stable teacher assignment & identical name handling ---');
     // Seed Teacher 62 with identical full_name 'Tanvir Mokammel'
     db.prepare(`
@@ -1295,28 +1301,235 @@ async function run() {
     const tanvirEditedData = await resTanvirAfterProfileEdit.json();
     assert.strictEqual(tanvirEditedData.phases[0].schedule[0].isMyClass, true);
 
-    // Assignment removal test: update routine override to set teacherUserId: null -> Teacher 60 is immediately denied
-    const unassignedSlotRoutine = [
-      {
-        ...batch300001Routine[0],
-        teacherName: 'Tanvir Mokammel',
-        teacherUserId: null // Unassigned
-      }
-    ];
-    db.prepare(`
-      UPDATE course_routine_overrides SET routine_json = ? WHERE course_definition_id = ? AND batch_id = 300001
-    `).run(JSON.stringify(unassignedSlotRoutine), diplomaDefId);
+    // 10.5a: Change to unmatched free text ("Guest Director") via real PUT route -> Teacher 60 loses slot-derived access
+    const resSaveFreeText = await fetchWithTimeout(`${baseUrl}/api/admin/course-definitions/${diplomaDefId}/routine`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${batchAdminToken}`
+      },
+      body: JSON.stringify({
+        phase_id: 'phase_1',
+        batch_id: 300001,
+        routine: [
+          {
+            ...batch300001Routine[0],
+            teacherName: 'Guest Lecturer Shahin',
+            teacherUserId: null // Unmatched free text
+          }
+        ],
+        reason: 'Switched to guest speaker free text'
+      })
+    });
+    assert.strictEqual(resSaveFreeText.status, 200);
 
-    const resTanvirAfterRemoval = await fetchWithTimeout(`${baseUrl}/api/teacher/batches/300001/schedule`, {
+    const resTanvirFreeTextDenied = await fetchWithTimeout(`${baseUrl}/api/teacher/batches/300001/schedule`, {
       headers: { 'Authorization': `Bearer ${tanvirToken}` }
     });
-    assert.strictEqual(resTanvirAfterRemoval.status, 403, 'Teacher 60 must be denied once assignment is removed');
+    assert.strictEqual(resTanvirFreeTextDenied.status, 403, 'Teacher 60 must lose access when slot is changed to free text');
 
-    // Restore assigned slot for remaining tests
+    // 10.5b: Select Teacher 62 (Teacher B) explicitly: 62 gains access and 60 loses it
+    const resSaveTeacher62 = await fetchWithTimeout(`${baseUrl}/api/admin/course-definitions/${diplomaDefId}/routine`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${batchAdminToken}`
+      },
+      body: JSON.stringify({
+        phase_id: 'phase_1',
+        batch_id: 300001,
+        routine: [
+          {
+            ...batch300001Routine[0],
+            teacherName: 'Tanvir Mokammel',
+            teacherUserId: 62 // Explicit selection of Teacher B
+          }
+        ],
+        reason: 'Explicitly reassigned to Teacher 62'
+      })
+    });
+    assert.strictEqual(resSaveTeacher62.status, 200);
+
+    const resTeacher62Auth = await fetchWithTimeout(`${baseUrl}/api/teacher/batches/300001/schedule`, {
+      headers: { 'Authorization': `Bearer ${tanvirDuplicateToken}` }
+    });
+    assert.strictEqual(resTeacher62Auth.status, 200);
+    const teacher62Data = await resTeacher62Auth.json();
+    assert.strictEqual(teacher62Data.phases[0].schedule[0].isMyClass, true);
+
+    const resTeacher60Denied = await fetchWithTimeout(`${baseUrl}/api/teacher/batches/300001/schedule`, {
+      headers: { 'Authorization': `Bearer ${tanvirToken}` }
+    });
+    assert.strictEqual(resTeacher60Denied.status, 403, 'Teacher 60 must not have access when reassigned to 62');
+
+    // 10.5c: Clearing and reassigning persists across reopening & refresh
+    const resClearTeacher = await fetchWithTimeout(`${baseUrl}/api/admin/course-definitions/${diplomaDefId}/routine`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${batchAdminToken}`
+      },
+      body: JSON.stringify({
+        phase_id: 'phase_1',
+        batch_id: 300001,
+        routine: [
+          {
+            ...batch300001Routine[0],
+            teacherName: 'Unassigned',
+            teacherUserId: null
+          }
+        ],
+        reason: 'Clearing teacher assignment'
+      })
+    });
+    assert.strictEqual(resClearTeacher.status, 200);
+
+    const resReadBackCleared = await fetchWithTimeout(`${baseUrl}/api/admin/batches/300001`, {
+      headers: { 'Authorization': `Bearer ${batchAdminToken}` }
+    });
+    const clearedBatchData = await resReadBackCleared.json();
+    const clearedPhases = clearedBatchData.course_definition?.definition?.phases || [];
+    assert.strictEqual(clearedPhases[0].routine[0].teacherUserId, null);
+
+    const resReassign60 = await fetchWithTimeout(`${baseUrl}/api/admin/course-definitions/${diplomaDefId}/routine`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${batchAdminToken}`
+      },
+      body: JSON.stringify({
+        phase_id: 'phase_1',
+        batch_id: 300001,
+        routine: [
+          {
+            ...batch300001Routine[0],
+            teacherName: 'Tanvir Mokammel',
+            teacherUserId: 60
+          }
+        ],
+        reason: 'Reassigning back to Teacher 60'
+      })
+    });
+    assert.strictEqual(resReassign60.status, 200);
+
+    const resReadBack60 = await fetchWithTimeout(`${baseUrl}/api/admin/batches/300001`, {
+      headers: { 'Authorization': `Bearer ${batchAdminToken}` }
+    });
+    const reloadedBatchData = await resReadBack60.json();
+    const reloadedPhases = reloadedBatchData.course_definition?.definition?.phases || [];
+    assert.strictEqual(reloadedPhases[0].routine[0].teacherUserId, 60);
+
+    // 10.5d: Invalid, inactive, or deleted instructor IDs do not create assignments
     db.prepare(`
-      UPDATE course_routine_overrides SET routine_json = ? WHERE course_definition_id = ? AND batch_id = 300001
-    `).run(JSON.stringify(batch300001Routine), diplomaDefId);
-    console.log('✅ 10.5 Stable teacher assignment verified: identical names isolated, profile edits retain access, and assignment removal immediately revokes access');
+      INSERT OR REPLACE INTO users (id, username, email, password_hash, role, first_name, last_name, is_active, is_super_admin, token_version)
+      VALUES (63, 'inactive_teacher', 'inactive@bfi.edu', 'hash', 'instructor', 'Inactive', 'Teacher', 0, 0, 1)
+    `).run();
+    const inactiveToken = createValidToken({ id: 63, username: 'inactive_teacher', role: 'instructor', is_super_admin: 0 });
+
+    db.prepare(`
+      INSERT OR REPLACE INTO users (id, username, email, password_hash, role, first_name, last_name, is_active, is_super_admin, token_version, deleted_at)
+      VALUES (64, 'deleted_teacher', 'deleted@bfi.edu', 'hash', 'instructor', 'Deleted', 'Teacher', 1, 0, 1, datetime('now'))
+    `).run();
+    const deletedToken = createValidToken({ id: 64, username: 'deleted_teacher', role: 'instructor', is_super_admin: 0 });
+
+    // Inactive teacher ID 63
+    const resInactiveSave = await fetchWithTimeout(`${baseUrl}/api/admin/course-definitions/${diplomaDefId}/routine`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${batchAdminToken}`
+      },
+      body: JSON.stringify({
+        phase_id: 'phase_1',
+        batch_id: 300001,
+        routine: [
+          {
+            ...batch300001Routine[0],
+            teacherName: 'Inactive Teacher',
+            teacherUserId: 63
+          }
+        ],
+        reason: 'Attempting inactive teacher assignment'
+      })
+    });
+    assert.strictEqual(resInactiveSave.status, 200);
+    const inactiveSaveBody = await resInactiveSave.json();
+    assert.strictEqual(inactiveSaveBody.routine[0].teacherUserId, null, 'Inactive teacher must be sanitized to null');
+
+    const resInactiveCheck = await fetchWithTimeout(`${baseUrl}/api/teacher/batches/300001/schedule`, {
+      headers: { 'Authorization': `Bearer ${inactiveToken}` }
+    });
+    assert([401, 403].includes(resInactiveCheck.status), 'Inactive instructor cannot access schedule');
+
+    // Deleted teacher ID 64
+    const resDeletedSave = await fetchWithTimeout(`${baseUrl}/api/admin/course-definitions/${diplomaDefId}/routine`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${batchAdminToken}`
+      },
+      body: JSON.stringify({
+        phase_id: 'phase_1',
+        batch_id: 300001,
+        routine: [
+          {
+            ...batch300001Routine[0],
+            teacherName: 'Deleted Teacher',
+            teacherUserId: 64
+          }
+        ],
+        reason: 'Attempting deleted teacher assignment'
+      })
+    });
+    assert.strictEqual(resDeletedSave.status, 200);
+    const deletedSaveBody = await resDeletedSave.json();
+    assert.strictEqual(deletedSaveBody.routine[0].teacherUserId, null, 'Deleted teacher must be sanitized to null');
+
+    // Invalid nonexistent teacher ID 99999
+    const resInvalidSave = await fetchWithTimeout(`${baseUrl}/api/admin/course-definitions/${diplomaDefId}/routine`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${batchAdminToken}`
+      },
+      body: JSON.stringify({
+        phase_id: 'phase_1',
+        batch_id: 300001,
+        routine: [
+          {
+            ...batch300001Routine[0],
+            teacherName: 'Nonexistent',
+            teacherUserId: 99999
+          }
+        ],
+        reason: 'Attempting invalid teacher assignment'
+      })
+    });
+    assert.strictEqual(resInvalidSave.status, 200);
+    const invalidSaveBody = await resInvalidSave.json();
+    assert.strictEqual(invalidSaveBody.routine[0].teacherUserId, null, 'Invalid nonexistent teacher ID must be sanitized to null');
+
+    // Restore Teacher 60 baseline
+    await fetchWithTimeout(`${baseUrl}/api/admin/course-definitions/${diplomaDefId}/routine`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${batchAdminToken}`
+      },
+      body: JSON.stringify({
+        phase_id: 'phase_1',
+        batch_id: 300001,
+        routine: [
+          {
+            ...batch300001Routine[0],
+            teacherName: 'Tanvir Mokammel',
+            teacherUserId: 60
+          }
+        ],
+        reason: 'Restoring Teacher 60 baseline'
+      })
+    });
+    console.log('✅ 10.5 Stable teacher assignment verified: identical names isolated, profile edits retain access, free text clears access, and invalid/inactive/deleted IDs create no assignments');
 
     // 10.6: Assigned teacher aggregated schedule (/api/teacher/schedule and /api/instructor/schedule)
     console.log('--- 10.6 Assigned teacher aggregated schedule ---');

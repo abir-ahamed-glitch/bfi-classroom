@@ -631,6 +631,91 @@ test.describe('Course Maker Extended Verification: Mobile, 3-Phase Stats, Fees, 
     // Profile edit test: Teacher 20 changes full_name in instructor_profiles -> retains access because assignment is by user ID!
     db.prepare("UPDATE instructor_profiles SET full_name = 'Tanvir Mokammel Senior' WHERE user_id = 20").run();
 
+    // 1b. Browser Regression: Routine UI Explicit Teacher Reassignment & Unmatched Free Text
+    await injectAdminAuth(page);
+    await page.goto(`admin/batchmanager/${testBatchId1}`);
+    await page.waitForLoadState('networkidle');
+
+    // Open Adjust Routine modal
+    await page.locator('button:has-text("Adjust Routine")').first().click();
+    await expect(page.locator('h3:has-text("Adjust Batch Routine")')).toBeVisible({ timeout: 10000 });
+
+    // Step 1: Change Teacher Label to unmatched free text -> association cleared (teacherUserId becomes null)
+    const teacherAccountSelect = page.locator('select[aria-label="Instructor Account"]').first();
+    const teacherLabelInput = page.locator('input[title="Assigned Teacher"]').first();
+    await expect(teacherAccountSelect).toHaveValue('20');
+    await teacherLabelInput.fill('Guest Speaker Shahin');
+    // Notice account select automatically resets to unassigned
+    await expect(teacherAccountSelect).toHaveValue('');
+
+    // Save batch routine with free text
+    const reasonInput = page.locator('input[placeholder*="Adjusted shooting schedule"]').first();
+    await reasonInput.fill('Switched slot to guest speaker free text');
+    await page.locator('button:has-text("Save Batch Schedule")').click();
+    await expect(page.locator('text=Batch class routine updated successfully!')).toBeVisible({ timeout: 10000 });
+
+    // Teacher 20 loses slot-derived access -> 403 Forbidden
+    const resTeacherALost = await page.request.get(`api/teacher/batches/${testBatchId1}/schedule`, {
+      headers: { 'Authorization': `Bearer ${teacherToken}` }
+    });
+    expect(resTeacherALost.status()).toBe(403);
+
+    // Step 2: Reopen modal and select Teacher B (ID 22) explicitly
+    await page.locator('button:has-text("Adjust Routine")').first().click();
+    await expect(page.locator('h3:has-text("Adjust Batch Routine")')).toBeVisible();
+    await expect(teacherAccountSelect).toHaveValue('');
+    await expect(teacherLabelInput).toHaveValue('Guest Speaker Shahin');
+
+    // Select Teacher 22 from the explicit ID dropdown
+    await teacherAccountSelect.selectOption('22');
+    await expect(teacherLabelInput).toHaveValue('Tanvir Mokammel');
+
+    await reasonInput.fill('Explicitly assigned to Teacher 22');
+    await page.locator('button:has-text("Save Batch Schedule")').click();
+    await expect(page.locator('text=Batch class routine updated successfully!')).toBeVisible({ timeout: 10000 });
+
+    // Teacher B (22) gains access -> 200 OK; Teacher A (20) remains denied -> 403 Forbidden
+    const resTeacherBGained = await page.request.get(`api/teacher/batches/${testBatchId1}/schedule`, {
+      headers: { 'Authorization': `Bearer ${teacher2Token}` }
+    });
+    expect(resTeacherBGained.status()).toBe(200);
+
+    const resTeacherARemainsDenied = await page.request.get(`api/teacher/batches/${testBatchId1}/schedule`, {
+      headers: { 'Authorization': `Bearer ${teacherToken}` }
+    });
+    expect(resTeacherARemainsDenied.status()).toBe(403);
+
+    // Step 3: Clearing and reassigning persists across reopening & refresh
+    await page.reload();
+    await page.waitForLoadState('networkidle');
+    await page.locator('button:has-text("Adjust Routine")').first().click();
+    await expect(teacherAccountSelect).toHaveValue('22');
+
+    // Clear assignment to unassigned
+    await teacherAccountSelect.selectOption('');
+    await reasonInput.fill('Clearing instructor assignment');
+    await page.locator('button:has-text("Save Batch Schedule")').click();
+    await expect(page.locator('text=Batch class routine updated successfully!')).toBeVisible({ timeout: 10000 });
+
+    // Both instructors denied 403 when unassigned
+    const checkUnassigned1 = await page.request.get(`api/teacher/batches/${testBatchId1}/schedule`, {
+      headers: { 'Authorization': `Bearer ${teacherToken}` }
+    });
+    expect(checkUnassigned1.status()).toBe(403);
+
+    const checkUnassigned2 = await page.request.get(`api/teacher/batches/${testBatchId1}/schedule`, {
+      headers: { 'Authorization': `Bearer ${teacher2Token}` }
+    });
+    expect(checkUnassigned2.status()).toBe(403);
+
+    // Restore Teacher 20 baseline for subsequent Classroom and mobile view verification
+    await page.locator('button:has-text("Adjust Routine")').first().click();
+    await expect(teacherAccountSelect).toHaveValue('');
+    await teacherAccountSelect.selectOption('20');
+    await reasonInput.fill('Restoring Teacher 20 baseline');
+    await page.locator('button:has-text("Save Batch Schedule")').click();
+    await expect(page.locator('text=Batch class routine updated successfully!')).toBeVisible({ timeout: 10000 });
+
     // 2. Client Level Security: Student attempting to navigate to admin batch manager is redirected away
     await injectStudentAuth(page);
     await page.goto(`admin/batchmanager/${testBatchId1}`);

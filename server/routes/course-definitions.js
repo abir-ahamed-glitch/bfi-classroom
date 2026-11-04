@@ -21,13 +21,43 @@ const ALLOWED_COURSE_TYPES = [
 ];
 
 // classCount is derived data: always reconcile it with the classes actually defined.
-function reconcileClassCounts(phases) {
+export function validateAndSanitizeInstructorId(database, teacherUserId) {
+  if (teacherUserId === undefined || teacherUserId === null || teacherUserId === '') {
+    return null;
+  }
+  const parsedTid = parseInt(teacherUserId, 10);
+  if (isNaN(parsedTid) || parsedTid <= 0) {
+    return null;
+  }
+  const teacherUser = database.prepare("SELECT id FROM users WHERE id = ? AND role = 'instructor' AND is_active = 1 AND deleted_at IS NULL").get(parsedTid);
+  return teacherUser ? teacherUser.id : null;
+}
+
+function reconcileClassCounts(phases, database = null) {
   if (!Array.isArray(phases)) return phases;
-  return phases.map(phase => (
-    phase && Array.isArray(phase.classes)
-      ? { ...phase, classCount: phase.classes.length }
-      : phase
-  ));
+  return phases.map(phase => {
+    if (!phase) return phase;
+    const reconciledClasses = Array.isArray(phase.classes)
+      ? phase.classes.map(cls => ({
+          ...cls,
+          teacherUserId: database ? validateAndSanitizeInstructorId(database, cls.teacherUserId) : (cls.teacherUserId ? Number(cls.teacherUserId) : null)
+        }))
+      : phase.classes;
+
+    const reconciledRoutine = Array.isArray(phase.routine)
+      ? phase.routine.map(slot => ({
+          ...slot,
+          teacherUserId: database ? validateAndSanitizeInstructorId(database, slot.teacherUserId) : (slot.teacherUserId ? Number(slot.teacherUserId) : null)
+        }))
+      : phase.routine;
+
+    return {
+      ...phase,
+      classes: reconciledClasses,
+      routine: reconciledRoutine,
+      classCount: Array.isArray(reconciledClasses) ? reconciledClasses.length : (phase.classCount || 0)
+    };
+  });
 }
 
 function slugify(text) {
@@ -518,7 +548,7 @@ router.post('/', authenticateToken, requireRole('admin'), requirePermission('cou
       phase_count = 1,
       completionPolicy = {}
     } = req.body;
-    const phases = reconcileClassCounts(req.body.phases || []);
+    const phases = reconcileClassCounts(req.body.phases || [], db);
 
     const slug = slugify(name);
 
@@ -737,7 +767,7 @@ router.post('/:id/publish', authenticateToken, requireRole('admin'), requirePerm
     }
 
     // Reconcile derived classCount with the classes actually defined (fixes stale drafts)
-    parsed.phases = reconcileClassCounts(parsed.phases || []);
+    parsed.phases = reconcileClassCounts(parsed.phases || [], db);
 
     // Run strict publishing validation
     const validationData = {
@@ -972,37 +1002,11 @@ router.put('/:id/routine', authenticateToken, (req, res) => {
       }
     }
 
-    // Sanitize routine slots to preserve full metadata and validated teacherUserId
+    // Sanitize routine slots to preserve full metadata and strictly validated teacherUserId
     const sanitizedRoutine = routine.map(slot => {
-      let validatedTeacherUserId = null;
-      if (slot.teacherUserId !== undefined && slot.teacherUserId !== null && slot.teacherUserId !== '') {
-        const parsedTid = parseInt(slot.teacherUserId, 10);
-        if (!isNaN(parsedTid) && parsedTid > 0) {
-          const teacherUser = db.prepare("SELECT id FROM users WHERE id = ? AND role = 'instructor' AND deleted_at IS NULL").get(parsedTid);
-          if (teacherUser) {
-            validatedTeacherUserId = teacherUser.id;
-          }
-        }
-      } else if (slot.teacherName && String(slot.teacherName).trim()) {
-        // Resolve teacherUserId ONLY if teacherName unambiguously matches exactly one active instructor
-        // If ambiguous (multiple instructors with same name), do NOT guess or automatically grant permissions!
-        const trimmedName = String(slot.teacherName).trim().toLowerCase();
-        const matchingInstructors = db.prepare(`
-          SELECT u.id
-          FROM users u
-          LEFT JOIN instructor_profiles p ON p.user_id = u.id
-          WHERE u.role = 'instructor' AND u.deleted_at IS NULL
-            AND (
-              LOWER(TRIM(COALESCE(p.full_name, ''))) = ?
-              OR LOWER(TRIM(COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, ''))) = ?
-              OR LOWER(TRIM(u.username)) = ?
-            )
-        `).all(trimmedName, trimmedName, trimmedName);
-
-        if (matchingInstructors.length === 1) {
-          validatedTeacherUserId = matchingInstructors[0].id;
-        }
-      }
+      // Strictly validate instructor ID: must be active instructor and not deleted
+      // Strictly NEVER guess teacherUserId from slot.teacherName!
+      const validatedTeacherUserId = validateAndSanitizeInstructorId(db, slot.teacherUserId);
 
       return {
         id: slot.id,

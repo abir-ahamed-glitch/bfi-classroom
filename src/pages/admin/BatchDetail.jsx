@@ -941,14 +941,27 @@ export default function BatchDetail() {
     const cls = (editingRoutinePhase.classes || []).find(c => String(c.id) === String(classId));
     if (!cls) return;
     const fallbackSlot = createDefaultRoutineSlot();
+
+    let validatedTid = null;
+    let validatedTname = cls.teacherName || fallbackSlot.teacherName;
+    if (cls.teacherUserId) {
+      const matchTeacher = catalogTeachers.find(t => t.id === Number(cls.teacherUserId) && t.is_active !== 0 && !t.deleted_at);
+      if (matchTeacher) {
+        validatedTid = matchTeacher.id;
+        if (!validatedTname) {
+          validatedTname = matchTeacher.full_name || `${matchTeacher.first_name} ${matchTeacher.last_name}`;
+        }
+      }
+    }
+
     setBatchRoutineSlots(prev => {
       const updated = [...prev];
       updated[slotIdx] = {
         ...updated[slotIdx],
         classTitle: cls.title || fallbackSlot.classTitle,
         subjectName: cls.subjectName || fallbackSlot.subjectName,
-        teacherName: cls.teacherName || fallbackSlot.teacherName,
-        teacherUserId: cls.teacherUserId || fallbackSlot.teacherUserId || null,
+        teacherName: validatedTname,
+        teacherUserId: validatedTid,
         deliveryMode: cls.deliveryMode || fallbackSlot.deliveryMode,
         category: cls.category || fallbackSlot.category,
         platform: cls.platform || fallbackSlot.platform
@@ -973,14 +986,28 @@ export default function BatchDetail() {
           nextSlot.weekday = dayNames[dateObj.getUTCDay()];
         }
       }
-      if (field === 'teacherName') {
-        const match = catalogTeachers.find(t => (t.full_name || `${t.first_name} ${t.last_name}`) === value || String(t.id) === value);
-        nextSlot.teacherUserId = match ? match.id : (value === '' ? null : (nextSlot.teacherUserId || null));
-      }
       if (field === 'teacherUserId') {
-        const match = catalogTeachers.find(t => t.id === Number(value));
-        nextSlot.teacherUserId = match ? match.id : (value ? Number(value) : null);
-        if (match) nextSlot.teacherName = match.full_name || `${match.first_name} ${match.last_name}`;
+        const parsedId = value ? Number(value) : null;
+        const match = catalogTeachers.find(t => t.id === parsedId && t.is_active !== 0 && !t.deleted_at);
+        nextSlot.teacherUserId = match ? match.id : null;
+        if (match) {
+          nextSlot.teacherName = match.full_name || `${match.first_name} ${match.last_name}`;
+        }
+      }
+      if (field === 'teacherName') {
+        nextSlot.teacherName = value;
+        // If a teacher account was selected, check if display text was edited away from that account's canonical name.
+        // If edited away, clear the association (teacherUserId = null).
+        // Display names must NEVER silently select or link an account!
+        if (nextSlot.teacherUserId) {
+          const match = catalogTeachers.find(t => t.id === Number(nextSlot.teacherUserId));
+          const canonicalName = match ? (match.full_name || `${match.first_name} ${match.last_name}`) : '';
+          if (!value || value.trim().toLowerCase() !== canonicalName.trim().toLowerCase()) {
+            nextSlot.teacherUserId = null;
+          }
+        } else {
+          nextSlot.teacherUserId = null;
+        }
       }
       if (field === 'subjectName' && value && typeof value === 'string') {
         const match = catalogSubjects.find(s => s.name?.trim().toLowerCase() === value.trim().toLowerCase());
@@ -988,7 +1015,10 @@ export default function BatchDetail() {
           if (!nextSlot.teacherName && match.teacher_name) {
             nextSlot.teacherName = match.teacher_name;
             if (match.teacher_id) {
-              nextSlot.teacherUserId = match.teacher_id;
+              const teacherMatch = catalogTeachers.find(t => t.id === Number(match.teacher_id) && t.is_active !== 0 && !t.deleted_at);
+              nextSlot.teacherUserId = teacherMatch ? teacherMatch.id : null;
+            } else {
+              nextSlot.teacherUserId = null;
             }
           }
           if ((!nextSlot.deliveryMode || nextSlot.deliveryMode === 'live') && match.class_type) {
@@ -3036,13 +3066,40 @@ export default function BatchDetail() {
                               </div>
                             </div>
 
-                            {/* Row 3: Teacher, Mode & Category */}
-                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 130px), 1fr))', gap: '0.4rem', width: '100%' }}>
+                            {/* Row 3: Teacher Account, Teacher Label, Mode & Category */}
+                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 140px), 1fr))', gap: '0.4rem', width: '100%' }}>
                               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
-                                <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Teacher</label>
+                                <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Instructor Account</label>
+                                <select
+                                  aria-label="Instructor Account"
+                                  value={slot.teacherUserId ? String(slot.teacherUserId) : ''}
+                                  onChange={(e) => handleUpdateRoutineSlot(sIdx, 'teacherUserId', e.target.value)}
+                                  style={{
+                                    background: 'rgba(255,255,255,0.05)',
+                                    border: '1px solid rgba(255,255,255,0.12)',
+                                    borderRadius: '6px',
+                                    padding: '0.35rem 0.4rem',
+                                    color: slot.teacherUserId ? '#38bdf8' : 'var(--text-primary)',
+                                    fontSize: '0.78rem',
+                                    minHeight: '38px',
+                                    width: '100%'
+                                  }}
+                                  title="Assign Instructor Account"
+                                >
+                                  <option value="" style={{ background: '#1e293b' }}>-- Unassigned / Free Text --</option>
+                                  {catalogTeachers.filter(t => t.is_active !== 0 && !t.deleted_at).map(t => (
+                                    <option key={t.id} value={t.id} style={{ background: '#1e293b' }}>
+                                      {t.full_name || `${t.first_name} ${t.last_name}`} (ID: {t.id}{t.username ? `, @${t.username}` : ''})
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                                <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                                  Teacher Label {slot.teacherUserId ? <span style={{ color: '#38bdf8' }}>(ID #{slot.teacherUserId})</span> : <span style={{ color: 'var(--text-muted)' }}>(Unassigned)</span>}
+                                </label>
                                 <input
                                   type="text"
-                                  list="batch-teacher-suggestions"
                                   value={slot.teacherName || ''}
                                   onChange={(e) => handleUpdateRoutineSlot(sIdx, 'teacherName', e.target.value)}
                                   placeholder="Select or enter teacher"
