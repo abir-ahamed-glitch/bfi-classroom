@@ -19,7 +19,7 @@ import AddStudentsModal from '../../components/admin/AddStudentsModal';
 import EditStudentModal from '../../components/admin/EditStudentModal';
 import UploadResultsModal from '../../components/admin/UploadResultsModal';
 import DefinedCourseProgressModal from '../../components/admin/DefinedCourseProgressModal';
-import { resolveClientDiscount, resolveFeeAccounting, isCourseFeeUnpaid } from '../../utils/feeUtils';
+import { resolveFeeAccounting, isCourseFeeUnpaid, resolveEnrollmentFinancialsClient } from '../../utils/feeUtils';
 
 const hasPendingDueOrPartialPayment = (course) => isCourseFeeUnpaid(course);
 import { getOrdinalSuffix } from '../../utils/formatUtils';
@@ -1251,89 +1251,14 @@ export default function BatchDetail() {
 
         case 'fee_fully_paid':
         case 'fee_partial_paid':
-        case 'fee_unpaid':
+        case 'fee_unpaid': {
           if (!enrollment) return false;
-          {
-            const feeDetails = typeof enrollment.fee_details === 'string' ? JSON.parse(enrollment.fee_details) : enrollment.fee_details;
-            const defaultFee = batchData.course_fee || 8000;
-            const defaultP1 = batchData.phase1_fee || 4000;
-            const defaultP2 = batchData.phase2_fee || 4000;
-            const cleanNum = (val) => parseFloat(String(val || '').replace(/[^\d.]/g, '')) || 0;
-            let totalFee = 0;
-            let collected = 0;
-
-            const phaseKeys = Object.keys(feeDetails || {}).filter(k => /^phase\d+$/i.test(k));
-            if (phaseKeys.length > 0) {
-              for (const pk of phaseKeys) {
-                const p = feeDetails[pk] || {};
-                const pFull = cleanNum(p.full_fee);
-                const pPaid = cleanNum(p.amount_paid);
-                const pDiscount = resolveClientDiscount(p.discount, pFull, p.discount_amount);
-                const pInsts = p.installments || [];
-                const pInstPaidSum = pInsts
-                  .filter(inst => (inst.status || '').toLowerCase() === 'paid')
-                  .reduce((sum, inst) => sum + cleanNum(inst.amount), 0);
-                const pCollected = Math.min(pPaid + pInstPaidSum + pDiscount, pFull);
-                totalFee += pFull;
-                collected += pCollected;
-              }
-            } else if (Array.isArray(feeDetails?.phases) && feeDetails.phases.length > 0) {
-              for (const p of feeDetails.phases) {
-                const pFull = cleanNum(p.full_fee);
-                const pPaid = cleanNum(p.amount_paid);
-                const pDiscount = resolveClientDiscount(p.discount, pFull, p.discount_amount);
-                const pCollected = Math.min(pPaid + pDiscount, pFull);
-                totalFee += pFull;
-                collected += pCollected;
-              }
-            } else if (batchData.course_name === 'Online Filmmaking Course') {
-              const p1 = feeDetails?.phase1 || {};
-              const p1Full = cleanNum(p1.full_fee) || defaultP1;
-              const p1Paid = cleanNum(p1.amount_paid);
-              const p1Discount = resolveClientDiscount(p1.discount, p1Full, p1.discount_amount);
-              const p1Insts = p1.installments || [];
-              const p1InstPaidSum = p1Insts
-                .filter(inst => (inst.status || '').toLowerCase() === 'paid')
-                .reduce((sum, inst) => sum + cleanNum(inst.amount), 0);
-              const p1Collected = Math.min(p1Paid + p1InstPaidSum + p1Discount, p1Full);
-
-              const p2 = feeDetails?.phase2 || {};
-              const p2Full = cleanNum(p2.full_fee) || defaultP2;
-              const p2Paid = cleanNum(p2.amount_paid);
-              const p2Discount = resolveClientDiscount(p2.discount, p2Full, p2.discount_amount);
-              const p2Insts = p2.installments || [];
-              const p2InstPaidSum = p2Insts
-                .filter(inst => (inst.status || '').toLowerCase() === 'paid')
-                .reduce((sum, inst) => sum + cleanNum(inst.amount), 0);
-              const p2Collected = Math.min(p2Paid + p2InstPaidSum + p2Discount, p2Full);
-
-              totalFee = p1Full + p2Full;
-              collected = p1Collected + p2Collected;
-            } else {
-              const p = feeDetails || {};
-              const full = cleanNum(p.full_fee) || defaultFee;
-              const paid = cleanNum(p.amount_paid);
-              const discount = resolveClientDiscount(p.discount, full, p.discount_amount);
-              const insts = p.installments || [];
-              const instPaidSum = insts
-                .filter(inst => (inst.status || '').toLowerCase() === 'paid')
-                .reduce((sum, inst) => sum + cleanNum(inst.amount), 0);
-              
-              totalFee = full;
-              collected = Math.min(paid + instPaidSum + discount, full);
-            }
-
-            if (selectedStatFilter === 'fee_fully_paid') {
-              return totalFee > 0 && collected >= totalFee;
-            }
-            if (selectedStatFilter === 'fee_partial_paid') {
-              return collected > 0 && collected < totalFee;
-            }
-            if (selectedStatFilter === 'fee_unpaid') {
-              return collected === 0;
-            }
-            return true;
-          }
+          const fin = resolveEnrollmentFinancialsClient(enrollment, batchData);
+          if (selectedStatFilter === 'fee_fully_paid') return fin.isPaid;
+          if (selectedStatFilter === 'fee_partial_paid') return fin.isPartial;
+          if (selectedStatFilter === 'fee_unpaid') return fin.isUnpaid;
+          return true;
+        }
 
         default:
           if (selectedStatFilter && selectedStatFilter.startsWith('dp_')) {
@@ -1967,51 +1892,9 @@ export default function BatchDetail() {
                   let totalFee = 0;
                   let collected = 0;
                   if (enrollment) {
-                    let feeDetails = null;
-                    if (enrollment.fee_details) {
-                      try {
-                        feeDetails = typeof enrollment.fee_details === 'string' ? JSON.parse(enrollment.fee_details) : enrollment.fee_details;
-                      } catch (err) { /* ignore parse error */ }
-                    }
-                    const defaultFee = batchData.course_fee || 8000;
-                    const defaultP1 = batchData.phase1_fee || 4000;
-                    const defaultP2 = batchData.phase2_fee || 4000;
-                    const cleanNum = (val) => parseFloat(String(val || '').replace(/[^\d.]/g, '')) || 0;
-                    if (batchData.course_name === 'Online Filmmaking Course') {
-                      const p1 = feeDetails?.phase1 || {};
-                      const p1Full = cleanNum(p1.full_fee) || defaultP1;
-                      const p1Paid = cleanNum(p1.amount_paid);
-                      const p1Discount = resolveClientDiscount(p1.discount, p1Full, p1.discount_amount);
-                      const p1Insts = p1.installments || [];
-                      const p1InstPaidSum = p1Insts
-                        .filter(inst => (inst.status || '').toLowerCase() === 'paid')
-                        .reduce((sum, inst) => sum + cleanNum(inst.amount), 0);
-                      const p1Collected = Math.min(p1Paid + p1InstPaidSum + p1Discount, p1Full);
-
-                      const p2 = feeDetails?.phase2 || {};
-                      const p2Full = cleanNum(p2.full_fee) || defaultP2;
-                      const p2Paid = cleanNum(p2.amount_paid);
-                      const p2Discount = resolveClientDiscount(p2.discount, p2Full, p2.discount_amount);
-                      const p2Insts = p2.installments || [];
-                      const p2InstPaidSum = p2Insts
-                        .filter(inst => (inst.status || '').toLowerCase() === 'paid')
-                        .reduce((sum, inst) => sum + cleanNum(inst.amount), 0);
-                      const p2Collected = Math.min(p2Paid + p2InstPaidSum + p2Discount, p2Full);
-
-                      totalFee = p1Full + p2Full;
-                      collected = p1Collected + p2Collected;
-                    } else {
-                      const p = feeDetails || {};
-                      const full = cleanNum(p.full_fee) || defaultFee;
-                      const paid = cleanNum(p.amount_paid);
-                      const discount = resolveClientDiscount(p.discount, full, p.discount_amount);
-                      const insts = p.installments || [];
-                      const instPaidSum = insts
-                        .filter(inst => (inst.status || '').toLowerCase() === 'paid')
-                        .reduce((sum, inst) => sum + cleanNum(inst.amount), 0);
-                      totalFee = full;
-                      collected = Math.min(paid + instPaidSum + discount, full);
-                    }
+                    const fin = resolveEnrollmentFinancialsClient(enrollment, batchData);
+                    totalFee = fin.netPayable;
+                    collected = fin.cashCollected;
                   }
                   return (
                     <tr key={s.user_id} className="student-list-row">

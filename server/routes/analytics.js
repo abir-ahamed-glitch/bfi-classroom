@@ -2,6 +2,7 @@ import express from 'express';
 import db from '../db/database.js';
 import { authenticateToken, requireRole, requirePermission, requireAnyPermission } from '../middleware/auth.js';
 import { parseFeeDetails, getBatchFee, getFeeStatus, createFeeResolverContext, resolveEnrollmentFinancials } from '../utils/feeResolver.js';
+import { getEnrollmentProgressSync } from '../services/courseProgressService.js';
 
 const router = express.Router();
 
@@ -49,6 +50,12 @@ function getPendingCertificateRows(feeContext = null) {
           AND LOWER(TRIM(issued.course_name)) = LOWER(TRIM(sce.course_name))
           AND COALESCE(issued.step4_completed, 0) = 1
       )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM certificate_downloads cd
+        WHERE cd.user_id = sce.user_id
+          AND LOWER(TRIM(cd.course_name)) = LOWER(TRIM(sce.course_name))
+      )
     ORDER BY datetime(sp.updated_at) DESC, sce.id DESC
   `).all();
 
@@ -57,18 +64,19 @@ function getPendingCertificateRows(feeContext = null) {
   return rows
     .filter((row) => {
       if (row.course_definition_id) {
-        const defRow = db.prepare('SELECT phase_count FROM course_definitions WHERE id = ?').get(row.course_definition_id);
-        const totalPhases = defRow?.phase_count || 1;
-        const passedRow = db.prepare('SELECT COUNT(*) as count FROM student_phase_results WHERE enrollment_id = ? AND is_passed = 1').get(row.enrollment_id);
-        if ((passedRow?.count || 0) < totalPhases) return false;
+        const progress = getEnrollmentProgressSync(row.enrollment_id, db);
+        if (!progress || !progress.certificateEligible) return false;
+      } else {
+        const feeStatus = getFeeStatus(parseFeeDetails(row.fee_details), row.course_type, null, {
+          courseDefId: row.course_definition_id,
+          courseName: row.course_name,
+          batchNumber: row.batch_number,
+          batchId: row.batch_id,
+          feeContext: ctx
+        });
+        if (feeStatus !== 'paid') return false;
       }
-      return getFeeStatus(parseFeeDetails(row.fee_details), row.course_type, null, {
-      courseDefId: row.course_definition_id,
-      courseName: row.course_name,
-      batchNumber: row.batch_number,
-      batchId: row.batch_id,
-      feeContext: ctx
-    }) === 'paid';
+      return true;
     })
     .map(({ fee_details: _feeDetails, ...row }) => ({
       ...row,
@@ -238,15 +246,14 @@ router.get('/stats', authenticateToken, requireRole('admin'), requirePermission(
         WHERE step4_completed = 1 AND course_definition_id IS NULL
       `).get();
 
-      let definedCertsCount = 0;
-      for (const e of allEnrollments) {
-        if (e.course_definition_id) {
-          const requiredPhases = defMap.get(e.course_definition_id) || 1;
-          if ((passedPhasesMap.get(e.id) || 0) >= requiredPhases) {
-            definedCertsCount++;
-          }
-        }
-      }
+      // Count defined course certificates issued from actual downloads or step4_completed
+      const definedCertsCount = db.prepare(`
+        SELECT COUNT(DISTINCT cd.user_id || '_' || cd.course_name) as count
+        FROM certificate_downloads cd
+        JOIN student_course_enrollments sce ON sce.user_id = cd.user_id AND LOWER(TRIM(sce.course_name)) = LOWER(TRIM(cd.course_name))
+        WHERE sce.course_definition_id IS NOT NULL
+      `).get()?.count || 0;
+
       const certificatesIssued = { count: (legacyCertificates?.count || 0) + definedCertsCount };
 
       // Failed / Dropped (global)

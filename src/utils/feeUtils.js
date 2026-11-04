@@ -242,3 +242,160 @@ export function isCourseFeeUnpaid(course) {
     return isPhaseUnpaid(feeDetails);
   }
 }
+
+
+/**
+ * Authoritative client-side enrollment financial resolver.
+ * Unifies fee status, cash collected, and remaining dues across defined multi-phase courses,
+ * legacy OFC, and single-phase workshops.
+ */
+export function resolveEnrollmentFinancialsClient(enrollment, batchData = {}) {
+  if (!enrollment) {
+    return {
+      grossFee: 0,
+      discount: 0,
+      netPayable: 0,
+      cashCollected: 0,
+      remainingDue: 0,
+      isPaid: false,
+      isPartial: false,
+      isUnpaid: true,
+      status: 'Due'
+    };
+  }
+
+  let feeDetails = {};
+  try {
+    feeDetails = typeof enrollment.fee_details === 'string'
+      ? JSON.parse(enrollment.fee_details)
+      : (enrollment.fee_details || {});
+  } catch {
+    feeDetails = {};
+  }
+
+  const defaultFee = batchData.course_fee || 8000;
+  const defaultP1 = batchData.phase1_fee || 4000;
+  const defaultP2 = batchData.phase2_fee || 4000;
+
+  // Case 1: Defined Course with configured phases
+  const defPhases = batchData.definition?.phases || batchData.defined_phases || null;
+  const phaseArray = Array.isArray(feeDetails?.phases) && feeDetails.phases.length > 0
+    ? feeDetails.phases
+    : null;
+  const phaseKeys = Object.keys(feeDetails || {}).filter(k => /^phase\d+$/i.test(k)).sort((a, b) => {
+    return (parseInt(a.replace(/\D/g, ''), 10) || 0) - (parseInt(b.replace(/\D/g, ''), 10) || 0);
+  });
+
+  if (batchData.course_definition_id && defPhases && Array.isArray(defPhases) && defPhases.length > 0) {
+    let grossFee = 0;
+    let discount = 0;
+    let netPayable = 0;
+    let cashCollected = 0;
+    let remainingDue = 0;
+    let allPaid = true;
+    let anyPayment = false;
+
+    defPhases.forEach((p, idx) => {
+      const pKey = `phase${idx + 1}`;
+      const pData = (phaseArray && phaseArray[idx]) || feeDetails[pKey] || {};
+      const expectedPhaseFee = p.feeAmount ?? p.fee ?? p.fee_amount ?? 0;
+      const acct = resolveFeeAccounting(pData, { grossFeeOverride: expectedPhaseFee });
+
+      grossFee += acct.grossFee;
+      discount += acct.discount;
+      netPayable += acct.netPayable;
+      cashCollected += acct.cashCollected;
+      remainingDue += acct.remainingDue;
+      if (!acct.isPaid) allPaid = false;
+      if (acct.hasPayment || acct.cashCollected > 0) anyPayment = true;
+    });
+
+    return {
+      grossFee,
+      discount,
+      netPayable,
+      cashCollected,
+      remainingDue,
+      isPaid: allPaid,
+      isPartial: !allPaid && anyPayment,
+      isUnpaid: !allPaid && !anyPayment,
+      status: allPaid ? 'Paid Full' : (anyPayment ? 'Partial' : 'Due')
+    };
+  }
+
+  if (phaseKeys.length > 0) {
+    let grossFee = 0;
+    let discount = 0;
+    let netPayable = 0;
+    let cashCollected = 0;
+    let remainingDue = 0;
+    let allPaid = true;
+    let anyPayment = false;
+
+    phaseKeys.forEach((pk, idx) => {
+      const pData = feeDetails[pk] || {};
+      const fallbackFee = idx === 0 ? defaultP1 : (idx === 1 ? defaultP2 : 0);
+      const acct = resolveFeeAccounting(pData, { grossFeeOverride: fallbackFee });
+
+      grossFee += acct.grossFee;
+      discount += acct.discount;
+      netPayable += acct.netPayable;
+      cashCollected += acct.cashCollected;
+      remainingDue += acct.remainingDue;
+      if (!acct.isPaid) allPaid = false;
+      if (acct.hasPayment || acct.cashCollected > 0) anyPayment = true;
+    });
+
+    return {
+      grossFee,
+      discount,
+      netPayable,
+      cashCollected,
+      remainingDue,
+      isPaid: allPaid,
+      isPartial: !allPaid && anyPayment,
+      isUnpaid: !allPaid && !anyPayment,
+      status: allPaid ? 'Paid Full' : (anyPayment ? 'Partial' : 'Due')
+    };
+  }
+
+  // Case 2: Online Filmmaking Course (legacy 2-phase)
+  if (batchData.course_name === 'Online Filmmaking Course') {
+    const p1Acct = resolveFeeAccounting(feeDetails.phase1 || {}, { grossFeeOverride: defaultP1 });
+    const p2Acct = resolveFeeAccounting(feeDetails.phase2 || {}, { grossFeeOverride: defaultP2 });
+
+    const grossFee = p1Acct.grossFee + p2Acct.grossFee;
+    const discount = p1Acct.discount + p2Acct.discount;
+    const netPayable = p1Acct.netPayable + p2Acct.netPayable;
+    const cashCollected = p1Acct.cashCollected + p2Acct.cashCollected;
+    const remainingDue = p1Acct.remainingDue + p2Acct.remainingDue;
+    const allPaid = p1Acct.isPaid && p2Acct.isPaid;
+    const anyPayment = p1Acct.hasPayment || p2Acct.hasPayment || cashCollected > 0;
+
+    return {
+      grossFee,
+      discount,
+      netPayable,
+      cashCollected,
+      remainingDue,
+      isPaid: allPaid,
+      isPartial: !allPaid && anyPayment,
+      isUnpaid: !allPaid && !anyPayment,
+      status: allPaid ? 'Paid Full' : (anyPayment ? 'Partial' : 'Due')
+    };
+  }
+
+  // Case 3: Flat single-phase course (workshop / appreciation)
+  const acct = resolveFeeAccounting(feeDetails, { grossFeeOverride: defaultFee });
+  return {
+    grossFee: acct.grossFee,
+    discount: acct.discount,
+    netPayable: acct.netPayable,
+    cashCollected: acct.cashCollected,
+    remainingDue: acct.remainingDue,
+    isPaid: acct.isPaid,
+    isPartial: !acct.isPaid && (acct.hasPayment || acct.cashCollected > 0),
+    isUnpaid: !acct.isPaid && !acct.hasPayment && acct.cashCollected === 0,
+    status: acct.isPaid ? 'Paid Full' : (acct.cashCollected > 0 ? 'Partial' : 'Due')
+  };
+}
