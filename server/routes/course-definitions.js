@@ -2,7 +2,7 @@ import express from 'express';
 import db from '../db/database.js';
 import { authenticateToken, requireRole, requirePermission, isSuperAdmin } from '../middleware/auth.js';
 import { recordAuditEventFromReq } from '../services/auditLedgerService.js';
-import { resolvePhaseRoutine } from '../services/courseProgressService.js';
+import { resolvePhaseRoutine, getCanonicalPhaseInfo } from '../services/courseProgressService.js';
 
 const router = express.Router();
 
@@ -431,11 +431,13 @@ router.get('/:idOrSlug', authenticateToken, (req, res) => {
 
     const batchIdParam = req.query.batch_id ? parseInt(req.query.batch_id, 10) : null;
     if (Array.isArray(parsed.phases)) {
-      parsed.phases = parsed.phases.map((p, idx) => {
-        const phaseId = p.id || `p_${idx + 1}`;
-        const resRoutine = resolvePhaseRoutine(db, row.id, batchIdParam, phaseId, p.routine);
+      const { mappedPhases } = getCanonicalPhaseInfo(parsed.phases);
+      parsed.phases = mappedPhases.map((m) => {
+        const resRoutine = resolvePhaseRoutine(db, row.id, batchIdParam, m.canonicalId, m.phase.routine);
         return {
-          ...p,
+          ...m.phase,
+          id: m.canonicalId,
+          phaseIndex: m.phaseNumber,
           routine: resRoutine.routine,
           routineSource: resRoutine.source
         };
@@ -798,9 +800,10 @@ router.post('/:id/publish', authenticateToken, requireRole('admin'), requirePerm
 router.put('/:id/routine', authenticateToken, (req, res) => {
   try {
     const { id } = req.params;
-    const { phase_id, batch_id = null, routine, reason = 'Routine update' } = req.body;
+    const { phase_id, batch_id = null, routine, reason = 'Routine update', action, revert } = req.body;
+    const isRevertAction = action === 'revert' || revert === true;
 
-    if (!phase_id || !Array.isArray(routine)) {
+    if (!phase_id || (!isRevertAction && !Array.isArray(routine))) {
       return res.status(400).json({ error: 'phase_id and routine array are required' });
     }
 
@@ -862,41 +865,63 @@ router.put('/:id/routine', authenticateToken, (req, res) => {
     }
 
     const parsed = JSON.parse(definition.definition_json);
-    const phase = (parsed.phases || []).find(p => {
-      const pid = String(p.id || '').trim();
-      return pid === phase_id ||
-             pid === phase_id.replace('phase_', 'p_') ||
-             pid === phase_id.replace('p_', 'phase_') ||
-             (p.phaseIndex && `phase_${p.phaseIndex}` === phase_id);
-    });
-    if (!phase) {
+    const { matched } = getCanonicalPhaseInfo(parsed.phases, phase_id);
+    if (!matched) {
       return res.status(404).json({ error: `Phase with id "${phase_id}" not found in definition.` });
     }
 
-    // Support revert action to clear batch override and inherit course template
+    const canonicalPhaseId = matched.canonicalId;
+    const phase = matched.phase;
+    const lowerAliases = Array.from(new Set(matched.aliases.map(a => a.toLowerCase())));
+    const aliasPlaceholders = lowerAliases.map(() => '?').join(', ');
+
+    // Support revert action to clear batch override and inherit course template (ATOMIC TRANSACTION)
     if (req.body.action === 'revert' || req.body.revert === true) {
       if (resolvedBatchId <= 0) {
         return res.status(400).json({ error: 'Reverting routine requires a specific batch_id.' });
       }
-      const existing = db.prepare('SELECT routine_json FROM course_routine_overrides WHERE course_definition_id = ? AND batch_id = ? AND phase_id = ?').get(id, resolvedBatchId, phase_id);
-      db.prepare('DELETE FROM course_routine_overrides WHERE course_definition_id = ? AND batch_id = ? AND phase_id = ?').run(id, resolvedBatchId, phase_id);
-      db.prepare(`
-        INSERT INTO course_routine_audits (
-          course_definition_id, batch_id, phase_id, old_routine, new_routine, changed_by, reason
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        id,
-        resolvedBatchId,
-        phase_id,
-        existing ? existing.routine_json : '[]',
-        JSON.stringify(phase.routine || []),
-        req.user.id,
-        reason ? String(reason).trim() : 'Reverted batch schedule to course default template'
-      );
+
+      // 1. Calculate effective routine BEFORE revert (the active batch routine)
+      const currentRoutineRes = resolvePhaseRoutine(db, id, resolvedBatchId, canonicalPhaseId, phase.routine);
+      const effectiveBeforeRoutine = currentRoutineRes.routine || [];
+
+      // 2. Calculate effective routine AFTER revert (course-level override if exists, else baseline)
+      const inheritedRoutineRes = resolvePhaseRoutine(db, id, 0, canonicalPhaseId, phase.routine);
+      const effectiveAfterRoutine = inheritedRoutineRes.routine || [];
+
+      // 3. Execute atomic revert inside single database transaction
+      const revertTx = db.transaction(() => {
+        // Delete any batch override rows under any alias for this batch and phase
+        db.prepare(`
+          DELETE FROM course_routine_overrides
+          WHERE course_definition_id = ? AND batch_id = ? AND LOWER(phase_id) IN (${aliasPlaceholders})
+        `).run(id, resolvedBatchId, ...lowerAliases);
+
+        // Record audit with the exact effective before and after routines
+        db.prepare(`
+          INSERT INTO course_routine_audits (
+            course_definition_id, batch_id, phase_id, old_routine, new_routine, changed_by, reason
+          ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          id,
+          resolvedBatchId,
+          canonicalPhaseId,
+          JSON.stringify(effectiveBeforeRoutine),
+          JSON.stringify(effectiveAfterRoutine),
+          req.user.id,
+          reason ? String(reason).trim() : 'Reverted batch schedule to course default template'
+        );
+      });
+
+      revertTx();
+
       return res.json({
         success: true,
         message: 'Batch schedule reverted to course default template.',
-        reverted: true
+        reverted: true,
+        phase_id: canonicalPhaseId,
+        effectiveRoutine: effectiveAfterRoutine,
+        effectiveSource: inheritedRoutineRes.source
       });
     }
 
@@ -959,35 +984,22 @@ router.put('/:id/routine', authenticateToken, (req, res) => {
       platform: slot.platform ? String(slot.platform).trim() : ''
     }));
 
-    // Determine old routine: check if there was a previous override or take base phase routine
-    const existingOverride = db.prepare(`
-      SELECT routine_json FROM course_routine_overrides
-      WHERE course_definition_id = ? AND batch_id = ? AND phase_id = ?
-    `).get(id, resolvedBatchId, phase_id);
-
-    const oldRoutine = existingOverride
-      ? JSON.parse(existingOverride.routine_json)
-      : (phase.routine || []);
+    // Determine effective old routine before saving
+    const currentRoutineRes = resolvePhaseRoutine(db, id, resolvedBatchId, canonicalPhaseId, phase.routine);
+    const oldRoutine = currentRoutineRes.routine || [];
 
     const tx = db.transaction(() => {
-      // 1. Audit log with actor, reason, old/new routine, batch_id
-      db.prepare(`
-        INSERT INTO course_routine_audits (
-          course_definition_id, batch_id, phase_id, old_routine, new_routine, changed_by, reason
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        id,
-        resolvedBatchId,
-        phase_id,
-        JSON.stringify(oldRoutine),
-        JSON.stringify(sanitizedRoutine),
-        req.user.id,
-        reason.trim()
-      );
+      // 1. Cleanse any stale alias rows for this batch/course and phase (other than canonicalPhaseId)
+      const staleAliases = lowerAliases.filter(a => a !== canonicalPhaseId.toLowerCase());
+      if (staleAliases.length > 0) {
+        const stalePlaceholders = staleAliases.map(() => '?').join(', ');
+        db.prepare(`
+          DELETE FROM course_routine_overrides
+          WHERE course_definition_id = ? AND batch_id = ? AND LOWER(phase_id) IN (${stalePlaceholders})
+        `).run(id, resolvedBatchId, ...staleAliases);
+      }
 
-      // 2. Issue 2: Store operational routine overrides separately!
-      // If definition is published, DO NOT mutate definition_json on course_definitions!
-      // Keep published grading rules permanently immutable.
+      // 2. Persist to course_routine_overrides table under canonical phase identity
       db.prepare(`
         INSERT INTO course_routine_overrides (
           course_definition_id, batch_id, phase_id, routine_json, updated_by, updated_at
@@ -996,7 +1008,22 @@ router.put('/:id/routine', authenticateToken, (req, res) => {
           routine_json = excluded.routine_json,
           updated_by = excluded.updated_by,
           updated_at = excluded.updated_at
-      `).run(id, resolvedBatchId, phase_id, JSON.stringify(sanitizedRoutine), req.user.id);
+      `).run(id, resolvedBatchId, canonicalPhaseId, JSON.stringify(sanitizedRoutine), req.user.id);
+
+      // 3. Audit log with actor, reason, effective old/new routine under canonical phase identity
+      db.prepare(`
+        INSERT INTO course_routine_audits (
+          course_definition_id, batch_id, phase_id, old_routine, new_routine, changed_by, reason
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        id,
+        resolvedBatchId,
+        canonicalPhaseId,
+        JSON.stringify(oldRoutine),
+        JSON.stringify(sanitizedRoutine),
+        req.user.id,
+        reason ? String(reason).trim() : 'Routine updated'
+      );
 
       // If definition is still a draft, update draft definition_json as well
       if (definition.status === 'draft') {
@@ -1015,7 +1042,11 @@ router.put('/:id/routine', authenticateToken, (req, res) => {
 
     res.json({
       success: true,
-      message: 'Routine updated and audited successfully.',
+      message: resolvedBatchId > 0
+        ? 'Batch-specific routine adjusted successfully.'
+        : 'Course definition baseline routine updated successfully.',
+      phase_id: canonicalPhaseId,
+      routine: sanitizedRoutine,
       is_operational_override: definition.status === 'published'
     });
   } catch (err) {

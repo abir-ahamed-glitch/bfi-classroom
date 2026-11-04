@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { DELIVERY_MODE_OPTIONS, normalizeDeliveryMode, deliveryModeLabel, deliveryModeFromSubject } from '../../utils/deliveryModes';
+import { DELIVERY_MODE_OPTIONS, normalizeDeliveryMode, deliveryModeLabel, deliveryModeFromSubject, createDefaultRoutineSlot, DEFAULT_ROUTINE_SLOT } from '../../utils/deliveryModes';
 import PlatformSelector from '../../components/admin/PlatformSelector';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { 
@@ -150,6 +150,7 @@ export default function BatchDetail() {
   const [routineAuditReason, setRoutineAuditReason] = useState('');
   const [routineAuditTouched, setRoutineAuditTouched] = useState(false);
   const routineAuditInputRef = useRef(null);
+  const lastSlotRef = useRef(null);
   const [routineSaving, setRoutineSaving] = useState(false);
   const [routineError, setRoutineError] = useState('');
   const [catalogSubjects, setCatalogSubjects] = useState([]);
@@ -998,7 +999,7 @@ export default function BatchDetail() {
       setRoutineSaving(true);
       setRoutineError('');
       const token = localStorage.getItem('token');
-      const res = await fetch(`/api/course-definitions/${batchData.course_definition.id}/routine`, {
+      const res = await fetch(`/api/admin/course-definitions/${batchData.course_definition.id}/routine`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -1048,7 +1049,7 @@ export default function BatchDetail() {
       setRoutineSaving(true);
       setRoutineError('');
       const token = localStorage.getItem('token');
-      const res = await fetch(`/api/course-definitions/${batchData.course_definition.id}/routine`, {
+      const res = await fetch(`/api/admin/course-definitions/${batchData.course_definition.id}/routine`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',

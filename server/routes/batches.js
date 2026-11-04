@@ -5,7 +5,7 @@ import { recordAuditEventFromReq } from '../services/auditLedgerService.js';
 import { runBatchStatusAutomation } from '../utils/batchStatusAutomation.js';
 import { getBatchFee, createFeeResolverContext } from '../utils/feeResolver.js';
 import { logTrashAction } from '../utils/trashLogger.js';
-import { courseProgressService, getEnrollmentProgressSync, resolvePhaseRoutine } from '../services/courseProgressService.js';
+import { courseProgressService, getEnrollmentProgressSync, resolvePhaseRoutine, getCanonicalPhaseInfo } from '../services/courseProgressService.js';
 
 const router = express.Router();
 
@@ -229,14 +229,13 @@ router.get('/:id', authenticateToken, requireRole('admin'), requirePermission('b
         try {
           parsed = JSON.parse(def.definition_json || '{}');
           if (Array.isArray(parsed.phases)) {
-            parsed.phases = parsed.phases.map((p, idx) => {
-              const phaseNum = p.phaseIndex || (idx + 1);
-              const phaseId = String(p.id || `phase_${phaseNum}`).trim();
-              const resRoutine = resolvePhaseRoutine(db, def.id, batch.id, phaseId, p.routine);
+            const { mappedPhases } = getCanonicalPhaseInfo(parsed.phases);
+            parsed.phases = mappedPhases.map((m) => {
+              const resRoutine = resolvePhaseRoutine(db, def.id, batch.id, m.canonicalId, m.phase.routine);
               return {
-                ...p,
-                id: phaseId,
-                phaseIndex: phaseNum,
+                ...m.phase,
+                id: m.canonicalId,
+                phaseIndex: m.phaseNumber,
                 routine: resRoutine.routine,
                 routineSource: resRoutine.source
               };

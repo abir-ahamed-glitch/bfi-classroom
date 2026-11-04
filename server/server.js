@@ -582,6 +582,7 @@ app.use('/api/admin/broadcast', broadcastRoutes);
 app.use('/api/admin/trash', trashRoutes);
 app.use('/api/admin/course-settings', courseSettingsRoutes);
 app.use('/api/admin/course-definitions', courseDefinitionsRoutes);
+app.use('/api/course-definitions', courseDefinitionsRoutes);
 app.use('/api/admin', adminManagementRoutes);
 
 // Test environment and database identity verification endpoint (strictly restricted to test servers)

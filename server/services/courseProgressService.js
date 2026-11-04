@@ -1,17 +1,86 @@
 import defaultDb from '../db/database.js';
 import { resolvePhaseFee } from '../utils/feeResolver.js';
 
-/**
- * Course Progress Engine & Dual-Model Evaluation Service
- * 
- * Provides an authoritative separation between legacy 2-phase courses
- * (course_definition_id IS NULL) and defined 1–5 phase courses (course_definition_id IS NOT NULL).
- * Avoids lossy dual-writes to legacy columns, and uses atomic relational updates
- * for attendance and assignment grades to prevent JSON concurrency race conditions.
- */
-
 function getDatabase(customDb) {
   return customDb || defaultDb;
+}
+
+/**
+ * Canonical Phase Resolver
+ * 
+ * Given a list of definition phases and an incoming phase identifier (e.g. 'phase_1', 'p_1', '1', or custom string),
+ * resolves to a single canonical phase identity and its full set of lookup aliases.
+ *
+ * Precedence / Canonical Rules:
+ * 1. If phase has explicit non-empty id: canonicalId = String(phase.id).trim()
+ * 2. If phase has phaseIndex but no id: canonicalId = `phase_${Number(phase.phaseIndex)}`
+ * 3. If phase has neither id nor phaseIndex: canonicalId = `phase_${indexInArray + 1}`
+ */
+export function getCanonicalPhaseInfo(phases = [], requestedPhaseId = null) {
+  if (!Array.isArray(phases)) phases = [];
+
+  const mappedPhases = phases.map((p, idx) => {
+    const pos = idx + 1;
+    const rawId = p && p.id ? String(p.id).trim() : '';
+    const phaseIndex = (p && p.phaseIndex !== undefined && p.phaseIndex !== null) ? Number(p.phaseIndex) : null;
+
+    let canonicalId = '';
+    if (rawId) {
+      canonicalId = rawId;
+    } else if (phaseIndex !== null && !isNaN(phaseIndex)) {
+      canonicalId = `phase_${phaseIndex}`;
+    } else {
+      canonicalId = `phase_${pos}`;
+    }
+
+    const aliases = new Set();
+    aliases.add(canonicalId);
+    aliases.add(canonicalId.toLowerCase());
+    if (rawId) {
+      aliases.add(rawId);
+      aliases.add(rawId.toLowerCase());
+    }
+
+    const numMatch = canonicalId.match(/^(?:phase|p)_?(\d+)$/i);
+    if (numMatch) {
+      const n = numMatch[1];
+      aliases.add(`phase_${n}`);
+      aliases.add(`phase_${n}`.toLowerCase());
+      aliases.add(`p_${n}`);
+      aliases.add(`p_${n}`.toLowerCase());
+      aliases.add(String(n));
+    }
+    if (phaseIndex !== null && !isNaN(phaseIndex)) {
+      aliases.add(`phase_${phaseIndex}`);
+      aliases.add(`phase_${phaseIndex}`.toLowerCase());
+      aliases.add(`p_${phaseIndex}`);
+      aliases.add(`p_${phaseIndex}`.toLowerCase());
+      aliases.add(String(phaseIndex));
+    }
+    aliases.add(`phase_${pos}`);
+    aliases.add(`phase_${pos}`.toLowerCase());
+    aliases.add(`p_${pos}`);
+    aliases.add(`p_${pos}`.toLowerCase());
+    aliases.add(String(pos));
+
+    return {
+      phase: p,
+      index: idx,
+      phaseNumber: phaseIndex !== null && !isNaN(phaseIndex) ? phaseIndex : pos,
+      canonicalId,
+      aliases: Array.from(aliases)
+    };
+  });
+
+  if (!requestedPhaseId) {
+    return { mappedPhases, matched: null };
+  }
+
+  const reqStr = String(requestedPhaseId).trim();
+  const reqLower = reqStr.toLowerCase();
+  const matched = mappedPhases.find(m => m.aliases.includes(reqStr) || m.aliases.includes(reqLower)) || null;
+
+  return { mappedPhases, matched };
 }
 
 /**
@@ -19,38 +88,77 @@ function getDatabase(customDb) {
  * 1. Batch-specific override (batch_id = batchId)
  * 2. Course-level override (batch_id = 0 or NULL)
  * 3. Published definition baseline routine
+ *
+ * Deterministically resolves phaseId to canonical identity and checks all aliases.
+ * In case of multiple override rows, prioritizes canonical match first, then latest updated_at.
  */
 export function resolvePhaseRoutine(db, courseDefinitionId, batchId, phaseId, baseRoutine = []) {
-  const pIdStr = String(phaseId || '').trim();
-  const altId = pIdStr.startsWith('phase_')
-    ? pIdStr.replace('phase_', 'p_')
-    : pIdStr.startsWith('p_')
-    ? pIdStr.replace('p_', 'phase_')
-    : `phase_${pIdStr}`;
+  let canonicalId = String(phaseId || '').trim();
+  let aliasList = [canonicalId.toLowerCase()];
 
+  if (courseDefinitionId) {
+    try {
+      const defRow = db.prepare('SELECT definition_json FROM course_definitions WHERE id = ?').get(courseDefinitionId);
+      if (defRow?.definition_json) {
+        const parsed = JSON.parse(defRow.definition_json);
+        const { matched } = getCanonicalPhaseInfo(parsed.phases, phaseId);
+        if (matched) {
+          canonicalId = matched.canonicalId;
+          aliasList = matched.aliases.map(a => a.toLowerCase());
+        }
+      }
+    } catch { /* empty */ }
+  }
+
+  if (aliasList.length === 1) {
+    const pIdStr = canonicalId;
+    const alt = pIdStr.startsWith('phase_')
+      ? pIdStr.replace('phase_', 'p_')
+      : pIdStr.startsWith('p_')
+      ? pIdStr.replace('p_', 'phase_')
+      : `phase_${pIdStr}`;
+    aliasList = Array.from(new Set([pIdStr.toLowerCase(), alt.toLowerCase()]));
+  }
+
+  const uniqueLowerAliases = Array.from(new Set(aliasList));
+  const placeholders = uniqueLowerAliases.map(() => '?').join(', ');
+
+  // Tier 1: Batch-specific override
   if (batchId) {
-    const batchOverride = db.prepare(`
-      SELECT routine_json FROM course_routine_overrides
-      WHERE course_definition_id = ? AND batch_id = ? AND (phase_id = ? OR phase_id = ?)
-    `).get(courseDefinitionId, batchId, pIdStr, altId);
-    if (batchOverride?.routine_json) {
+    const batchOverrides = db.prepare(`
+      SELECT phase_id, routine_json, updated_at, id
+      FROM course_routine_overrides
+      WHERE course_definition_id = ? AND batch_id = ? AND LOWER(phase_id) IN (${placeholders})
+      ORDER BY CASE WHEN LOWER(phase_id) = ? THEN 0 ELSE 1 END, updated_at DESC, id DESC
+    `).all(courseDefinitionId, batchId, ...uniqueLowerAliases, canonicalId.toLowerCase());
+
+    if (batchOverrides && batchOverrides.length > 0) {
+      const best = batchOverrides[0];
       try {
-        return { routine: JSON.parse(batchOverride.routine_json), source: 'batch_override' };
+        return { routine: JSON.parse(best.routine_json), source: 'batch_override', phase_id: canonicalId };
       } catch { /* empty */ }
     }
   }
 
-  const courseOverride = db.prepare(`
-    SELECT routine_json FROM course_routine_overrides
-    WHERE course_definition_id = ? AND (batch_id = 0 OR batch_id IS NULL) AND (phase_id = ? OR phase_id = ?)
-  `).get(courseDefinitionId, pIdStr, altId);
-  if (courseOverride?.routine_json) {
-    try {
-      return { routine: JSON.parse(courseOverride.routine_json), source: 'course_override' };
-    } catch { /* empty */ }
+  // Tier 2: Course-level override (batch_id = 0 or NULL)
+  if (courseDefinitionId) {
+    const courseOverrides = db.prepare(`
+      SELECT phase_id, routine_json, updated_at, id
+      FROM course_routine_overrides
+      WHERE course_definition_id = ? AND (batch_id = 0 OR batch_id IS NULL) AND LOWER(phase_id) IN (${placeholders})
+      ORDER BY CASE WHEN LOWER(phase_id) = ? THEN 0 ELSE 1 END, updated_at DESC, id DESC
+    `).all(courseDefinitionId, ...uniqueLowerAliases, canonicalId.toLowerCase());
+
+    if (courseOverrides && courseOverrides.length > 0) {
+      const best = courseOverrides[0];
+      try {
+        return { routine: JSON.parse(best.routine_json), source: 'course_override', phase_id: canonicalId };
+      } catch { /* empty */ }
+    }
   }
 
-  return { routine: baseRoutine || [], source: 'definition_baseline' };
+  // Tier 3: Published definition baseline routine
+  return { routine: baseRoutine || [], source: 'definition_baseline', phase_id: canonicalId };
 }
 
 /**
@@ -287,9 +395,10 @@ export function getEnrollmentProgressSync(enrollmentId, customDb = null, options
   let allMandatoryAssignmentsMet = true;
 
   const evaluatedPhases = [];
-  for (let idx = 0; idx < (definition.phases || []).length; idx++) {
-    const phase = definition.phases[idx];
-    const phaseId = phase.id || `p_${idx + 1}`;
+  const { mappedPhases: syncMappedPhases } = getCanonicalPhaseInfo(definition.phases || []);
+  for (let idx = 0; idx < syncMappedPhases.length; idx++) {
+    const { phase, canonicalId } = syncMappedPhases[idx];
+    const phaseId = canonicalId;
     const resolvedRoutine = resolvePhaseRoutine(db, enrollment.course_definition_id, studentBatchId, phaseId, phase.routine);
 
     // Evaluate classes
