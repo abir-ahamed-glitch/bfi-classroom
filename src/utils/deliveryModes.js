@@ -61,6 +61,7 @@ export const DEFAULT_ROUTINE_SLOT = Object.freeze({
   subjectName: '',
   classTitle: '',
   teacherName: '',
+  teacherUserId: null,
   deliveryMode: 'recorded',
   category: 'theory',
   platform: 'Zoom'

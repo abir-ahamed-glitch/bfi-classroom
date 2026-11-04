@@ -972,20 +972,54 @@ router.put('/:id/routine', authenticateToken, (req, res) => {
       }
     }
 
-    // Sanitize routine slots to preserve full metadata
-    const sanitizedRoutine = routine.map(slot => ({
-      date: slot.date ? String(slot.date).trim() : '',
-      weekday: slot.weekday,
-      startTime: slot.startTime,
-      endTime: slot.endTime,
-      timezone: slot.timezone || 'Asia/Dhaka',
-      subjectName: slot.subjectName ? String(slot.subjectName).trim() : '',
-      classTitle: slot.classTitle ? String(slot.classTitle).trim() : '',
-      teacherName: slot.teacherName ? String(slot.teacherName).trim() : '',
-      deliveryMode: slot.deliveryMode ? String(slot.deliveryMode).trim() : 'live',
-      category: slot.category ? String(slot.category).trim() : 'theory',
-      platform: slot.platform ? String(slot.platform).trim() : ''
-    }));
+    // Sanitize routine slots to preserve full metadata and validated teacherUserId
+    const sanitizedRoutine = routine.map(slot => {
+      let validatedTeacherUserId = null;
+      if (slot.teacherUserId !== undefined && slot.teacherUserId !== null && slot.teacherUserId !== '') {
+        const parsedTid = parseInt(slot.teacherUserId, 10);
+        if (!isNaN(parsedTid) && parsedTid > 0) {
+          const teacherUser = db.prepare("SELECT id FROM users WHERE id = ? AND role = 'instructor' AND deleted_at IS NULL").get(parsedTid);
+          if (teacherUser) {
+            validatedTeacherUserId = teacherUser.id;
+          }
+        }
+      } else if (slot.teacherName && String(slot.teacherName).trim()) {
+        // Resolve teacherUserId ONLY if teacherName unambiguously matches exactly one active instructor
+        // If ambiguous (multiple instructors with same name), do NOT guess or automatically grant permissions!
+        const trimmedName = String(slot.teacherName).trim().toLowerCase();
+        const matchingInstructors = db.prepare(`
+          SELECT u.id
+          FROM users u
+          LEFT JOIN instructor_profiles p ON p.user_id = u.id
+          WHERE u.role = 'instructor' AND u.deleted_at IS NULL
+            AND (
+              LOWER(TRIM(COALESCE(p.full_name, ''))) = ?
+              OR LOWER(TRIM(COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, ''))) = ?
+              OR LOWER(TRIM(u.username)) = ?
+            )
+        `).all(trimmedName, trimmedName, trimmedName);
+
+        if (matchingInstructors.length === 1) {
+          validatedTeacherUserId = matchingInstructors[0].id;
+        }
+      }
+
+      return {
+        id: slot.id,
+        date: slot.date ? String(slot.date).trim() : '',
+        weekday: slot.weekday,
+        startTime: slot.startTime,
+        endTime: slot.endTime,
+        timezone: slot.timezone || 'Asia/Dhaka',
+        subjectName: slot.subjectName ? String(slot.subjectName).trim() : '',
+        classTitle: slot.classTitle ? String(slot.classTitle).trim() : '',
+        teacherName: slot.teacherName ? String(slot.teacherName).trim() : '',
+        teacherUserId: validatedTeacherUserId,
+        deliveryMode: slot.deliveryMode ? String(slot.deliveryMode).trim() : 'live',
+        category: slot.category ? String(slot.category).trim() : 'theory',
+        platform: slot.platform ? String(slot.platform).trim() : ''
+      };
+    });
 
     // Determine effective old routine before saving
     const currentRoutineRes = resolvePhaseRoutine(db, id, resolvedBatchId, canonicalPhaseId, phase.routine);

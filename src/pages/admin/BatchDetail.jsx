@@ -948,6 +948,7 @@ export default function BatchDetail() {
         classTitle: cls.title || fallbackSlot.classTitle,
         subjectName: cls.subjectName || fallbackSlot.subjectName,
         teacherName: cls.teacherName || fallbackSlot.teacherName,
+        teacherUserId: cls.teacherUserId || fallbackSlot.teacherUserId || null,
         deliveryMode: cls.deliveryMode || fallbackSlot.deliveryMode,
         category: cls.category || fallbackSlot.category,
         platform: cls.platform || fallbackSlot.platform
@@ -972,11 +973,23 @@ export default function BatchDetail() {
           nextSlot.weekday = dayNames[dateObj.getUTCDay()];
         }
       }
+      if (field === 'teacherName') {
+        const match = catalogTeachers.find(t => (t.full_name || `${t.first_name} ${t.last_name}`) === value || String(t.id) === value);
+        nextSlot.teacherUserId = match ? match.id : (value === '' ? null : (nextSlot.teacherUserId || null));
+      }
+      if (field === 'teacherUserId') {
+        const match = catalogTeachers.find(t => t.id === Number(value));
+        nextSlot.teacherUserId = match ? match.id : (value ? Number(value) : null);
+        if (match) nextSlot.teacherName = match.full_name || `${match.first_name} ${match.last_name}`;
+      }
       if (field === 'subjectName' && value && typeof value === 'string') {
         const match = catalogSubjects.find(s => s.name?.trim().toLowerCase() === value.trim().toLowerCase());
         if (match) {
           if (!nextSlot.teacherName && match.teacher_name) {
             nextSlot.teacherName = match.teacher_name;
+            if (match.teacher_id) {
+              nextSlot.teacherUserId = match.teacher_id;
+            }
           }
           if ((!nextSlot.deliveryMode || nextSlot.deliveryMode === 'live') && match.class_type) {
             nextSlot.deliveryMode = deliveryModeFromSubject(match);

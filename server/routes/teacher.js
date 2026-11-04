@@ -1,11 +1,11 @@
 import express from 'express';
 import db from '../db/database.js';
-import { authenticateToken } from '../middleware/auth.js';
+import { authenticateToken, hasAnyPermission, isSuperAdmin } from '../middleware/auth.js';
 import { resolvePhaseRoutine } from '../services/courseProgressService.js';
 
 const router = express.Router();
 
-function sanitizeRoutineSlots(routine = []) {
+export function sanitizeRoutineSlots(routine = []) {
   if (!Array.isArray(routine)) return [];
   return routine.map((slot, idx) => ({
     id: slot.id || `slot_${idx + 1}`,
@@ -17,60 +17,113 @@ function sanitizeRoutineSlots(routine = []) {
     subjectName: slot.subjectName ? String(slot.subjectName).trim() : '',
     classTitle: slot.classTitle ? String(slot.classTitle).trim() : '',
     teacherName: slot.teacherName ? String(slot.teacherName).trim() : '',
+    teacherUserId: slot.teacherUserId ? Number(slot.teacherUserId) : null,
     deliveryMode: slot.deliveryMode ? String(slot.deliveryMode).trim() : 'live',
     category: slot.category ? String(slot.category).trim() : 'theory',
     platform: slot.platform ? String(slot.platform).trim() : ''
   }));
 }
 
-function getInstructorIdentities(userId) {
-  const profile = db.prepare('SELECT * FROM instructor_profiles WHERE user_id = ?').get(userId);
-  const user = db.prepare('SELECT first_name, last_name, username FROM users WHERE id = ?').get(userId);
-  
-  const names = [];
-  if (profile?.full_name) names.push(profile.full_name.trim().toLowerCase());
-  if (user) {
-    const fullName = `${user.first_name || ''} ${user.last_name || ''}`.trim().toLowerCase();
-    if (fullName) names.push(fullName);
-    if (user.username) names.push(user.username.trim().toLowerCase());
+/**
+ * Authoritatively determines if a teacher (by stable user ID) is assigned to a batch.
+ * Checks:
+ * 1. batch_instructors table (direct assignment by user ID)
+ * 2. batch.created_by (batch creator)
+ * 3. Class-level assignment in routine slots (slot.teacherUserId === teacherUserId)
+ * 4. Legacy course assignment via custom_subjects (custom_subjects.teacher_id === teacherUserId)
+ * 
+ * NEVER infers permissions from matching names or editable profile text!
+ */
+export function isTeacherAssignedToBatch(database, teacherUserId, batch) {
+  if (!teacherUserId || !batch) return false;
+  const uid = Number(teacherUserId);
+  const bid = Number(batch.id);
+
+  // 1. Authoritative batch_instructors table
+  try {
+    const inBatchInstructors = database.prepare(`
+      SELECT 1 FROM batch_instructors WHERE batch_id = ? AND user_id = ?
+    `).get(bid, uid);
+    if (inBatchInstructors) return true;
+  } catch {
+    // If table doesn't exist yet in an unmigrated runtime, proceed to slot checks
   }
 
-  return {
-    profile,
-    user,
-    names: Array.from(new Set(names)),
-    bfiBatch: profile?.bfi_batch ? String(profile.bfi_batch).trim() : null
-  };
+  // 2. Creator of the batch
+  if (batch.created_by && Number(batch.created_by) === uid) {
+    return true;
+  }
+
+  // 3. Class-level assignment in routine slots (for course definition batches)
+  if (batch.course_definition_id) {
+    const defRow = database.prepare('SELECT definition_json FROM course_definitions WHERE id = ?').get(batch.course_definition_id);
+    if (defRow?.definition_json) {
+      try {
+        const def = JSON.parse(defRow.definition_json);
+        const rawPhases = Array.isArray(def.phases) ? def.phases : [];
+        for (let pIdx = 0; pIdx < rawPhases.length; pIdx++) {
+          const phase = rawPhases[pIdx];
+          const phaseId = phase.id || `phase_${phase.phaseIndex || pIdx + 1}`;
+          const resolved = resolvePhaseRoutine(database, batch.course_definition_id, batch.id, phaseId, phase.routine);
+          if (Array.isArray(resolved?.routine)) {
+            const hasClass = resolved.routine.some(slot => slot && Number(slot.teacherUserId) === uid);
+            if (hasClass) return true;
+          }
+        }
+      } catch (e) {
+        console.error('Error in isTeacherAssignedToBatch parsing definition JSON:', e);
+      }
+    }
+  } else {
+    // 4. Legacy course: check custom_subjects.teacher_id
+    try {
+      const hasLegacySubject = database.prepare(`
+        SELECT 1 FROM custom_subjects WHERE course_name = ? AND teacher_id = ?
+      `).get(batch.course_name, uid);
+      if (hasLegacySubject) return true;
+    } catch { /* empty */ }
+  }
+
+  return false;
 }
 
 // Teacher / Instructor Batch Routine View - Specific Batch (Authoritative, Read-Only)
 router.get('/batches/:id/schedule', authenticateToken, (req, res) => {
   try {
+    // Role check: Only instructors and authorized admins are permitted; fail closed for others
     if (req.user.role !== 'instructor' && req.user.role !== 'admin') {
       return res.status(403).json({ error: 'Forbidden: Instructor access required.' });
     }
 
-    const batchId = Number(req.params.id);
-    if (!batchId || isNaN(batchId)) {
-      return res.status(400).json({ error: 'Invalid batch ID' });
+    if (req.user.role === 'admin' && !isSuperAdmin(req.user)) {
+      const hasPerm = hasAnyPermission(req.user, 'batches:view', 'courses:view', 'teachers:view');
+      if (!hasPerm) {
+        return res.status(403).json({ error: "Access denied: missing required view permission ('batches:view', 'courses:view', or 'teachers:view')." });
+      }
     }
 
-    const batch = db.prepare('SELECT * FROM batches WHERE id = ?').get(batchId);
-    if (!batch) {
-      return res.status(404).json({ error: 'Batch not found.' });
+    // Validate positive integer batch ID
+    const rawId = req.params.id;
+    const batchId = parseInt(rawId, 10);
+    if (!Number.isInteger(batchId) || batchId <= 0 || String(batchId) !== String(rawId).trim()) {
+      return res.status(400).json({ error: 'Invalid batch ID: must be a positive integer.' });
     }
 
-    const { names, bfiBatch } = getInstructorIdentities(req.user.id);
+    // Query batch enforcing active policy (not deleted and not archived)
+    const batch = db.prepare('SELECT * FROM batches WHERE id = ? AND deleted_at IS NULL').get(batchId);
+    if (!batch || batch.status === 'archived') {
+      return res.status(404).json({ error: 'Batch not found or unavailable.' });
+    }
+
+    // For instructor role, enforce authoritative assignment
+    if (req.user.role === 'instructor') {
+      const isAssigned = isTeacherAssignedToBatch(db, req.user.id, batch);
+      if (!isAssigned) {
+        return res.status(403).json({ error: 'Forbidden: You are not assigned to instruct this batch.' });
+      }
+    }
 
     let phases = [];
-    let isTeacherAssigned = req.user.role === 'admin'; // Admins have broad viewing access
-
-    if (!batch.course_definition_id && bfiBatch && (bfiBatch === String(batch.id) || bfiBatch === String(batch.batch_number))) {
-      isTeacherAssigned = true;
-    } else if (bfiBatch && bfiBatch === String(batch.id)) {
-      isTeacherAssigned = true;
-    }
-
     if (batch.course_definition_id) {
       const defRow = db.prepare('SELECT definition_json FROM course_definitions WHERE id = ?').get(batch.course_definition_id);
       if (defRow?.definition_json) {
@@ -82,9 +135,9 @@ router.get('/batches/:id/schedule', authenticateToken, (req, res) => {
             const resolved = resolvePhaseRoutine(db, batch.course_definition_id, batch.id, phaseId, phase.routine);
             const sanitizedSlots = sanitizeRoutineSlots(resolved.routine);
 
+            // Mark classes where teacherUserId explicitly matches authenticated instructor
             const markedSlots = sanitizedSlots.map(slot => {
-              const isMy = slot.teacherName && names.includes(slot.teacherName.toLowerCase());
-              if (isMy) isTeacherAssigned = true;
+              const isMy = slot.teacherUserId && Number(slot.teacherUserId) === Number(req.user.id);
               return {
                 ...slot,
                 isMyClass: Boolean(isMy)
@@ -103,10 +156,6 @@ router.get('/batches/:id/schedule', authenticateToken, (req, res) => {
           console.error('Error parsing course definition JSON for teacher:', e);
         }
       }
-    }
-
-    if (!isTeacherAssigned && req.user.role === 'instructor') {
-      return res.status(403).json({ error: 'Forbidden: You are not assigned to this batch.' });
     }
 
     return res.json({
@@ -130,13 +179,22 @@ router.get('/schedule', authenticateToken, (req, res) => {
       return res.status(403).json({ error: 'Forbidden: Instructor access required.' });
     }
 
-    const { profile, user, names, bfiBatch } = getInstructorIdentities(req.user.id);
-    const teacherDisplayName = profile?.full_name || (user ? `${user.first_name || ''} ${user.last_name || ''}`.trim() : 'Instructor');
+    if (req.user.role === 'admin' && !isSuperAdmin(req.user)) {
+      const hasPerm = hasAnyPermission(req.user, 'batches:view', 'courses:view', 'teachers:view');
+      if (!hasPerm) {
+        return res.status(403).json({ error: 'Access denied: missing required view permission.' });
+      }
+    }
 
+    const teacherUser = db.prepare('SELECT id, first_name, last_name, username FROM users WHERE id = ?').get(req.user.id);
+    const profile = db.prepare('SELECT full_name FROM instructor_profiles WHERE user_id = ?').get(req.user.id);
+    const teacherDisplayName = profile?.full_name || (teacherUser ? `${teacherUser.first_name || ''} ${teacherUser.last_name || ''}`.trim() : 'Instructor');
+
+    // Only active batches (deleted_at IS NULL AND status != 'archived')
     const allBatches = db.prepare(`
-      SELECT id, batch_name, batch_number, course_name, course_definition_id
+      SELECT id, batch_name, batch_number, course_name, course_definition_id, created_by
       FROM batches
-      WHERE course_definition_id IS NOT NULL
+      WHERE deleted_at IS NULL AND (status IS NULL OR status != 'archived')
       ORDER BY id DESC
     `).all();
 
@@ -144,70 +202,63 @@ router.get('/schedule', authenticateToken, (req, res) => {
     const myClasses = [];
 
     for (const batch of allBatches) {
-      const defRow = db.prepare('SELECT definition_json FROM course_definitions WHERE id = ?').get(batch.course_definition_id);
-      if (!defRow?.definition_json) continue;
+      const isAssigned = (req.user.role === 'admin') || isTeacherAssignedToBatch(db, req.user.id, batch);
+      if (!isAssigned) continue;
 
-      try {
-        const def = JSON.parse(defRow.definition_json);
-        const rawPhases = Array.isArray(def.phases) ? def.phases : [];
-        let batchHasMyClasses = req.user.role === 'admin';
+      let batchPhases = [];
+      if (batch.course_definition_id) {
+        const defRow = db.prepare('SELECT definition_json FROM course_definitions WHERE id = ?').get(batch.course_definition_id);
+        if (defRow?.definition_json) {
+          try {
+            const def = JSON.parse(defRow.definition_json);
+            const rawPhases = Array.isArray(def.phases) ? def.phases : [];
+            for (let pIdx = 0; pIdx < rawPhases.length; pIdx++) {
+              const phase = rawPhases[pIdx];
+              const phaseId = phase.id || `phase_${phase.phaseIndex || pIdx + 1}`;
+              const resolved = resolvePhaseRoutine(db, batch.course_definition_id, batch.id, phaseId, phase.routine);
+              const sanitizedSlots = sanitizeRoutineSlots(resolved.routine);
 
-        if (!batch.course_definition_id && bfiBatch && (bfiBatch === String(batch.id) || bfiBatch === String(batch.batch_number))) {
-          batchHasMyClasses = true;
-        } else if (bfiBatch && bfiBatch === String(batch.id)) {
-          batchHasMyClasses = true;
-        }
+              const markedSlots = sanitizedSlots.map(slot => {
+                const isMy = slot.teacherUserId && Number(slot.teacherUserId) === Number(req.user.id);
+                if (isMy) {
+                  myClasses.push({
+                    batchId: batch.id,
+                    batchName: batch.batch_name,
+                    batchNumber: batch.batch_number,
+                    courseName: batch.course_name,
+                    phaseId,
+                    phaseTitle: phase.title || `Phase ${pIdx + 1}`,
+                    slot
+                  });
+                }
+                return {
+                  ...slot,
+                  isMyClass: Boolean(isMy)
+                };
+              });
 
-        const batchPhases = [];
-
-        for (let pIdx = 0; pIdx < rawPhases.length; pIdx++) {
-          const phase = rawPhases[pIdx];
-          const phaseId = phase.id || `phase_${phase.phaseIndex || pIdx + 1}`;
-          const resolved = resolvePhaseRoutine(db, batch.course_definition_id, batch.id, phaseId, phase.routine);
-          const sanitizedSlots = sanitizeRoutineSlots(resolved.routine);
-
-          const markedSlots = sanitizedSlots.map(slot => {
-            const isMy = slot.teacherName && names.includes(slot.teacherName.toLowerCase());
-            if (isMy) {
-              batchHasMyClasses = true;
-              myClasses.push({
-                batchId: batch.id,
-                batchName: batch.batch_name,
-                batchNumber: batch.batch_number,
-                courseName: batch.course_name,
+              batchPhases.push({
                 phaseId,
-                phaseTitle: phase.title || `Phase ${pIdx + 1}`,
-                slot
+                title: phase.title || `Phase ${pIdx + 1}`,
+                phaseIndex: phase.phaseIndex || pIdx + 1,
+                source: resolved.source,
+                schedule: markedSlots
               });
             }
-            return {
-              ...slot,
-              isMyClass: Boolean(isMy)
-            };
-          });
-
-          batchPhases.push({
-            phaseId,
-            title: phase.title || `Phase ${pIdx + 1}`,
-            phaseIndex: phase.phaseIndex || pIdx + 1,
-            source: resolved.source,
-            schedule: markedSlots
-          });
+          } catch (e) {
+            console.error(`Error processing batch ${batch.id} schedule for teacher:`, e);
+          }
         }
-
-        if (batchHasMyClasses) {
-          assignedBatches.push({
-            batchId: batch.id,
-            batchName: batch.batch_name,
-            batchNumber: batch.batch_number,
-            courseName: batch.course_name,
-            courseDefinitionId: batch.course_definition_id,
-            phases: batchPhases
-          });
-        }
-      } catch (e) {
-        console.error(`Error processing batch ${batch.id} schedule for teacher:`, e);
       }
+
+      assignedBatches.push({
+        batchId: batch.id,
+        batchName: batch.batch_name,
+        batchNumber: batch.batch_number,
+        courseName: batch.course_name,
+        courseDefinitionId: batch.course_definition_id,
+        phases: batchPhases
+      });
     }
 
     return res.json({

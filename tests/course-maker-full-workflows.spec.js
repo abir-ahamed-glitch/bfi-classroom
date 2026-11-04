@@ -178,7 +178,7 @@ test.beforeAll(async () => {
         title: 'Phase 1: Story Structure',
         classCount: 1,
         routine: [
-          { date: '2026-08-25', weekday: 'Tuesday', startTime: '19:00', endTime: '21:00', timezone: 'Asia/Dhaka', deliveryMode: 'recorded', category: 'theory', platform: 'Zoom', teacherName: 'Tanvir Mokammel', subjectName: 'Film Language', classTitle: 'Part 01' }
+          { date: '2026-08-25', weekday: 'Tuesday', startTime: '19:00', endTime: '21:00', timezone: 'Asia/Dhaka', deliveryMode: 'recorded', category: 'theory', platform: 'Zoom', teacherName: 'Tanvir Mokammel', teacherUserId: 20, subjectName: 'Film Language', classTitle: 'Part 01' }
         ],
         classes: [
           { id: 'cls_1', title: 'Part 01: Character Archetypes', deliveryMode: 'recorded', category: 'theory', platform: 'Zoom' }
@@ -586,7 +586,50 @@ test.describe('Course Maker Extended Verification: Mobile, 3-Phase Stats, Fees, 
     });
     expect(teacherUnassignedRes.status()).toBe(403);
     const bodyTeacherUnassigned = await teacherUnassignedRes.json();
-    expect(bodyTeacherUnassigned.error).toMatch(/not assigned to this batch/i);
+    expect(bodyTeacherUnassigned.error).toMatch(/not assigned to (?:instruct )?this batch/i);
+
+    // Close student-route bypass: Teacher 20 attempts student endpoint api/student/batches/300099/schedule -> 403 Forbidden
+    const teacherStudentBypassRes = await page.request.get(`api/student/batches/${testBatchId3P}/schedule`, {
+      headers: { 'Authorization': `Bearer ${teacherToken}` }
+    });
+    expect(teacherStudentBypassRes.status()).toBe(403);
+    const bodyBypass = await teacherStudentBypassRes.json();
+    expect(bodyBypass.error).toMatch(/not assigned to instruct this batch/i);
+    expect(bodyBypass.phases).toBeUndefined();
+
+    // Route alias denial: Teacher 20 on api/instructor/batches/300099/schedule -> 403 Forbidden
+    const teacherAliasRes = await page.request.get(`api/instructor/batches/${testBatchId3P}/schedule`, {
+      headers: { 'Authorization': `Bearer ${teacherToken}` }
+    });
+    expect(teacherAliasRes.status()).toBe(403);
+
+    // Invalid batch ID validation: non-positive or non-integer IDs return 400 Bad Request
+    const badIdRes = await page.request.get('api/student/batches/invalid/schedule', {
+      headers: { 'Authorization': `Bearer ${studentToken}` }
+    });
+    expect(badIdRes.status()).toBe(400);
+
+    const zeroIdRes = await page.request.get('api/teacher/batches/0/schedule', {
+      headers: { 'Authorization': `Bearer ${teacherToken}` }
+    });
+    expect(zeroIdRes.status()).toBe(400);
+
+    // Stable teacher assignment & identical name handling:
+    // Seed Teacher 22 with identical full_name 'Tanvir Mokammel'
+    db.prepare("INSERT OR REPLACE INTO users (id, username, email, password_hash, role, first_name, last_name, is_active, is_super_admin, token_version) VALUES (22, 'tanvir_dup', 'tanvir2@bfi.edu', 'hash', 'instructor', 'Tanvir', 'Mokammel', 1, 0, 1)").run();
+    db.prepare("INSERT OR REPLACE INTO instructor_profiles (user_id, full_name, subjects, bfi_batch) VALUES (22, 'Tanvir Mokammel', '[]', '01')").run();
+    const teacher2Token = issueUserSessionToken(22, 'instructor').token;
+
+    // Teacher 22 attempts to access batch 100082 -> 403 Forbidden because teacherUserId is 20, not 22!
+    const dupRes = await page.request.get(`api/teacher/batches/${testBatchId1}/schedule`, {
+      headers: { 'Authorization': `Bearer ${teacher2Token}` }
+    });
+    expect(dupRes.status()).toBe(403);
+    const dupBody = await dupRes.json();
+    expect(dupBody.error).toMatch(/not assigned to instruct this batch/i);
+
+    // Profile edit test: Teacher 20 changes full_name in instructor_profiles -> retains access because assignment is by user ID!
+    db.prepare("UPDATE instructor_profiles SET full_name = 'Tanvir Mokammel Senior' WHERE user_id = 20").run();
 
     // 2. Client Level Security: Student attempting to navigate to admin batch manager is redirected away
     await injectStudentAuth(page);
@@ -652,6 +695,7 @@ test.describe('Course Maker Extended Verification: Mobile, 3-Phase Stats, Fees, 
         subjectName: 'Directing Masterclass',
         classTitle: 'Part 02: Blocking & Action',
         teacherName: 'Tanvir Mokammel',
+        teacherUserId: 20,
         deliveryMode: 'recorded_plus_live_discussion',
         category: 'practical',
         platform: 'Google Meet'
@@ -678,7 +722,24 @@ test.describe('Course Maker Extended Verification: Mobile, 3-Phase Stats, Fees, 
     await expect(teacherSlotCard.locator('[data-testid="slot-time-badge"]')).toContainText('21:00');
     await expect(teacherSlotCard.locator('[data-testid="slot-platform-badge"]')).toContainText('Zoom');
 
-    // 8. Admin Level Presentation: Admin views batch 100082 routine schedule with all rich attributes
+    // 8. Mobile Viewport Verification (390x844): Student and Teacher Schedule Views
+    await page.setViewportSize({ width: 390, height: 844 });
+    await injectStudentAuth(page);
+    await page.goto('classroom');
+    await page.waitForLoadState('networkidle');
+    await expect(page.locator('.classroom-slots-grid')).toBeVisible();
+    await page.screenshot({ path: `${artifactDir}/evidence/23_mobile_student_classroom_view.png` });
+
+    await injectTeacherAuth(page);
+    await page.goto('classroom');
+    await page.waitForLoadState('networkidle');
+    await expect(teacherSlotCard.locator('[data-testid="slot-myclass-tag"]')).toContainText('Your Class');
+    await page.screenshot({ path: `${artifactDir}/evidence/24_mobile_teacher_classroom_view.png` });
+
+    // Reset viewport to desktop
+    await page.setViewportSize({ width: 1440, height: 900 });
+
+    // 9. Admin Level Presentation: Admin views batch 100082 routine schedule with all rich attributes
     await injectAdminAuth(page);
     await page.goto(`admin/batchmanager/${testBatchId1}`);
     await page.waitForLoadState('networkidle');
@@ -690,7 +751,7 @@ test.describe('Course Maker Extended Verification: Mobile, 3-Phase Stats, Fees, 
     await expect(page.locator('text=/Tanvir Mokammel/').first()).toBeVisible();
     await expect(page.locator('text=/Zoom/').first()).toBeVisible();
 
-    console.log('✅ Flow 4: Student & Teacher authorized routine views, security denial & dynamic updates verified successfully');
+    console.log('✅ Flow 4: Student & Teacher authorized routine views, security denial, stable assignments & mobile views verified successfully');
   });
 
   test('Flow 5: Certificate Parity, Eligibility vs. Issuance Distinction & Download Verification', async ({ page }) => {

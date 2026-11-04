@@ -156,7 +156,7 @@ async function run() {
       type: 'access'
     };
     if (user.role === 'admin') {
-      payload.sessionId = user.id === 2 ? 101 : (user.id === 3 ? 103 : 102);
+      payload.sessionId = user.id === 2 ? 101 : (user.id === 3 ? 103 : (user.id === 4 ? 104 : 102));
     }
     return jwt.sign(payload, getJwtSecret(), { expiresIn: '1h' });
   }
@@ -519,7 +519,7 @@ async function run() {
           title: 'Phase 1: Pre-Visualisation',
           feeAmount: 5000,
           classCount: 1,
-          routine: [{ weekday: 'Saturday', startTime: '19:00', endTime: '21:00', teacherName: 'Tanvir Mokammel' }],
+          routine: [{ weekday: 'Saturday', startTime: '19:00', endTime: '21:00', teacherName: 'Tanvir Mokammel', teacherUserId: 60 }],
           classes: [{ id: 'cls_d1', title: 'Storyboarding', mandatory: true }],
           assignments: [{ id: 'asg_d1', title: 'Storyboard Book', passMarks: 10, maxMarks: 20 }],
           exam: { enabled: true, title: 'Phase 1 Exam', passMarks: 40, maxMarks: 80 }
@@ -1079,8 +1079,8 @@ async function run() {
     assert(studentAllData.batches.some(b => b.batchId === 300001));
     console.log('✅ 10.3 Student aggregated schedule returned all enrolled batches with effective routines');
 
-    // 10.4: Seed Teachers: Tanvir (assigned to batch 300001) and Kabir (unassigned)
-    console.log('--- 10.4 Teacher authorization and unassigned batch denial ---');
+    // 10.4a: Close the student-route bypass & verify unassigned teacher denial
+    console.log('--- 10.4a Close the student-route bypass ---');
     db.prepare(`
       INSERT OR REPLACE INTO users (id, username, email, password_hash, role, first_name, last_name, is_active, is_super_admin, token_version)
       VALUES (60, 'tanvir', 'tanvir@bfi.edu', 'hash', 'instructor', 'Tanvir', 'Mokammel', 1, 0, 1)
@@ -1101,7 +1101,7 @@ async function run() {
     `).run();
     const kabirToken = createValidToken({ id: 61, username: 'kabir', role: 'instructor', is_super_admin: 0 });
 
-    // Seed a class in batch 300001 taught by Tanvir Mokammel
+    // Seed a class in batch 300001 taught by Tanvir Mokammel (stable teacherUserId = 60)
     const batch300001Routine = [
       {
         date: '2026-09-15',
@@ -1112,6 +1112,7 @@ async function run() {
         subjectName: 'Film Language',
         classTitle: 'Part 01: Mise-en-scène',
         teacherName: 'Tanvir Mokammel',
+        teacherUserId: 60,
         deliveryMode: 'recorded_plus_live_discussion',
         category: 'theory',
         platform: 'Zoom'
@@ -1122,29 +1123,200 @@ async function run() {
       VALUES (?, 300001, 'phase_1', ?, 1, datetime('now'))
     `).run(diplomaDefId, JSON.stringify(batch300001Routine));
 
-    // Kabir attempts to access batch 300001 -> HTTP 403 Forbidden
-    const resKabirDenied = await fetchWithTimeout(`${baseUrl}/api/teacher/batches/300001/schedule`, {
+    // Kabir (unassigned instructor) attempts student endpoint /api/student/batches/300001/schedule -> HTTP 403 Forbidden
+    const resKabirStudentBypass = await fetchWithTimeout(`${baseUrl}/api/student/batches/300001/schedule`, {
       headers: { 'Authorization': `Bearer ${kabirToken}` }
     });
-    assert.strictEqual(resKabirDenied.status, 403);
-    const kabirBody = await resKabirDenied.json();
-    assert(kabirBody.error.includes('not assigned to this batch'));
-    console.log('✅ 10.4 Unassigned teacher access to batch 300001 strictly rejected with HTTP 403 Forbidden');
+    assert.strictEqual(resKabirStudentBypass.status, 403);
+    const kabirBypassBody = await resKabirStudentBypass.json();
+    assert.strictEqual(kabirBypassBody.phases, undefined, 'Denied response must contain zero schedule data');
+    assert(kabirBypassBody.error.includes('not assigned to instruct this batch'));
+    console.log('✅ 10.4a Student-route bypass closed: unassigned instructor strictly denied HTTP 403 with zero schedule data');
 
-    // 10.5: Assigned teacher Tanvir accesses batch 300001 schedule -> HTTP 200 OK
-    console.log('--- 10.5 Assigned teacher accesses batch schedule ---');
-    const resTanvir = await fetchWithTimeout(`${baseUrl}/api/teacher/batches/300001/schedule`, {
+    // 10.4b: Test all route aliases and unintended roles
+    console.log('--- 10.4b Route aliases and unintended roles ---');
+    // Kabir on /api/teacher/batches/300001/schedule -> 403
+    const resKabirTeacher = await fetchWithTimeout(`${baseUrl}/api/teacher/batches/300001/schedule`, {
+      headers: { 'Authorization': `Bearer ${kabirToken}` }
+    });
+    assert.strictEqual(resKabirTeacher.status, 403);
+
+    // Kabir on /api/instructor/batches/300001/schedule -> 403
+    const resKabirInstructor = await fetchWithTimeout(`${baseUrl}/api/instructor/batches/300001/schedule`, {
+      headers: { 'Authorization': `Bearer ${kabirToken}` }
+    });
+    assert.strictEqual(resKabirInstructor.status, 403);
+
+    // Student Jamil on /api/teacher/batches/300001/schedule -> 403
+    const resStudentOnTeacher = await fetchWithTimeout(`${baseUrl}/api/teacher/batches/300001/schedule`, {
+      headers: { 'Authorization': `Bearer ${jamilToken}` }
+    });
+    assert.strictEqual(resStudentOnTeacher.status, 403);
+
+    // Moderator role on /api/student and /api/teacher routes -> 403
+    db.prepare(`
+      INSERT OR REPLACE INTO users (id, username, email, password_hash, role, first_name, last_name, is_active, is_super_admin, token_version)
+      VALUES (65, 'mod_user', 'mod@bfi.edu', 'hash', 'moderator', 'Mod', 'User', 1, 0, 1)
+    `).run();
+    const modToken = createValidToken({ id: 65, username: 'mod_user', role: 'moderator', is_super_admin: 0 });
+    const resModStudent = await fetchWithTimeout(`${baseUrl}/api/student/batches/300001/schedule`, {
+      headers: { 'Authorization': `Bearer ${modToken}` }
+    });
+    assert.strictEqual(resModStudent.status, 403);
+    const resModTeacher = await fetchWithTimeout(`${baseUrl}/api/teacher/batches/300001/schedule`, {
+      headers: { 'Authorization': `Bearer ${modToken}` }
+    });
+    assert.strictEqual(resModTeacher.status, 403);
+
+    // Instructor calling aggregate /api/student/schedule -> 403
+    const resKabirStudentAgg = await fetchWithTimeout(`${baseUrl}/api/student/schedule`, {
+      headers: { 'Authorization': `Bearer ${kabirToken}` }
+    });
+    assert.strictEqual(resKabirStudentAgg.status, 403);
+
+    // Admin without batches:view / courses:view permissions (User 4) -> 403 Forbidden
+    db.prepare(`
+      INSERT OR REPLACE INTO users (id, username, email, password_hash, role, first_name, last_name, is_active, is_super_admin, token_version)
+      VALUES (4, 'nopermadmin', 'noperm@bfi.edu', 'hash', 'admin', 'NoPerm', 'Admin', 1, 0, 1)
+    `).run();
+    db.prepare("INSERT OR REPLACE INTO admin_profiles (user_id, full_name) VALUES (4, 'NoPerm Admin')").run();
+    db.prepare("INSERT OR REPLACE INTO sessions (id, user_id, token_hash, ip_address, user_agent, expires_at) VALUES (104, 4, 'valid_hash', '127.0.0.1', 'test_agent', datetime('now', '+1 day'))").run();
+    const noPermAdminToken = createValidToken({ id: 4, username: 'nopermadmin', role: 'admin', is_super_admin: 0 });
+
+    const resAdminNoPerm = await fetchWithTimeout(`${baseUrl}/api/student/batches/300001/schedule`, {
+      headers: { 'Authorization': `Bearer ${noPermAdminToken}` }
+    });
+    assert.strictEqual(resAdminNoPerm.status, 403);
+
+    // Admin WITH batches:view permission (User 3) -> 200 OK
+    const resAdminWithPerm = await fetchWithTimeout(`${baseUrl}/api/student/batches/300001/schedule`, {
+      headers: { 'Authorization': `Bearer ${readOnlyAdminToken}` }
+    });
+    assert.strictEqual(resAdminWithPerm.status, 200);
+    console.log('✅ 10.4b All route aliases (/api/teacher, /api/instructor) and unintended roles (student, moderator, read-only admin) strictly fail closed');
+
+    // 10.4c: Positive integer ID validation & deleted/archived batch visibility
+    console.log('--- 10.4c Positive integer ID validation & deleted/archived batch visibility ---');
+    // Non-positive or invalid integer batch IDs -> 400 Bad Request
+    for (const badId of ['0', '-1', 'abc', '1.5']) {
+      const resBadId = await fetchWithTimeout(`${baseUrl}/api/student/batches/${badId}/schedule`, {
+        headers: { 'Authorization': `Bearer ${jamilToken}` }
+      });
+      assert.strictEqual(resBadId.status, 400);
+      const resBadIdTeacher = await fetchWithTimeout(`${baseUrl}/api/teacher/batches/${badId}/schedule`, {
+        headers: { 'Authorization': `Bearer ${tanvirToken}` }
+      });
+      assert.strictEqual(resBadIdTeacher.status, 400);
+    }
+
+    // Soft-deleted batch -> 404 Not Found
+    db.prepare(`
+      INSERT OR REPLACE INTO batches (id, batch_name, batch_number, course_name, course_definition_id, deleted_at, status)
+      VALUES (300099, 'Deleted Batch', '99', 'Directing Diploma 3-Phase', ?, datetime('now'), 'active')
+    `).run(diplomaDefId);
+    db.prepare('INSERT OR REPLACE INTO batch_students (batch_id, student_id) VALUES (300099, 50)').run();
+    db.prepare('INSERT OR REPLACE INTO batch_instructors (batch_id, user_id) VALUES (300099, 60)').run();
+
+    const resDeletedStudent = await fetchWithTimeout(`${baseUrl}/api/student/batches/300099/schedule`, {
+      headers: { 'Authorization': `Bearer ${jamilToken}` }
+    });
+    assert.strictEqual(resDeletedStudent.status, 404);
+    const resDeletedTeacher = await fetchWithTimeout(`${baseUrl}/api/teacher/batches/300099/schedule`, {
       headers: { 'Authorization': `Bearer ${tanvirToken}` }
     });
-    assert.strictEqual(resTanvir.status, 200);
-    const tanvirBatchData = await resTanvir.json();
-    assert.strictEqual(tanvirBatchData.batchId, 300001);
-    const tanvirSlots = tanvirBatchData.phases[0].schedule;
-    assert.strictEqual(tanvirSlots[0].teacherName, 'Tanvir Mokammel');
-    assert.strictEqual(tanvirSlots[0].isMyClass, true, 'isMyClass must be true for assigned instructor');
-    assert.strictEqual(tanvirSlots[0].deliveryMode, 'recorded_plus_live_discussion');
-    assert.strictEqual(tanvirSlots[0].platform, 'Zoom');
-    console.log('✅ 10.5 Assigned teacher received batch schedule with isMyClass=true, deliveryMode="recorded_plus_live_discussion", platform="Zoom"');
+    assert.strictEqual(resDeletedTeacher.status, 404);
+
+    // Archived batch -> 404 Not Found
+    db.prepare(`
+      INSERT OR REPLACE INTO batches (id, batch_name, batch_number, course_name, course_definition_id, deleted_at, status)
+      VALUES (300098, 'Archived Batch', '98', 'Directing Diploma 3-Phase', ?, NULL, 'archived')
+    `).run(diplomaDefId);
+    db.prepare('INSERT OR REPLACE INTO batch_students (batch_id, student_id) VALUES (300098, 50)').run();
+    db.prepare('INSERT OR REPLACE INTO batch_instructors (batch_id, user_id) VALUES (300098, 60)').run();
+
+    const resArchivedStudent = await fetchWithTimeout(`${baseUrl}/api/student/batches/300098/schedule`, {
+      headers: { 'Authorization': `Bearer ${jamilToken}` }
+    });
+    assert.strictEqual(resArchivedStudent.status, 404);
+    const resArchivedTeacher = await fetchWithTimeout(`${baseUrl}/api/teacher/batches/300098/schedule`, {
+      headers: { 'Authorization': `Bearer ${tanvirToken}` }
+    });
+    assert.strictEqual(resArchivedTeacher.status, 404);
+
+    // Verify aggregate routes omit deleted and archived batches
+    const resAggStudentCheck = await fetchWithTimeout(`${baseUrl}/api/student/schedule`, {
+      headers: { 'Authorization': `Bearer ${jamilToken}` }
+    });
+    const aggStudentData = await resAggStudentCheck.json();
+    assert(!aggStudentData.batches.some(b => b.batchId === 300099 || b.batchId === 300098));
+
+    const resAggTeacherCheck = await fetchWithTimeout(`${baseUrl}/api/teacher/schedule`, {
+      headers: { 'Authorization': `Bearer ${tanvirToken}` }
+    });
+    const aggTeacherData = await resAggTeacherCheck.json();
+    assert(!aggTeacherData.batches.some(b => b.batchId === 300099 || b.batchId === 300098));
+    console.log('✅ 10.4c Positive integer ID validation & consistent deleted/archived batch exclusion verified on all routes');
+
+    // 10.5: Stable teacher assignment & two instructors with identical names
+    console.log('--- 10.5 Stable teacher assignment & identical name handling ---');
+    // Seed Teacher 62 with identical full_name 'Tanvir Mokammel'
+    db.prepare(`
+      INSERT OR REPLACE INTO users (id, username, email, password_hash, role, first_name, last_name, is_active, is_super_admin, token_version)
+      VALUES (62, 'tanvir_duplicate', 'tanvir2@bfi.edu', 'hash', 'instructor', 'Tanvir', 'Mokammel', 1, 0, 1)
+    `).run();
+    db.prepare(`
+      INSERT OR REPLACE INTO instructor_profiles (user_id, full_name, subjects, bfi_batch)
+      VALUES (62, 'Tanvir Mokammel', '["Directing"]', '01')
+    `).run();
+    const tanvirDuplicateToken = createValidToken({ id: 62, username: 'tanvir_duplicate', role: 'instructor', is_super_admin: 0 });
+
+    // Teacher 60 (assigned by user_id = 60) succeeds
+    const resTanvirAuth = await fetchWithTimeout(`${baseUrl}/api/teacher/batches/300001/schedule`, {
+      headers: { 'Authorization': `Bearer ${tanvirToken}` }
+    });
+    assert.strictEqual(resTanvirAuth.status, 200);
+    const tanvirBatchData = await resTanvirAuth.json();
+    assert.strictEqual(tanvirBatchData.phases[0].schedule[0].isMyClass, true);
+
+    // Teacher 62 (shares identical full_name, but user_id is 62) is rejected -> 403 Forbidden!
+    const resDuplicateDenied = await fetchWithTimeout(`${baseUrl}/api/teacher/batches/300001/schedule`, {
+      headers: { 'Authorization': `Bearer ${tanvirDuplicateToken}` }
+    });
+    assert.strictEqual(resDuplicateDenied.status, 403);
+    const duplicateBody = await resDuplicateDenied.json();
+    assert(duplicateBody.error.includes('not assigned to instruct this batch'));
+
+    // Profile edit test: Teacher 60 changes profile full_name -> still retains access because assignment is by user ID!
+    db.prepare("UPDATE instructor_profiles SET full_name = 'Tanvir Mokammel Senior' WHERE user_id = 60").run();
+    const resTanvirAfterProfileEdit = await fetchWithTimeout(`${baseUrl}/api/teacher/batches/300001/schedule`, {
+      headers: { 'Authorization': `Bearer ${tanvirToken}` }
+    });
+    assert.strictEqual(resTanvirAfterProfileEdit.status, 200);
+    const tanvirEditedData = await resTanvirAfterProfileEdit.json();
+    assert.strictEqual(tanvirEditedData.phases[0].schedule[0].isMyClass, true);
+
+    // Assignment removal test: update routine override to set teacherUserId: null -> Teacher 60 is immediately denied
+    const unassignedSlotRoutine = [
+      {
+        ...batch300001Routine[0],
+        teacherName: 'Tanvir Mokammel',
+        teacherUserId: null // Unassigned
+      }
+    ];
+    db.prepare(`
+      UPDATE course_routine_overrides SET routine_json = ? WHERE course_definition_id = ? AND batch_id = 300001
+    `).run(JSON.stringify(unassignedSlotRoutine), diplomaDefId);
+
+    const resTanvirAfterRemoval = await fetchWithTimeout(`${baseUrl}/api/teacher/batches/300001/schedule`, {
+      headers: { 'Authorization': `Bearer ${tanvirToken}` }
+    });
+    assert.strictEqual(resTanvirAfterRemoval.status, 403, 'Teacher 60 must be denied once assignment is removed');
+
+    // Restore assigned slot for remaining tests
+    db.prepare(`
+      UPDATE course_routine_overrides SET routine_json = ? WHERE course_definition_id = ? AND batch_id = 300001
+    `).run(JSON.stringify(batch300001Routine), diplomaDefId);
+    console.log('✅ 10.5 Stable teacher assignment verified: identical names isolated, profile edits retain access, and assignment removal immediately revokes access');
 
     // 10.6: Assigned teacher aggregated schedule (/api/teacher/schedule and /api/instructor/schedule)
     console.log('--- 10.6 Assigned teacher aggregated schedule ---');
@@ -1178,6 +1350,7 @@ async function run() {
         subjectName: 'Advanced Directing',
         classTitle: 'Part 02: Blocking & Staging',
         teacherName: 'Tanvir Mokammel',
+        teacherUserId: 60,
         deliveryMode: 'live',
         category: 'practical',
         platform: 'Google Meet'

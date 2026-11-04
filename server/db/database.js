@@ -613,9 +613,21 @@ export function initializeDatabase() {
       UNIQUE(batch_id, student_id)
     );
 
+    -- Batch instructors association table
+    CREATE TABLE IF NOT EXISTS batch_instructors (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      batch_id INTEGER NOT NULL REFERENCES batches(id) ON DELETE CASCADE,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      assigned_by INTEGER REFERENCES users(id),
+      assigned_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(batch_id, user_id)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_bcf_lookup ON batch_course_fees(batch_id, course_name, batch_number);
     CREATE INDEX IF NOT EXISTS idx_batch_students_batch_id ON batch_students(batch_id);
     CREATE INDEX IF NOT EXISTS idx_batch_students_student_id ON batch_students(student_id);
+    CREATE INDEX IF NOT EXISTS idx_batch_instructors_batch ON batch_instructors(batch_id);
+    CREATE INDEX IF NOT EXISTS idx_batch_instructors_user ON batch_instructors(user_id);
     CREATE INDEX IF NOT EXISTS idx_sce_batch_id ON student_course_enrollments(batch_id);
     CREATE INDEX IF NOT EXISTS idx_sce_batch_step2 ON student_course_enrollments(batch_id, step2_completed);
     CREATE INDEX IF NOT EXISTS idx_batches_deleted_status ON batches(deleted_at, status);
