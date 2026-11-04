@@ -21,11 +21,18 @@ function getDatabase(customDb) {
  * 3. Published definition baseline routine
  */
 export function resolvePhaseRoutine(db, courseDefinitionId, batchId, phaseId, baseRoutine = []) {
+  const pIdStr = String(phaseId || '').trim();
+  const altId = pIdStr.startsWith('phase_')
+    ? pIdStr.replace('phase_', 'p_')
+    : pIdStr.startsWith('p_')
+    ? pIdStr.replace('p_', 'phase_')
+    : `phase_${pIdStr}`;
+
   if (batchId) {
     const batchOverride = db.prepare(`
       SELECT routine_json FROM course_routine_overrides
-      WHERE course_definition_id = ? AND batch_id = ? AND phase_id = ?
-    `).get(courseDefinitionId, batchId, phaseId);
+      WHERE course_definition_id = ? AND batch_id = ? AND (phase_id = ? OR phase_id = ?)
+    `).get(courseDefinitionId, batchId, pIdStr, altId);
     if (batchOverride?.routine_json) {
       try {
         return { routine: JSON.parse(batchOverride.routine_json), source: 'batch_override' };
@@ -35,8 +42,8 @@ export function resolvePhaseRoutine(db, courseDefinitionId, batchId, phaseId, ba
 
   const courseOverride = db.prepare(`
     SELECT routine_json FROM course_routine_overrides
-    WHERE course_definition_id = ? AND (batch_id = 0 OR batch_id IS NULL) AND phase_id = ?
-  `).get(courseDefinitionId, phaseId);
+    WHERE course_definition_id = ? AND (batch_id = 0 OR batch_id IS NULL) AND (phase_id = ? OR phase_id = ?)
+  `).get(courseDefinitionId, pIdStr, altId);
   if (courseOverride?.routine_json) {
     try {
       return { routine: JSON.parse(courseOverride.routine_json), source: 'course_override' };

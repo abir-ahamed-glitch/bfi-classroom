@@ -904,20 +904,8 @@ export default function BatchDetail() {
     setEditingRoutinePhase(phase);
     setBatchRoutineSlots(
       Array.isArray(phase.routine) && phase.routine.length > 0
-        ? JSON.parse(JSON.stringify(phase.routine))
-        : [{
-            date: '',
-            weekday: 'Saturday',
-            startTime: '19:00',
-            endTime: '21:00',
-            timezone: 'Asia/Dhaka',
-            subjectName: '',
-            classTitle: '',
-            teacherName: '',
-            deliveryMode: 'recorded',
-            category: 'theory',
-            platform: 'Zoom'
-          }]
+        ? phase.routine.map(slot => createDefaultRoutineSlot(slot))
+        : [createDefaultRoutineSlot()]
     );
     setRoutineAuditReason('');
     setRoutineAuditTouched(false);
@@ -936,36 +924,32 @@ export default function BatchDetail() {
   const handleAddRoutineSlot = () => {
     setBatchRoutineSlots(prev => [
       ...prev,
-      {
-        date: '',
-        weekday: 'Saturday',
-        startTime: '19:00',
-            endTime: '21:00',
-            timezone: 'Asia/Dhaka',
-            subjectName: '',
-            classTitle: '',
-            teacherName: '',
-            deliveryMode: 'recorded',
-            category: 'theory',
-            platform: 'Zoom'
-      }
+      createDefaultRoutineSlot()
     ]);
+    setTimeout(() => {
+      if (lastSlotRef.current) {
+        lastSlotRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        const firstInput = lastSlotRef.current.querySelector('input, select');
+        if (firstInput) firstInput.focus();
+      }
+    }, 50);
   };
 
   const handleCopyFromPhaseClass = (slotIdx, classId) => {
     if (!classId || !editingRoutinePhase) return;
     const cls = (editingRoutinePhase.classes || []).find(c => String(c.id) === String(classId));
     if (!cls) return;
+    const fallbackSlot = createDefaultRoutineSlot();
     setBatchRoutineSlots(prev => {
       const updated = [...prev];
       updated[slotIdx] = {
         ...updated[slotIdx],
-        classTitle: cls.title || '',
-        subjectName: cls.subjectName || '',
-        teacherName: cls.teacherName || '',
-        deliveryMode: cls.deliveryMode || 'live',
-        category: cls.category || 'theory',
-        platform: cls.platform || ''
+        classTitle: cls.title || fallbackSlot.classTitle,
+        subjectName: cls.subjectName || fallbackSlot.subjectName,
+        teacherName: cls.teacherName || fallbackSlot.teacherName,
+        deliveryMode: cls.deliveryMode || fallbackSlot.deliveryMode,
+        category: cls.category || fallbackSlot.category,
+        platform: cls.platform || fallbackSlot.platform
       };
       return updated;
     });
@@ -981,10 +965,10 @@ export default function BatchDetail() {
       const nextSlot = { ...updated[index], [field]: value };
       if (field === 'date' && value && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
         const [y, m, d] = value.split('-').map(Number);
-        const dateObj = new Date(y, m - 1, d);
+        const dateObj = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
         if (!isNaN(dateObj.getTime())) {
           const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-          nextSlot.weekday = dayNames[dateObj.getDay()];
+          nextSlot.weekday = dayNames[dateObj.getUTCDay()];
         }
       }
       if (field === 'subjectName' && value && typeof value === 'string') {
@@ -1003,12 +987,57 @@ export default function BatchDetail() {
     });
   };
 
+  const handleRevertBatchRoutine = async () => {
+    if (!editingRoutinePhase || !batchData?.course_definition?.id) return;
+    const confirmed = window.confirm(
+      'Are you sure you want to revert this batch routine to the course default template? This will delete the custom routine override for this batch.'
+    );
+    if (!confirmed) return;
+
+    try {
+      setRoutineSaving(true);
+      setRoutineError('');
+      const token = localStorage.getItem('token');
+      const res = await fetch(`/api/course-definitions/${batchData.course_definition.id}/routine`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          phase_id: editingRoutinePhase.id,
+          batch_id: batchData.id,
+          action: 'revert',
+          reason: routineAuditReason.trim() || 'Reverted batch schedule to course default template'
+        })
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to revert batch routine.');
+      }
+
+      showToast('Batch routine reverted to course template successfully!');
+      handleCloseRoutineModal();
+      await fetchAllData();
+    } catch (err) {
+      console.error('Error reverting batch routine:', err);
+      setRoutineError(err.message || 'Error reverting batch routine');
+    } finally {
+      setRoutineSaving(false);
+    }
+  };
+
   const handleSaveBatchRoutine = async (e) => {
     if (e && e.preventDefault) e.preventDefault();
-    if (!editingRoutinePhase || !batchData?.course_definition?.id) return;
-    if (!routineAuditReason.trim()) {
+    if (!editingRoutinePhase || !batchData?.course_definition?.id) {
+      setRoutineError('Course definition data is missing for this batch. Cannot save routine override.');
+      return;
+    }
+    const trimmedReason = routineAuditReason.trim();
+    if (!trimmedReason || trimmedReason.length < 3) {
       setRoutineAuditTouched(true);
-      setRoutineError('Reason for routine adjustment is required before saving. Please provide a brief explanation below (Required for Audit Log).');
+      setRoutineError('Reason for routine adjustment is required (at least 3 characters) before saving (Required for Audit Log).');
       if (routineAuditInputRef.current) {
         routineAuditInputRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
         routineAuditInputRef.current.focus();
@@ -1029,7 +1058,7 @@ export default function BatchDetail() {
           phase_id: editingRoutinePhase.id,
           batch_id: batchData.id,
           routine: batchRoutineSlots,
-          reason: routineAuditReason.trim()
+          reason: trimmedReason
         })
       });
 
@@ -2917,7 +2946,10 @@ export default function BatchDetail() {
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '0.65rem' }}>
                     {batchRoutineSlots.length === 0 ? (
                       <div style={{ padding: '1rem', textAlign: 'center', background: 'rgba(255,255,255,0.02)', borderRadius: '6px', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
-                        No routine slots scheduled. Click "+ Add Slot" to add one.
+                        <p style={{ margin: 0 }}>No routine slots scheduled for this batch.</p>
+                        <p style={{ margin: '0.35rem 0 0', fontSize: '0.78rem', color: '#94a3b8' }}>
+                          💡 Saving an empty list sets an empty schedule for this batch. To restore the course default schedule, click &ldquo;Revert to Course Default&rdquo;.
+                        </p>
                       </div>
                     ) : (
                       batchRoutineSlots.map((slot, sIdx) => {
@@ -2925,6 +2957,7 @@ export default function BatchDetail() {
                         return (
                           <div
                             key={sIdx}
+                            ref={sIdx === batchRoutineSlots.length - 1 ? lastSlotRef : null}
                             style={{
                               background: 'rgba(255,255,255,0.03)',
                               border: '1px solid rgba(255,255,255,0.08)',
@@ -3266,12 +3299,25 @@ export default function BatchDetail() {
                   )}
                 </div>
 
-                {routineError && (
-                  <div style={{ padding: '0.65rem 0.85rem', borderRadius: '6px', background: 'rgba(239,68,68,0.15)', color: '#ef4444', border: '1px solid rgba(239,68,68,0.3)', fontSize: '0.85rem' }}>
-                    {routineError}
-                  </div>
-                )}
               </div>
+
+              {routineError && (
+                <div style={{
+                  margin: '0 1.5rem 0.75rem',
+                  padding: '0.65rem 0.85rem',
+                  borderRadius: '6px',
+                  background: 'rgba(239,68,68,0.15)',
+                  color: '#ef4444',
+                  border: '1px solid rgba(239,68,68,0.3)',
+                  fontSize: '0.85rem',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.5rem'
+                }}>
+                  <XCircle size={16} style={{ flexShrink: 0 }} />
+                  <span>{routineError}</span>
+                </div>
+              )}
 
               <div
                 style={{
@@ -3281,14 +3327,40 @@ export default function BatchDetail() {
                   justifyContent: 'space-between',
                   alignItems: 'center',
                   gap: '0.75rem',
-                  background: 'rgba(0,0,0,0.1)'
+                  background: 'rgba(0,0,0,0.1)',
+                  flexWrap: 'wrap'
                 }}
               >
-                {!routineAuditReason.trim() ? (
-                  <span style={{ fontSize: '0.78rem', color: '#f59e0b', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
-                    💡 সেভ করতে উপরের লাল চিহ্নিত কারণটি (Reason) লিখুন
-                  </span>
-                ) : <span />}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+                  {editingRoutinePhase?.routineSource === 'batch_override' && (
+                    <button
+                      type="button"
+                      onClick={handleRevertBatchRoutine}
+                      disabled={routineSaving}
+                      style={{
+                        padding: '0.45rem 0.8rem',
+                        borderRadius: '6px',
+                        background: 'rgba(245, 158, 11, 0.1)',
+                        border: '1px solid rgba(245, 158, 11, 0.3)',
+                        color: '#fbbf24',
+                        fontSize: '0.8rem',
+                        fontWeight: 500,
+                        cursor: routineSaving ? 'not-allowed' : 'pointer',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '0.35rem'
+                      }}
+                      title="Revert custom batch schedule back to the original course template"
+                    >
+                      <RefreshCw size={13} /> Revert to Course Default
+                    </button>
+                  )}
+                  {(!routineAuditReason.trim() || routineAuditReason.trim().length < 3) && (
+                    <span style={{ fontSize: '0.78rem', color: '#f59e0b', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                      💡 সেভ করতে কারণটি (কমপক্ষে ৩ অক্ষর) লিখুন
+                    </span>
+                  )}
+                </div>
 
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
                   <button

@@ -27,7 +27,7 @@ function getCourseTypeLabel(type) {
   return found ? found.label : (type || 'Course');
 }
 
-import { DELIVERY_MODE_OPTIONS as DELIVERY_MODES, normalizeDeliveryMode, deliveryModeFromSubject } from '../../utils/deliveryModes';
+import { DELIVERY_MODE_OPTIONS as DELIVERY_MODES, normalizeDeliveryMode, deliveryModeFromSubject, createDefaultRoutineSlot } from '../../utils/deliveryModes';
 import PlatformSelector from '../../components/admin/PlatformSelector';
 
 const CLASS_CATEGORIES = [
@@ -59,7 +59,7 @@ function buildDefaultPhase(index) {
       completionRequired: true
     },
     routine: [
-      { date: '', weekday: 'Saturday', startTime: '18:00', endTime: '20:00', timezone: 'Asia/Dhaka', platform: '' }
+      createDefaultRoutineSlot()
     ],
     classes: [
       {
@@ -697,19 +697,7 @@ export default function CourseMaker() {
   // Routine helpers
   const addRoutineToPhase = () => {
     const cur = form.phases[activePhaseTab];
-    const newSlot = {
-      date: '',
-      weekday: 'Saturday',
-      startTime: '18:00',
-      endTime: '20:00',
-      timezone: 'Asia/Dhaka',
-      subjectName: '',
-      classTitle: '',
-      teacherName: '',
-      deliveryMode: 'live',
-      category: 'theory',
-      platform: ''
-    };
+    const newSlot = createDefaultRoutineSlot();
     updateCurrentPhase({ routine: [...(cur.routine || []), newSlot] });
   };
 
@@ -718,16 +706,17 @@ export default function CourseMaker() {
     const cur = form.phases[activePhaseTab];
     const cls = (cur.classes || []).find(c => String(c.id) === String(classId));
     if (!cls) return;
+    const fallbackSlot = createDefaultRoutineSlot();
     const updated = (cur.routine || []).map((r, i) => {
       if (i !== routineIndex) return r;
       return {
         ...r,
-        classTitle: cls.title || '',
-        subjectName: cls.subjectName || '',
-        teacherName: cls.teacherName || '',
-        deliveryMode: cls.deliveryMode || 'live',
-        category: cls.category || 'theory',
-        platform: cls.platform || ''
+        classTitle: cls.title || fallbackSlot.classTitle,
+        subjectName: cls.subjectName || fallbackSlot.subjectName,
+        teacherName: cls.teacherName || fallbackSlot.teacherName,
+        deliveryMode: cls.deliveryMode || fallbackSlot.deliveryMode,
+        category: cls.category || fallbackSlot.category,
+        platform: cls.platform || fallbackSlot.platform
       };
     });
     updateCurrentPhase({ routine: updated });
@@ -747,10 +736,10 @@ export default function CourseMaker() {
         const next = { ...r, date: val };
         if (val && typeof val === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(val.trim())) {
           const parts = val.trim().split('-').map(Number);
-          const dObj = new Date(parts[0], parts[1] - 1, parts[2]);
+          const dObj = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2], 12, 0, 0));
           if (!isNaN(dObj.getTime())) {
             const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-            next.weekday = dayNames[dObj.getDay()];
+            next.weekday = dayNames[dObj.getUTCDay()];
           }
         }
         return next;
@@ -1897,6 +1886,33 @@ export default function CourseMaker() {
                           </div>
                         </div>
                       ))}
+                    </div>
+                  )}
+
+                  {(curPhase.routine || []).length > 0 && (
+                    <div style={{ marginTop: '0.75rem' }}>
+                      <button
+                        type="button"
+                        onClick={addRoutineToPhase}
+                        style={{
+                          width: '100%',
+                          padding: '0.6rem 1rem',
+                          fontSize: '0.82rem',
+                          fontWeight: 600,
+                          borderRadius: '6px',
+                          background: 'rgba(59,130,246,0.08)',
+                          border: '1px dashed rgba(59,130,246,0.35)',
+                          color: '#93c5fd',
+                          cursor: 'pointer',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: '0.4rem',
+                          transition: 'background-color 0.15s ease, border-color 0.15s ease'
+                        }}
+                      >
+                        <Plus size={16} /> + Add Day / Time
+                      </button>
                     </div>
                   )}
                 </div>

@@ -230,10 +230,13 @@ router.get('/:id', authenticateToken, requireRole('admin'), requirePermission('b
           parsed = JSON.parse(def.definition_json || '{}');
           if (Array.isArray(parsed.phases)) {
             parsed.phases = parsed.phases.map((p, idx) => {
-              const phaseId = p.id || `p_${idx + 1}`;
+              const phaseNum = p.phaseIndex || (idx + 1);
+              const phaseId = String(p.id || `phase_${phaseNum}`).trim();
               const resRoutine = resolvePhaseRoutine(db, def.id, batch.id, phaseId, p.routine);
               return {
                 ...p,
+                id: phaseId,
+                phaseIndex: phaseNum,
                 routine: resRoutine.routine,
                 routineSource: resRoutine.source
               };

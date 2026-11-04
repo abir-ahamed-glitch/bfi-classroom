@@ -830,9 +830,18 @@ router.put('/:id/routine', authenticateToken, (req, res) => {
     }
 
     if (req.user.role === 'admin' && !isSuperAdmin(req.user)) {
-      const has = db.prepare('SELECT 1 FROM admin_permissions WHERE user_id = ? AND permission = ?').get(req.user.id, 'courses:edit');
-      if (!has) {
-        return res.status(403).json({ error: "Access denied: missing required permission 'courses:edit'", requiredPermission: 'courses:edit' });
+      if (resolvedBatchId > 0) {
+        const has = db.prepare(`
+          SELECT 1 FROM admin_permissions WHERE user_id = ? AND permission IN ('batches:edit', 'courses:edit')
+        `).get(req.user.id);
+        if (!has) {
+          return res.status(403).json({ error: "Access denied: requires 'batches:edit' or 'courses:edit' permission.", requiredPermission: 'batches:edit' });
+        }
+      } else {
+        const has = db.prepare('SELECT 1 FROM admin_permissions WHERE user_id = ? AND permission = ?').get(req.user.id, 'courses:edit');
+        if (!has) {
+          return res.status(403).json({ error: "Access denied: missing required permission 'courses:edit'", requiredPermission: 'courses:edit' });
+        }
       }
     }
 
@@ -853,9 +862,42 @@ router.put('/:id/routine', authenticateToken, (req, res) => {
     }
 
     const parsed = JSON.parse(definition.definition_json);
-    const phase = (parsed.phases || []).find(p => p.id === phase_id);
+    const phase = (parsed.phases || []).find(p => {
+      const pid = String(p.id || '').trim();
+      return pid === phase_id ||
+             pid === phase_id.replace('phase_', 'p_') ||
+             pid === phase_id.replace('p_', 'phase_') ||
+             (p.phaseIndex && `phase_${p.phaseIndex}` === phase_id);
+    });
     if (!phase) {
       return res.status(404).json({ error: `Phase with id "${phase_id}" not found in definition.` });
+    }
+
+    // Support revert action to clear batch override and inherit course template
+    if (req.body.action === 'revert' || req.body.revert === true) {
+      if (resolvedBatchId <= 0) {
+        return res.status(400).json({ error: 'Reverting routine requires a specific batch_id.' });
+      }
+      const existing = db.prepare('SELECT routine_json FROM course_routine_overrides WHERE course_definition_id = ? AND batch_id = ? AND phase_id = ?').get(id, resolvedBatchId, phase_id);
+      db.prepare('DELETE FROM course_routine_overrides WHERE course_definition_id = ? AND batch_id = ? AND phase_id = ?').run(id, resolvedBatchId, phase_id);
+      db.prepare(`
+        INSERT INTO course_routine_audits (
+          course_definition_id, batch_id, phase_id, old_routine, new_routine, changed_by, reason
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        id,
+        resolvedBatchId,
+        phase_id,
+        existing ? existing.routine_json : '[]',
+        JSON.stringify(phase.routine || []),
+        req.user.id,
+        reason ? String(reason).trim() : 'Reverted batch schedule to course default template'
+      );
+      return res.json({
+        success: true,
+        message: 'Batch schedule reverted to course default template.',
+        reverted: true
+      });
     }
 
     // Validate routine slots
@@ -885,10 +927,13 @@ router.put('/:id/routine', authenticateToken, (req, res) => {
         ? `date:${String(slot.date).trim()}`
         : `weekday:${slot.weekday}`;
       const previousSlots = scheduleSlots.get(conflictKey) || [];
-      if (previousSlots.some(previous => Math.max(start, previous.start) < Math.min(end, previous.end))) {
-        return res.status(400).json({ error: `Overlapping routine schedule detected on ${slot.date || slot.weekday}.` });
+      const conflict = previousSlots.find(previous => Math.max(start, previous.start) < Math.min(end, previous.end));
+      if (conflict) {
+        return res.status(400).json({
+          error: `Overlapping routine schedule detected: Slot #${conflict.slotNum} and Slot #${rIdx + 1} conflict on ${slot.date || slot.weekday} (${slot.startTime}–${slot.endTime} overlaps with ${conflict.startTime}–${conflict.endTime}).`
+        });
       }
-      previousSlots.push({ start, end });
+      previousSlots.push({ start, end, startTime: slot.startTime, endTime: slot.endTime, slotNum: rIdx + 1 });
       scheduleSlots.set(conflictKey, previousSlots);
 
       if (slot.deliveryMode && !ALLOWED_DELIVERY_MODES.includes(slot.deliveryMode)) {
