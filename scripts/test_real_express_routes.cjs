@@ -28,7 +28,17 @@ const fs = require('fs');
 
 // Set isolated database path BEFORE any server module imports
 const testDbPath = path.resolve(__dirname, '../server/test_real_express_routes.sqlite');
-if (fs.existsSync(testDbPath)) fs.unlinkSync(testDbPath);
+
+function cleanupDbFiles() {
+  for (const ext of ['', '-wal', '-shm']) {
+    const p = testDbPath + ext;
+    if (fs.existsSync(p)) {
+      try { fs.unlinkSync(p); } catch { /* ignore unlink error */ }
+    }
+  }
+}
+cleanupDbFiles();
+
 process.env.DATABASE_PATH = testDbPath;
 process.env.JWT_SECRET = 'test-jwt-secret-bfi-classroom-2026-very-secure';
 
@@ -36,6 +46,24 @@ const jwt = require('jsonwebtoken');
 const express = require('express');
 const http = require('http');
 const assert = require('assert');
+
+// 30-second bounded execution safety watchdog
+const watchdog = setTimeout(() => {
+  console.error('❌ FATAL: test_real_express_routes execution watchdog triggered after 30 seconds');
+  cleanupDbFiles();
+  process.exit(1);
+}, 30000);
+watchdog.unref();
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = 5000) {
+  const signal = options.signal || AbortSignal.timeout(timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal });
+  } catch (err) {
+    console.error(`❌ HTTP request failed or timed out (${timeoutMs}ms): ${options.method || 'GET'} ${url} - ${err.message}`);
+    throw err;
+  }
+}
 
 async function run() {
   const { default: db, initializeDatabase } = await import('../server/db/database.js');
@@ -156,7 +184,7 @@ async function run() {
     // HTTP TEST 1: Reason Length Validation on Real Route
     // -------------------------------------------------------------
     console.log('\n--- HTTP TEST 1: Reason Length Validation ---');
-    const resShortReason = await fetch(`${baseUrl}/api/course-definitions/${courseDefId}/routine`, {
+    const resShortReason = await fetchWithTimeout(`${baseUrl}/api/course-definitions/${courseDefId}/routine`, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
@@ -179,7 +207,7 @@ async function run() {
     // HTTP TEST 2: Save Batch Routine Override via Real Route
     // -------------------------------------------------------------
     console.log('\n--- HTTP TEST 2: Save Batch Routine Override ---');
-    const resSave = await fetch(`${baseUrl}/api/course-definitions/${courseDefId}/routine`, {
+    const resSave = await fetchWithTimeout(`${baseUrl}/api/course-definitions/${courseDefId}/routine`, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
@@ -204,7 +232,7 @@ async function run() {
     // HTTP TEST 3: Read back via GET /api/admin/batches/:id
     // -------------------------------------------------------------
     console.log('\n--- HTTP TEST 3: Read-back via Batches Route ---');
-    const resGetBatch = await fetch(`${baseUrl}/api/admin/batches/100082`, {
+    const resGetBatch = await fetchWithTimeout(`${baseUrl}/api/admin/batches/100082`, {
       headers: {
         'Authorization': `Bearer ${batchAdminToken}`
       }
@@ -227,7 +255,7 @@ async function run() {
     // HTTP TEST 4: Atomic Revert Action via Real Route
     // -------------------------------------------------------------
     console.log('\n--- HTTP TEST 4: Atomic Revert Action ---');
-    const resRevert = await fetch(`${baseUrl}/api/course-definitions/${courseDefId}/routine`, {
+    const resRevert = await fetchWithTimeout(`${baseUrl}/api/course-definitions/${courseDefId}/routine`, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
@@ -250,7 +278,7 @@ async function run() {
     console.log('✅ 4.1 Revert action cleared batch override and restored definition baseline via real route');
 
     // Verify read-back after revert via batches route
-    const resGetAfterRevert = await fetch(`${baseUrl}/api/admin/batches/100082`, {
+    const resGetAfterRevert = await fetchWithTimeout(`${baseUrl}/api/admin/batches/100082`, {
       headers: { 'Authorization': `Bearer ${batchAdminToken}` }
     });
     const jsonBatchAfterRevert = await resGetAfterRevert.json();
@@ -298,7 +326,7 @@ async function run() {
     `).run(reorderedBatchId, reorderedDefId);
 
     // Save batch override for phase_2
-    const resSaveP2 = await fetch(`${baseUrl}/api/course-definitions/${reorderedDefId}/routine`, {
+    const resSaveP2 = await fetchWithTimeout(`${baseUrl}/api/course-definitions/${reorderedDefId}/routine`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${batchAdminToken}` },
       body: JSON.stringify({
@@ -313,7 +341,7 @@ async function run() {
     assert.strictEqual(jsonSaveP2.phase_id, 'phase_2');
 
     // Save batch override for phase_1
-    const resSaveP1 = await fetch(`${baseUrl}/api/course-definitions/${reorderedDefId}/routine`, {
+    const resSaveP1 = await fetchWithTimeout(`${baseUrl}/api/course-definitions/${reorderedDefId}/routine`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${batchAdminToken}` },
       body: JSON.stringify({
@@ -336,7 +364,7 @@ async function run() {
     assert.ok(rowsBeforeRevert.find(r => r.phase_id === 'phase_2'), 'Phase 2 override must exist');
 
     // Revert phase_1 ONLY via real route
-    const resRevertP1 = await fetch(`${baseUrl}/api/course-definitions/${reorderedDefId}/routine`, {
+    const resRevertP1 = await fetchWithTimeout(`${baseUrl}/api/course-definitions/${reorderedDefId}/routine`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${batchAdminToken}` },
       body: JSON.stringify({
@@ -388,7 +416,7 @@ async function run() {
     `).run(customBatchId, customDefId);
 
     // Save batch override for 'prod'
-    const resSaveCustom = await fetch(`${baseUrl}/api/course-definitions/${customDefId}/routine`, {
+    const resSaveCustom = await fetchWithTimeout(`${baseUrl}/api/course-definitions/${customDefId}/routine`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${batchAdminToken}` },
       body: JSON.stringify({
@@ -403,7 +431,7 @@ async function run() {
     assert.strictEqual(jsonSaveCustom.phase_id, 'prod', 'Custom string phase ID must be canonical');
 
     // Read back via batches route
-    const resGetCustomBatch = await fetch(`${baseUrl}/api/admin/batches/${customBatchId}`, {
+    const resGetCustomBatch = await fetchWithTimeout(`${baseUrl}/api/admin/batches/${customBatchId}`, {
       headers: { 'Authorization': `Bearer ${batchAdminToken}` }
     });
     const jsonCustomBatch = await resGetCustomBatch.json();
@@ -438,7 +466,7 @@ async function run() {
       VALUES (200003, 'ambig-batch-01', '1st Batch', '01', 'Ambiguous Course', ?, 1)
     `).run(ambigDefId);
 
-    const resAmbig = await fetch(`${baseUrl}/api/course-definitions/${ambigDefId}/routine`, {
+    const resAmbig = await fetchWithTimeout(`${baseUrl}/api/course-definitions/${ambigDefId}/routine`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${batchAdminToken}` },
       body: JSON.stringify({
@@ -565,7 +593,7 @@ async function run() {
     };
 
     console.log('--- 8.1 Execute initial enrollment with Phase 1 installment payment via PUT /api/admin/students/:id ---');
-    const resEnroll = await fetch(`${baseUrl}/api/admin/students/${studentUserId}`, {
+    const resEnroll = await fetchWithTimeout(`${baseUrl}/api/admin/students/${studentUserId}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${superAdminToken}` },
       body: JSON.stringify({
@@ -605,7 +633,7 @@ async function run() {
     phase1PaidPayload['Directing Diploma 3-Phase'].phase1.status = 'paid';
     phase1PaidPayload['Directing Diploma 3-Phase'].phase1.installments[1].status = 'paid';
 
-    const resP1Pay = await fetch(`${baseUrl}/api/admin/students/${studentUserId}`, {
+    const resP1Pay = await fetchWithTimeout(`${baseUrl}/api/admin/students/${studentUserId}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${superAdminToken}` },
       body: JSON.stringify({
@@ -664,7 +692,7 @@ async function run() {
       installments: [{ id: 1, amount: 4500, date: '2026-10-01', method: 'bKash', status: 'paid' }]
     };
 
-    const resP2Pay = await fetch(`${baseUrl}/api/admin/students/${studentUserId}`, {
+    const resP2Pay = await fetchWithTimeout(`${baseUrl}/api/admin/students/${studentUserId}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${superAdminToken}` },
       body: JSON.stringify({
@@ -750,7 +778,7 @@ async function run() {
       installments: [{ id: 1, amount: 5000, date: '2026-11-01', method: 'bKash', status: 'paid' }]
     };
 
-    const resP3Pay = await fetch(`${baseUrl}/api/admin/students/${studentUserId}`, {
+    const resP3Pay = await fetchWithTimeout(`${baseUrl}/api/admin/students/${studentUserId}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${superAdminToken}` },
       body: JSON.stringify({
@@ -784,11 +812,25 @@ async function run() {
     console.log('🎉 ALL 8 REAL EXPRESS ROUTE & PAYMENT LIFECYCLE TESTS PASSED!');
     console.log('============================================================');
   } finally {
-    server.close();
+    if (server) {
+      if (typeof server.closeAllConnections === 'function') {
+        server.closeAllConnections();
+      }
+      await new Promise(resolve => server.close(resolve));
+    }
+    if (db && typeof db.close === 'function') {
+      try { db.close(); } catch { /* ignore */ }
+    }
+    cleanupDbFiles();
   }
 }
 
-run().catch(err => {
+run().then(() => {
+  clearTimeout(watchdog);
+  process.exit(0);
+}).catch(err => {
+  clearTimeout(watchdog);
   console.error('❌ Express route test error:', err);
+  cleanupDbFiles();
   process.exit(1);
 });

@@ -79,7 +79,10 @@ export async function downloadCertificatePdf(certificate, template = {}) {
   const dateStr = new Date(completionDate).toLocaleDateString('en-GB');
 
   let positions = normalizePositions();
-  let bodyTemplate = 'This is to certify that Mr./Ms. {Student Name} has passed the Three Month Long Online Filmmaking Course of {Batch Number} Batch directed by Tanvir Mokammel and organized by Bangladesh Film Institute (BFI).';
+  const courseDisplayName = certificate.courseName || 'Online Filmmaking Course';
+  let bodyTemplate = courseDisplayName === 'Online Filmmaking Course'
+    ? 'This is to certify that Mr./Ms. {Student Name} has passed the Three Month Long Online Filmmaking Course of {Batch Number} Batch directed by Tanvir Mokammel and organized by Bangladesh Film Institute (BFI).'
+    : 'This is to certify that Mr./Ms. {Student Name} has successfully completed the {Course Name} of {Batch Number} Batch organized by Bangladesh Film Institute (BFI).';
 
   if (template.layout_json) {
     try {
@@ -191,10 +194,15 @@ const getOrdinalSuffixHTML = (str) => {
       (_match, before, _between, after) => `${before}${value || ''}${after}`
     );
   const fillTemplatePlaceholders = (html) => fillRichPlaceholder(
-    fillRichPlaceholder(html, 'Student', 'Name', fullName),
-    'Batch',
-    'Number',
-    getOrdinalSuffixHTML(batchNumber)
+    fillRichPlaceholder(
+      fillRichPlaceholder(html, 'Student', 'Name', fullName),
+      'Batch',
+      'Number',
+      getOrdinalSuffixHTML(batchNumber)
+    ),
+    'Course',
+    'Name',
+    certificate.courseName || 'Course'
   );
 
   const fullSentence = fillTemplatePlaceholders(bodyTemplate);

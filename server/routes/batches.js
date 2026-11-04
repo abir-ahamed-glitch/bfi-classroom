@@ -1216,7 +1216,7 @@ router.get('/:id/progress', authenticateToken, requireRole('admin'), requirePerm
               phaseId: pId,
               phaseIndex: pIdx + 1,
               title: p.title || `Phase ${pIdx + 1}`,
-              admitted: students.length,
+              admitted: pIdx === 0 ? students.length : 0,
               attendance_qualified: 0,
               attendance_not_qualified: 0,
               assignments_completed: 0,
@@ -1228,6 +1228,9 @@ router.get('/:id/progress', authenticateToken, requireRole('admin'), requirePerm
             for (const s of students) {
               const pr = sprByPhaseAndEnrollment.get(`${pId}_${s.enrollment_id}`);
               if (pr) {
+                if (pIdx > 0 && pr.admitted === 1) {
+                  metric.admitted++;
+                }
                 if (pr.attendance_percentage >= minAtt) {
                   metric.attendance_qualified++;
                 } else {
@@ -1350,29 +1353,36 @@ router.get('/:id/progress', authenticateToken, requireRole('admin'), requirePerm
             } else {
               fees.due++;
             }
-          } else if (batch.course_name === 'Online Filmmaking Course' || feeDetails.phase1 || feeDetails.phase2) {
-            // Filmmaking course has phase1 and phase2 fee details
-            const p1 = feeDetails.phase1 || {};
-            const p2 = feeDetails.phase2 || {};
+          } else if (Object.keys(feeDetails).some(k => /^phase\d+$/i.test(k)) || batch.course_name === 'Online Filmmaking Course') {
+            const phaseKeys = Object.keys(feeDetails).filter(k => /^phase\d+$/i.test(k)).sort((a, b) => {
+              const numA = parseInt(a.replace(/\D/g, ''), 10) || 0;
+              const numB = parseInt(b.replace(/\D/g, ''), 10) || 0;
+              return numA - numB;
+            });
+            const targetKeys = phaseKeys.length > 0 ? phaseKeys : ['phase1', 'phase2'];
+            let collected = 0;
+            let outstanding = 0;
+            let allPaid = true;
 
-            const f1 = parseFloat(p1.full_fee || 0);
-            const paid1 = parseFloat(p1.amount_paid || 0);
-            const d1 = parseFloat(p1.discount || 0);
+            for (const pk of targetKeys) {
+              const p = feeDetails[pk] || {};
+              const f = parseFloat(p.full_fee || 0);
+              const paid = parseFloat(p.amount_paid || 0);
+              const d = parseFloat(p.discount || 0);
 
-            const f2 = parseFloat(p2.full_fee || 0);
-            const paid2 = parseFloat(p2.amount_paid || 0);
-            const d2 = parseFloat(p2.discount || 0);
+              collected += paid;
+              outstanding += Math.max(0, f - d - paid);
 
-            const collected = paid1 + paid2;
-            const outstanding = Math.max(0, f1 - d1 - paid1) + Math.max(0, f2 - d2 - paid2);
+              const isPPaid = p.status === 'Paid Full' || (f > 0 && paid + d >= f);
+              if (!isPPaid) {
+                allPaid = false;
+              }
+            }
 
             fees.total_collected += collected;
             fees.total_outstanding += outstanding;
 
-            const isP1Paid = p1.status === 'Paid Full' || (f1 > 0 && paid1 + d1 >= f1);
-            const isP2Paid = p2.status === 'Paid Full' || (f2 > 0 && paid2 + d2 >= f2);
-
-            if (isP1Paid && isP2Paid) {
+            if (allPaid && (targetKeys.length > 0 || collected > 0)) {
               fees.fully_paid++;
             } else if (collected > 0) {
               fees.partial++;
@@ -1435,8 +1445,17 @@ router.get('/:id/progress', authenticateToken, requireRole('admin'), requirePerm
         if (cs.fee_details) {
           try {
             const fd = typeof cs.fee_details === 'string' ? JSON.parse(cs.fee_details) : cs.fee_details;
+            const fdPhaseKeys = Object.keys(fd || {}).filter(k => /^phase\d+$/i.test(k));
             if (Array.isArray(fd.phases)) {
               isFeePending = fd.phases.some(p => p.status !== 'Paid Full' && p.status !== 'Waived');
+            } else if (fdPhaseKeys.length > 0) {
+              isFeePending = fdPhaseKeys.some(pk => {
+                const p = fd[pk] || {};
+                const f = parseFloat(p.full_fee || 0);
+                const paid = parseFloat(p.amount_paid || 0);
+                const d = parseFloat(p.discount || 0);
+                return p.status !== 'Paid Full' && p.status !== 'Waived' && !(f > 0 && paid + d >= f);
+              });
             } else if (fd.status && fd.status !== 'Paid Full' && fd.status !== 'Waived') {
               isFeePending = true;
             }

@@ -52,7 +52,7 @@ function StatCard({ icon, value, label, colorVariant, onClick, isActive }) {
     cursor: onClick ? 'pointer' : 'default',
     transition: 'all 0.2s ease-in-out',
     ...(onClick && {
-      transform: isActive ? 'translateY(-2px)' : 'none',
+      // Rule 4: subtle transition without hover movement
       background: isActive ? getIconBg().replace('0.1', '0.15') : undefined,
       borderColor: isActive ? getIconColor() : undefined,
       boxShadow: isActive ? `0 4px 20px ${getIconBg().replace('0.1', '0.2')}` : undefined,
@@ -1250,103 +1250,7 @@ export default function BatchDetail() {
           return enrollment && enrollment.step2_completed === 1;
 
         case 'fee_fully_paid':
-          if (!enrollment) return false;
-          {
-            const feeDetails = typeof enrollment.fee_details === 'string' ? JSON.parse(enrollment.fee_details) : enrollment.fee_details;
-            const defaultFee = batchData.course_fee || 8000;
-            const defaultP1 = batchData.phase1_fee || 4000;
-            const defaultP2 = batchData.phase2_fee || 4000;
-            const cleanNum = (val) => parseFloat(String(val || '').replace(/[^\d.]/g, '')) || 0;
-            let totalFee = 0;
-            let collected = 0;
-            if (batchData.course_name === 'Online Filmmaking Course') {
-              const p1 = feeDetails?.phase1 || {};
-              const p1Full = cleanNum(p1.full_fee) || defaultP1;
-              const p1Paid = cleanNum(p1.amount_paid);
-              const p1Discount = resolveClientDiscount(p1.discount, p1Full, p1.discount_amount);
-              const p1Insts = p1.installments || [];
-              const p1InstPaidSum = p1Insts
-                .filter(inst => (inst.status || '').toLowerCase() === 'paid')
-                .reduce((sum, inst) => sum + cleanNum(inst.amount), 0);
-              const p1Collected = Math.min(p1Paid + p1InstPaidSum + p1Discount, p1Full);
-
-              const p2 = feeDetails?.phase2 || {};
-              const p2Full = cleanNum(p2.full_fee) || defaultP2;
-              const p2Paid = cleanNum(p2.amount_paid);
-              const p2Discount = resolveClientDiscount(p2.discount, p2Full, p2.discount_amount);
-              const p2Insts = p2.installments || [];
-              const p2InstPaidSum = p2Insts
-                .filter(inst => (inst.status || '').toLowerCase() === 'paid')
-                .reduce((sum, inst) => sum + cleanNum(inst.amount), 0);
-              const p2Collected = Math.min(p2Paid + p2InstPaidSum + p2Discount, p2Full);
-
-              totalFee = p1Full + p2Full;
-              collected = p1Collected + p2Collected;
-            } else {
-              const p = feeDetails || {};
-              const full = cleanNum(p.full_fee) || defaultFee;
-              const paid = cleanNum(p.amount_paid);
-              const discount = resolveClientDiscount(p.discount, full, p.discount_amount);
-              const insts = p.installments || [];
-              const instPaidSum = insts
-                .filter(inst => (inst.status || '').toLowerCase() === 'paid')
-                .reduce((sum, inst) => sum + cleanNum(inst.amount), 0);
-              
-              totalFee = full;
-              collected = Math.min(paid + instPaidSum + discount, full);
-            }
-            return totalFee > 0 && collected >= totalFee;
-          }
-
         case 'fee_partial_paid':
-          if (!enrollment) return false;
-          {
-            const feeDetails = typeof enrollment.fee_details === 'string' ? JSON.parse(enrollment.fee_details) : enrollment.fee_details;
-            const defaultFee = batchData.course_fee || 8000;
-            const defaultP1 = batchData.phase1_fee || 4000;
-            const defaultP2 = batchData.phase2_fee || 4000;
-            const cleanNum = (val) => parseFloat(String(val || '').replace(/[^\d.]/g, '')) || 0;
-            let totalFee = 0;
-            let collected = 0;
-            if (batchData.course_name === 'Online Filmmaking Course') {
-              const p1 = feeDetails?.phase1 || {};
-              const p1Full = cleanNum(p1.full_fee) || defaultP1;
-              const p1Paid = cleanNum(p1.amount_paid);
-              const p1Discount = resolveClientDiscount(p1.discount, p1Full, p1.discount_amount);
-              const p1Insts = p1.installments || [];
-              const p1InstPaidSum = p1Insts
-                .filter(inst => (inst.status || '').toLowerCase() === 'paid')
-                .reduce((sum, inst) => sum + cleanNum(inst.amount), 0);
-              const p1Collected = Math.min(p1Paid + p1InstPaidSum + p1Discount, p1Full);
-
-              const p2 = feeDetails?.phase2 || {};
-              const p2Full = cleanNum(p2.full_fee) || defaultP2;
-              const p2Paid = cleanNum(p2.amount_paid);
-              const p2Discount = resolveClientDiscount(p2.discount, p2Full, p2.discount_amount);
-              const p2Insts = p2.installments || [];
-              const p2InstPaidSum = p2Insts
-                .filter(inst => (inst.status || '').toLowerCase() === 'paid')
-                .reduce((sum, inst) => sum + cleanNum(inst.amount), 0);
-              const p2Collected = Math.min(p2Paid + p2InstPaidSum + p2Discount, p2Full);
-
-              totalFee = p1Full + p2Full;
-              collected = p1Collected + p2Collected;
-            } else {
-              const p = feeDetails || {};
-              const full = cleanNum(p.full_fee) || defaultFee;
-              const paid = cleanNum(p.amount_paid);
-              const discount = resolveClientDiscount(p.discount, full, p.discount_amount);
-              const insts = p.installments || [];
-              const instPaidSum = insts
-                .filter(inst => (inst.status || '').toLowerCase() === 'paid')
-                .reduce((sum, inst) => sum + cleanNum(inst.amount), 0);
-              
-              totalFee = full;
-              collected = Math.min(paid + instPaidSum + discount, full);
-            }
-            return collected > 0 && collected < totalFee;
-          }
-
         case 'fee_unpaid':
           if (!enrollment) return false;
           {
@@ -1357,7 +1261,32 @@ export default function BatchDetail() {
             const cleanNum = (val) => parseFloat(String(val || '').replace(/[^\d.]/g, '')) || 0;
             let totalFee = 0;
             let collected = 0;
-            if (batchData.course_name === 'Online Filmmaking Course') {
+
+            const phaseKeys = Object.keys(feeDetails || {}).filter(k => /^phase\d+$/i.test(k));
+            if (phaseKeys.length > 0) {
+              for (const pk of phaseKeys) {
+                const p = feeDetails[pk] || {};
+                const pFull = cleanNum(p.full_fee);
+                const pPaid = cleanNum(p.amount_paid);
+                const pDiscount = resolveClientDiscount(p.discount, pFull, p.discount_amount);
+                const pInsts = p.installments || [];
+                const pInstPaidSum = pInsts
+                  .filter(inst => (inst.status || '').toLowerCase() === 'paid')
+                  .reduce((sum, inst) => sum + cleanNum(inst.amount), 0);
+                const pCollected = Math.min(pPaid + pInstPaidSum + pDiscount, pFull);
+                totalFee += pFull;
+                collected += pCollected;
+              }
+            } else if (Array.isArray(feeDetails?.phases) && feeDetails.phases.length > 0) {
+              for (const p of feeDetails.phases) {
+                const pFull = cleanNum(p.full_fee);
+                const pPaid = cleanNum(p.amount_paid);
+                const pDiscount = resolveClientDiscount(p.discount, pFull, p.discount_amount);
+                const pCollected = Math.min(pPaid + pDiscount, pFull);
+                totalFee += pFull;
+                collected += pCollected;
+              }
+            } else if (batchData.course_name === 'Online Filmmaking Course') {
               const p1 = feeDetails?.phase1 || {};
               const p1Full = cleanNum(p1.full_fee) || defaultP1;
               const p1Paid = cleanNum(p1.amount_paid);
@@ -1393,10 +1322,58 @@ export default function BatchDetail() {
               totalFee = full;
               collected = Math.min(paid + instPaidSum + discount, full);
             }
-            return collected === 0;
+
+            if (selectedStatFilter === 'fee_fully_paid') {
+              return totalFee > 0 && collected >= totalFee;
+            }
+            if (selectedStatFilter === 'fee_partial_paid') {
+              return collected > 0 && collected < totalFee;
+            }
+            if (selectedStatFilter === 'fee_unpaid') {
+              return collected === 0;
+            }
+            return true;
           }
 
         default:
+          if (selectedStatFilter && selectedStatFilter.startsWith('dp_')) {
+            const defPhases = enrollment?.defined_progress?.phases || [];
+            if (selectedStatFilter.startsWith('dp_admitted_')) {
+              const pId = selectedStatFilter.replace('dp_admitted_', '');
+              const ph = defPhases.find(p => p.id === pId);
+              return ph ? Boolean(ph.admitted) : false;
+            }
+            if (selectedStatFilter.startsWith('dp_att_qual_')) {
+              const pId = selectedStatFilter.replace('dp_att_qual_', '');
+              const ph = defPhases.find(p => p.id === pId);
+              return ph ? Boolean(ph.attendance?.isQualified) : false;
+            }
+            if (selectedStatFilter.startsWith('dp_att_not_qual_')) {
+              const pId = selectedStatFilter.replace('dp_att_not_qual_', '');
+              const ph = defPhases.find(p => p.id === pId);
+              return ph ? !ph.attendance?.isQualified : true;
+            }
+            if (selectedStatFilter.startsWith('dp_asg_done_')) {
+              const pId = selectedStatFilter.replace('dp_asg_done_', '');
+              const ph = defPhases.find(p => p.id === pId);
+              return ph && ph.assignments ? ph.assignments.completed >= ph.assignments.total : false;
+            }
+            if (selectedStatFilter.startsWith('dp_exam_passed_')) {
+              const pId = selectedStatFilter.replace('dp_exam_passed_', '');
+              const ph = defPhases.find(p => p.id === pId);
+              return ph?.exam?.isPassed === true;
+            }
+            if (selectedStatFilter.startsWith('dp_exam_failed_')) {
+              const pId = selectedStatFilter.replace('dp_exam_failed_', '');
+              const ph = defPhases.find(p => p.id === pId);
+              return ph?.exam && !ph.exam.isPassed && ph.exam.marks !== null && ph.exam.marks !== undefined;
+            }
+            if (selectedStatFilter.startsWith('dp_completed_')) {
+              const pId = selectedStatFilter.replace('dp_completed_', '');
+              const ph = defPhases.find(p => p.id === pId);
+              return ph?.isPassed === true;
+            }
+          }
           return true;
       }
     }
@@ -1695,7 +1672,24 @@ export default function BatchDetail() {
       {/* SECTION 2: Progress Dashboard */}
       {progressData && (
         <div className="batch-progress-section">
-          {isFilmmaking ? (
+          {progressData.defined_phases && progressData.defined_phases.length > 0 ? (
+            progressData.defined_phases.map((dp, idx) => (
+              <div key={dp.phaseId || idx} style={{ marginTop: idx > 0 ? '1rem' : 0 }}>
+                <div className="batch-phase-label" style={{ color: idx === 1 ? '#a855f7' : idx === 2 ? '#ec4899' : '#60a5fa' }}>
+                  {dp.title || `Phase ${dp.phaseIndex || idx + 1}`}
+                </div>
+                <div className="batch-metrics-grid">
+                  <StatCard icon={<Users size={20} />} value={dp.admitted} label="Admitted" colorVariant="Blue" onClick={() => toggleStatFilter(`dp_admitted_${dp.phaseId}`)} isActive={selectedStatFilter === `dp_admitted_${dp.phaseId}`} />
+                  <StatCard icon={<CheckCircle2 size={20} />} value={dp.attendance_qualified} label="Attendance Qualified" colorVariant="Green" onClick={() => toggleStatFilter(`dp_att_qual_${dp.phaseId}`)} isActive={selectedStatFilter === `dp_att_qual_${dp.phaseId}`} />
+                  <StatCard icon={<XCircle size={20} />} value={dp.attendance_not_qualified} label="Not Qualified" colorVariant="Red" onClick={() => toggleStatFilter(`dp_att_not_qual_${dp.phaseId}`)} isActive={selectedStatFilter === `dp_att_not_qual_${dp.phaseId}`} />
+                  <StatCard icon={<FileText size={20} />} value={dp.assignments_completed} label="Assignments Done" colorVariant="Amber" onClick={() => toggleStatFilter(`dp_asg_done_${dp.phaseId}`)} isActive={selectedStatFilter === `dp_asg_done_${dp.phaseId}`} />
+                  <StatCard icon={<Award size={20} />} value={dp.exam_passed} label="Exam Passed" colorVariant="Green" onClick={() => toggleStatFilter(`dp_exam_passed_${dp.phaseId}`)} isActive={selectedStatFilter === `dp_exam_passed_${dp.phaseId}`} />
+                  <StatCard icon={<XCircle size={20} />} value={dp.exam_failed} label="Exam Failed" colorVariant="Red" onClick={() => toggleStatFilter(`dp_exam_failed_${dp.phaseId}`)} isActive={selectedStatFilter === `dp_exam_failed_${dp.phaseId}`} />
+                  <StatCard icon={<CheckSquare size={20} />} value={dp.completed} label="Phase Completed" colorVariant="Green" onClick={() => toggleStatFilter(`dp_completed_${dp.phaseId}`)} isActive={selectedStatFilter === `dp_completed_${dp.phaseId}`} />
+                </div>
+              </div>
+            ))
+          ) : isFilmmaking ? (
             <>
               <div>
                 <div className="batch-phase-label">Phase 1</div>
@@ -1792,7 +1786,7 @@ export default function BatchDetail() {
                       gap: '0.25rem',
                       boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
                     }}
-                    className="hover-scale-subtle"
+                    className="subtle-card"
                   >
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.78rem', color: '#34d399', fontWeight: '600' }}>
                       <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#34d399' }}></span>
@@ -1818,7 +1812,7 @@ export default function BatchDetail() {
                       gap: '0.25rem',
                       boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
                     }}
-                    className="hover-scale-subtle"
+                    className="subtle-card"
                   >
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.78rem', color: '#fbbf24', fontWeight: '600' }}>
                       <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#f59e0b' }}></span>
@@ -1844,7 +1838,7 @@ export default function BatchDetail() {
                       gap: '0.25rem',
                       boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
                     }}
-                    className="hover-scale-subtle"
+                    className="subtle-card"
                   >
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.78rem', color: '#f87171', fontWeight: '600' }}>
                       <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#ef4444' }}></span>

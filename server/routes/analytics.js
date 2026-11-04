@@ -1,7 +1,7 @@
 import express from 'express';
 import db from '../db/database.js';
 import { authenticateToken, requireRole, requirePermission, requireAnyPermission } from '../middleware/auth.js';
-import { parseFeeDetails, getBatchFee, getFeeStatus, extractFeeAmounts, resolvePhaseFee, createFeeResolverContext, resolveEnrollmentFinancials } from '../utils/feeResolver.js';
+import { parseFeeDetails, getBatchFee, getFeeStatus, createFeeResolverContext, resolveEnrollmentFinancials } from '../utils/feeResolver.js';
 
 const router = express.Router();
 
@@ -37,8 +37,11 @@ function getPendingCertificateRows(feeContext = null) {
     FROM student_course_enrollments sce
     JOIN users u ON u.id = sce.user_id
     JOIN student_profiles sp ON sp.user_id = u.id
-    WHERE sp.phase2_completed = 1
-      AND COALESCE(sce.step4_completed, 0) = 0
+    WHERE (
+      (sce.course_definition_id IS NULL AND sp.phase2_completed = 1 AND COALESCE(sce.step4_completed, 0) = 0)
+      OR
+      (sce.course_definition_id IS NOT NULL AND COALESCE(sce.step4_completed, 0) = 0)
+    )
       AND NOT EXISTS (
         SELECT 1
         FROM student_course_enrollments issued
@@ -52,13 +55,21 @@ function getPendingCertificateRows(feeContext = null) {
   const ctx = feeContext || createFeeResolverContext(db);
 
   return rows
-    .filter((row) => getFeeStatus(parseFeeDetails(row.fee_details), row.course_type, null, {
+    .filter((row) => {
+      if (row.course_definition_id) {
+        const defRow = db.prepare('SELECT phase_count FROM course_definitions WHERE id = ?').get(row.course_definition_id);
+        const totalPhases = defRow?.phase_count || 1;
+        const passedRow = db.prepare('SELECT COUNT(*) as count FROM student_phase_results WHERE enrollment_id = ? AND is_passed = 1').get(row.enrollment_id);
+        if ((passedRow?.count || 0) < totalPhases) return false;
+      }
+      return getFeeStatus(parseFeeDetails(row.fee_details), row.course_type, null, {
       courseDefId: row.course_definition_id,
       courseName: row.course_name,
       batchNumber: row.batch_number,
       batchId: row.batch_id,
       feeContext: ctx
-    }) === 'paid')
+    }) === 'paid';
+    })
     .map(({ fee_details: _feeDetails, ...row }) => ({
       ...row,
       payment_status: 'Fully Paid',
