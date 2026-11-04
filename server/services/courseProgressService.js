@@ -19,68 +19,127 @@ function getDatabase(customDb) {
 export function getCanonicalPhaseInfo(phases = [], requestedPhaseId = null) {
   if (!Array.isArray(phases)) phases = [];
 
+  const explicitIdSet = new Set(phases.filter(p => p && p.id).map(p => String(p.id).trim().toLowerCase()));
+  const explicitIndexSet = new Set(phases.filter(p => p && p.phaseIndex !== undefined && p.phaseIndex !== null && !isNaN(Number(p.phaseIndex))).map(p => Number(p.phaseIndex)));
+
   const mappedPhases = phases.map((p, idx) => {
     const pos = idx + 1;
     const rawId = p && p.id ? String(p.id).trim() : '';
-    const phaseIndex = (p && p.phaseIndex !== undefined && p.phaseIndex !== null) ? Number(p.phaseIndex) : null;
+    const hasExplicitId = Boolean(rawId);
+    const phaseIndex = (p && p.phaseIndex !== undefined && p.phaseIndex !== null && !isNaN(Number(p.phaseIndex))) ? Number(p.phaseIndex) : null;
 
     let canonicalId = '';
-    if (rawId) {
+    if (hasExplicitId) {
       canonicalId = rawId;
-    } else if (phaseIndex !== null && !isNaN(phaseIndex)) {
-      canonicalId = `phase_${phaseIndex}`;
+    } else if (phaseIndex !== null) {
+      canonicalId = 'phase_' + phaseIndex;
     } else {
-      canonicalId = `phase_${pos}`;
+      canonicalId = 'phase_' + pos;
     }
 
     const aliases = new Set();
     aliases.add(canonicalId);
     aliases.add(canonicalId.toLowerCase());
-    if (rawId) {
+    if (hasExplicitId) {
       aliases.add(rawId);
       aliases.add(rawId.toLowerCase());
     }
 
+    // Number matching from canonical ID
     const numMatch = canonicalId.match(/^(?:phase|p)_?(\d+)$/i);
     if (numMatch) {
-      const n = numMatch[1];
-      aliases.add(`phase_${n}`);
-      aliases.add(`phase_${n}`.toLowerCase());
-      aliases.add(`p_${n}`);
-      aliases.add(`p_${n}`.toLowerCase());
-      aliases.add(String(n));
+      const n = parseInt(numMatch[1], 10);
+      const isOtherExplicitId = Array.from(explicitIdSet).some(id => id !== canonicalId.toLowerCase() && (id === 'phase_' + n || id === 'p_' + n || id === String(n)));
+      const isOtherExplicitIndex = Array.from(explicitIndexSet).some(pi => (phaseIndex === null || pi !== phaseIndex) && pi === n);
+      if (!isOtherExplicitId && !isOtherExplicitIndex) {
+        aliases.add('phase_' + n);
+        aliases.add('p_' + n);
+        aliases.add(String(n));
+      }
     }
-    if (phaseIndex !== null && !isNaN(phaseIndex)) {
-      aliases.add(`phase_${phaseIndex}`);
-      aliases.add(`phase_${phaseIndex}`.toLowerCase());
-      aliases.add(`p_${phaseIndex}`);
-      aliases.add(`p_${phaseIndex}`.toLowerCase());
-      aliases.add(String(phaseIndex));
+
+    if (phaseIndex !== null) {
+      const isOtherExplicitId = Array.from(explicitIdSet).some(id => id !== canonicalId.toLowerCase() && (id === 'phase_' + phaseIndex || id === 'p_' + phaseIndex || id === String(phaseIndex)));
+      if (!isOtherExplicitId) {
+        aliases.add('phase_' + phaseIndex);
+        aliases.add('p_' + phaseIndex);
+        aliases.add(String(phaseIndex));
+      }
     }
-    aliases.add(`phase_${pos}`);
-    aliases.add(`phase_${pos}`.toLowerCase());
-    aliases.add(`p_${pos}`);
-    aliases.add(`p_${pos}`.toLowerCase());
-    aliases.add(String(pos));
+
+    // Positional aliases only if no explicit ID, and pos does not collide with ANY other phase's explicit ID or index
+    if (!hasExplicitId) {
+      const collidesWithExplicitId = explicitIdSet.has('phase_' + pos) || explicitIdSet.has('p_' + pos) || explicitIdSet.has(String(pos));
+      const collidesWithExplicitIndex = explicitIndexSet.has(pos);
+      if (!collidesWithExplicitId && !collidesWithExplicitIndex) {
+        aliases.add('phase_' + pos);
+        aliases.add('p_' + pos);
+        aliases.add(String(pos));
+      }
+    }
 
     return {
       phase: p,
       index: idx,
-      phaseNumber: phaseIndex !== null && !isNaN(phaseIndex) ? phaseIndex : pos,
+      pos,
+      rawId,
+      hasExplicitId,
+      phaseNumber: phaseIndex !== null ? phaseIndex : pos,
       canonicalId,
       aliases: Array.from(aliases)
     };
   });
 
   if (!requestedPhaseId) {
-    return { mappedPhases, matched: null };
+    return { mappedPhases, matched: null, isAmbiguous: false };
+}
+
+const reqStr = String(requestedPhaseId).trim();
+  const reqLower = reqStr.toLowerCase();
+
+  // Tier 1: Exact Explicit ID match (highest priority across ALL phases)
+  const explicitMatches = mappedPhases.filter(m => m.hasExplicitId && (m.rawId.toLowerCase() === reqLower || m.canonicalId.toLowerCase() === reqLower));
+  if (explicitMatches.length === 1) {
+    return { mappedPhases, matched: explicitMatches[0], isAmbiguous: false };
+  }
+  if (explicitMatches.length > 1) {
+    return { mappedPhases, matched: null, isAmbiguous: true, reason: 'Duplicate explicit ID in definition' };
   }
 
-  const reqStr = String(requestedPhaseId).trim();
-  const reqLower = reqStr.toLowerCase();
-  const matched = mappedPhases.find(m => m.aliases.includes(reqStr) || m.aliases.includes(reqLower)) || null;
+  // Tier 2: Explicit canonicalId match
+  const canonicalMatches = mappedPhases.filter(m => m.canonicalId.toLowerCase() === reqLower);
+  if (canonicalMatches.length === 1) {
+    return { mappedPhases, matched: canonicalMatches[0], isAmbiguous: false };
+  }
+  if (canonicalMatches.length > 1) {
+    return { mappedPhases, matched: null, isAmbiguous: true, reason: 'Duplicate canonical ID' };
+  }
 
-  return { mappedPhases, matched };
+  // Tier 3: Explicit phaseIndex match
+  const indexMatches = mappedPhases.filter(m => {
+    if (m.phase && m.phase.phaseIndex !== undefined && m.phase.phaseIndex !== null) {
+      const pi = Number(m.phase.phaseIndex);
+      return reqLower === 'phase_' + pi || reqLower === 'p_' + pi || reqLower === String(pi);
+    }
+    return false;
+  });
+  if (indexMatches.length === 1) {
+    return { mappedPhases, matched: indexMatches[0], isAmbiguous: false };
+  }
+  if (indexMatches.length > 1) {
+    return { mappedPhases, matched: null, isAmbiguous: true, reason: 'Duplicate phaseIndex in definition' };
+  }
+
+  // Tier 4: Unambiguous fallback alias match
+  const aliasMatches = mappedPhases.filter(m => m.aliases.some(a => a.toLowerCase() === reqLower));
+  if (aliasMatches.length === 1) {
+    return { mappedPhases, matched: aliasMatches[0], isAmbiguous: false };
+  }
+  if (aliasMatches.length > 1) {
+    return { mappedPhases, matched: null, isAmbiguous: true, reason: 'Ambiguous alias match' };
+  }
+
+  return { mappedPhases, matched: null, isAmbiguous: false };
 }
 
 /**
@@ -101,7 +160,10 @@ export function resolvePhaseRoutine(db, courseDefinitionId, batchId, phaseId, ba
       const defRow = db.prepare('SELECT definition_json FROM course_definitions WHERE id = ?').get(courseDefinitionId);
       if (defRow?.definition_json) {
         const parsed = JSON.parse(defRow.definition_json);
-        const { matched } = getCanonicalPhaseInfo(parsed.phases, phaseId);
+        const { matched, isAmbiguous } = getCanonicalPhaseInfo(parsed.phases, phaseId);
+        if (isAmbiguous) {
+          return { routine: baseRoutine || [], source: 'definition_baseline', phase_id: canonicalId, isAmbiguous: true };
+        }
         if (matched) {
           canonicalId = matched.canonicalId;
           aliasList = matched.aliases.map(a => a.toLowerCase());
@@ -110,7 +172,7 @@ export function resolvePhaseRoutine(db, courseDefinitionId, batchId, phaseId, ba
     } catch { /* empty */ }
   }
 
-  if (aliasList.length === 1) {
+  if (aliasList.length === 1 && !courseDefinitionId) {
     const pIdStr = canonicalId;
     const alt = pIdStr.startsWith('phase_')
       ? pIdStr.replace('phase_', 'p_')

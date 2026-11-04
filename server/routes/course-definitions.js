@@ -865,7 +865,10 @@ router.put('/:id/routine', authenticateToken, (req, res) => {
     }
 
     const parsed = JSON.parse(definition.definition_json);
-    const { matched } = getCanonicalPhaseInfo(parsed.phases, phase_id);
+    const { matched, isAmbiguous, reason: ambiguityReason } = getCanonicalPhaseInfo(parsed.phases, phase_id);
+    if (isAmbiguous) {
+      return res.status(400).json({ error: `Ambiguous phase identifier "${phase_id}": ${ambiguityReason || "matches multiple phases in this definition"}.` });
+    }
     if (!matched) {
       return res.status(404).json({ error: `Phase with id "${phase_id}" not found in definition.` });
     }

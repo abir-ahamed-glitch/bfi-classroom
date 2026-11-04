@@ -73,16 +73,31 @@ test.beforeAll(async () => {
     adminUser = db.prepare("SELECT * FROM users WHERE id = 1").get();
   }
 
+  // Ensure admin user is super admin and active
+  db.prepare("UPDATE users SET is_super_admin = 1, is_active = 1 WHERE id = ?").run(adminUser.id);
+  try {
+    db.prepare("INSERT OR IGNORE INTO super_admin_users (user_id, granted_by) VALUES (?, ?)").run(adminUser.id, adminUser.id);
+  } catch { /* empty */ }
+
   // Grant required permissions
   db.prepare("INSERT OR IGNORE INTO admin_permissions (user_id, permission) VALUES (?, 'batches:edit')").run(adminUser.id);
   db.prepare("INSERT OR IGNORE INTO admin_permissions (user_id, permission) VALUES (?, 'batches:view')").run(adminUser.id);
   db.prepare("INSERT OR IGNORE INTO admin_permissions (user_id, permission) VALUES (?, 'courses:edit')").run(adminUser.id);
+  db.prepare("INSERT OR IGNORE INTO admin_permissions (user_id, permission) VALUES (?, 'students:edit')").run(adminUser.id);
+  db.prepare("INSERT OR IGNORE INTO admin_permissions (user_id, permission) VALUES (?, 'students:view')").run(adminUser.id);
+  db.prepare("INSERT OR IGNORE INTO admin_permissions (user_id, permission) VALUES (?, 'students:academic_records')").run(adminUser.id);
 
   const sessionData = issueAdminSessionToken(adminUser.id, { is_super_admin: 1 });
   adminToken = sessionData.token;
 
-  // Seed course definition and batch
+  // Clean up existing test data safely across all dependent tables
+  db.prepare("DELETE FROM course_routine_audits WHERE course_definition_id IN (SELECT id FROM course_definitions WHERE slug = 'script-writing-workshop-2026')").run();
   db.prepare("DELETE FROM course_routine_overrides WHERE course_definition_id IN (SELECT id FROM course_definitions WHERE slug = 'script-writing-workshop-2026')").run();
+  db.prepare("DELETE FROM student_class_attendance WHERE enrollment_id IN (SELECT id FROM student_course_enrollments WHERE course_definition_id IN (SELECT id FROM course_definitions WHERE slug = 'script-writing-workshop-2026'))").run();
+  db.prepare("DELETE FROM student_assignment_grades WHERE enrollment_id IN (SELECT id FROM student_course_enrollments WHERE course_definition_id IN (SELECT id FROM course_definitions WHERE slug = 'script-writing-workshop-2026'))").run();
+  db.prepare("DELETE FROM student_phase_results WHERE enrollment_id IN (SELECT id FROM student_course_enrollments WHERE course_definition_id IN (SELECT id FROM course_definitions WHERE slug = 'script-writing-workshop-2026'))").run();
+  db.prepare("DELETE FROM student_course_enrollments WHERE course_definition_id IN (SELECT id FROM course_definitions WHERE slug = 'script-writing-workshop-2026')").run();
+  db.prepare("DELETE FROM batch_students WHERE batch_id = ?").run(testBatchId);
   db.prepare("DELETE FROM batches WHERE id = ?").run(testBatchId);
   db.prepare("DELETE FROM course_definitions WHERE slug = 'script-writing-workshop-2026'").run();
 
@@ -99,7 +114,11 @@ test.beforeAll(async () => {
         ],
         classes: [
           { id: 'cls_1', title: 'Part 01: Character Archetypes', deliveryMode: 'recorded', category: 'theory', platform: 'Zoom' }
-        ]
+        ],
+        assignments: [
+          { id: 'asg_1', title: 'Character Archetype Analysis', maxMarks: 20, passMarks: 10 }
+        ],
+        exam: { enabled: true, title: 'Screenplay Structure Exam', maxMarks: 100, passMarks: 50 }
       }
     ]
   };
@@ -114,6 +133,27 @@ test.beforeAll(async () => {
     INSERT INTO batches (id, slug, batch_name, batch_number, course_name, course_definition_id, created_by)
     VALUES (?, 'batch-01-sww', '1st Batch', '01', 'Script Writing Workshop-2026', ?, ?)
   `).run(testBatchId, testCourseDefId, adminUser.id);
+
+  // Seed test student Rahim Chowdhury
+  db.prepare(`
+    INSERT OR REPLACE INTO users (id, username, email, password_hash, role, first_name, last_name, is_active, is_super_admin, token_version)
+    VALUES (10, 'rahim', 'rahim@bfi.edu', 'hash', 'student', 'Rahim', 'Chowdhury', 1, 0, 1)
+  `).run();
+
+  db.prepare(`
+    INSERT OR REPLACE INTO student_profiles (user_id, full_name, student_id, batch_number)
+    VALUES (10, 'Rahim Chowdhury', 'BFI01012026', '01')
+  `).run();
+
+  db.prepare(`
+    INSERT OR IGNORE INTO batch_students (batch_id, student_id)
+    VALUES (?, 10)
+  `).run(testBatchId);
+
+  db.prepare(`
+    INSERT OR REPLACE INTO student_course_enrollments (user_id, course_name, course_type, course_definition_id, course_version, batch_id)
+    VALUES (10, 'Script Writing Workshop-2026', 'workshop', ?, 1, ?)
+  `).run(testCourseDefId, testBatchId);
 
   const screenshotDir = path.resolve('test-results/routine-evidence');
   if (!fs.existsSync(screenshotDir)) {
@@ -297,5 +337,78 @@ test.describe('Course Maker Batch Routine End-to-End Browser Verification', () =
     await page.screenshot({ path: 'test-results/routine-evidence/07_reverted_to_course_default.png' });
 
     console.log('🎉 ALL 11 STEPS OF ROUTINE BROWSER VERIFICATION PASSED!');
+  });
+
+  test('Complete Academic Progress Workflow: Attendance, Assignment Marks, Exam Marks, Save & Reopen Persistence', async ({ page }) => {
+    await injectAdminAuth(page);
+
+    // 1. Navigate to Batch Manager for the batch
+    await page.goto(`admin/batchmanager/${testBatchId}`);
+    await page.waitForLoadState('networkidle');
+
+    // Verify student "Rahim Chowdhury" is listed in the batch
+    await expect(page.locator('text=Rahim Chowdhury')).toBeVisible({ timeout: 15000 });
+
+    // 2. Click "Manage Defined Course Progress" button
+    const progressBtn = page.locator('button[title*="Manage Defined Course Progress"]').first();
+    await expect(progressBtn).toBeVisible({ timeout: 10000 });
+    await progressBtn.click();
+
+    // 3. Modal opens: verify header and sections
+    const modalHeader = page.locator('text=Story Structure');
+    await expect(modalHeader.first()).toBeVisible({ timeout: 10000 });
+
+    // 4. Toggle Attendance for Class 1 (from Absent to Attended)
+    const attBtn = page.locator('button[aria-label^="Mark class"]').first();
+    await expect(attBtn).toBeVisible();
+    await attBtn.click();
+    await expect(attBtn).toContainText('Attended');
+
+    // 5. Enter Assignment Marks (18 out of 20)
+    const asgMarksInput = page.locator('input[type="number"][max="20"]').first();
+    await expect(asgMarksInput).toBeVisible();
+    await asgMarksInput.fill('18');
+
+    // 6. Enter Exam Marks (75 out of 100)
+    const examMarksInput = page.locator('input[placeholder="Enter marks"]').first();
+    await expect(examMarksInput).toBeVisible();
+    await examMarksInput.fill('75');
+
+    // 7. Save Progress
+    const saveBtn = page.locator('button').filter({ hasText: 'Save Progress' }).first();
+    await expect(saveBtn).toBeVisible();
+    await saveBtn.click();
+
+    // Verify success feedback
+    await expect(page.locator('text=Progress updated successfully!')).toBeVisible({ timeout: 10000 });
+    await page.screenshot({ path: 'test-results/routine-evidence/08_academic_progress_saved.png' });
+
+    // 8. Close Modal
+    const closeBtn = page.locator('button').filter({ hasText: 'Close' }).first();
+    await closeBtn.click();
+    await expect(page.locator('text=Progress updated successfully!')).not.toBeVisible();
+
+    // 9. Reopen Modal to verify persistence from the database
+    await progressBtn.click();
+    await expect(modalHeader.first()).toBeVisible({ timeout: 10000 });
+
+    // Verify Attendance remained Attended
+    const attBtnAfterReopen = page.locator('button[aria-label^="Mark class"]').first();
+    await expect(attBtnAfterReopen).toContainText('Attended');
+
+    // Verify Assignment Marks persisted as 18
+    const asgMarksAfterReopen = page.locator('input[type="number"][max="20"]').first();
+    await expect(asgMarksAfterReopen).toHaveValue('18');
+
+    // Verify Exam Marks persisted as 75
+    const examMarksAfterReopen = page.locator('input[placeholder="Enter marks"]').first();
+    await expect(examMarksAfterReopen).toHaveValue('75');
+
+    await page.screenshot({ path: 'test-results/routine-evidence/09_academic_progress_persisted.png' });
+
+    // Close modal
+    await closeBtn.click();
+
+    console.log('🎉 ACADEMIC PROGRESS MODAL BROWSER VERIFICATION PASSED WITH 100% SUCCESS!');
   });
 });

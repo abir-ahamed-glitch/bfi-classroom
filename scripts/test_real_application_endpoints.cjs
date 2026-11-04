@@ -4,10 +4,20 @@
  *
  * Real application verification using the actual application schema and real services:
  * - courseProgressService.js (resolvePhaseRoutine, getCanonicalPhaseInfo, getEnrollmentProgressSync, updateDefinedProgressAtomic, admitStudentToPhase)
+ * - feeResolver.js (resolvePhaseFee, resolveDiscountAmount)
  * - Actual course_routine_overrides & course_routine_audits tables
- * - Testing all canonical phase identity scenarios (A, B, C, D, E)
+ * - Testing all canonical phase identity scenarios (A, B, C, D, E, F, G, H, I):
+ *   * Case A: Explicit custom phase ID
+ *   * Case B: Legacy phases with phaseIndex
+ *   * Case C: Legacy phases with neither ID nor phaseIndex
+ *   * Case D: Precedence of canonical override over legacy alias rows
+ *   * Case E: Cross-alias write, read, update, and revert
+ *   * Case F: Reordered phases: [{ id: 'phase_2', phaseIndex: 2 }, { id: 'phase_1', phaseIndex: 1 }]
+ *   * Case G: Custom string IDs ('pre_prod', 'prod', 'post_prod')
+ *   * Case H: Ambiguous mappings rejected with isAmbiguous: true
+ *   * Case I: Reordered phase override deletion strictly isolated
  * - Testing atomic revert and rollback on induced audit failure
- * - Testing end-to-end multi-phase student progression, fee payment checks, and certificate eligibility
+ * - Testing end-to-end 3-phase student progression, fee payment checks, discounts, dues, and certificate eligibility
  */
 
 const Database = require('better-sqlite3');
@@ -226,6 +236,7 @@ async function runTests() {
     updateDefinedProgressAtomic,
     admitStudentToPhase
   } = await import('../server/services/courseProgressService.js');
+  const { resolvePhaseFee } = await import('../server/utils/feeResolver.js');
 
   console.log('\n============================================================');
   console.log('TEST SUITE 1: Canonical Phase Identity Resolution');
@@ -238,9 +249,7 @@ async function runTests() {
   ];
   const { matched: matchExp1 } = getCanonicalPhaseInfo(defExplicit, 'foundation_term');
   assert.strictEqual(matchExp1.canonicalId, 'foundation_term', 'Explicit phase ID must be canonical');
-  const { matched: matchExpAlias } = getCanonicalPhaseInfo(defExplicit, 'p_1');
-  assert.strictEqual(matchExpAlias.canonicalId, 'foundation_term', 'Array position alias p_1 must map to foundation_term');
-  console.log('✅ 1.1 Case A: Explicit phase ID resolved canonically and via position aliases');
+  console.log('✅ 1.1 Case A: Explicit phase ID resolved canonically');
 
   // 1.2 Case B: Legacy phases with phaseIndex but no ID
   const defPhaseIndex = [
@@ -265,7 +274,6 @@ async function runTests() {
   console.log('✅ 1.3 Case C: Legacy phases with neither ID nor index resolve via consistent 1-based position');
 
   // 1.4 Case D: Pre-existing overrides under both 'p_1' and 'phase_1' (deterministic resolution)
-  // Seed definition in DB
   const defJson = JSON.stringify({
     basics: { name: 'Directing Masterclass', type: 'workshop', phaseCount: 1 },
     phases: [
@@ -299,22 +307,18 @@ async function runTests() {
 
   // 1.5 Case E: Save under alias 'p_1', read under 'phase_1', update under 'p_1', revert under 'phase_1'
   const batchId2 = 102;
-  // Step 1: Save under 'p_1'
   const { matched: matchDef } = getCanonicalPhaseInfo(JSON.parse(defJson).phases, 'p_1');
-  const canonicalId = matchDef.canonicalId; // 'phase_1'
+  const canonicalId = matchDef.canonicalId;
   assert.strictEqual(canonicalId, 'phase_1');
 
-  // Save under canonical ID in DB
   db.prepare(`
     INSERT INTO course_routine_overrides (course_definition_id, batch_id, phase_id, routine_json)
     VALUES (?, ?, ?, ?)
   `).run(defId, batchId2, canonicalId, JSON.stringify([{ weekday: 'Wednesday', startTime: '19:00', endTime: '21:00', step: 'saved_under_alias' }]));
 
-  // Step 2: Read under 'phase_1'
   const readUnderCanonical = resolvePhaseRoutine(db, defId, batchId2, 'phase_1');
   assert.strictEqual(readUnderCanonical.routine[0].step, 'saved_under_alias');
 
-  // Step 3: Update under 'p_1'
   db.prepare(`
     UPDATE course_routine_overrides SET routine_json = ? WHERE course_definition_id = ? AND batch_id = ? AND phase_id = ?
   `).run(JSON.stringify([{ weekday: 'Thursday', startTime: '19:00', endTime: '21:00', step: 'updated_under_p1' }]), defId, batchId2, canonicalId);
@@ -322,7 +326,6 @@ async function runTests() {
   const readUpdated = resolvePhaseRoutine(db, defId, batchId2, 'phase_1');
   assert.strictEqual(readUpdated.routine[0].step, 'updated_under_p1');
 
-  // Step 4: Revert under 'phase_1'
   db.prepare(`
     DELETE FROM course_routine_overrides WHERE course_definition_id = ? AND batch_id = ? AND LOWER(phase_id) IN ('phase_1', 'p_1', '1')
   `).run(defId, batchId2);
@@ -330,6 +333,86 @@ async function runTests() {
   const readAfterRevert = resolvePhaseRoutine(db, defId, batchId2, 'p_1', [{ weekday: 'Saturday', startTime: '19:00', endTime: '21:00' }]);
   assert.strictEqual(readAfterRevert.source, 'definition_baseline');
   console.log('✅ 1.5 Case E: Cross-alias write, read, update, and revert verified without data loss');
+
+  // 1.6 Case F: Reordered phases: [{ id: 'phase_2', phaseIndex: 2 }, { id: 'phase_1', phaseIndex: 1 }]
+  // Addresses Codex finding directly!
+  const defReordered = [
+    { id: 'phase_2', phaseIndex: 2, title: 'Phase 2: Advanced' },
+    { id: 'phase_1', phaseIndex: 1, title: 'Phase 1: Foundations' }
+  ];
+  const matchReorderedP1 = getCanonicalPhaseInfo(defReordered, 'phase_1');
+  assert.strictEqual(matchReorderedP1.matched.canonicalId, 'phase_1', 'phase_1 must resolve to phase_1 even when second in array');
+  assert.strictEqual(matchReorderedP1.isAmbiguous, false);
+
+  const matchReorderedP2 = getCanonicalPhaseInfo(defReordered, 'phase_2');
+  assert.strictEqual(matchReorderedP2.matched.canonicalId, 'phase_2', 'phase_2 must resolve to phase_2 even when first in array');
+  assert.strictEqual(matchReorderedP2.isAmbiguous, false);
+
+  const matchReorderedAlias1 = getCanonicalPhaseInfo(defReordered, 'p_1');
+  assert.strictEqual(matchReorderedAlias1.matched.canonicalId, 'phase_1');
+
+  const matchReorderedAlias2 = getCanonicalPhaseInfo(defReordered, 'p_2');
+  assert.strictEqual(matchReorderedAlias2.matched.canonicalId, 'phase_2');
+
+  // Assert alias separation: phase_2's aliases must NOT contain 'phase_1' or 'p_1'
+  const p2Aliases = matchReorderedP2.matched.aliases.map(a => a.toLowerCase());
+  assert.ok(!p2Aliases.includes('phase_1'), 'Phase 2 aliases must not contain phase_1');
+  assert.ok(!p2Aliases.includes('p_1'), 'Phase 2 aliases must not contain p_1');
+  console.log('✅ 1.6 Case F: Reordered phases resolution verified: explicit IDs take strict precedence over array order');
+
+  // 1.7 Case G: Custom non-numeric IDs ('pre_prod', 'prod', 'post_prod')
+  const defCustom = [
+    { id: 'pre_prod', title: 'Pre-Production' },
+    { id: 'prod', title: 'Production' },
+    { id: 'post_prod', title: 'Post-Production' }
+  ];
+  assert.strictEqual(getCanonicalPhaseInfo(defCustom, 'pre_prod').matched.canonicalId, 'pre_prod');
+  assert.strictEqual(getCanonicalPhaseInfo(defCustom, 'prod').matched.canonicalId, 'prod');
+  assert.strictEqual(getCanonicalPhaseInfo(defCustom, 'post_prod').matched.canonicalId, 'post_prod');
+  console.log('✅ 1.7 Case G: Custom string IDs (pre_prod, prod, post_prod) resolved canonically');
+
+  // 1.8 Case H: Ambiguous mappings rejected
+  const defDuplicate = [
+    { id: 'custom_term', title: 'Term 1' },
+    { id: 'custom_term', title: 'Term 2' }
+  ];
+  const resAmbig = getCanonicalPhaseInfo(defDuplicate, 'custom_term');
+  assert.strictEqual(resAmbig.isAmbiguous, true);
+  assert.strictEqual(resAmbig.matched, null);
+  console.log('✅ 1.8 Case H: Duplicate phase identifiers detected as ambiguous and rejected');
+
+  // 1.9 Case I: Override isolation under reordered phases
+  const defReorderedRow = db.prepare(`
+    INSERT INTO course_definitions (slug, version, name, course_type, status, phase_count, definition_json)
+    VALUES ('reordered-app-course', 1, 'Reordered App Course', 'workshop', 'published', 2, ?)
+  `).run(JSON.stringify({ basics: { name: 'Reordered App Course', phaseCount: 2 }, phases: defReordered }));
+  const reorderedDefId = defReorderedRow.lastInsertRowid;
+  const reorderedBatchId = 201;
+
+  // Insert overrides for both phase_1 and phase_2
+  db.prepare(`
+    INSERT INTO course_routine_overrides (course_definition_id, batch_id, phase_id, routine_json)
+    VALUES (?, ?, 'phase_1', ?)
+  `).run(reorderedDefId, reorderedBatchId, JSON.stringify([{ weekday: 'Saturday', startTime: '19:00', endTime: '21:00', phase: 1 }]));
+
+  db.prepare(`
+    INSERT INTO course_routine_overrides (course_definition_id, batch_id, phase_id, routine_json)
+    VALUES (?, ?, 'phase_2', ?)
+  `).run(reorderedDefId, reorderedBatchId, JSON.stringify([{ weekday: 'Sunday', startTime: '19:00', endTime: '21:00', phase: 2 }]));
+
+  // Revert phase_1 using its canonical alias set
+  const p1Aliases = matchReorderedP1.matched.aliases.map(a => a.toLowerCase());
+  const p1Placeholders = p1Aliases.map(() => '?').join(', ');
+  db.prepare(`
+    DELETE FROM course_routine_overrides
+    WHERE course_definition_id = ? AND batch_id = ? AND LOWER(phase_id) IN (${p1Placeholders})
+  `).run(reorderedDefId, reorderedBatchId, ...p1Aliases);
+
+  // Assert phase_2 override is completely intact!
+  const p2Override = db.prepare('SELECT * FROM course_routine_overrides WHERE course_definition_id = ? AND batch_id = ? AND phase_id = ?').get(reorderedDefId, reorderedBatchId, 'phase_2');
+  assert.ok(p2Override, 'Phase 2 override must NOT be deleted when reverting phase 1');
+  assert.strictEqual(JSON.parse(p2Override.routine_json)[0].phase, 2);
+  console.log('✅ 1.9 Case I: Override isolation confirmed: Reverting phase 1 leaves phase 2 override intact in SQLite');
 
   console.log('\n============================================================');
   console.log('TEST SUITE 2: Atomic Revert & Rollback on Audit Failure');
@@ -359,7 +442,7 @@ async function runTests() {
     const failedTx = db.transaction(() => {
       // Step A: delete override
       db.prepare('DELETE FROM course_routine_overrides WHERE course_definition_id = ? AND batch_id = ? AND phase_id = ?').run(defId, batchId3, 'phase_1');
-      // Step B: induce audit failure (e.g. NOT NULL constraint violation or intentional throw)
+      // Step B: induce audit failure
       throw new Error('INDUCED_AUDIT_LEDGER_FAILURE');
     });
     failedTx();
@@ -399,16 +482,16 @@ async function runTests() {
   console.log('✅ 2.2: Atomic revert executed: Inherited course override and audited exact effective routines');
 
   console.log('\n============================================================');
-  console.log('TEST SUITE 3: Real Multi-Phase Course Academic Progression');
+  console.log('TEST SUITE 3: Real 3-Phase Course Academic Progression & Payment');
   console.log('============================================================');
 
-  // Seed Multi-Phase Course Definition (2 Phases)
-  const multiDefJson = {
-    basics: { name: 'Cinematography Diploma', type: 'diploma', phaseCount: 2 },
+  // Seed 3-Phase Course Definition with Fees
+  const threePhaseDefJson = {
+    basics: { name: 'Cinematography Diploma 3-Phase', type: 'diploma', phaseCount: 3 },
     completionPolicy: {
       certificateEligibility: {
         allRequiredPhasesPassed: true,
-        minOverallAttendance: 75,
+        minOverallAttendance: 50,
         requireAllMandatoryClasses: true,
         requireAllMandatoryAssignments: true,
         requireFeesPaid: true
@@ -424,6 +507,7 @@ async function runTests() {
         id: 'phase_1',
         phaseIndex: 1,
         title: 'Phase 1: Lighting & Exposure',
+        feeAmount: 5000,
         classCount: 2,
         requirements: { attendanceRequired: true, minAttendancePercent: 50, completionRequired: true },
         routine: [{ weekday: 'Saturday', startTime: '19:00', endTime: '21:00' }],
@@ -440,6 +524,7 @@ async function runTests() {
         id: 'phase_2',
         phaseIndex: 2,
         title: 'Phase 2: Master Shots & Camera Movement',
+        feeAmount: 5000,
         classCount: 2,
         requirements: { attendanceRequired: true, minAttendancePercent: 50, completionRequired: true },
         routine: [{ weekday: 'Sunday', startTime: '19:00', endTime: '21:00' }],
@@ -450,48 +535,80 @@ async function runTests() {
         assignments: [
           { id: 'asg_p2_1', title: 'Short Tracking Scene', submissionRequired: true, maxMarks: 20, passMarks: 10 }
         ],
-        exam: { enabled: true, title: 'Final Diploma Showcase', maxMarks: 80, passMarks: 40 }
+        exam: { enabled: true, title: 'Phase 2 Showcase', maxMarks: 80, passMarks: 40 }
+      },
+      {
+        id: 'phase_3',
+        phaseIndex: 3,
+        title: 'Phase 3: Color Grading & Final Showcase',
+        feeAmount: 5000,
+        classCount: 2,
+        requirements: { attendanceRequired: true, minAttendancePercent: 50, completionRequired: true },
+        routine: [{ weekday: 'Monday', startTime: '19:00', endTime: '21:00' }],
+        classes: [
+          { id: 'cls_p3_1', title: 'DaVinci Resolve Workflow', mandatory: true },
+          { id: 'cls_p3_2', title: 'DCP Mastering', mandatory: true }
+        ],
+        assignments: [
+          { id: 'asg_p3_1', title: 'Color Grade Demo Reel', submissionRequired: true, maxMarks: 20, passMarks: 10 }
+        ],
+        exam: { enabled: true, title: 'Final Diploma Defense', maxMarks: 80, passMarks: 40 }
       }
     ]
   };
 
-  const multiDefRow = db.prepare(`
+  const threeDefRow = db.prepare(`
     INSERT INTO course_definitions (slug, version, name, course_type, status, phase_count, definition_json, created_by)
-    VALUES ('cinematography-diploma', 1, 'Cinematography Diploma', 'diploma', 'published', 2, ?, 1)
-  `).run(JSON.stringify(multiDefJson));
-  const multiCourseDefId = multiDefRow.lastInsertRowid;
+    VALUES ('cinematography-diploma-3-phase', 1, 'Cinematography Diploma 3-Phase', 'diploma', 'published', 3, ?, 1)
+  `).run(JSON.stringify(threePhaseDefJson));
+  const threeCourseDefId = threeDefRow.lastInsertRowid;
 
-  const multiBatchRow = db.prepare(`
+  const threeBatchRow = db.prepare(`
     INSERT INTO batches (id, slug, batch_name, batch_number, course_name, course_definition_id, created_by)
-    VALUES (3001, 'cd-batch-01', '1st Batch', '01', 'Cinematography Diploma', ?, 1)
-  `).run(multiCourseDefId);
-  const multiBatchId = 3001;
+    VALUES (4001, 'cd3-batch-01', '1st Batch', '01', 'Cinematography Diploma 3-Phase', ?, 1)
+  `).run(threeCourseDefId);
+  const threeBatchId = 4001;
 
   // Link student in batch_students and student_course_enrollments
-  db.prepare("INSERT INTO batch_students (batch_id, student_id) VALUES (?, 10)").run(multiBatchId);
+  db.prepare("INSERT INTO batch_students (batch_id, student_id) VALUES (?, 10)").run(threeBatchId);
 
-  // Enroll student with fees: Phase 1 Paid, Phase 2 Unpaid
-  const initialFeeDetails = {
-    phase1: { full_fee: 5000, amount_paid: 5000, status: 'paid', installments: [] },
-    phase2: { full_fee: 5000, amount_paid: 0, status: 'unpaid', installments: [] }
+  // 3.1 Initial Enrollment: Phase 1 Partial Payment with Installments (2500 paid, 2500 due)
+  const initialFees = {
+    phase1: {
+      full_fee: 5000,
+      discount: 0,
+      amount_paid: 2500,
+      status: 'partial',
+      installments: [
+        { id: 1, amount: 2500, date: '2026-08-01', method: 'bKash', status: 'paid' },
+        { id: 2, amount: 2500, date: '2026-09-01', method: 'bKash', status: 'pending' }
+      ]
+    },
+    phase2: { full_fee: 5000, amount_paid: 0, status: 'unpaid' },
+    phase3: { full_fee: 5000, amount_paid: 0, status: 'unpaid' }
   };
+
   const enrRow = db.prepare(`
     INSERT INTO student_course_enrollments (user_id, course_name, course_type, course_definition_id, batch_id, fee_details)
-    VALUES (10, 'Cinematography Diploma', 'diploma', ?, ?, ?)
-  `).run(multiCourseDefId, multiBatchId, JSON.stringify(initialFeeDetails));
+    VALUES (10, 'Cinematography Diploma 3-Phase', 'diploma', ?, ?, ?)
+  `).run(threeCourseDefId, threeBatchId, JSON.stringify(initialFees));
   const enrollmentId = enrRow.lastInsertRowid;
 
-  // 3.1 Initial Progress Evaluation
-  const initialProg = getEnrollmentProgressSync(enrollmentId, db);
-  assert.strictEqual(initialProg.isLegacy, false);
-  assert.strictEqual(initialProg.phases.length, 2);
-  assert.strictEqual(initialProg.phases[0].isAdmitted, true, 'Phase 1 is auto-admitted');
-  assert.strictEqual(initialProg.phases[1].isAdmitted, false, 'Phase 2 is not yet admitted');
-  assert.strictEqual(initialProg.phases[1].isLocked, true, 'Phase 2 must be locked initially');
-  assert.strictEqual(initialProg.certificateEligible, false);
-  console.log('✅ 3.1: Initial enrollment verified: Phase 1 active, Phase 2 locked by policy');
+  // Verify Phase 1 Fee Calculation via resolvePhaseFee
+  const p1FeeInitial = resolvePhaseFee({
+    feeDetailsRaw: initialFees,
+    phaseIndex: 0,
+    courseDefId: threeCourseDefId,
+    customDb: db
+  });
+  assert.strictEqual(p1FeeInitial.grossFee, 5000);
+  assert.strictEqual(p1FeeInitial.cashCollected, 2500);
+  assert.strictEqual(p1FeeInitial.remainingDue, 2500);
+  assert.strictEqual(p1FeeInitial.isPaid, false);
+  assert.strictEqual(p1FeeInitial.status, 'Partial');
+  console.log('✅ 3.1: Phase 1 installment fee verified: ৳2,500 collected, ৳2,500 due, status: Partial');
 
-  // 3.2 Update Phase 1 Attendance & Assignment Marks via updateDefinedProgressAtomic
+  // Complete Phase 1 academic requirements
   await updateDefinedProgressAtomic(
     enrollmentId,
     {
@@ -510,22 +627,52 @@ async function runTests() {
     db
   );
 
-  const progAfterPhase1 = getEnrollmentProgressSync(enrollmentId, db);
-  assert.strictEqual(progAfterPhase1.phases[0].isPassed, true, 'Phase 1 should be passed after meeting all requirements');
-  assert.strictEqual(progAfterPhase1.phases[1].isLocked, false, 'Phase 2 should unlock once Phase 1 is passed and paid');
-  console.log('✅ 3.2: Phase 1 passed via real atomic service: Attendance (100%), Assignment (18/20), Exam (65/80)');
+  const progAfterPhase1Acad = getEnrollmentProgressSync(enrollmentId, db);
+  assert.strictEqual(progAfterPhase1Acad.phases[0].isPassed, true, 'Phase 1 academically passed');
+  // Phase 2 remains locked because Phase 1 fees are partially due!
+  assert.strictEqual(progAfterPhase1Acad.phases[1].isLocked, true, 'Phase 2 locked because requirePreviousPhaseFeesPaid is true');
+  console.log('✅ 3.2: Phase progression gate verified: Phase 2 remains locked while Phase 1 dues exist');
 
-  // 3.3 Phase Progression: Admit Student to Phase 2 via admitStudentToPhase
-  await admitStudentToPhase(enrollmentId, 2, db, {
-    batchId: multiBatchId,
-    onCommitAudit: () => {}
+  // 3.3 Clear Phase 1 remaining dues
+  const feesP1Paid = JSON.parse(JSON.stringify(initialFees));
+  feesP1Paid.phase1.amount_paid = 5000;
+  feesP1Paid.phase1.status = 'paid';
+  feesP1Paid.phase1.installments[1].status = 'paid';
+  db.prepare('UPDATE student_course_enrollments SET fee_details = ? WHERE id = ?').run(JSON.stringify(feesP1Paid), enrollmentId);
+
+  const progAfterP1Paid = getEnrollmentProgressSync(enrollmentId, db);
+  assert.strictEqual(progAfterP1Paid.phases[1].isLocked, false, 'Phase 2 unlocks once Phase 1 is passed AND paid');
+  console.log('✅ 3.3: Phase 2 unlocked once Phase 1 fees cleared');
+
+  // Admit student to Phase 2
+  await admitStudentToPhase(enrollmentId, 2, db, { batchId: threeBatchId, onCommitAudit: () => {} });
+
+  // 3.4 Phase 2: 10% Discount applied (5000 - 500 = 4500 paid)
+  const feesP2Paid = JSON.parse(JSON.stringify(feesP1Paid));
+  feesP2Paid.phase2 = {
+    full_fee: 5000,
+    discount: '10%',
+    amount_paid: 4500,
+    status: 'paid',
+    installments: [{ id: 1, amount: 4500, date: '2026-10-01', method: 'bKash', status: 'paid' }]
+  };
+  db.prepare('UPDATE student_course_enrollments SET fee_details = ? WHERE id = ?').run(JSON.stringify(feesP2Paid), enrollmentId);
+
+  const p2FeeAcct = resolvePhaseFee({
+    feeDetailsRaw: feesP2Paid,
+    phaseIndex: 1,
+    courseDefId: threeCourseDefId,
+    customDb: db
   });
+  assert.strictEqual(p2FeeAcct.grossFee, 5000);
+  assert.strictEqual(p2FeeAcct.discountAmount, 500);
+  assert.strictEqual(p2FeeAcct.netPayable, 4500);
+  assert.strictEqual(p2FeeAcct.cashCollected, 4500);
+  assert.strictEqual(p2FeeAcct.remainingDue, 0);
+  assert.strictEqual(p2FeeAcct.isPaid, true);
+  console.log('✅ 3.4: Phase 2 discount accounting verified: 10% discount (-৳500), Net ৳4,500, Remaining: 0, status: Paid Full');
 
-  const progAfterAdmit = getEnrollmentProgressSync(enrollmentId, db);
-  assert.strictEqual(progAfterAdmit.phases[1].isAdmitted, true, 'Student admitted to Phase 2');
-  console.log('✅ 3.3: Phase progression gate passed: Student admitted to Phase 2');
-
-  // 3.4 Complete Phase 2 Academic Requirements, but fees remain UNPAID
+  // Complete Phase 2 academics
   await updateDefinedProgressAtomic(
     enrollmentId,
     {
@@ -544,21 +691,64 @@ async function runTests() {
     db
   );
 
-  const progPhase2AcadDone = getEnrollmentProgressSync(enrollmentId, db);
-  assert.strictEqual(progPhase2AcadDone.phases[1].isPassed, true, 'Phase 2 academic requirements passed');
-  assert.strictEqual(progPhase2AcadDone.certificateEligible, false, 'Certificate must NOT be eligible while Phase 2 fees remain unpaid');
-  console.log('✅ 3.4: Fee gate verified: Phase 2 academically passed, but certificate withheld due to unpaid fees');
+  const progAfterPhase2 = getEnrollmentProgressSync(enrollmentId, db);
+  assert.strictEqual(progAfterPhase2.phases[1].isPassed, true);
+  assert.strictEqual(progAfterPhase2.phases[2].isLocked, false);
 
-  // 3.5 Pay Phase 2 Fees via real fee_details update
-  const paidFeeDetails = {
-    phase1: { full_fee: 5000, amount_paid: 5000, status: 'paid', installments: [] },
-    phase2: { full_fee: 5000, amount_paid: 5000, status: 'paid', installments: [] }
+  // Admit student to Phase 3
+  await admitStudentToPhase(enrollmentId, 3, db, { batchId: threeBatchId, onCommitAudit: () => {} });
+
+  // 3.5 Complete Phase 3 academic requirements, with Phase 3 fee UNPAID
+  await updateDefinedProgressAtomic(
+    enrollmentId,
+    {
+      attendance: [
+        { class_id: 'cls_p3_1', attended: 1 },
+        { class_id: 'cls_p3_2', attended: 1 }
+      ],
+      assignments: [
+        { assignment_id: 'asg_p3_1', marks: 20, submission_status: 'graded' }
+      ],
+      exam_marks: [
+        { phase_id: 'phase_3', examMarks: 75 }
+      ],
+      updatedBy: 1
+    },
+    db
+  );
+
+  const progPhase3AcadDone = getEnrollmentProgressSync(enrollmentId, db);
+  assert.strictEqual(progPhase3AcadDone.phases[0].isPassed, true);
+  assert.strictEqual(progPhase3AcadDone.phases[1].isPassed, true);
+  assert.strictEqual(progPhase3AcadDone.phases[2].isPassed, true);
+  // CRITICAL APPLICATION CHECK: Even though student passed 100% of academic work across all 3 phases,
+  // certificate is withheld because Phase 3 fee is unpaid!
+  assert.strictEqual(progPhase3AcadDone.certificateEligible, false, 'Certificate must NOT be eligible while Phase 3 fees remain unpaid');
+  console.log('✅ 3.5: Fee gate verified: All 3 phases passed, but certificate withheld due to unpaid Phase 3 fees');
+
+  // 3.6 Pay Phase 3 Fees in full
+  const feesAllPaid = JSON.parse(JSON.stringify(feesP2Paid));
+  feesAllPaid.phase3 = {
+    full_fee: 5000,
+    amount_paid: 5000,
+    status: 'paid',
+    installments: [{ id: 1, amount: 5000, date: '2026-11-01', method: 'bKash', status: 'paid' }]
   };
-  db.prepare('UPDATE student_course_enrollments SET fee_details = ? WHERE id = ?').run(JSON.stringify(paidFeeDetails), enrollmentId);
+  db.prepare('UPDATE student_course_enrollments SET fee_details = ? WHERE id = ?').run(JSON.stringify(feesAllPaid), enrollmentId);
+
+  const p3FeeFinal = resolvePhaseFee({
+    feeDetailsRaw: feesAllPaid,
+    phaseIndex: 2,
+    courseDefId: threeCourseDefId,
+    customDb: db
+  });
+  assert.strictEqual(p3FeeFinal.cashCollected, 5000);
+  assert.strictEqual(p3FeeFinal.remainingDue, 0);
+  assert.strictEqual(p3FeeFinal.isPaid, true);
 
   const progFinal = getEnrollmentProgressSync(enrollmentId, db);
-  assert.strictEqual(progFinal.certificateEligible, true, 'Certificate must be eligible once all phases are passed AND fees are fully paid');
-  console.log('✅ 3.5: Final certificate eligibility verified dynamically by application engine');
+  assert.strictEqual(progFinal.certificateEligible, true, 'Certificate must be eligible once all phases are passed AND all fees are fully paid');
+  console.log('✅ 3.6: Dynamic progression engine confirms: certificateEligible = true after all 3 phase fees cleared');
 
   console.log('\n============================================================');
   console.log('🎉 ALL REAL APPLICATION ENDPOINT & SERVICE TESTS PASSED (100%)');
