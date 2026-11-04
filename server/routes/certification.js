@@ -352,9 +352,9 @@ router.post('/log-download', authenticateToken, async (req, res) => {
     const recipientUserId = authoritativeUserId;
 
     if (req.user.role === 'admin') {
-      const hasPerm = isSuperAdmin(req.user) || hasAnyPermission(req.user, 'students:view', 'students:academic_records', 'courses:view', 'batches:view', 'reports:view');
+      const hasPerm = isSuperAdmin(req.user) || hasAnyPermission(req.user, 'students:academic_records', 'students:edit');
       if (!hasPerm) {
-        return res.status(403).json({ error: 'Forbidden: Insufficient administrative privileges to log certificate download.' });
+        return res.status(403).json({ error: 'Forbidden: Insufficient administrative privileges to log certificate download. Requires students:academic_records or students:edit permission.' });
       }
     } else {
       if (authoritativeUserId !== req.user.id) {

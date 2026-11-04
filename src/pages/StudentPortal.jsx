@@ -152,6 +152,15 @@ export default function StudentPortal() {
                       <Download size={14} /> Download Certificate
                     </button>
                   )}
+                  <NavLink 
+                    to="/classroom" 
+                    className="btn btn-secondary" 
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.85rem', padding: '0.5rem 0.9rem' }}
+                    title="View routine and schedule for this batch in Classroom"
+                    data-testid="student-portal-routine-link"
+                  >
+                    <CalendarCheck size={14} /> Class Routine
+                  </NavLink>
                 </div>
               </div>
 

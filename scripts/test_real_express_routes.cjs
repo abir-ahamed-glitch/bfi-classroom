@@ -156,7 +156,7 @@ async function run() {
       type: 'access'
     };
     if (user.role === 'admin') {
-      payload.sessionId = user.id === 2 ? 101 : 102;
+      payload.sessionId = user.id === 2 ? 101 : (user.id === 3 ? 103 : 102);
     }
     return jwt.sign(payload, getJwtSecret(), { expiresIn: '1h' });
   }
@@ -169,6 +169,8 @@ async function run() {
   const { default: batchesRouter } = await import('../server/routes/batches.js');
   const { default: adminRouter } = await import('../server/routes/admin.js');
   const { default: certificationRouter } = await import('../server/routes/certification.js');
+  const { default: studentRouter } = await import('../server/routes/student.js');
+  const { default: teacherRouter } = await import('../server/routes/teacher.js');
 
   const app = express();
   app.use(express.json());
@@ -176,6 +178,9 @@ async function run() {
   app.use('/api/admin/batches', batchesRouter);
   app.use('/api/admin', adminRouter);
   app.use('/api/certification', certificationRouter);
+  app.use('/api/student', studentRouter);
+  app.use('/api/teacher', teacherRouter);
+  app.use('/api/instructor', teacherRouter);
 
   const server = http.createServer(app);
   await new Promise(resolve => server.listen(0, resolve));
@@ -514,7 +519,7 @@ async function run() {
           title: 'Phase 1: Pre-Visualisation',
           feeAmount: 5000,
           classCount: 1,
-          routine: [{ weekday: 'Saturday', startTime: '19:00', endTime: '21:00' }],
+          routine: [{ weekday: 'Saturday', startTime: '19:00', endTime: '21:00', teacherName: 'Tanvir Mokammel' }],
           classes: [{ id: 'cls_d1', title: 'Storyboarding', mandatory: true }],
           assignments: [{ id: 'asg_d1', title: 'Storyboard Book', passMarks: 10, maxMarks: 20 }],
           exam: { enabled: true, title: 'Phase 1 Exam', passMarks: 40, maxMarks: 80 }
@@ -980,23 +985,264 @@ async function run() {
     assert.strictEqual(progressAfter.certificates.issued, 1, 'Batch progress must now reflect 1 issued certificate for eligible downloaded student');
     console.log('✅ 9.7 Authorized download persisted correctly with derived enrollment identity and certificates.issued = 1');
 
-    // 9.8 Admin logging download on behalf of student (recipient vs acting administrator separation)
-    console.log('--- 9.8 Admin logging download on behalf of student ---');
-    // Clear download row so admin can re-log
+    // 9.8 Read-only administrator denied vs Authorized administrator accepted
+    console.log('--- 9.8 Read-only administrator denied vs Authorized administrator accepted ---');
+    // Seed Read-only admin User 3
+    db.prepare(`
+      INSERT OR REPLACE INTO users (id, username, email, password_hash, role, first_name, last_name, is_active, is_super_admin, token_version)
+      VALUES (3, 'readonlyadmin', 'readonly@bfi.edu', 'hash', 'admin', 'Read Only', 'Admin', 1, 0, 1)
+    `).run();
+    db.prepare(`
+      INSERT OR REPLACE INTO admin_profiles (user_id, full_name)
+      VALUES (3, 'Read Only Admin')
+    `).run();
+    db.prepare(`
+      INSERT OR REPLACE INTO sessions (id, user_id, token_hash, ip_address, user_agent, expires_at)
+      VALUES (103, 3, 'dummy-hash-3', '127.0.0.1', 'test-agent', datetime('now', '+1 hour'))
+    `).run();
+    db.prepare('DELETE FROM admin_permissions WHERE user_id = 3').run();
+    // Grant ONLY read permissions
+    for (const p of ['reports:view', 'batches:view', 'courses:view', 'students:view', 'settings:view']) {
+      db.prepare('INSERT INTO admin_permissions (user_id, permission, granted_by) VALUES (3, ?, 1)').run(p);
+    }
+    const readOnlyAdminToken = createValidToken({ id: 3, username: 'readonlyadmin', role: 'admin', is_super_admin: 0 });
+
+    // Clear download row so admin can log
     db.prepare('DELETE FROM certificate_downloads WHERE enrollment_id = ?').run(enrId);
+    const downloadsBeforeAdmin = getDownloadsCount();
+
+    // 9.8a: Read-only admin attempts to log download -> HTTP 403 Forbidden
+    const resReadOnlyAdmin = await fetchWithTimeout(`${baseUrl}/api/certification/log-download`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${readOnlyAdminToken}` },
+      body: JSON.stringify({ enrollmentId: enrId })
+    });
+    assert.strictEqual(resReadOnlyAdmin.status, 403);
+    const readOnlyBody = await resReadOnlyAdmin.json();
+    assert(readOnlyBody.error.includes('Insufficient administrative privileges'));
+    assert.strictEqual(getDownloadsCount(), downloadsBeforeAdmin, 'Zero database mutations when read-only admin is denied');
+    console.log('✅ 9.8a Read-only administrator strictly denied HTTP 403 with zero database mutations');
+
+    // 9.8b: Authorized admin (User 2, having students:academic_records) succeeds
     const resAdminDownload = await fetchWithTimeout(`${baseUrl}/api/certification/log-download`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${batchAdminToken}` },
       body: JSON.stringify({ enrollmentId: enrId })
     });
     assert.strictEqual(resAdminDownload.status, 200);
+    assert.strictEqual(getDownloadsCount(), downloadsBeforeAdmin + 1);
     const adminInsertedRow = db.prepare('SELECT * FROM certificate_downloads WHERE enrollment_id = ?').get(enrId);
     assert.strictEqual(adminInsertedRow.user_id, 50, 'Authoritative recipient MUST be student Jamil (50)');
     assert.strictEqual(adminInsertedRow.downloaded_by, 2, 'downloaded_by MUST record acting administrator Batch Admin (2)');
-    console.log('✅ 9.8 Admin download verified: recipient user_id (50) is cleanly separated from acting downloaded_by admin (2)');
+    console.log('✅ 9.8b Authorized admin download verified: recipient user_id (50) is cleanly separated from acting downloaded_by admin (2)');
+
+    // -------------------------------------------------------------
+    // HTTP TEST 10: Authorized Student & Teacher Routine Schedule Views
+    // -------------------------------------------------------------
+    console.log('\n--- HTTP TEST 10: Authorized Student & Teacher Routine Schedule Views ---');
+    
+    // 10.1: Unrelated batch denial for student
+    console.log('--- 10.1 Unrelated batch denial for student ---');
+    const resUnenrolledStudent = await fetchWithTimeout(`${baseUrl}/api/student/batches/200003/schedule`, {
+      headers: { 'Authorization': `Bearer ${jamilToken}` } // Jamil is NOT enrolled in 200003
+    });
+    assert.strictEqual(resUnenrolledStudent.status, 403);
+    const unenrolledBody = await resUnenrolledStudent.json();
+    assert(unenrolledBody.error.includes('not enrolled in this batch'));
+    console.log('✅ 10.1 Real route rejected student access to unrelated batch with HTTP 403 Forbidden');
+
+    // 10.2: Enrolled student authorized batch schedule view
+    console.log('--- 10.2 Enrolled student authorized batch schedule view ---');
+    const resEnrolledStudent = await fetchWithTimeout(`${baseUrl}/api/student/batches/300001/schedule`, {
+      headers: { 'Authorization': `Bearer ${jamilToken}` } // Jamil is enrolled in 300001
+    });
+    assert.strictEqual(resEnrolledStudent.status, 200);
+    const enrolledSchedule = await resEnrolledStudent.json();
+    assert.strictEqual(enrolledSchedule.batchId, 300001);
+    assert.strictEqual(enrolledSchedule.courseName, 'Directing Diploma 3-Phase');
+    assert(Array.isArray(enrolledSchedule.phases) && enrolledSchedule.phases.length === 3);
+    const phase1Sched = enrolledSchedule.phases[0].schedule;
+    assert(Array.isArray(phase1Sched) && phase1Sched.length > 0);
+    assert.strictEqual(phase1Sched[0].timezone, 'Asia/Dhaka');
+    assert.strictEqual(phase1Sched[0].startTime, '19:00');
+    assert.strictEqual(phase1Sched[0].endTime, '21:00');
+    console.log('✅ 10.2 Enrolled student received authorized batch schedule with Asia/Dhaka times and metadata');
+
+    // 10.3: Enrolled student aggregated schedule
+    console.log('--- 10.3 Enrolled student aggregated schedule ---');
+    const resStudentAll = await fetchWithTimeout(`${baseUrl}/api/student/schedule`, {
+      headers: { 'Authorization': `Bearer ${jamilToken}` }
+    });
+    assert.strictEqual(resStudentAll.status, 200);
+    const studentAllData = await resStudentAll.json();
+    assert.strictEqual(studentAllData.studentId, 50);
+    assert(studentAllData.batches.some(b => b.batchId === 300001));
+    console.log('✅ 10.3 Student aggregated schedule returned all enrolled batches with effective routines');
+
+    // 10.4: Seed Teachers: Tanvir (assigned to batch 300001) and Kabir (unassigned)
+    console.log('--- 10.4 Teacher authorization and unassigned batch denial ---');
+    db.prepare(`
+      INSERT OR REPLACE INTO users (id, username, email, password_hash, role, first_name, last_name, is_active, is_super_admin, token_version)
+      VALUES (60, 'tanvir', 'tanvir@bfi.edu', 'hash', 'instructor', 'Tanvir', 'Mokammel', 1, 0, 1)
+    `).run();
+    db.prepare(`
+      INSERT OR REPLACE INTO instructor_profiles (user_id, full_name, subjects, bfi_batch)
+      VALUES (60, 'Tanvir Mokammel', '["Directing"]', '01')
+    `).run();
+    const tanvirToken = createValidToken({ id: 60, username: 'tanvir', role: 'instructor', is_super_admin: 0 });
+
+    db.prepare(`
+      INSERT OR REPLACE INTO users (id, username, email, password_hash, role, first_name, last_name, is_active, is_super_admin, token_version)
+      VALUES (61, 'kabir', 'kabir@bfi.edu', 'hash', 'instructor', 'Kabir', 'Ahmed', 1, 0, 1)
+    `).run();
+    db.prepare(`
+      INSERT OR REPLACE INTO instructor_profiles (user_id, full_name, subjects, bfi_batch)
+      VALUES (61, 'Kabir Ahmed', '["Sound Design"]', NULL)
+    `).run();
+    const kabirToken = createValidToken({ id: 61, username: 'kabir', role: 'instructor', is_super_admin: 0 });
+
+    // Seed a class in batch 300001 taught by Tanvir Mokammel
+    const batch300001Routine = [
+      {
+        date: '2026-09-15',
+        weekday: 'Tuesday',
+        startTime: '19:00',
+        endTime: '21:00',
+        timezone: 'Asia/Dhaka',
+        subjectName: 'Film Language',
+        classTitle: 'Part 01: Mise-en-scène',
+        teacherName: 'Tanvir Mokammel',
+        deliveryMode: 'recorded_plus_live_discussion',
+        category: 'theory',
+        platform: 'Zoom'
+      }
+    ];
+    db.prepare(`
+      INSERT OR REPLACE INTO course_routine_overrides (course_definition_id, batch_id, phase_id, routine_json, updated_by, updated_at)
+      VALUES (?, 300001, 'phase_1', ?, 1, datetime('now'))
+    `).run(diplomaDefId, JSON.stringify(batch300001Routine));
+
+    // Kabir attempts to access batch 300001 -> HTTP 403 Forbidden
+    const resKabirDenied = await fetchWithTimeout(`${baseUrl}/api/teacher/batches/300001/schedule`, {
+      headers: { 'Authorization': `Bearer ${kabirToken}` }
+    });
+    assert.strictEqual(resKabirDenied.status, 403);
+    const kabirBody = await resKabirDenied.json();
+    assert(kabirBody.error.includes('not assigned to this batch'));
+    console.log('✅ 10.4 Unassigned teacher access to batch 300001 strictly rejected with HTTP 403 Forbidden');
+
+    // 10.5: Assigned teacher Tanvir accesses batch 300001 schedule -> HTTP 200 OK
+    console.log('--- 10.5 Assigned teacher accesses batch schedule ---');
+    const resTanvir = await fetchWithTimeout(`${baseUrl}/api/teacher/batches/300001/schedule`, {
+      headers: { 'Authorization': `Bearer ${tanvirToken}` }
+    });
+    assert.strictEqual(resTanvir.status, 200);
+    const tanvirBatchData = await resTanvir.json();
+    assert.strictEqual(tanvirBatchData.batchId, 300001);
+    const tanvirSlots = tanvirBatchData.phases[0].schedule;
+    assert.strictEqual(tanvirSlots[0].teacherName, 'Tanvir Mokammel');
+    assert.strictEqual(tanvirSlots[0].isMyClass, true, 'isMyClass must be true for assigned instructor');
+    assert.strictEqual(tanvirSlots[0].deliveryMode, 'recorded_plus_live_discussion');
+    assert.strictEqual(tanvirSlots[0].platform, 'Zoom');
+    console.log('✅ 10.5 Assigned teacher received batch schedule with isMyClass=true, deliveryMode="recorded_plus_live_discussion", platform="Zoom"');
+
+    // 10.6: Assigned teacher aggregated schedule (/api/teacher/schedule and /api/instructor/schedule)
+    console.log('--- 10.6 Assigned teacher aggregated schedule ---');
+    const resTeacherAgg = await fetchWithTimeout(`${baseUrl}/api/teacher/schedule`, {
+      headers: { 'Authorization': `Bearer ${tanvirToken}` }
+    });
+    assert.strictEqual(resTeacherAgg.status, 200);
+    const teacherAggData = await resTeacherAgg.json();
+    assert.strictEqual(teacherAggData.teacherId, 60);
+    assert(teacherAggData.classes.length > 0);
+    assert.strictEqual(teacherAggData.classes[0].slot.teacherName, 'Tanvir Mokammel');
+
+    // Verify /api/instructor/schedule alias produces identical authorized output
+    const resInstructorAgg = await fetchWithTimeout(`${baseUrl}/api/instructor/schedule`, {
+      headers: { 'Authorization': `Bearer ${tanvirToken}` }
+    });
+    assert.strictEqual(resInstructorAgg.status, 200);
+    const instructorAggData = await resInstructorAgg.json();
+    assert.deepStrictEqual(instructorAggData.classes, teacherAggData.classes);
+    console.log('✅ 10.6 Assigned teacher aggregated schedule verified across /api/teacher and /api/instructor routes');
+
+    // 10.7: Batch Routine Override Dynamic Update: Visibility in Student and Teacher views
+    console.log('--- 10.7 Dynamic Override Update: Visibility in Student and Teacher views ---');
+    const updatedRoutine = [
+      {
+        date: '2026-09-20',
+        weekday: 'Sunday',
+        startTime: '20:00',
+        endTime: '22:00',
+        timezone: 'Asia/Dhaka',
+        subjectName: 'Advanced Directing',
+        classTitle: 'Part 02: Blocking & Staging',
+        teacherName: 'Tanvir Mokammel',
+        deliveryMode: 'live',
+        category: 'practical',
+        platform: 'Google Meet'
+      }
+    ];
+    // Admin saves override through real route
+    const resOverrideUpdate = await fetchWithTimeout(`${baseUrl}/api/course-definitions/${diplomaDefId}/routine`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${batchAdminToken}` },
+      body: JSON.stringify({ phase_id: 'phase_1', batch_id: 300001, routine: updatedRoutine, reason: 'Rescheduling session to Sunday on Google Meet' })
+    });
+    assert.strictEqual(resOverrideUpdate.status, 200);
+
+    // Student immediately sees the updated override
+    const resStudentAfterUpdate = await fetchWithTimeout(`${baseUrl}/api/student/batches/300001/schedule`, {
+      headers: { 'Authorization': `Bearer ${jamilToken}` }
+    });
+    const studentDataAfterUpdate = await resStudentAfterUpdate.json();
+    const updatedStudentSlot = studentDataAfterUpdate.phases[0].schedule[0];
+    assert.strictEqual(updatedStudentSlot.startTime, '20:00');
+    assert.strictEqual(updatedStudentSlot.endTime, '22:00');
+    assert.strictEqual(updatedStudentSlot.platform, 'Google Meet');
+    assert.strictEqual(updatedStudentSlot.weekday, 'Sunday');
+
+    // Teacher immediately sees the updated override
+    const resTeacherAfterUpdate = await fetchWithTimeout(`${baseUrl}/api/teacher/batches/300001/schedule`, {
+      headers: { 'Authorization': `Bearer ${tanvirToken}` }
+    });
+    const teacherDataAfterUpdate = await resTeacherAfterUpdate.json();
+    const updatedTeacherSlot = teacherDataAfterUpdate.phases[0].schedule[0];
+    assert.strictEqual(updatedTeacherSlot.startTime, '20:00');
+    assert.strictEqual(updatedTeacherSlot.endTime, '22:00');
+    assert.strictEqual(updatedTeacherSlot.platform, 'Google Meet');
+    assert.strictEqual(updatedTeacherSlot.isMyClass, true);
+    console.log('✅ 10.7 Batch routine override update dynamically reflected in both Student and Teacher schedule endpoints');
+
+    // 10.8: Atomic Revert: Restores Inherited Course Schedule in Student and Teacher views
+    console.log('--- 10.8 Atomic Revert: Restores Inherited Course Schedule in Student and Teacher views ---');
+    const resRevert10 = await fetchWithTimeout(`${baseUrl}/api/course-definitions/${diplomaDefId}/routine`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${batchAdminToken}` },
+      body: JSON.stringify({ phase_id: 'phase_1', batch_id: 300001, action: 'revert', reason: 'Reverting back to course template baseline' })
+    });
+    assert.strictEqual(resRevert10.status, 200);
+
+    // Student schedule now reflects restored template baseline
+    const resStudentAfterRevert = await fetchWithTimeout(`${baseUrl}/api/student/batches/300001/schedule`, {
+      headers: { 'Authorization': `Bearer ${jamilToken}` }
+    });
+    const studentDataAfterRevert = await resStudentAfterRevert.json();
+    assert.strictEqual(studentDataAfterRevert.phases[0].source, 'definition_baseline');
+    const studentRevertedSlots = studentDataAfterRevert.phases[0].schedule;
+    assert.strictEqual(studentRevertedSlots[0].startTime, '19:00');
+    assert.strictEqual(studentRevertedSlots[0].endTime, '21:00');
+
+    // Teacher schedule also reflects restored template baseline
+    const resTeacherAfterRevert = await fetchWithTimeout(`${baseUrl}/api/teacher/batches/300001/schedule`, {
+      headers: { 'Authorization': `Bearer ${tanvirToken}` }
+    });
+    const teacherDataAfterRevert = await resTeacherAfterRevert.json();
+    assert.strictEqual(teacherDataAfterRevert.phases[0].source, 'definition_baseline');
+    console.log('✅ 10.8 Atomic Revert dynamically restored inherited course baseline across both Student and Teacher schedule endpoints');
 
     console.log('\n============================================================');
-    console.log('🎉 ALL 9 REAL EXPRESS ROUTE & PAYMENT LIFECYCLE TESTS PASSED!');
+    console.log('🎉 ALL 10 REAL EXPRESS ROUTE & SCHEDULE TESTS PASSED!');
     console.log('============================================================');
   } finally {
     if (server) {

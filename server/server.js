@@ -57,6 +57,7 @@ import { runBatchStatusAutomation } from './utils/batchStatusAutomation.js';
 import broadcastRoutes from './routes/broadcast.js';
 import trashRoutes from './routes/trash.js';
 import adminManagementRoutes from './routes/admin-management.js';
+import teacherRoutes from './routes/teacher.js';
 import { checkScheduledBroadcasts } from './utils/broadcastScheduler.js';
 
 import { getJwtRefreshSecret, getJwtSecret } from './config/security.js';
@@ -584,6 +585,8 @@ app.use('/api/admin/course-settings', courseSettingsRoutes);
 app.use('/api/admin/course-definitions', courseDefinitionsRoutes);
 app.use('/api/course-definitions', courseDefinitionsRoutes);
 app.use('/api/admin', adminManagementRoutes);
+app.use('/api/teacher', teacherRoutes);
+app.use('/api/instructor', teacherRoutes);
 
 // Test environment and database identity verification endpoint (strictly restricted to test servers)
 app.get('/api/test/db-identity', (req, res) => {

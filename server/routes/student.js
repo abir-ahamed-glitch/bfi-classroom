@@ -7,7 +7,7 @@ import express from 'express';
 import bcrypt from 'bcryptjs';
 import db from '../db/database.js';
 import { authenticateToken, sanitizeInput, validatePassword, sensitiveEndpointLimiter, hasPermission, isSuperAdmin } from '../middleware/auth.js';
-import courseProgressService from '../services/courseProgressService.js';
+import courseProgressService, { resolvePhaseRoutine } from '../services/courseProgressService.js';
 
 const router = express.Router();
 
@@ -568,6 +568,143 @@ router.put('/privacy', authenticateToken, (req, res) => {
   } catch (error) {
     console.error('Privacy update error:', error);
     res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+function sanitizeRoutineSlots(routine = []) {
+  if (!Array.isArray(routine)) return [];
+  return routine.map((slot, idx) => ({
+    id: slot.id || `slot_${idx + 1}`,
+    date: slot.date ? String(slot.date).trim() : '',
+    weekday: slot.weekday || '',
+    startTime: slot.startTime || '19:00',
+    endTime: slot.endTime || '21:00',
+    timezone: slot.timezone || 'Asia/Dhaka',
+    subjectName: slot.subjectName ? String(slot.subjectName).trim() : '',
+    classTitle: slot.classTitle ? String(slot.classTitle).trim() : '',
+    teacherName: slot.teacherName ? String(slot.teacherName).trim() : '',
+    deliveryMode: slot.deliveryMode ? String(slot.deliveryMode).trim() : 'live',
+    category: slot.category ? String(slot.category).trim() : 'theory',
+    platform: slot.platform ? String(slot.platform).trim() : ''
+  }));
+}
+
+// Student Batch Routine View - Specific Batch (Authoritative, Read-Only)
+router.get('/batches/:id/schedule', authenticateToken, (req, res) => {
+  try {
+    const batchId = Number(req.params.id);
+    if (!batchId || isNaN(batchId)) {
+      return res.status(400).json({ error: 'Invalid batch ID' });
+    }
+
+    // Role check: If user is student, enforce enrollment
+    if (req.user.role === 'student') {
+      const isEnrolled = db.prepare(`
+        SELECT 1 FROM batch_students WHERE batch_id = ? AND student_id = ?
+        UNION
+        SELECT 1 FROM student_course_enrollments WHERE batch_id = ? AND user_id = ?
+      `).get(batchId, req.user.id, batchId, req.user.id);
+
+      if (!isEnrolled) {
+        return res.status(403).json({ error: 'Forbidden: You are not enrolled in this batch.' });
+      }
+    }
+
+    const batch = db.prepare('SELECT * FROM batches WHERE id = ?').get(batchId);
+    if (!batch) {
+      return res.status(404).json({ error: 'Batch not found.' });
+    }
+
+    let phases = [];
+    if (batch.course_definition_id) {
+      const defRow = db.prepare('SELECT definition_json FROM course_definitions WHERE id = ?').get(batch.course_definition_id);
+      if (defRow?.definition_json) {
+        try {
+          const def = JSON.parse(defRow.definition_json);
+          const rawPhases = Array.isArray(def.phases) ? def.phases : [];
+          phases = rawPhases.map((phase, pIdx) => {
+            const phaseId = phase.id || `phase_${phase.phaseIndex || pIdx + 1}`;
+            const resolved = resolvePhaseRoutine(db, batch.course_definition_id, batch.id, phaseId, phase.routine);
+            return {
+              phaseId,
+              title: phase.title || `Phase ${pIdx + 1}`,
+              phaseIndex: phase.phaseIndex || pIdx + 1,
+              source: resolved.source,
+              schedule: sanitizeRoutineSlots(resolved.routine)
+            };
+          });
+        } catch (e) {
+          console.error('Error parsing course definition JSON:', e);
+        }
+      }
+    }
+
+    return res.json({
+      batchId: batch.id,
+      batchName: batch.batch_name,
+      batchNumber: batch.batch_number,
+      courseName: batch.course_name,
+      courseDefinitionId: batch.course_definition_id,
+      phases
+    });
+  } catch (error) {
+    console.error('Error fetching student batch schedule:', error);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Student All Enrolled Batches Routine View (Authoritative, Read-Only)
+router.get('/schedule', authenticateToken, (req, res) => {
+  try {
+    const enrolledBatches = db.prepare(`
+      SELECT DISTINCT b.id, b.batch_name, b.batch_number, b.course_name, b.course_definition_id
+      FROM batches b
+      LEFT JOIN batch_students bs ON bs.batch_id = b.id
+      LEFT JOIN student_course_enrollments sce ON sce.batch_id = b.id
+      WHERE bs.student_id = ? OR sce.user_id = ?
+    `).all(req.user.id, req.user.id);
+
+    const schedules = enrolledBatches.map(batch => {
+      let phases = [];
+      if (batch.course_definition_id) {
+        const defRow = db.prepare('SELECT definition_json FROM course_definitions WHERE id = ?').get(batch.course_definition_id);
+        if (defRow?.definition_json) {
+          try {
+            const def = JSON.parse(defRow.definition_json);
+            const rawPhases = Array.isArray(def.phases) ? def.phases : [];
+            phases = rawPhases.map((phase, pIdx) => {
+              const phaseId = phase.id || `phase_${phase.phaseIndex || pIdx + 1}`;
+              const resolved = resolvePhaseRoutine(db, batch.course_definition_id, batch.id, phaseId, phase.routine);
+              return {
+                phaseId,
+                title: phase.title || `Phase ${pIdx + 1}`,
+                phaseIndex: phase.phaseIndex || pIdx + 1,
+                source: resolved.source,
+                schedule: sanitizeRoutineSlots(resolved.routine)
+              };
+            });
+          } catch (e) {
+            console.error('Error parsing course definition JSON for schedule:', e);
+          }
+        }
+      }
+      return {
+        batchId: batch.id,
+        batchName: batch.batch_name,
+        batchNumber: batch.batch_number,
+        courseName: batch.course_name,
+        courseDefinitionId: batch.course_definition_id,
+        phases
+      };
+    });
+
+    return res.json({
+      studentId: req.user.id,
+      batches: schedules
+    });
+  } catch (error) {
+    console.error('Error fetching student all schedules:', error);
+    return res.status(500).json({ error: 'Internal server error' });
   }
 });
 

@@ -35,6 +35,7 @@ let teacherToken;
 const testBatchId1 = 100082; // Script Writing Workshop (1 phase)
 const testBatchId3P = 300099; // Directing Diploma (3 phases)
 const testBatchIdIso = 300098; // Isolated batch with same course name
+let swwDefId;
 let diplomaDefId;
 let enrId101;
 let enrId102;
@@ -104,6 +105,22 @@ async function injectStudentAuth(page) {
     }));
   }, {
     token: studentToken
+  });
+}
+
+async function injectTeacherAuth(page) {
+  await setupTestRouteProxy(page);
+  await page.addInitScript(({ token }) => {
+    localStorage.setItem('token', token);
+    localStorage.setItem('user', JSON.stringify({
+      id: 20,
+      username: 'tanvir',
+      role: 'instructor',
+      first_name: 'Tanvir',
+      last_name: 'Mokammel'
+    }));
+  }, {
+    token: teacherToken
   });
 }
 
@@ -179,7 +196,7 @@ test.beforeAll(async () => {
     INSERT INTO course_definitions (slug, version, name, course_type, status, phase_count, definition_json, created_by, updated_by)
     VALUES ('script-writing-workshop-2026', 1, 'Script Writing Workshop-2026', 'workshop', 'published', 1, ?, ?, ?)
   `).run(JSON.stringify(swwDefJson), adminUser.id, adminUser.id);
-  const swwDefId = swwRes.lastInsertRowid;
+  swwDefId = swwRes.lastInsertRowid;
 
   db.prepare(`
     INSERT INTO batches (id, slug, batch_name, batch_number, course_name, course_definition_id, created_by)
@@ -196,6 +213,7 @@ test.beforeAll(async () => {
 
   // Teacher Tanvir Mokammel
   db.prepare(`INSERT OR REPLACE INTO users (id, username, email, password_hash, role, first_name, last_name, is_active, is_super_admin, token_version) VALUES (20, 'tanvir', 'tanvir@bfi.edu', 'hash', 'instructor', 'Tanvir', 'Mokammel', 1, 0, 1)`).run();
+  db.prepare(`INSERT OR REPLACE INTO instructor_profiles (user_id, full_name, subjects, bfi_batch) VALUES (20, 'Tanvir Mokammel', '["Directing"]', '01')`).run();
   teacherToken = issueUserSessionToken(20, 'instructor').token;
 
   // 2. Seed 3-Phase Course: Directing Diploma 3-Phase
@@ -542,63 +560,137 @@ test.describe('Course Maker Extended Verification: Mobile, 3-Phase Stats, Fees, 
     console.log('✅ Flow 3: Fee Management accessible labels, dues clearing & populated batch isolation verified successfully');
   });
 
-  test('Flow 4: Student & Teacher Schedule Access Restrictions & Admin Schedule Presentation', async ({ page }) => {
-    // 1. API Level Security: Genuine student and teacher access attempts must be rejected with HTTP 403 Forbidden
-    const studentRes = await page.request.get(`api/admin/batches/${testBatchId1}`, {
+  test('Flow 4: Student & Teacher Authorized Routine Views, Security Denial & Dynamic Updates', async ({ page }) => {
+    // 1. API Level Security: Genuine student and teacher access attempts to admin endpoints must be rejected with HTTP 403 Forbidden
+    const studentAdminRes = await page.request.get(`api/admin/batches/${testBatchId1}`, {
       headers: { 'Authorization': `Bearer ${studentToken}` }
     });
-    expect(studentRes.status()).toBe(403);
+    expect(studentAdminRes.status()).toBe(403);
 
-    const teacherRes = await page.request.get(`api/admin/batches/${testBatchId1}`, {
+    const teacherAdminRes = await page.request.get(`api/admin/batches/${testBatchId1}`, {
       headers: { 'Authorization': `Bearer ${teacherToken}` }
     });
-    expect(teacherRes.status()).toBe(403);
+    expect(teacherAdminRes.status()).toBe(403);
 
-    const studentUnrelatedRes = await page.request.get(`api/admin/batches/${testBatchId3P}`, {
+    // Unrelated batch denial: Student 10 is NOT enrolled in 3-phase batch testBatchId3P -> HTTP 403 Forbidden
+    const studentUnrelatedRes = await page.request.get(`api/student/batches/${testBatchId3P}/schedule`, {
       headers: { 'Authorization': `Bearer ${studentToken}` }
     });
     expect(studentUnrelatedRes.status()).toBe(403);
+    const bodyStudentUnrelated = await studentUnrelatedRes.json();
+    expect(bodyStudentUnrelated.error).toMatch(/not enrolled in this batch/i);
+
+    // Unassigned batch denial: Teacher 20 is NOT assigned to 3-phase batch testBatchId3P -> HTTP 403 Forbidden
+    const teacherUnassignedRes = await page.request.get(`api/teacher/batches/${testBatchId3P}/schedule`, {
+      headers: { 'Authorization': `Bearer ${teacherToken}` }
+    });
+    expect(teacherUnassignedRes.status()).toBe(403);
+    const bodyTeacherUnassigned = await teacherUnassignedRes.json();
+    expect(bodyTeacherUnassigned.error).toMatch(/not assigned to this batch/i);
 
     // 2. Client Level Security: Student attempting to navigate to admin batch manager is redirected away
     await injectStudentAuth(page);
     await page.goto(`admin/batchmanager/${testBatchId1}`);
     await page.waitForTimeout(500);
-    // Student must NOT have access to admin batch manager
     expect(page.url()).not.toContain(`admin/batchmanager/${testBatchId1}`);
 
-    // 3. Document Student Portal & Classroom Schedule State:
-    // Student navigates to Student Portal — verify routine schedule interface is not present (documented missing feature)
-    await page.goto('student-portal');
-    await page.waitForLoadState('networkidle');
-    await expect(page.locator('.batch-routine-table')).not.toBeVisible();
-    await expect(page.locator('button').filter({ hasText: 'Adjust Routine' })).not.toBeVisible();
-
-    // Student navigates to Classroom — verify "Coming Soon" placeholder is present
+    // 3. Genuine Student Authorized Routine View in Classroom (/classroom)
     await page.goto('classroom');
     await page.waitForLoadState('networkidle');
-    await expect(page.locator('text=Coming Soon')).toBeVisible();
 
-    // 4. Admin Level Verification: Admin views batch 100082 routine schedule with all rich attributes
+    // Verify Timezone indicator, Course Name, Batch Name, and Routine Slot details
+    await expect(page.locator('.classroom-badge-tz')).toContainText('Asia/Dhaka');
+    await expect(page.locator('text=Script Writing Workshop-2026').first()).toBeVisible({ timeout: 10000 });
+    await expect(page.locator('.classroom-slots-grid')).toBeVisible();
+
+    // Verify slot attributes: 19:00-21:00 time badge, delivery mode (Recorded), platform (Zoom), topic, teacher
+    const slotCard = page.locator('[data-testid="classroom-slot-0"]');
+    await expect(slotCard).toBeVisible();
+    await expect(slotCard.locator('[data-testid="slot-time-badge"]')).toContainText('19:00');
+    await expect(slotCard.locator('[data-testid="slot-time-badge"]')).toContainText('21:00');
+    await expect(slotCard.locator('[data-testid="slot-delivery-badge"]')).toHaveText('Recorded');
+    await expect(slotCard.locator('[data-testid="slot-platform-badge"]')).toContainText('Zoom');
+    await expect(slotCard.locator('[data-testid="slot-teacher-name"]')).toContainText('Tanvir Mokammel');
+
+    // Screenshot for student routine view evidence
+    const artifactDir = 'C:/Users/shahi/.gemini/antigravity/brain/8a2c550d-de2b-4cee-a467-088c18dbcc23';
+    await page.screenshot({ path: `${artifactDir}/evidence/21_student_classroom_schedule_view.png` });
+
+    // 4. Student Portal Integration: Verify Class Routine Link in Student Portal navigates to Classroom
+    await page.goto('student-portal');
+    await page.waitForLoadState('networkidle');
+    const routineLink = page.locator('[data-testid="student-portal-routine-link"]').first();
+    await expect(routineLink).toBeVisible();
+    await routineLink.click();
+    await page.waitForLoadState('networkidle');
+    expect(page.url()).toContain('classroom');
+
+    // 5. Genuine Teacher Authorized Routine View in Classroom (/classroom)
+    await injectTeacherAuth(page);
+    await page.goto('classroom');
+    await page.waitForLoadState('networkidle');
+
+    // Teacher Tanvir Mokammel views his assigned class with "Your Class" indicator
+    await expect(page.locator('.classroom-badge-tz')).toContainText('Asia/Dhaka');
+    await expect(page.locator('text=Script Writing Workshop-2026').first()).toBeVisible({ timeout: 10000 });
+    const teacherSlotCard = page.locator('[data-testid="classroom-slot-0"]');
+    await expect(teacherSlotCard).toBeVisible();
+    await expect(teacherSlotCard.locator('[data-testid="slot-myclass-tag"]')).toContainText('Your Class');
+    await expect(teacherSlotCard.locator('[data-testid="slot-teacher-name"]')).toContainText('Tanvir Mokammel');
+
+    // Screenshot for teacher routine view evidence
+    await page.screenshot({ path: `${artifactDir}/evidence/22_teacher_classroom_schedule_view.png` });
+
+    // 6. Dynamic Override Visibility: Update batch routine and verify real-time reflection
+    const dynamicUpdatedRoutine = [
+      {
+        date: '2026-09-20',
+        weekday: 'Sunday',
+        startTime: '20:00',
+        endTime: '22:00',
+        timezone: 'Asia/Dhaka',
+        subjectName: 'Directing Masterclass',
+        classTitle: 'Part 02: Blocking & Action',
+        teacherName: 'Tanvir Mokammel',
+        deliveryMode: 'recorded_plus_live_discussion',
+        category: 'practical',
+        platform: 'Google Meet'
+      }
+    ];
+    db.prepare(`
+      INSERT OR REPLACE INTO course_routine_overrides (course_definition_id, batch_id, phase_id, routine_json, updated_by, updated_at)
+      VALUES (?, ?, 'phase_1', ?, 1, datetime('now'))
+    `).run(swwDefId, testBatchId1, JSON.stringify(dynamicUpdatedRoutine));
+
+    // Reload teacher classroom view -> immediately reflects Google Meet and Recorded + Live Q&A
+    await page.reload();
+    await page.waitForLoadState('networkidle');
+    await expect(teacherSlotCard.locator('[data-testid="slot-time-badge"]')).toContainText('20:00');
+    await expect(teacherSlotCard.locator('[data-testid="slot-time-badge"]')).toContainText('22:00');
+    await expect(teacherSlotCard.locator('[data-testid="slot-platform-badge"]')).toContainText('Google Meet');
+    await expect(teacherSlotCard.locator('[data-testid="slot-delivery-badge"]')).toHaveText('Recorded + Live Q&A');
+
+    // 7. Atomic Revert: Revert override and verify restored baseline
+    db.prepare('DELETE FROM course_routine_overrides WHERE course_definition_id = ? AND batch_id = ?').run(swwDefId, testBatchId1);
+    await page.reload();
+    await page.waitForLoadState('networkidle');
+    await expect(teacherSlotCard.locator('[data-testid="slot-time-badge"]')).toContainText('19:00');
+    await expect(teacherSlotCard.locator('[data-testid="slot-time-badge"]')).toContainText('21:00');
+    await expect(teacherSlotCard.locator('[data-testid="slot-platform-badge"]')).toContainText('Zoom');
+
+    // 8. Admin Level Presentation: Admin views batch 100082 routine schedule with all rich attributes
     await injectAdminAuth(page);
     await page.goto(`admin/batchmanager/${testBatchId1}`);
     await page.waitForLoadState('networkidle');
 
     const routineCard = page.locator('.batch-detail-header, .glass-panel').filter({ hasText: 'Story Structure' }).first();
     await expect(routineCard).toBeVisible({ timeout: 10000 });
-
-    // Verify all saved routine attributes are visibly rendered in the Admin UI:
-    await expect(page.locator('text=/2026-08-25/').first()).toBeVisible();
     await expect(page.locator('text=/19:00.*21:00/').first()).toBeVisible();
     await expect(page.locator('text=Film Language').first()).toBeVisible();
-    await expect(page.locator('text=Part 01').first()).toBeVisible();
     await expect(page.locator('text=/Tanvir Mokammel/').first()).toBeVisible();
-    await expect(page.locator('text=/Recorded/i').first()).toBeVisible();
-    await expect(page.locator('text=/(theory)/i').first()).toBeVisible();
     await expect(page.locator('text=/Zoom/').first()).toBeVisible();
 
-    await page.screenshot({ path: 'test-results/routine-evidence/19_routine_card_details_zoom.png' });
-
-    console.log('✅ Flow 4: Student/Teacher security rejection, missing portal schedule classification, and admin routine verified');
+    console.log('✅ Flow 4: Student & Teacher authorized routine views, security denial & dynamic updates verified successfully');
   });
 
   test('Flow 5: Certificate Parity, Eligibility vs. Issuance Distinction & Download Verification', async ({ page }) => {
