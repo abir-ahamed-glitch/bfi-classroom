@@ -173,10 +173,10 @@ function runAllTests() {
   fs.mkdirSync(TEST_DIR, { recursive: true });
 
   // Verify MIGRATIONS registry in canonical runner
-  assert(MIGRATIONS.length === 8, 'Canonical runner registers all 8 migrations');
+  assert(MIGRATIONS.length >= 8, 'Canonical runner registers all canonical migrations');
   assert(
-    MIGRATIONS[MIGRATIONS.length - 1].name === '20261030_schema_repairs_and_key_pair',
-    '20261030_schema_repairs_and_key_pair is registered as the 8th migration in canonical order'
+    MIGRATIONS.some(m => m.name === '20261030_schema_repairs_and_key_pair'),
+    '20261030_schema_repairs_and_key_pair is registered in canonical order'
   );
 
   // ── TEST 1: Database with all 7 prior migration markers but missing repaired columns ──
@@ -297,7 +297,7 @@ function runAllTests() {
     const reportCols = checkDb.prepare('PRAGMA table_info(reports)').all().map(c => c.name);
     checkDb.close();
 
-    assert(countMig === 8, 'All 8 migrations recorded in app_migrations on fresh database');
+    assert(countMig === MIGRATIONS.length, `All ${MIGRATIONS.length} migrations recorded in app_migrations on fresh database`);
     assert(userCols.includes('private_key'), 'Fresh database has users.private_key');
     assert(reportCols.includes('content_snapshot') && reportCols.includes('screenshot_path'), 'Fresh database has reports.content_snapshot and reports.screenshot_path');
   }
@@ -461,6 +461,10 @@ function runAllTests() {
     }
     // Spoof the 8th migration marker without adding private_key
     memSpoofed.prepare('INSERT INTO app_migrations (name) VALUES (?)').run(MIGRATION_NAME);
+    // Apply subsequent migrations (e.g. 20261104_batch_instructors_and_certificate_downloads)
+    for (const m of MIGRATIONS.slice(8)) {
+      m.runner(memSpoofed);
+    }
     let integrityErr = null;
     try {
       assertSchemaIntegrity(memSpoofed);

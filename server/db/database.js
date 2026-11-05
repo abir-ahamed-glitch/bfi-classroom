@@ -19,6 +19,7 @@ const { runAdminAccountabilityMigration } = require('./migrations/20261025_admin
 const { runAdminArchivingAndResetMigration } = require('./migrations/20261028_admin_archiving_and_reset.cjs');
 const { runUniversalMfaAndSuperAdminMigration } = require('./migrations/20261029_universal_mfa_and_super_admin.cjs');
 const { runSchemaRepairsAndKeyPairMigration } = require('./migrations/20261030_schema_repairs_and_key_pair.cjs');
+const { runBatchInstructorsAndCertificateDownloadsMigration } = require('./migrations/20261104_batch_instructors_and_certificate_downloads.cjs');
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1569,6 +1570,9 @@ export function initializeDatabase() {
 
     // Run Additive Schema Repairs & Key-Pair migration
     runSchemaRepairsAndKeyPairMigration(db);
+
+    // Run Batch Instructors & Certificate Downloads schema migration
+    runBatchInstructorsAndCertificateDownloadsMigration(db);
 
     console.log('✅ Course Maker tables and columns verified');
   } catch (err) {
