@@ -39,12 +39,16 @@ export function isTeacherAssignedToBatch(database, teacherUserId, batch) {
   const uid = Number(teacherUserId);
   const bid = Number(batch.id);
 
-  // Verify the instructor user account is valid, active, and not deleted
+  // Authoritatively verify the instructor account in the users table:
+  // Must be an active, non-deleted user with role 'instructor'.
+  // STRICT SECURITY REQUIREMENT: Verification failures must FAIL CLOSED (return false).
+  // Under zero circumstances may an unverified or query-failing user proceed to slot/creator checks!
   try {
     const instructor = database.prepare("SELECT id FROM users WHERE id = ? AND role = 'instructor' AND is_active = 1 AND deleted_at IS NULL").get(uid);
     if (!instructor) return false;
-  } catch {
-    // Proceed if users table query fails in isolated test mock
+  } catch (err) {
+    console.error('isTeacherAssignedToBatch: instructor account verification failed in users table (failing closed):', err?.message || err);
+    return false;
   }
 
   // 1. Authoritative batch_instructors table

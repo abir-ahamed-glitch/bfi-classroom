@@ -47,12 +47,18 @@ const express = require('express');
 const http = require('http');
 const assert = require('assert');
 
-// 30-second bounded execution safety watchdog
+// Bounded execution safety watchdog with active stage tracking
+let currentStage = 'initialization';
+const testStartTime = Date.now();
+function logDiagnostic(msg) {
+  console.log(`[Diagnostic +${Date.now() - testStartTime}ms] ${msg}`);
+}
+
 const watchdog = setTimeout(() => {
-  console.error('❌ FATAL: test_real_express_routes execution watchdog triggered after 30 seconds');
+  console.error(`❌ FATAL: test_real_express_routes execution watchdog triggered after 45 seconds (last active stage: "${currentStage}")`);
   cleanupDbFiles();
   process.exit(1);
-}, 30000);
+}, 45000);
 watchdog.unref();
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = 5000) {
@@ -60,12 +66,14 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 5000) {
   try {
     return await fetch(url, { ...options, signal });
   } catch (err) {
-    console.error(`❌ HTTP request failed or timed out (${timeoutMs}ms): ${options.method || 'GET'} ${url} - ${err.message}`);
+    console.error(`❌ HTTP request failed or timed out (${timeoutMs}ms) during stage "${currentStage}": ${options.method || 'GET'} ${url} - ${err.message}`);
     throw err;
   }
 }
 
 async function run() {
+  currentStage = 'Stage 1/4: Schema initialization';
+  logDiagnostic('Starting database schema initialization via initializeDatabase()...');
   const { default: db, initializeDatabase } = await import('../server/db/database.js');
   const { getJwtSecret } = await import('../server/config/security.js');
   const { 
@@ -78,6 +86,7 @@ async function run() {
   const { resolvePhaseFee } = await import('../server/utils/feeResolver.js');
 
   initializeDatabase();
+  logDiagnostic('Database schema initialized. Seeding test users & permissions...');
   console.log('✅ Real application schema initialized via initializeDatabase()');
 
   // Seed users in the isolated database with token_version = 1
@@ -164,13 +173,17 @@ async function run() {
   const batchAdminToken = createValidToken({ id: 2, username: 'batchadmin', role: 'admin', is_super_admin: 0 });
   const superAdminToken = createValidToken({ id: 1, username: 'superadmin', role: 'admin', is_super_admin: 1 });
 
-  // Import routers
-  const { default: courseDefRouter } = await import('../server/routes/course-definitions.js');
+  currentStage = 'Stage 3/4: Importing Express routers';
+  logDiagnostic('Loading Express router modules (course-definitions, batches, admin, student, teacher)...');
+  const { default: courseDefRouter, validateAndSanitizeInstructorId } = await import('../server/routes/course-definitions.js');
   const { default: batchesRouter } = await import('../server/routes/batches.js');
   const { default: adminRouter } = await import('../server/routes/admin.js');
   const { default: certificationRouter } = await import('../server/routes/certification.js');
   const { default: studentRouter } = await import('../server/routes/student.js');
-  const { default: teacherRouter } = await import('../server/routes/teacher.js');
+  const { default: teacherRouter, isTeacherAssignedToBatch } = await import('../server/routes/teacher.js');
+
+  currentStage = 'Stage 4/4: Binding HTTP server';
+  logDiagnostic('Express router modules loaded. Mounting routes and binding HTTP server to 127.0.0.1...');
 
   const app = express();
   app.use(express.json());
@@ -184,9 +197,16 @@ async function run() {
   app.use('/api/instructor', teacherRouter);
 
   const server = http.createServer(app);
-  await new Promise(resolve => server.listen(0, resolve));
+  await new Promise((resolve, reject) => {
+    server.once('error', (err) => {
+      console.error('❌ Failed to bind HTTP test server to 127.0.0.1:', err.message);
+      reject(err);
+    });
+    server.listen(0, '127.0.0.1', () => resolve());
+  });
   const port = server.address().port;
   const baseUrl = `http://127.0.0.1:${port}`;
+  logDiagnostic(`HTTP server listening on ${baseUrl}. Commencing test suites.`);
   console.log(`✅ Real Express test server running on ${baseUrl}`);
 
   try {
@@ -1530,6 +1550,218 @@ async function run() {
       })
     });
     console.log('✅ 10.5 Stable teacher assignment verified: identical names isolated, profile edits retain access, free text clears access, and invalid/inactive/deleted IDs create no assignments');
+
+    // 10.5e: Fail closed on instructor verification errors (Query Failure Induced)
+    console.log('--- 10.5e Fail closed on instructor verification errors ---');
+    // Direct call with simulated users table failure
+    const failingMockDb = {
+      prepare: (sql) => {
+        if (typeof sql === 'string' && sql.includes('FROM users')) {
+          throw new Error('SIMULATED_DATABASE_QUERY_FAILURE: users table disk I/O error');
+        }
+        return db.prepare(sql);
+      }
+    };
+    const assignedUnderFailure = isTeacherAssignedToBatch(failingMockDb, 60, { id: 300001, course_definition_id: diplomaDefId });
+    assert.strictEqual(assignedUnderFailure, false, 'isTeacherAssignedToBatch must strictly return false (fail closed) when users table query fails');
+
+    // Route endpoint verification: simulate query error during /api/teacher/batches/:id/schedule
+    const originalPrepare = db.prepare.bind(db);
+    let induceUsersQueryError = true;
+    db.prepare = function(sql) {
+      if (induceUsersQueryError && typeof sql === 'string' && sql.includes("SELECT id FROM users WHERE id = ? AND role = 'instructor'")) {
+        throw new Error('SIMULATED_QUERY_FAILURE_FOR_TEST');
+      }
+      return originalPrepare(sql);
+    };
+
+    try {
+      const resQueryFailureCheck = await fetchWithTimeout(`${baseUrl}/api/teacher/batches/300001/schedule`, {
+        headers: { 'Authorization': `Bearer ${tanvirToken}` }
+      });
+      // Verification failure must deny access (403 or 500) and return ZERO schedule data
+      assert([403, 500].includes(resQueryFailureCheck.status), `Query failure must deny access: got status ${resQueryFailureCheck.status}`);
+      const bodyQueryFailure = await resQueryFailureCheck.json();
+      assert.strictEqual(bodyQueryFailure.phases, undefined, 'Query failure response must contain NO phases schedule data');
+      assert.strictEqual(bodyQueryFailure.batches, undefined, 'Query failure response must contain NO batches schedule data');
+      console.log('✅ 10.5e Verification failure strictly fails closed: zero schedule data returned on database error');
+    } finally {
+      induceUsersQueryError = false;
+      db.prepare = originalPrepare;
+    }
+
+    // 10.5f: Strict positive-integer validation on routine write path (rejects "20abc", 20.8, arrays, booleans)
+    console.log('--- 10.5f Malformed instructor ID validation on routine endpoint ---');
+    const malformedRoutineTests = [
+      { raw: '60abc', desc: 'string with trailing characters "60abc"' },
+      { raw: 60.8, desc: 'float 60.8' },
+      { raw: [60], desc: 'array [60]' },
+      { raw: true, desc: 'boolean true' },
+      { raw: false, desc: 'boolean false' },
+      { raw: { id: 60 }, desc: 'object { id: 60 }' },
+      { raw: -60, desc: 'negative integer -60' },
+      { raw: 0, desc: 'zero 0' }
+    ];
+
+    for (const testCase of malformedRoutineTests) {
+      const resMalformedRoutine = await fetchWithTimeout(`${baseUrl}/api/admin/course-definitions/${diplomaDefId}/routine`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${batchAdminToken}`
+        },
+        body: JSON.stringify({
+          phase_id: 'phase_1',
+          batch_id: 300001,
+          routine: [
+            {
+              ...batch300001Routine[0],
+              teacherName: 'Guest Speaker',
+              teacherUserId: testCase.raw
+            }
+          ],
+          reason: `Testing malformed ${testCase.desc}`
+        })
+      });
+      assert.strictEqual(resMalformedRoutine.status, 200);
+      const malformedBody = await resMalformedRoutine.json();
+      assert.strictEqual(
+        malformedBody.routine[0].teacherUserId,
+        null,
+        `Malformed instructor ID (${testCase.desc}) must sanitize to null on routine update`
+      );
+    }
+    console.log('✅ 10.5f Malformed instructor IDs strictly sanitized to null on routine endpoint');
+
+    // 10.5g: Authoritative instructor ID validation on Draft Update route (PUT /api/admin/course-definitions/:id)
+    console.log('--- 10.5g Draft update route (PUT) authoritative instructor validation ---');
+    // Step 1: Create a draft course definition
+    const resCreateDraft = await fetchWithTimeout(`${baseUrl}/api/admin/course-definitions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${superAdminToken}`
+      },
+      body: JSON.stringify({
+        name: 'Strict Write Path Instructor Validation Course',
+        course_type: 'workshop',
+        phase_count: 1,
+        phases: [
+          {
+            id: 'phase_1',
+            title: 'Phase 1',
+            classes: [
+              { id: 'c_initial', title: 'Initial Class', teacherUserId: null, teacherName: 'Initial' }
+            ]
+          }
+        ]
+      })
+    });
+    assert.strictEqual(resCreateDraft.status, 201);
+    const draftDefData = await resCreateDraft.json();
+    const testDraftId = draftDefData.id;
+
+    // Step 2: Call PUT /api/admin/course-definitions/:id with malformed, inactive, deleted, nonexistent, and valid IDs
+    const resDraftUpdate = await fetchWithTimeout(`${baseUrl}/api/admin/course-definitions/${testDraftId}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${superAdminToken}`
+      },
+      body: JSON.stringify({
+        name: 'Strict Write Path Instructor Validation Course Updated',
+        course_type: 'workshop',
+        phase_count: 1,
+        phases: [
+          {
+            id: 'phase_1',
+            title: 'Phase 1: Storytelling',
+            classes: [
+              { id: 'c_str', title: 'Malformed String', teacherUserId: '60abc', teacherName: 'Malformed Str' },
+              { id: 'c_float', title: 'Malformed Float', teacherUserId: 60.8, teacherName: 'Malformed Float' },
+              { id: 'c_arr', title: 'Malformed Array', teacherUserId: [60], teacherName: 'Malformed Arr' },
+              { id: 'c_bool', title: 'Malformed Bool', teacherUserId: true, teacherName: 'Malformed Bool' },
+              { id: 'c_inact', title: 'Inactive Teacher', teacherUserId: 63, teacherName: 'Inactive' },
+              { id: 'c_del', title: 'Deleted Teacher', teacherUserId: 64, teacherName: 'Deleted' },
+              { id: 'c_nonexist', title: 'Nonexistent Teacher', teacherUserId: 99999, teacherName: 'Nonexistent' },
+              { id: 'c_valid', title: 'Valid Active Instructor', teacherUserId: 60, teacherName: 'Tanvir Mokammel' },
+              { id: 'c_guest', title: 'Unassigned Guest Speaker', teacherUserId: null, teacherName: 'Guest Speaker Shahin' }
+            ],
+            routine: [
+              { weekday: 'Saturday', startTime: '19:00', endTime: '21:00', teacherUserId: '60abc', teacherName: 'Guest Speaker' },
+              { weekday: 'Sunday', startTime: '19:00', endTime: '21:00', teacherUserId: 60, teacherName: 'Tanvir Mokammel' }
+            ]
+          }
+        ]
+      })
+    });
+    assert.strictEqual(resDraftUpdate.status, 200, 'Draft update must succeed');
+
+    // Step 3: Reopen via GET /api/admin/course-definitions/:id to verify persisted sanitized state
+    const resReopenDraft = await fetchWithTimeout(`${baseUrl}/api/admin/course-definitions/${testDraftId}`, {
+      headers: { 'Authorization': `Bearer ${superAdminToken}` }
+    });
+    assert.strictEqual(resReopenDraft.status, 200);
+    const reopenedDraftData = await resReopenDraft.json();
+    const reopenedPhases = reopenedDraftData.definition?.phases || [];
+    assert.strictEqual(reopenedPhases.length, 1);
+    const savedClasses = reopenedPhases[0].classes || [];
+
+    // Verify all malformed, inactive, deleted, and nonexistent IDs resolved to null
+    assert.strictEqual(savedClasses[0].teacherUserId, null, '"60abc" must be sanitized to null');
+    assert.strictEqual(savedClasses[1].teacherUserId, null, '60.8 must be sanitized to null');
+    assert.strictEqual(savedClasses[2].teacherUserId, null, '[60] must be sanitized to null');
+    assert.strictEqual(savedClasses[3].teacherUserId, null, 'true must be sanitized to null');
+    assert.strictEqual(savedClasses[4].teacherUserId, null, 'inactive 63 must be sanitized to null');
+    assert.strictEqual(savedClasses[5].teacherUserId, null, 'deleted 64 must be sanitized to null');
+    assert.strictEqual(savedClasses[6].teacherUserId, null, 'nonexistent 99999 must be sanitized to null');
+
+    // Verify valid active instructor (60) persisted
+    assert.strictEqual(savedClasses[7].teacherUserId, 60, 'Valid active instructor 60 must persist');
+    assert.strictEqual(savedClasses[7].teacherName, 'Tanvir Mokammel');
+
+    // Verify unassigned guest speaker label preserved with teacherUserId = null
+    assert.strictEqual(savedClasses[8].teacherUserId, null, 'Unassigned teacherUserId must persist as null');
+    assert.strictEqual(savedClasses[8].teacherName, 'Guest Speaker Shahin', 'Unassigned label must be preserved');
+
+    // Verify routine slots in reopened draft
+    const savedRoutine = reopenedPhases[0].routine || [];
+    assert.strictEqual(savedRoutine[0].teacherUserId, null, 'Malformed routine slot teacherUserId must be sanitized to null');
+    assert.strictEqual(savedRoutine[1].teacherUserId, 60, 'Valid active routine slot teacherUserId must persist as 60');
+
+    // Step 4: Publish draft and verify batch schedule authorization
+    const resPublishDraft = await fetchWithTimeout(`${baseUrl}/api/admin/course-definitions/${testDraftId}/publish`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${superAdminToken}` }
+    });
+    assert.strictEqual(resPublishDraft.status, 200);
+
+    // Link a batch (300005) to this newly published definition
+    db.prepare(`
+      INSERT INTO batches (id, slug, batch_name, batch_number, course_name, course_definition_id, created_by)
+      VALUES (300005, NULL, 'Strict Batch', '01', 'Strict Write Path Instructor Validation Course Updated', ?, 1)
+    `).run(testDraftId);
+
+    // Valid Teacher 60 gets access to batch 300005
+    const resTeacher60Strict = await fetchWithTimeout(`${baseUrl}/api/teacher/batches/300005/schedule`, {
+      headers: { 'Authorization': `Bearer ${tanvirToken}` }
+    });
+    assert.strictEqual(resTeacher60Strict.status, 200, 'Assigned active teacher 60 must have schedule access');
+    const teacher60Schedule = await resTeacher60Strict.json();
+    assert(teacher60Schedule.phases.length > 0, 'Schedule phases must be present for assigned instructor');
+
+    // Inactive instructor 63 denied access (401 or 403)
+    const resTeacher63Strict = await fetchWithTimeout(`${baseUrl}/api/teacher/batches/300005/schedule`, {
+      headers: { 'Authorization': `Bearer ${inactiveToken}` }
+    });
+    assert([401, 403].includes(resTeacher63Strict.status), 'Inactive instructor 63 must be denied access');
+
+    // Deleted instructor 64 denied access (401 or 403)
+    const resTeacher64Strict = await fetchWithTimeout(`${baseUrl}/api/teacher/batches/300005/schedule`, {
+      headers: { 'Authorization': `Bearer ${deletedToken}` }
+    });
+    assert([401, 403].includes(resTeacher64Strict.status), 'Deleted instructor 64 must be denied access');
+    console.log('✅ 10.5g Authoritative instructor validation on draft update route (PUT) verified: malformed/inactive/deleted sanitized to null, valid persists, authorization confirmed');
 
     // 10.6: Assigned teacher aggregated schedule (/api/teacher/schedule and /api/instructor/schedule)
     console.log('--- 10.6 Assigned teacher aggregated schedule ---');

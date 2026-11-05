@@ -22,32 +22,62 @@ const ALLOWED_COURSE_TYPES = [
 
 // classCount is derived data: always reconcile it with the classes actually defined.
 export function validateAndSanitizeInstructorId(database, teacherUserId) {
+  // Preserve null/empty/unassigned
   if (teacherUserId === undefined || teacherUserId === null || teacherUserId === '') {
     return null;
   }
-  const parsedTid = parseInt(teacherUserId, 10);
-  if (isNaN(parsedTid) || parsedTid <= 0) {
+
+  // Strictly disallow booleans, arrays, objects, functions, etc.
+  if (typeof teacherUserId === 'boolean' || Array.isArray(teacherUserId) || typeof teacherUserId === 'object') {
     return null;
   }
-  const teacherUser = database.prepare("SELECT id FROM users WHERE id = ? AND role = 'instructor' AND is_active = 1 AND deleted_at IS NULL").get(parsedTid);
-  return teacherUser ? teacherUser.id : null;
+
+  let parsedTid;
+  if (typeof teacherUserId === 'number') {
+    // Must be a safe, positive integer (rejects 20.8, -20, 0, NaN, Infinity)
+    if (!Number.isInteger(teacherUserId) || teacherUserId <= 0) {
+      return null;
+    }
+    parsedTid = teacherUserId;
+  } else if (typeof teacherUserId === 'string') {
+    const trimmed = teacherUserId.trim();
+    // Must be an exact positive integer string (rejects "20abc", "20.8", "0", "-5", etc.)
+    if (!/^[1-9]\d*$/.test(trimmed)) {
+      return null;
+    }
+    parsedTid = Number(trimmed);
+  } else {
+    return null;
+  }
+
+  if (!database) {
+    return null;
+  }
+
+  try {
+    const teacherUser = database.prepare("SELECT id FROM users WHERE id = ? AND role = 'instructor' AND is_active = 1 AND deleted_at IS NULL").get(parsedTid);
+    return teacherUser ? teacherUser.id : null;
+  } catch (err) {
+    console.error('validateAndSanitizeInstructorId: instructor verification query failed:', err?.message || err);
+    return null;
+  }
 }
 
-function reconcileClassCounts(phases, database = null) {
+function reconcileClassCounts(phases, database = db) {
   if (!Array.isArray(phases)) return phases;
   return phases.map(phase => {
     if (!phase) return phase;
     const reconciledClasses = Array.isArray(phase.classes)
       ? phase.classes.map(cls => ({
           ...cls,
-          teacherUserId: database ? validateAndSanitizeInstructorId(database, cls.teacherUserId) : (cls.teacherUserId ? Number(cls.teacherUserId) : null)
+          teacherUserId: validateAndSanitizeInstructorId(database, cls.teacherUserId)
         }))
       : phase.classes;
 
     const reconciledRoutine = Array.isArray(phase.routine)
       ? phase.routine.map(slot => ({
           ...slot,
-          teacherUserId: database ? validateAndSanitizeInstructorId(database, slot.teacherUserId) : (slot.teacherUserId ? Number(slot.teacherUserId) : null)
+          teacherUserId: validateAndSanitizeInstructorId(database, slot.teacherUserId)
         }))
       : phase.routine;
 
@@ -651,7 +681,7 @@ router.put('/:id', authenticateToken, requireRole('admin'), requirePermission('c
       phase_count = 1,
       completionPolicy = {}
     } = req.body;
-    const phases = reconcileClassCounts(req.body.phases || []);
+    const phases = reconcileClassCounts(req.body.phases || [], db);
 
     const fullDefinition = {
       basics: { name, type: course_type, description, duration: { value: duration_value, unit: duration_unit }, phaseCount: phase_count },
