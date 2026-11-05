@@ -65,6 +65,38 @@ export default function CourseSettingsManager() {
   
   // Available batches for suggestions
   const [availableBatches, setAvailableBatches] = useState([]);
+  const [definedCourses, setDefinedCourses] = useState([]);
+
+  useEffect(() => {
+    const fetchCourseDefs = async () => {
+      try {
+        const token = localStorage.getItem('token');
+        const res = await fetch('/api/admin/course-definitions', {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (res.ok) {
+          const data = await res.json();
+          const list = Array.isArray(data) ? data : (data.definitions || []);
+          setDefinedCourses(list);
+        }
+      } catch (err) { /* ignore */ }
+    };
+    fetchCourseDefs();
+  }, []);
+
+  const courseList = useMemo(() => {
+    const set = new Set([
+      'Online Filmmaking Course',
+      'Film Appreciation Course',
+      'Script Writing',
+      'Cinematography',
+      'Acting'
+    ]);
+    definedCourses.forEach(c => {
+      if (c && c.name && c.status !== 'archived') set.add(c.name);
+    });
+    return Array.from(set);
+  }, [definedCourses]);
   const [showSuggestions, setShowSuggestions] = useState(false);
 
   useEffect(() => {
@@ -289,11 +321,9 @@ export default function CourseSettingsManager() {
                 disabled={editingId}
                 required
               >
-                <option value="Online Filmmaking Course">Online Filmmaking Course</option>
-                <option value="Film Appreciation Course">Film Appreciation Course</option>
-                <option value="Script Writing">Script Writing</option>
-                <option value="Cinematography">Cinematography</option>
-                <option value="Acting">Acting</option>
+                {courseList.map(c => (
+                  <option key={c} value={c}>{c}</option>
+                ))}
               </select>
             </div>
           </div>

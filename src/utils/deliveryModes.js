@@ -52,6 +52,29 @@ export function deliveryModeLabel(mode) {
   return SHORT_LABELS[mode] || mode;
 }
 
+export const DEFAULT_ROUTINE_SLOT = Object.freeze({
+  date: '',
+  weekday: 'Saturday',
+  startTime: '19:00',
+  endTime: '21:00',
+  timezone: 'Asia/Dhaka',
+  subjectName: '',
+  classTitle: '',
+  teacherName: '',
+  teacherUserId: null,
+  deliveryMode: 'recorded',
+  category: 'theory',
+  platform: 'Zoom'
+});
+
+export function createDefaultRoutineSlot(overrides = {}) {
+  return {
+    ...DEFAULT_ROUTINE_SLOT,
+    ...overrides
+  };
+}
+
 export function isRecordedWithLiveQa(mode) {
   return mode === 'recorded_plus_live_discussion';
 }
+

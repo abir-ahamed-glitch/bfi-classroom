@@ -1,13 +1,13 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { DELIVERY_MODE_OPTIONS, normalizeDeliveryMode, deliveryModeLabel, deliveryModeFromSubject } from '../../utils/deliveryModes';
+import { DELIVERY_MODE_OPTIONS, normalizeDeliveryMode, deliveryModeLabel, deliveryModeFromSubject, createDefaultRoutineSlot, DEFAULT_ROUTINE_SLOT } from '../../utils/deliveryModes';
 import PlatformSelector from '../../components/admin/PlatformSelector';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { 
   ArrowLeft, Calendar, Users, Clock, CheckCircle2, XCircle, 
   FileText, Film, Award, UserCheck, Camera, Video, Wallet,
   Search, ExternalLink, Trash2, UserPlus, Pencil, CheckSquare,
-  History, RefreshCw, Zap, Loader2, GraduationCap, Clapperboard, Edit, Square, X, Lock
+  History, RefreshCw, Zap, Loader2, GraduationCap, Clapperboard, Edit, Square, X, Lock, Plus
 } from 'lucide-react';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell 
@@ -19,7 +19,7 @@ import AddStudentsModal from '../../components/admin/AddStudentsModal';
 import EditStudentModal from '../../components/admin/EditStudentModal';
 import UploadResultsModal from '../../components/admin/UploadResultsModal';
 import DefinedCourseProgressModal from '../../components/admin/DefinedCourseProgressModal';
-import { resolveClientDiscount, resolveFeeAccounting, isCourseFeeUnpaid } from '../../utils/feeUtils';
+import { resolveFeeAccounting, isCourseFeeUnpaid, resolveEnrollmentFinancialsClient } from '../../utils/feeUtils';
 
 const hasPendingDueOrPartialPayment = (course) => isCourseFeeUnpaid(course);
 import { getOrdinalSuffix } from '../../utils/formatUtils';
@@ -52,7 +52,7 @@ function StatCard({ icon, value, label, colorVariant, onClick, isActive }) {
     cursor: onClick ? 'pointer' : 'default',
     transition: 'all 0.2s ease-in-out',
     ...(onClick && {
-      transform: isActive ? 'translateY(-2px)' : 'none',
+      // Rule 4: subtle transition without hover movement
       background: isActive ? getIconBg().replace('0.1', '0.15') : undefined,
       borderColor: isActive ? getIconColor() : undefined,
       boxShadow: isActive ? `0 4px 20px ${getIconBg().replace('0.1', '0.2')}` : undefined,
@@ -148,6 +148,9 @@ export default function BatchDetail() {
   const [editingRoutinePhase, setEditingRoutinePhase] = useState(null);
   const [batchRoutineSlots, setBatchRoutineSlots] = useState([]);
   const [routineAuditReason, setRoutineAuditReason] = useState('');
+  const [routineAuditTouched, setRoutineAuditTouched] = useState(false);
+  const routineAuditInputRef = useRef(null);
+  const lastSlotRef = useRef(null);
   const [routineSaving, setRoutineSaving] = useState(false);
   const [routineError, setRoutineError] = useState('');
   const [catalogSubjects, setCatalogSubjects] = useState([]);
@@ -902,22 +905,11 @@ export default function BatchDetail() {
     setEditingRoutinePhase(phase);
     setBatchRoutineSlots(
       Array.isArray(phase.routine) && phase.routine.length > 0
-        ? JSON.parse(JSON.stringify(phase.routine))
-        : [{
-            date: '',
-            weekday: 'Saturday',
-            startTime: '18:00',
-            endTime: '20:00',
-            timezone: 'Asia/Dhaka',
-            subjectName: '',
-            classTitle: '',
-            teacherName: '',
-            deliveryMode: 'live',
-            category: 'theory',
-            platform: ''
-          }]
+        ? phase.routine.map(slot => createDefaultRoutineSlot(slot))
+        : [createDefaultRoutineSlot()]
     );
     setRoutineAuditReason('');
+    setRoutineAuditTouched(false);
     setRoutineError('');
   };
 
@@ -925,6 +917,7 @@ export default function BatchDetail() {
     setEditingRoutinePhase(null);
     setBatchRoutineSlots([]);
     setRoutineAuditReason('');
+    setRoutineAuditTouched(false);
     setRoutineError('');
     setRoutineSaving(false);
   };
@@ -932,36 +925,46 @@ export default function BatchDetail() {
   const handleAddRoutineSlot = () => {
     setBatchRoutineSlots(prev => [
       ...prev,
-      {
-        date: '',
-        weekday: 'Saturday',
-        startTime: '18:00',
-        endTime: '20:00',
-        timezone: 'Asia/Dhaka',
-        subjectName: '',
-        classTitle: '',
-        teacherName: '',
-        deliveryMode: 'live',
-        category: 'theory',
-        platform: ''
-      }
+      createDefaultRoutineSlot()
     ]);
+    setTimeout(() => {
+      if (lastSlotRef.current) {
+        lastSlotRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        const firstInput = lastSlotRef.current.querySelector('input, select');
+        if (firstInput) firstInput.focus();
+      }
+    }, 50);
   };
 
   const handleCopyFromPhaseClass = (slotIdx, classId) => {
     if (!classId || !editingRoutinePhase) return;
     const cls = (editingRoutinePhase.classes || []).find(c => String(c.id) === String(classId));
     if (!cls) return;
+    const fallbackSlot = createDefaultRoutineSlot();
+
+    let validatedTid = null;
+    let validatedTname = cls.teacherName || fallbackSlot.teacherName;
+    if (cls.teacherUserId) {
+      const matchTeacher = catalogTeachers.find(t => t.id === Number(cls.teacherUserId) && t.is_active !== 0 && !t.deleted_at);
+      if (matchTeacher) {
+        validatedTid = matchTeacher.id;
+        if (!validatedTname) {
+          validatedTname = matchTeacher.full_name || `${matchTeacher.first_name} ${matchTeacher.last_name}`;
+        }
+      }
+    }
+
     setBatchRoutineSlots(prev => {
       const updated = [...prev];
       updated[slotIdx] = {
         ...updated[slotIdx],
-        classTitle: cls.title || '',
-        subjectName: cls.subjectName || '',
-        teacherName: cls.teacherName || '',
-        deliveryMode: cls.deliveryMode || 'live',
-        category: cls.category || 'theory',
-        platform: cls.platform || ''
+        classTitle: cls.title || fallbackSlot.classTitle,
+        subjectName: cls.subjectName || fallbackSlot.subjectName,
+        teacherName: validatedTname,
+        teacherUserId: validatedTid,
+        deliveryMode: cls.deliveryMode || fallbackSlot.deliveryMode,
+        category: cls.category || fallbackSlot.category,
+        platform: cls.platform || fallbackSlot.platform
       };
       return updated;
     });
@@ -977,10 +980,33 @@ export default function BatchDetail() {
       const nextSlot = { ...updated[index], [field]: value };
       if (field === 'date' && value && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
         const [y, m, d] = value.split('-').map(Number);
-        const dateObj = new Date(y, m - 1, d);
+        const dateObj = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
         if (!isNaN(dateObj.getTime())) {
           const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-          nextSlot.weekday = dayNames[dateObj.getDay()];
+          nextSlot.weekday = dayNames[dateObj.getUTCDay()];
+        }
+      }
+      if (field === 'teacherUserId') {
+        const parsedId = value ? Number(value) : null;
+        const match = catalogTeachers.find(t => t.id === parsedId && t.is_active !== 0 && !t.deleted_at);
+        nextSlot.teacherUserId = match ? match.id : null;
+        if (match) {
+          nextSlot.teacherName = match.full_name || `${match.first_name} ${match.last_name}`;
+        }
+      }
+      if (field === 'teacherName') {
+        nextSlot.teacherName = value;
+        // If a teacher account was selected, check if display text was edited away from that account's canonical name.
+        // If edited away, clear the association (teacherUserId = null).
+        // Display names must NEVER silently select or link an account!
+        if (nextSlot.teacherUserId) {
+          const match = catalogTeachers.find(t => t.id === Number(nextSlot.teacherUserId));
+          const canonicalName = match ? (match.full_name || `${match.first_name} ${match.last_name}`) : '';
+          if (!value || value.trim().toLowerCase() !== canonicalName.trim().toLowerCase()) {
+            nextSlot.teacherUserId = null;
+          }
+        } else {
+          nextSlot.teacherUserId = null;
         }
       }
       if (field === 'subjectName' && value && typeof value === 'string') {
@@ -988,6 +1014,12 @@ export default function BatchDetail() {
         if (match) {
           if (!nextSlot.teacherName && match.teacher_name) {
             nextSlot.teacherName = match.teacher_name;
+            if (match.teacher_id) {
+              const teacherMatch = catalogTeachers.find(t => t.id === Number(match.teacher_id) && t.is_active !== 0 && !t.deleted_at);
+              nextSlot.teacherUserId = teacherMatch ? teacherMatch.id : null;
+            } else {
+              nextSlot.teacherUserId = null;
+            }
           }
           if ((!nextSlot.deliveryMode || nextSlot.deliveryMode === 'live') && match.class_type) {
             nextSlot.deliveryMode = deliveryModeFromSubject(match);
@@ -999,18 +1031,68 @@ export default function BatchDetail() {
     });
   };
 
+  const handleRevertBatchRoutine = async () => {
+    if (!editingRoutinePhase || !batchData?.course_definition?.id) return;
+    const confirmed = window.confirm(
+      'Are you sure you want to revert this batch routine to the course default template? This will delete the custom routine override for this batch.'
+    );
+    if (!confirmed) return;
+
+    try {
+      setRoutineSaving(true);
+      setRoutineError('');
+      const token = localStorage.getItem('token');
+      const res = await fetch(`/api/admin/course-definitions/${batchData.course_definition.id}/routine`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          phase_id: editingRoutinePhase.id,
+          batch_id: batchData.id,
+          action: 'revert',
+          reason: routineAuditReason.trim() || 'Reverted batch schedule to course default template'
+        })
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to revert batch routine.');
+      }
+
+      showToast('Batch routine reverted to course template successfully!');
+      handleCloseRoutineModal();
+      await fetchAllData();
+    } catch (err) {
+      console.error('Error reverting batch routine:', err);
+      setRoutineError(err.message || 'Error reverting batch routine');
+    } finally {
+      setRoutineSaving(false);
+    }
+  };
+
   const handleSaveBatchRoutine = async (e) => {
     if (e && e.preventDefault) e.preventDefault();
-    if (!editingRoutinePhase || !batchData?.course_definition?.id) return;
-    if (!routineAuditReason.trim()) {
-      setRoutineError('Reason for routine adjustment is required for the audit trail.');
+    if (!editingRoutinePhase || !batchData?.course_definition?.id) {
+      setRoutineError('Course definition data is missing for this batch. Cannot save routine override.');
+      return;
+    }
+    const trimmedReason = routineAuditReason.trim();
+    if (!trimmedReason || trimmedReason.length < 3) {
+      setRoutineAuditTouched(true);
+      setRoutineError('Reason for routine adjustment is required (at least 3 characters) before saving (Required for Audit Log).');
+      if (routineAuditInputRef.current) {
+        routineAuditInputRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        routineAuditInputRef.current.focus();
+      }
       return;
     }
     try {
       setRoutineSaving(true);
       setRoutineError('');
       const token = localStorage.getItem('token');
-      const res = await fetch(`/api/course-definitions/${batchData.course_definition.id}/routine`, {
+      const res = await fetch(`/api/admin/course-definitions/${batchData.course_definition.id}/routine`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -1020,7 +1102,7 @@ export default function BatchDetail() {
           phase_id: editingRoutinePhase.id,
           batch_id: batchData.id,
           routine: batchRoutineSlots,
-          reason: routineAuditReason.trim()
+          reason: trimmedReason
         })
       });
 
@@ -1211,153 +1293,55 @@ export default function BatchDetail() {
           return enrollment && enrollment.step2_completed === 1;
 
         case 'fee_fully_paid':
-          if (!enrollment) return false;
-          {
-            const feeDetails = typeof enrollment.fee_details === 'string' ? JSON.parse(enrollment.fee_details) : enrollment.fee_details;
-            const defaultFee = batchData.course_fee || 8000;
-            const defaultP1 = batchData.phase1_fee || 4000;
-            const defaultP2 = batchData.phase2_fee || 4000;
-            const cleanNum = (val) => parseFloat(String(val || '').replace(/[^\d.]/g, '')) || 0;
-            let totalFee = 0;
-            let collected = 0;
-            if (batchData.course_name === 'Online Filmmaking Course') {
-              const p1 = feeDetails?.phase1 || {};
-              const p1Full = cleanNum(p1.full_fee) || defaultP1;
-              const p1Paid = cleanNum(p1.amount_paid);
-              const p1Discount = resolveClientDiscount(p1.discount, p1Full, p1.discount_amount);
-              const p1Insts = p1.installments || [];
-              const p1InstPaidSum = p1Insts
-                .filter(inst => (inst.status || '').toLowerCase() === 'paid')
-                .reduce((sum, inst) => sum + cleanNum(inst.amount), 0);
-              const p1Collected = Math.min(p1Paid + p1InstPaidSum + p1Discount, p1Full);
-
-              const p2 = feeDetails?.phase2 || {};
-              const p2Full = cleanNum(p2.full_fee) || defaultP2;
-              const p2Paid = cleanNum(p2.amount_paid);
-              const p2Discount = resolveClientDiscount(p2.discount, p2Full, p2.discount_amount);
-              const p2Insts = p2.installments || [];
-              const p2InstPaidSum = p2Insts
-                .filter(inst => (inst.status || '').toLowerCase() === 'paid')
-                .reduce((sum, inst) => sum + cleanNum(inst.amount), 0);
-              const p2Collected = Math.min(p2Paid + p2InstPaidSum + p2Discount, p2Full);
-
-              totalFee = p1Full + p2Full;
-              collected = p1Collected + p2Collected;
-            } else {
-              const p = feeDetails || {};
-              const full = cleanNum(p.full_fee) || defaultFee;
-              const paid = cleanNum(p.amount_paid);
-              const discount = resolveClientDiscount(p.discount, full, p.discount_amount);
-              const insts = p.installments || [];
-              const instPaidSum = insts
-                .filter(inst => (inst.status || '').toLowerCase() === 'paid')
-                .reduce((sum, inst) => sum + cleanNum(inst.amount), 0);
-              
-              totalFee = full;
-              collected = Math.min(paid + instPaidSum + discount, full);
-            }
-            return totalFee > 0 && collected >= totalFee;
-          }
-
         case 'fee_partial_paid':
+        case 'fee_unpaid': {
           if (!enrollment) return false;
-          {
-            const feeDetails = typeof enrollment.fee_details === 'string' ? JSON.parse(enrollment.fee_details) : enrollment.fee_details;
-            const defaultFee = batchData.course_fee || 8000;
-            const defaultP1 = batchData.phase1_fee || 4000;
-            const defaultP2 = batchData.phase2_fee || 4000;
-            const cleanNum = (val) => parseFloat(String(val || '').replace(/[^\d.]/g, '')) || 0;
-            let totalFee = 0;
-            let collected = 0;
-            if (batchData.course_name === 'Online Filmmaking Course') {
-              const p1 = feeDetails?.phase1 || {};
-              const p1Full = cleanNum(p1.full_fee) || defaultP1;
-              const p1Paid = cleanNum(p1.amount_paid);
-              const p1Discount = resolveClientDiscount(p1.discount, p1Full, p1.discount_amount);
-              const p1Insts = p1.installments || [];
-              const p1InstPaidSum = p1Insts
-                .filter(inst => (inst.status || '').toLowerCase() === 'paid')
-                .reduce((sum, inst) => sum + cleanNum(inst.amount), 0);
-              const p1Collected = Math.min(p1Paid + p1InstPaidSum + p1Discount, p1Full);
-
-              const p2 = feeDetails?.phase2 || {};
-              const p2Full = cleanNum(p2.full_fee) || defaultP2;
-              const p2Paid = cleanNum(p2.amount_paid);
-              const p2Discount = resolveClientDiscount(p2.discount, p2Full, p2.discount_amount);
-              const p2Insts = p2.installments || [];
-              const p2InstPaidSum = p2Insts
-                .filter(inst => (inst.status || '').toLowerCase() === 'paid')
-                .reduce((sum, inst) => sum + cleanNum(inst.amount), 0);
-              const p2Collected = Math.min(p2Paid + p2InstPaidSum + p2Discount, p2Full);
-
-              totalFee = p1Full + p2Full;
-              collected = p1Collected + p2Collected;
-            } else {
-              const p = feeDetails || {};
-              const full = cleanNum(p.full_fee) || defaultFee;
-              const paid = cleanNum(p.amount_paid);
-              const discount = resolveClientDiscount(p.discount, full, p.discount_amount);
-              const insts = p.installments || [];
-              const instPaidSum = insts
-                .filter(inst => (inst.status || '').toLowerCase() === 'paid')
-                .reduce((sum, inst) => sum + cleanNum(inst.amount), 0);
-              
-              totalFee = full;
-              collected = Math.min(paid + instPaidSum + discount, full);
-            }
-            return collected > 0 && collected < totalFee;
-          }
-
-        case 'fee_unpaid':
-          if (!enrollment) return false;
-          {
-            const feeDetails = typeof enrollment.fee_details === 'string' ? JSON.parse(enrollment.fee_details) : enrollment.fee_details;
-            const defaultFee = batchData.course_fee || 8000;
-            const defaultP1 = batchData.phase1_fee || 4000;
-            const defaultP2 = batchData.phase2_fee || 4000;
-            const cleanNum = (val) => parseFloat(String(val || '').replace(/[^\d.]/g, '')) || 0;
-            let totalFee = 0;
-            let collected = 0;
-            if (batchData.course_name === 'Online Filmmaking Course') {
-              const p1 = feeDetails?.phase1 || {};
-              const p1Full = cleanNum(p1.full_fee) || defaultP1;
-              const p1Paid = cleanNum(p1.amount_paid);
-              const p1Discount = resolveClientDiscount(p1.discount, p1Full, p1.discount_amount);
-              const p1Insts = p1.installments || [];
-              const p1InstPaidSum = p1Insts
-                .filter(inst => (inst.status || '').toLowerCase() === 'paid')
-                .reduce((sum, inst) => sum + cleanNum(inst.amount), 0);
-              const p1Collected = Math.min(p1Paid + p1InstPaidSum + p1Discount, p1Full);
-
-              const p2 = feeDetails?.phase2 || {};
-              const p2Full = cleanNum(p2.full_fee) || defaultP2;
-              const p2Paid = cleanNum(p2.amount_paid);
-              const p2Discount = resolveClientDiscount(p2.discount, p2Full, p2.discount_amount);
-              const p2Insts = p2.installments || [];
-              const p2InstPaidSum = p2Insts
-                .filter(inst => (inst.status || '').toLowerCase() === 'paid')
-                .reduce((sum, inst) => sum + cleanNum(inst.amount), 0);
-              const p2Collected = Math.min(p2Paid + p2InstPaidSum + p2Discount, p2Full);
-
-              totalFee = p1Full + p2Full;
-              collected = p1Collected + p2Collected;
-            } else {
-              const p = feeDetails || {};
-              const full = cleanNum(p.full_fee) || defaultFee;
-              const paid = cleanNum(p.amount_paid);
-              const discount = resolveClientDiscount(p.discount, full, p.discount_amount);
-              const insts = p.installments || [];
-              const instPaidSum = insts
-                .filter(inst => (inst.status || '').toLowerCase() === 'paid')
-                .reduce((sum, inst) => sum + cleanNum(inst.amount), 0);
-              
-              totalFee = full;
-              collected = Math.min(paid + instPaidSum + discount, full);
-            }
-            return collected === 0;
-          }
+          const fin = resolveEnrollmentFinancialsClient(enrollment, batchData);
+          if (selectedStatFilter === 'fee_fully_paid') return fin.isPaid;
+          if (selectedStatFilter === 'fee_partial_paid') return fin.isPartial;
+          if (selectedStatFilter === 'fee_unpaid') return fin.isUnpaid;
+          return true;
+        }
 
         default:
+          if (selectedStatFilter && selectedStatFilter.startsWith('dp_')) {
+            const defPhases = enrollment?.defined_progress?.phases || [];
+            if (selectedStatFilter.startsWith('dp_admitted_')) {
+              const pId = selectedStatFilter.replace('dp_admitted_', '');
+              const ph = defPhases.find(p => p.id === pId);
+              return ph ? Boolean(ph.admitted) : false;
+            }
+            if (selectedStatFilter.startsWith('dp_att_qual_')) {
+              const pId = selectedStatFilter.replace('dp_att_qual_', '');
+              const ph = defPhases.find(p => p.id === pId);
+              return ph ? Boolean(ph.attendance?.isQualified) : false;
+            }
+            if (selectedStatFilter.startsWith('dp_att_not_qual_')) {
+              const pId = selectedStatFilter.replace('dp_att_not_qual_', '');
+              const ph = defPhases.find(p => p.id === pId);
+              return ph ? !ph.attendance?.isQualified : true;
+            }
+            if (selectedStatFilter.startsWith('dp_asg_done_')) {
+              const pId = selectedStatFilter.replace('dp_asg_done_', '');
+              const ph = defPhases.find(p => p.id === pId);
+              return ph && ph.assignments ? ph.assignments.completed >= ph.assignments.total : false;
+            }
+            if (selectedStatFilter.startsWith('dp_exam_passed_')) {
+              const pId = selectedStatFilter.replace('dp_exam_passed_', '');
+              const ph = defPhases.find(p => p.id === pId);
+              return ph?.exam?.isPassed === true;
+            }
+            if (selectedStatFilter.startsWith('dp_exam_failed_')) {
+              const pId = selectedStatFilter.replace('dp_exam_failed_', '');
+              const ph = defPhases.find(p => p.id === pId);
+              return ph?.exam && !ph.exam.isPassed && ph.exam.marks !== null && ph.exam.marks !== undefined;
+            }
+            if (selectedStatFilter.startsWith('dp_completed_')) {
+              const pId = selectedStatFilter.replace('dp_completed_', '');
+              const ph = defPhases.find(p => p.id === pId);
+              return ph?.isPassed === true;
+            }
+          }
           return true;
       }
     }
@@ -1656,7 +1640,24 @@ export default function BatchDetail() {
       {/* SECTION 2: Progress Dashboard */}
       {progressData && (
         <div className="batch-progress-section">
-          {isFilmmaking ? (
+          {progressData.defined_phases && progressData.defined_phases.length > 0 ? (
+            progressData.defined_phases.map((dp, idx) => (
+              <div key={dp.phaseId || idx} style={{ marginTop: idx > 0 ? '1rem' : 0 }}>
+                <div className="batch-phase-label" style={{ color: idx === 1 ? '#a855f7' : idx === 2 ? '#ec4899' : '#60a5fa' }}>
+                  {dp.title || `Phase ${dp.phaseIndex || idx + 1}`}
+                </div>
+                <div className="batch-metrics-grid">
+                  <StatCard icon={<Users size={20} />} value={dp.admitted} label="Admitted" colorVariant="Blue" onClick={() => toggleStatFilter(`dp_admitted_${dp.phaseId}`)} isActive={selectedStatFilter === `dp_admitted_${dp.phaseId}`} />
+                  <StatCard icon={<CheckCircle2 size={20} />} value={dp.attendance_qualified} label="Attendance Qualified" colorVariant="Green" onClick={() => toggleStatFilter(`dp_att_qual_${dp.phaseId}`)} isActive={selectedStatFilter === `dp_att_qual_${dp.phaseId}`} />
+                  <StatCard icon={<XCircle size={20} />} value={dp.attendance_not_qualified} label="Not Qualified" colorVariant="Red" onClick={() => toggleStatFilter(`dp_att_not_qual_${dp.phaseId}`)} isActive={selectedStatFilter === `dp_att_not_qual_${dp.phaseId}`} />
+                  <StatCard icon={<FileText size={20} />} value={dp.assignments_completed} label="Assignments Done" colorVariant="Amber" onClick={() => toggleStatFilter(`dp_asg_done_${dp.phaseId}`)} isActive={selectedStatFilter === `dp_asg_done_${dp.phaseId}`} />
+                  <StatCard icon={<Award size={20} />} value={dp.exam_passed} label="Exam Passed" colorVariant="Green" onClick={() => toggleStatFilter(`dp_exam_passed_${dp.phaseId}`)} isActive={selectedStatFilter === `dp_exam_passed_${dp.phaseId}`} />
+                  <StatCard icon={<XCircle size={20} />} value={dp.exam_failed} label="Exam Failed" colorVariant="Red" onClick={() => toggleStatFilter(`dp_exam_failed_${dp.phaseId}`)} isActive={selectedStatFilter === `dp_exam_failed_${dp.phaseId}`} />
+                  <StatCard icon={<CheckSquare size={20} />} value={dp.completed} label="Phase Completed" colorVariant="Green" onClick={() => toggleStatFilter(`dp_completed_${dp.phaseId}`)} isActive={selectedStatFilter === `dp_completed_${dp.phaseId}`} />
+                </div>
+              </div>
+            ))
+          ) : isFilmmaking ? (
             <>
               <div>
                 <div className="batch-phase-label">Phase 1</div>
@@ -1753,7 +1754,7 @@ export default function BatchDetail() {
                       gap: '0.25rem',
                       boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
                     }}
-                    className="hover-scale-subtle"
+                    className="subtle-card"
                   >
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.78rem', color: '#34d399', fontWeight: '600' }}>
                       <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#34d399' }}></span>
@@ -1779,7 +1780,7 @@ export default function BatchDetail() {
                       gap: '0.25rem',
                       boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
                     }}
-                    className="hover-scale-subtle"
+                    className="subtle-card"
                   >
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.78rem', color: '#fbbf24', fontWeight: '600' }}>
                       <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#f59e0b' }}></span>
@@ -1805,7 +1806,7 @@ export default function BatchDetail() {
                       gap: '0.25rem',
                       boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
                     }}
-                    className="hover-scale-subtle"
+                    className="subtle-card"
                   >
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.78rem', color: '#f87171', fontWeight: '600' }}>
                       <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#ef4444' }}></span>
@@ -1934,51 +1935,9 @@ export default function BatchDetail() {
                   let totalFee = 0;
                   let collected = 0;
                   if (enrollment) {
-                    let feeDetails = null;
-                    if (enrollment.fee_details) {
-                      try {
-                        feeDetails = typeof enrollment.fee_details === 'string' ? JSON.parse(enrollment.fee_details) : enrollment.fee_details;
-                      } catch (err) { /* ignore parse error */ }
-                    }
-                    const defaultFee = batchData.course_fee || 8000;
-                    const defaultP1 = batchData.phase1_fee || 4000;
-                    const defaultP2 = batchData.phase2_fee || 4000;
-                    const cleanNum = (val) => parseFloat(String(val || '').replace(/[^\d.]/g, '')) || 0;
-                    if (batchData.course_name === 'Online Filmmaking Course') {
-                      const p1 = feeDetails?.phase1 || {};
-                      const p1Full = cleanNum(p1.full_fee) || defaultP1;
-                      const p1Paid = cleanNum(p1.amount_paid);
-                      const p1Discount = resolveClientDiscount(p1.discount, p1Full, p1.discount_amount);
-                      const p1Insts = p1.installments || [];
-                      const p1InstPaidSum = p1Insts
-                        .filter(inst => (inst.status || '').toLowerCase() === 'paid')
-                        .reduce((sum, inst) => sum + cleanNum(inst.amount), 0);
-                      const p1Collected = Math.min(p1Paid + p1InstPaidSum + p1Discount, p1Full);
-
-                      const p2 = feeDetails?.phase2 || {};
-                      const p2Full = cleanNum(p2.full_fee) || defaultP2;
-                      const p2Paid = cleanNum(p2.amount_paid);
-                      const p2Discount = resolveClientDiscount(p2.discount, p2Full, p2.discount_amount);
-                      const p2Insts = p2.installments || [];
-                      const p2InstPaidSum = p2Insts
-                        .filter(inst => (inst.status || '').toLowerCase() === 'paid')
-                        .reduce((sum, inst) => sum + cleanNum(inst.amount), 0);
-                      const p2Collected = Math.min(p2Paid + p2InstPaidSum + p2Discount, p2Full);
-
-                      totalFee = p1Full + p2Full;
-                      collected = p1Collected + p2Collected;
-                    } else {
-                      const p = feeDetails || {};
-                      const full = cleanNum(p.full_fee) || defaultFee;
-                      const paid = cleanNum(p.amount_paid);
-                      const discount = resolveClientDiscount(p.discount, full, p.discount_amount);
-                      const insts = p.installments || [];
-                      const instPaidSum = insts
-                        .filter(inst => (inst.status || '').toLowerCase() === 'paid')
-                        .reduce((sum, inst) => sum + cleanNum(inst.amount), 0);
-                      totalFee = full;
-                      collected = Math.min(paid + instPaidSum + discount, full);
-                    }
+                    const fin = resolveEnrollmentFinancialsClient(enrollment, batchData);
+                    totalFee = fin.netPayable;
+                    collected = fin.cashCollected;
                   }
                   return (
                     <tr key={s.user_id} className="student-list-row">
@@ -2695,8 +2654,8 @@ export default function BatchDetail() {
               >
                 {isAcademicSaving ? 'Saving...' : (academicStudent.enrollment?.course_name !== 'Online Filmmaking Course' ? 'Save Result' : 'Save Records')}
               </button>
-            </div>
-          </form>
+                </div>
+            </form>
         </div>,
         document.body
       )}
@@ -2908,7 +2867,10 @@ export default function BatchDetail() {
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '0.65rem' }}>
                     {batchRoutineSlots.length === 0 ? (
                       <div style={{ padding: '1rem', textAlign: 'center', background: 'rgba(255,255,255,0.02)', borderRadius: '6px', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
-                        No routine slots scheduled. Click "+ Add Slot" to add one.
+                        <p style={{ margin: 0 }}>No routine slots scheduled for this batch.</p>
+                        <p style={{ margin: '0.35rem 0 0', fontSize: '0.78rem', color: '#94a3b8' }}>
+                          💡 Saving an empty list sets an empty schedule for this batch. To restore the course default schedule, click &ldquo;Revert to Course Default&rdquo;.
+                        </p>
                       </div>
                     ) : (
                       batchRoutineSlots.map((slot, sIdx) => {
@@ -2916,6 +2878,7 @@ export default function BatchDetail() {
                         return (
                           <div
                             key={sIdx}
+                            ref={sIdx === batchRoutineSlots.length - 1 ? lastSlotRef : null}
                             style={{
                               background: 'rgba(255,255,255,0.03)',
                               border: '1px solid rgba(255,255,255,0.08)',
@@ -3103,13 +3066,40 @@ export default function BatchDetail() {
                               </div>
                             </div>
 
-                            {/* Row 3: Teacher, Mode & Category */}
-                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 130px), 1fr))', gap: '0.4rem', width: '100%' }}>
+                            {/* Row 3: Teacher Account, Teacher Label, Mode & Category */}
+                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 140px), 1fr))', gap: '0.4rem', width: '100%' }}>
                               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
-                                <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Teacher</label>
+                                <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Instructor Account</label>
+                                <select
+                                  aria-label="Instructor Account"
+                                  value={slot.teacherUserId ? String(slot.teacherUserId) : ''}
+                                  onChange={(e) => handleUpdateRoutineSlot(sIdx, 'teacherUserId', e.target.value)}
+                                  style={{
+                                    background: 'rgba(255,255,255,0.05)',
+                                    border: '1px solid rgba(255,255,255,0.12)',
+                                    borderRadius: '6px',
+                                    padding: '0.35rem 0.4rem',
+                                    color: slot.teacherUserId ? '#38bdf8' : 'var(--text-primary)',
+                                    fontSize: '0.78rem',
+                                    minHeight: '38px',
+                                    width: '100%'
+                                  }}
+                                  title="Assign Instructor Account"
+                                >
+                                  <option value="" style={{ background: '#1e293b' }}>-- Unassigned / Free Text --</option>
+                                  {catalogTeachers.filter(t => t.is_active !== 0 && !t.deleted_at).map(t => (
+                                    <option key={t.id} value={t.id} style={{ background: '#1e293b' }}>
+                                      {t.full_name || `${t.first_name} ${t.last_name}`} (ID: {t.id}{t.username ? `, @${t.username}` : ''})
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                                <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                                  Teacher Label {slot.teacherUserId ? <span style={{ color: '#38bdf8' }}>(ID #{slot.teacherUserId})</span> : <span style={{ color: 'var(--text-muted)' }}>(Unassigned)</span>}
+                                </label>
                                 <input
                                   type="text"
-                                  list="batch-teacher-suggestions"
                                   value={slot.teacherName || ''}
                                   onChange={(e) => handleUpdateRoutineSlot(sIdx, 'teacherName', e.target.value)}
                                   placeholder="Select or enter teacher"
@@ -3181,52 +3171,149 @@ export default function BatchDetail() {
                       })
                     )}
                   </div>
+
+                  {/* BOTTOM ADD SLOT BUTTON */}
+                  {batchRoutineSlots.length > 0 && (
+                    <div style={{ marginTop: '0.65rem' }}>
+                      <button
+                        type="button"
+                        onClick={handleAddRoutineSlot}
+                        style={{
+                          width: '100%',
+                          padding: '0.6rem 1rem',
+                          fontSize: '0.82rem',
+                          fontWeight: 600,
+                          borderRadius: '6px',
+                          background: 'rgba(59,130,246,0.08)',
+                          border: '1px dashed rgba(59,130,246,0.35)',
+                          color: '#93c5fd',
+                          cursor: 'pointer',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: '0.4rem',
+                          transition: 'all 0.15s ease'
+                        }}
+                        onMouseEnter={(e) => {
+                          e.currentTarget.style.background = 'rgba(59,130,246,0.16)';
+                          e.currentTarget.style.borderColor = 'rgba(59,130,246,0.6)';
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.background = 'rgba(59,130,246,0.08)';
+                          e.currentTarget.style.borderColor = 'rgba(59,130,246,0.35)';
+                        }}
+                      >
+                        <Plus size={16} /> + Add Slot
+                      </button>
+                    </div>
+                  )}
                 </div>
 
-                <div>
-                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '0.35rem' }}>
-                    Reason for Batch Routine Adjustment (Required for Audit Log) *
+                <div style={{ marginTop: '0.25rem' }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '0.35rem' }}>
+                    <span>Reason for Batch Routine Adjustment</span>
+                    <span style={{ color: '#ef4444', fontWeight: 'bold' }}>* (Required / আবশ্যক)</span>
                   </label>
                   <input
+                    ref={routineAuditInputRef}
                     type="text"
-                    required
                     value={routineAuditReason}
-                    onChange={(e) => setRoutineAuditReason(e.target.value)}
+                    onChange={(e) => {
+                      setRoutineAuditReason(e.target.value);
+                      if (e.target.value.trim()) {
+                        setRoutineAuditTouched(false);
+                        if (routineError && routineError.includes('Reason')) setRoutineError('');
+                      }
+                    }}
                     placeholder="e.g. Adjusted shooting schedule, rescheduled Friday class for holiday..."
                     style={{
                       width: '100%',
                       background: 'rgba(255,255,255,0.05)',
-                      border: '1px solid rgba(255,255,255,0.12)',
+                      border: routineAuditTouched && !routineAuditReason.trim() ? '1.5px solid #ef4444' : '1px solid rgba(255,255,255,0.12)',
                       borderRadius: '6px',
                       padding: '0.55rem 0.75rem',
                       color: 'var(--text-primary)',
                       fontSize: '0.85rem',
-                      minHeight: '44px'
+                      minHeight: '44px',
+                      outline: 'none',
+                      boxShadow: routineAuditTouched && !routineAuditReason.trim() ? '0 0 0 2px rgba(239,68,68,0.2)' : 'none',
+                      transition: 'border-color 0.2s ease, box-shadow 0.2s ease'
                     }}
                   />
+                  {routineAuditTouched && !routineAuditReason.trim() && (
+                    <div style={{ color: '#ef4444', fontSize: '0.78rem', marginTop: '0.35rem', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                      <span>⚠️ এই তথ্যটি পূরণ করা আবশ্যক — শিডিউল সেভ করার জন্য পরিবর্তনের কারণটি উল্লেখ করুন।</span>
+                    </div>
+                  )}
                 </div>
 
-                {routineError && (
-                  <div style={{ padding: '0.65rem 0.85rem', borderRadius: '6px', background: 'rgba(239,68,68,0.15)', color: '#ef4444', border: '1px solid rgba(239,68,68,0.3)', fontSize: '0.85rem' }}>
-                    {routineError}
-                  </div>
-                )}
               </div>
+
+              {routineError && (
+                <div style={{
+                  margin: '0 1.5rem 0.75rem',
+                  padding: '0.65rem 0.85rem',
+                  borderRadius: '6px',
+                  background: 'rgba(239,68,68,0.15)',
+                  color: '#ef4444',
+                  border: '1px solid rgba(239,68,68,0.3)',
+                  fontSize: '0.85rem',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.5rem'
+                }}>
+                  <XCircle size={16} style={{ flexShrink: 0 }} />
+                  <span>{routineError}</span>
+                </div>
+              )}
 
               <div
                 style={{
                   padding: '1rem 1.5rem',
                   borderTop: '1px solid rgba(255,255,255,0.06)',
                   display: 'flex',
-                  justifyContent: 'flex-end',
+                  justifyContent: 'space-between',
                   alignItems: 'center',
                   gap: '0.75rem',
-                  background: 'rgba(0,0,0,0.1)'
+                  background: 'rgba(0,0,0,0.1)',
+                  flexWrap: 'wrap'
                 }}
               >
-                <button
-                  type="button"
-                  onClick={handleCloseRoutineModal}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+                  {editingRoutinePhase?.routineSource === 'batch_override' && (
+                    <button
+                      type="button"
+                      onClick={handleRevertBatchRoutine}
+                      disabled={routineSaving}
+                      style={{
+                        padding: '0.45rem 0.8rem',
+                        borderRadius: '6px',
+                        background: 'rgba(245, 158, 11, 0.1)',
+                        border: '1px solid rgba(245, 158, 11, 0.3)',
+                        color: '#fbbf24',
+                        fontSize: '0.8rem',
+                        fontWeight: 500,
+                        cursor: routineSaving ? 'not-allowed' : 'pointer',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '0.35rem'
+                      }}
+                      title="Revert custom batch schedule back to the original course template"
+                    >
+                      <RefreshCw size={13} /> Revert to Course Default
+                    </button>
+                  )}
+                  {(!routineAuditReason.trim() || routineAuditReason.trim().length < 3) && (
+                    <span style={{ fontSize: '0.78rem', color: '#f59e0b', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                      💡 সেভ করতে কারণটি (কমপক্ষে ৩ অক্ষর) লিখুন
+                    </span>
+                  )}
+                </div>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                  <button
+                    type="button"
+                    onClick={handleCloseRoutineModal}
                   disabled={routineSaving}
                   style={{
                     padding: '0.5rem 1rem',
@@ -3243,16 +3330,16 @@ export default function BatchDetail() {
                 </button>
                 <button
                   type="submit"
-                  disabled={routineSaving || !routineAuditReason.trim()}
+                  disabled={routineSaving}
                   style={{
                     padding: '0.5rem 1.25rem',
                     borderRadius: '6px',
-                    background: routineSaving || !routineAuditReason.trim() ? 'rgba(59,130,246,0.3)' : '#2563eb',
+                    background: routineSaving ? 'rgba(59,130,246,0.3)' : '#2563eb',
                     border: 'none',
                     color: '#fff',
                     fontWeight: 600,
                     fontSize: '0.85rem',
-                    cursor: routineSaving || !routineAuditReason.trim() ? 'not-allowed' : 'pointer',
+                    cursor: routineSaving ? 'not-allowed' : 'pointer',
                     minHeight: '40px',
                     display: 'flex',
                     alignItems: 'center',
@@ -3268,6 +3355,7 @@ export default function BatchDetail() {
                     'Save Batch Schedule'
                   )}
                 </button>
+              </div>
               </div>
             </form>
           </div>

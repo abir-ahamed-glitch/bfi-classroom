@@ -331,7 +331,29 @@ const normalizePositions = (saved = {}) => {
 };
 
 export default function CertificateDesigner() {
+  const [courseOptions, setCourseOptions] = useState(COURSES);
   const [selectedCourse, setSelectedCourse] = useState(COURSES[0]);
+
+  useEffect(() => {
+    async function loadPublishedCourses() {
+      try {
+        const token = localStorage.getItem('token');
+        const res = await fetch(`${API_BASE}/api/admin/course-definitions/published`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (res.ok) {
+          const published = await res.json();
+          if (Array.isArray(published)) {
+            const definedNames = published.map(c => c.name || c.basics?.name).filter(Boolean);
+            setCourseOptions(prev => Array.from(new Set([...prev, ...definedNames])));
+          }
+        }
+      } catch (err) {
+        console.warn('Could not load published course definitions for certificate designer:', err);
+      }
+    }
+    loadPublishedCourses();
+  }, []);
   const [template, setTemplate]   = useState({ layout_json: '{}', background_url: '', course_name: COURSES[0] });
   const [positions, setPositions] = useState(DEFAULTS);
   const [bodyTemplate, setBodyTemplate] = useState(DEFAULT_BODY);
@@ -531,7 +553,7 @@ export default function CertificateDesigner() {
             {sectionLabel('Select Course')}
             <div style={{position:'relative'}}>
               <select className="input-glass" value={selectedCourse} onChange={e=>setSelectedCourse(e.target.value)} style={{width:'100%',cursor:'pointer',paddingRight:'2.5rem',appearance:'none',fontWeight:600}}>
-                {COURSES.map(c=><option key={c} value={c}>{c}</option>)}
+                {courseOptions.map(c=><option key={c} value={c}>{c}</option>)}
               </select>
               <ChevronDown size={15} style={{position:'absolute',right:'0.75rem',top:'50%',transform:'translateY(-50%)',color:'var(--text-muted)',pointerEvents:'none'}}/>
             </div>

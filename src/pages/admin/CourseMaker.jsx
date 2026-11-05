@@ -27,7 +27,7 @@ function getCourseTypeLabel(type) {
   return found ? found.label : (type || 'Course');
 }
 
-import { DELIVERY_MODE_OPTIONS as DELIVERY_MODES, normalizeDeliveryMode, deliveryModeFromSubject } from '../../utils/deliveryModes';
+import { DELIVERY_MODE_OPTIONS as DELIVERY_MODES, normalizeDeliveryMode, deliveryModeFromSubject, createDefaultRoutineSlot } from '../../utils/deliveryModes';
 import PlatformSelector from '../../components/admin/PlatformSelector';
 
 const CLASS_CATEGORIES = [
@@ -59,7 +59,7 @@ function buildDefaultPhase(index) {
       completionRequired: true
     },
     routine: [
-      { date: '', weekday: 'Saturday', startTime: '18:00', endTime: '20:00', timezone: 'Asia/Dhaka', platform: '' }
+      createDefaultRoutineSlot()
     ],
     classes: [
       {
@@ -678,11 +678,37 @@ export default function CourseMaker() {
     const updated = (cur.classes || []).map(c => {
       if (c.id !== clsId) return c;
       const next = { ...c, [field]: val };
+      if (field === 'teacherUserId') {
+        const parsedId = val ? Number(val) : null;
+        const match = teachers.find(t => t.id === parsedId && t.is_active !== 0 && !t.deleted_at);
+        next.teacherUserId = match ? match.id : null;
+        if (match) {
+          next.teacherName = match.full_name || `${match.first_name} ${match.last_name}`;
+        }
+      }
+      if (field === 'teacherName') {
+        next.teacherName = val;
+        if (next.teacherUserId) {
+          const match = teachers.find(t => t.id === Number(next.teacherUserId));
+          const cName = match ? (match.full_name || `${match.first_name} ${match.last_name}`) : '';
+          if (!val || val.trim().toLowerCase() !== cName.trim().toLowerCase()) {
+            next.teacherUserId = null;
+          }
+        } else {
+          next.teacherUserId = null;
+        }
+      }
       if (field === 'subjectName' && val && typeof val === 'string') {
         const match = subjects.find(s => s.name?.trim().toLowerCase() === val.trim().toLowerCase());
         if (match) {
           if (!next.teacherName && match.teacher_name) {
             next.teacherName = match.teacher_name;
+            if (match.teacher_id) {
+              const tMatch = teachers.find(t => t.id === Number(match.teacher_id) && t.is_active !== 0 && !t.deleted_at);
+              next.teacherUserId = tMatch ? tMatch.id : null;
+            } else {
+              next.teacherUserId = null;
+            }
           }
           if ((!next.deliveryMode || next.deliveryMode === 'live') && match.class_type) {
             next.deliveryMode = deliveryModeFromSubject(match);
@@ -697,19 +723,7 @@ export default function CourseMaker() {
   // Routine helpers
   const addRoutineToPhase = () => {
     const cur = form.phases[activePhaseTab];
-    const newSlot = {
-      date: '',
-      weekday: 'Saturday',
-      startTime: '18:00',
-      endTime: '20:00',
-      timezone: 'Asia/Dhaka',
-      subjectName: '',
-      classTitle: '',
-      teacherName: '',
-      deliveryMode: 'live',
-      category: 'theory',
-      platform: ''
-    };
+    const newSlot = createDefaultRoutineSlot();
     updateCurrentPhase({ routine: [...(cur.routine || []), newSlot] });
   };
 
@@ -718,16 +732,31 @@ export default function CourseMaker() {
     const cur = form.phases[activePhaseTab];
     const cls = (cur.classes || []).find(c => String(c.id) === String(classId));
     if (!cls) return;
+    const fallbackSlot = createDefaultRoutineSlot();
+
+    let validatedTid = null;
+    let validatedTname = cls.teacherName || fallbackSlot.teacherName;
+    if (cls.teacherUserId) {
+      const matchTeacher = teachers.find(t => t.id === Number(cls.teacherUserId) && t.is_active !== 0 && !t.deleted_at);
+      if (matchTeacher) {
+        validatedTid = matchTeacher.id;
+        if (!validatedTname) {
+          validatedTname = matchTeacher.full_name || `${matchTeacher.first_name} ${matchTeacher.last_name}`;
+        }
+      }
+    }
+
     const updated = (cur.routine || []).map((r, i) => {
       if (i !== routineIndex) return r;
       return {
         ...r,
-        classTitle: cls.title || '',
-        subjectName: cls.subjectName || '',
-        teacherName: cls.teacherName || '',
-        deliveryMode: cls.deliveryMode || 'live',
-        category: cls.category || 'theory',
-        platform: cls.platform || ''
+        classTitle: cls.title || fallbackSlot.classTitle,
+        subjectName: cls.subjectName || fallbackSlot.subjectName,
+        teacherName: validatedTname,
+        teacherUserId: validatedTid,
+        deliveryMode: cls.deliveryMode || fallbackSlot.deliveryMode,
+        category: cls.category || fallbackSlot.category,
+        platform: cls.platform || fallbackSlot.platform
       };
     });
     updateCurrentPhase({ routine: updated });
@@ -747,11 +776,33 @@ export default function CourseMaker() {
         const next = { ...r, date: val };
         if (val && typeof val === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(val.trim())) {
           const parts = val.trim().split('-').map(Number);
-          const dObj = new Date(parts[0], parts[1] - 1, parts[2]);
+          const dObj = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2], 12, 0, 0));
           if (!isNaN(dObj.getTime())) {
             const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-            next.weekday = dayNames[dObj.getDay()];
+            next.weekday = dayNames[dObj.getUTCDay()];
           }
+        }
+        return next;
+      }
+      if (field === 'teacherUserId') {
+        const parsedId = val ? Number(val) : null;
+        const match = teachers.find(t => t.id === parsedId && t.is_active !== 0 && !t.deleted_at);
+        const next = { ...r, teacherUserId: match ? match.id : null };
+        if (match) {
+          next.teacherName = match.full_name || `${match.first_name} ${match.last_name}`;
+        }
+        return next;
+      }
+      if (field === 'teacherName') {
+        const next = { ...r, teacherName: val };
+        if (next.teacherUserId) {
+          const match = teachers.find(t => t.id === Number(next.teacherUserId));
+          const cName = match ? (match.full_name || `${match.first_name} ${match.last_name}`) : '';
+          if (!val || val.trim().toLowerCase() !== cName.trim().toLowerCase()) {
+            next.teacherUserId = null;
+          }
+        } else {
+          next.teacherUserId = null;
         }
         return next;
       }
@@ -762,6 +813,12 @@ export default function CourseMaker() {
           if (match) {
             if (!next.teacherName && match.teacher_name) {
               next.teacherName = match.teacher_name;
+              if (match.teacher_id) {
+                const tMatch = teachers.find(t => t.id === Number(match.teacher_id) && t.is_active !== 0 && !t.deleted_at);
+                next.teacherUserId = tMatch ? tMatch.id : null;
+              } else {
+                next.teacherUserId = null;
+              }
             }
             if ((!next.deliveryMode || next.deliveryMode === 'live') && match.class_type) {
               next.deliveryMode = deliveryModeFromSubject(match);
@@ -1852,12 +1909,28 @@ export default function CourseMaker() {
                             </div>
                           </div>
 
-                          {/* Row 3: Teacher, Mode & Category */}
-                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 130px), 1fr))', gap: '0.4rem', width: '100%' }}>
+                          {/* Row 3: Teacher Account, Teacher Label, Mode & Category */}
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 140px), 1fr))', gap: '0.4rem', width: '100%' }}>
+                            <div>
+                              <select
+                                aria-label="Routine Instructor Account"
+                                value={rt.teacherUserId ? String(rt.teacherUserId) : ''}
+                                onChange={(e) => updateRoutineField(rIdx, 'teacherUserId', e.target.value)}
+                                className="cm-select"
+                                style={{ minHeight: '38px', padding: '0.35rem 0.4rem', fontSize: '0.78rem', width: '100%', color: rt.teacherUserId ? '#38bdf8' : 'inherit' }}
+                                title="Assign Instructor Account"
+                              >
+                                <option value="">-- Unassigned / Free Text --</option>
+                                {teachers.filter(t => t.is_active !== 0 && !t.deleted_at).map(t => (
+                                  <option key={t.id} value={t.id}>
+                                    {t.full_name || `${t.first_name} ${t.last_name}`} (ID: {t.id}{t.username ? `, @${t.username}` : ''})
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
                             <div>
                               <input
                                 type="text"
-                                list="teacher-suggestions"
                                 value={rt.teacherName || ''}
                                 onChange={(e) => updateRoutineField(rIdx, 'teacherName', e.target.value)}
                                 placeholder="Teacher / Mentor"
@@ -1897,6 +1970,33 @@ export default function CourseMaker() {
                           </div>
                         </div>
                       ))}
+                    </div>
+                  )}
+
+                  {(curPhase.routine || []).length > 0 && (
+                    <div style={{ marginTop: '0.75rem' }}>
+                      <button
+                        type="button"
+                        onClick={addRoutineToPhase}
+                        style={{
+                          width: '100%',
+                          padding: '0.6rem 1rem',
+                          fontSize: '0.82rem',
+                          fontWeight: 600,
+                          borderRadius: '6px',
+                          background: 'rgba(59,130,246,0.08)',
+                          border: '1px dashed rgba(59,130,246,0.35)',
+                          color: '#93c5fd',
+                          cursor: 'pointer',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: '0.4rem',
+                          transition: 'background-color 0.15s ease, border-color 0.15s ease'
+                        }}
+                      >
+                        <Plus size={16} /> + Add Day / Time
+                      </button>
                     </div>
                   )}
                 </div>
@@ -1957,22 +2057,39 @@ export default function CourseMaker() {
                           </datalist>
                         </div>
 
-                        <div>
-                          <label className="cm-label" style={{ fontSize: '0.75rem', marginBottom: '0.2rem' }}>
-                            Teacher
-                          </label>
-                          <input
-                            type="text"
-                            list="teacher-suggestions"
-                            value={cls.teacherName}
-                            onChange={(e) => updateClassField(cls.id, 'teacherName', e.target.value)}
-                            placeholder="Select or enter teacher"
-                            className="cm-input"
-                            style={{ minHeight: '44px', padding: '0.45rem 0.65rem', fontSize: '0.85rem' }}
-                          />
-                          <datalist id="teacher-suggestions">
-                            {teachers.map(t => <option key={t.id} value={t.full_name || `${t.first_name} ${t.last_name}`} />)}
-                          </datalist>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 140px), 1fr))', gap: '0.4rem' }}>
+                          <div>
+                            <label className="cm-label" style={{ fontSize: '0.75rem', marginBottom: '0.2rem' }}>
+                              Instructor Account
+                            </label>
+                            <select
+                              aria-label="Class Instructor Account"
+                              value={cls.teacherUserId ? String(cls.teacherUserId) : ''}
+                              onChange={(e) => updateClassField(cls.id, 'teacherUserId', e.target.value)}
+                              className="cm-select"
+                              style={{ minHeight: '44px', padding: '0.35rem 0.4rem', fontSize: '0.82rem', width: '100%', color: cls.teacherUserId ? '#38bdf8' : 'inherit' }}
+                            >
+                              <option value="">-- Unassigned / Free Text --</option>
+                              {teachers.filter(t => t.is_active !== 0 && !t.deleted_at).map(t => (
+                                <option key={t.id} value={t.id}>
+                                  {t.full_name || `${t.first_name} ${t.last_name}`} (ID: {t.id}{t.username ? `, @${t.username}` : ''})
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                          <div>
+                            <label className="cm-label" style={{ fontSize: '0.75rem', marginBottom: '0.2rem' }}>
+                              Teacher Label {cls.teacherUserId ? <span style={{ color: '#38bdf8' }}>(ID #{cls.teacherUserId})</span> : <span style={{ color: 'var(--text-muted)' }}>(Unassigned)</span>}
+                            </label>
+                            <input
+                              type="text"
+                              value={cls.teacherName || ''}
+                              onChange={(e) => updateClassField(cls.id, 'teacherName', e.target.value)}
+                              placeholder="Select or enter teacher"
+                              className="cm-input"
+                              style={{ minHeight: '44px', padding: '0.45rem 0.65rem', fontSize: '0.85rem' }}
+                            />
+                          </div>
                         </div>
 
                         <div>
@@ -2790,12 +2907,24 @@ export default function CourseMaker() {
                               if (!selId) return;
                               const matchCls = phaseClasses.find(c => String(c.id) === String(selId));
                               if (matchCls) {
+                                let validatedTid = null;
+                                let validatedTname = matchCls.teacherName || '';
+                                if (matchCls.teacherUserId) {
+                                  const matchTeacher = teachers.find(t => t.id === Number(matchCls.teacherUserId) && t.is_active !== 0 && !t.deleted_at);
+                                  if (matchTeacher) {
+                                    validatedTid = matchTeacher.id;
+                                    if (!validatedTname) {
+                                      validatedTname = matchTeacher.full_name || `${matchTeacher.first_name} ${matchTeacher.last_name}`;
+                                    }
+                                  }
+                                }
                                 const updated = [...auditRoutineList];
                                 updated[sIdx] = {
                                   ...updated[sIdx],
                                   classTitle: matchCls.title || '',
                                   subjectName: matchCls.subjectName || '',
-                                  teacherName: matchCls.teacherName || '',
+                                  teacherName: validatedTname,
+                                  teacherUserId: validatedTid,
                                   deliveryMode: matchCls.deliveryMode || 'live',
                                   category: matchCls.category || 'theory',
                                   platform: matchCls.platform || ''
@@ -2930,16 +3059,52 @@ export default function CourseMaker() {
                         </div>
                       </div>
 
-                      {/* Row 3: Teacher, Mode & Category */}
-                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 130px), 1fr))', gap: '0.4rem', width: '100%' }}>
+                      {/* Row 3: Teacher Account, Teacher Label, Mode & Category */}
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 140px), 1fr))', gap: '0.4rem', width: '100%' }}>
+                        <div>
+                          <select
+                            aria-label="Audit Modal Instructor Account"
+                            value={slot.teacherUserId ? String(slot.teacherUserId) : ''}
+                            onChange={(e) => {
+                              const parsedId = e.target.value ? Number(e.target.value) : null;
+                              const match = teachers.find(t => t.id === parsedId && t.is_active !== 0 && !t.deleted_at);
+                              const updated = [...auditRoutineList];
+                              updated[sIdx] = {
+                                ...updated[sIdx],
+                                teacherUserId: match ? match.id : null,
+                                ...(match ? { teacherName: match.full_name || `${match.first_name} ${match.last_name}` } : {})
+                              };
+                              setAuditRoutineList(updated);
+                            }}
+                            className="cm-select"
+                            style={{ minHeight: '38px', padding: '0.35rem 0.4rem', fontSize: '0.78rem', width: '100%', color: slot.teacherUserId ? '#38bdf8' : 'inherit' }}
+                            title="Assign Instructor Account"
+                          >
+                            <option value="">-- Unassigned / Free Text --</option>
+                            {teachers.filter(t => t.is_active !== 0 && !t.deleted_at).map(t => (
+                              <option key={t.id} value={t.id}>
+                                {t.full_name || `${t.first_name} ${t.last_name}`} (ID: {t.id}{t.username ? `, @${t.username}` : ''})
+                              </option>
+                            ))}
+                          </select>
+                        </div>
                         <div>
                           <input
                             type="text"
-                            list="teacher-suggestions"
                             value={slot.teacherName || ''}
                             onChange={(e) => {
+                              const val = e.target.value;
                               const updated = [...auditRoutineList];
-                              updated[sIdx] = { ...updated[sIdx], teacherName: e.target.value };
+                              const currentSlot = updated[sIdx];
+                              let nextTid = currentSlot.teacherUserId;
+                              if (nextTid) {
+                                const match = teachers.find(t => t.id === Number(nextTid));
+                                const cName = match ? (match.full_name || `${match.first_name} ${match.last_name}`) : '';
+                                if (!val || val.trim().toLowerCase() !== cName.trim().toLowerCase()) {
+                                  nextTid = null;
+                                }
+                              }
+                              updated[sIdx] = { ...currentSlot, teacherName: val, teacherUserId: nextTid };
                               setAuditRoutineList(updated);
                             }}
                             placeholder="Teacher / Mentor"

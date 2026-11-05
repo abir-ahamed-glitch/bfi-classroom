@@ -1,7 +1,8 @@
 import express from 'express';
 import db from '../db/database.js';
 import { authenticateToken, requireRole, requirePermission, requireAnyPermission } from '../middleware/auth.js';
-import { parseFeeDetails, getBatchFee, getFeeStatus, extractFeeAmounts, resolvePhaseFee, createFeeResolverContext, resolveEnrollmentFinancials } from '../utils/feeResolver.js';
+import { parseFeeDetails, getBatchFee, getFeeStatus, createFeeResolverContext, resolveEnrollmentFinancials } from '../utils/feeResolver.js';
+import { getEnrollmentProgressSync } from '../services/courseProgressService.js';
 
 const router = express.Router();
 
@@ -37,14 +38,25 @@ function getPendingCertificateRows(feeContext = null) {
     FROM student_course_enrollments sce
     JOIN users u ON u.id = sce.user_id
     JOIN student_profiles sp ON sp.user_id = u.id
-    WHERE sp.phase2_completed = 1
-      AND COALESCE(sce.step4_completed, 0) = 0
+    WHERE (
+      (sce.course_definition_id IS NULL AND sp.phase2_completed = 1 AND COALESCE(sce.step4_completed, 0) = 0)
+      OR
+      (sce.course_definition_id IS NOT NULL AND COALESCE(sce.step4_completed, 0) = 0)
+    )
       AND NOT EXISTS (
         SELECT 1
         FROM student_course_enrollments issued
-        WHERE issued.user_id = sce.user_id
-          AND LOWER(TRIM(issued.course_name)) = LOWER(TRIM(sce.course_name))
+        WHERE issued.id = sce.id
           AND COALESCE(issued.step4_completed, 0) = 1
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM certificate_downloads cd
+        WHERE cd.enrollment_id = sce.id
+           OR (cd.enrollment_id IS NULL AND cd.batch_id = sce.batch_id AND cd.user_id = sce.user_id)
+           OR (cd.enrollment_id IS NULL AND cd.batch_id IS NULL AND cd.user_id = sce.user_id
+               AND LOWER(TRIM(cd.course_name)) = LOWER(TRIM(sce.course_name))
+               AND (SELECT COUNT(*) FROM student_course_enrollments sce2 WHERE sce2.user_id = sce.user_id AND LOWER(TRIM(sce2.course_name)) = LOWER(TRIM(sce.course_name))) = 1)
       )
     ORDER BY datetime(sp.updated_at) DESC, sce.id DESC
   `).all();
@@ -52,13 +64,22 @@ function getPendingCertificateRows(feeContext = null) {
   const ctx = feeContext || createFeeResolverContext(db);
 
   return rows
-    .filter((row) => getFeeStatus(parseFeeDetails(row.fee_details), row.course_type, null, {
-      courseDefId: row.course_definition_id,
-      courseName: row.course_name,
-      batchNumber: row.batch_number,
-      batchId: row.batch_id,
-      feeContext: ctx
-    }) === 'paid')
+    .filter((row) => {
+      if (row.course_definition_id) {
+        const progress = getEnrollmentProgressSync(row.enrollment_id, db);
+        if (!progress || !progress.certificateEligible) return false;
+      } else {
+        const feeStatus = getFeeStatus(parseFeeDetails(row.fee_details), row.course_type, null, {
+          courseDefId: row.course_definition_id,
+          courseName: row.course_name,
+          batchNumber: row.batch_number,
+          batchId: row.batch_id,
+          feeContext: ctx
+        });
+        if (feeStatus !== 'paid') return false;
+      }
+      return true;
+    })
     .map(({ fee_details: _feeDetails, ...row }) => ({
       ...row,
       payment_status: 'Fully Paid',
@@ -227,15 +248,20 @@ router.get('/stats', authenticateToken, requireRole('admin'), requirePermission(
         WHERE step4_completed = 1 AND course_definition_id IS NULL
       `).get();
 
-      let definedCertsCount = 0;
-      for (const e of allEnrollments) {
-        if (e.course_definition_id) {
-          const requiredPhases = defMap.get(e.course_definition_id) || 1;
-          if ((passedPhasesMap.get(e.id) || 0) >= requiredPhases) {
-            definedCertsCount++;
-          }
-        }
-      }
+      // Count defined course certificates issued from actual downloads or step4_completed
+      const definedCertsCount = db.prepare(`
+        SELECT COUNT(DISTINCT sce.id) as count
+        FROM student_course_enrollments sce
+        JOIN certificate_downloads cd ON (
+          cd.enrollment_id = sce.id
+          OR (cd.enrollment_id IS NULL AND cd.batch_id = sce.batch_id AND cd.user_id = sce.user_id)
+          OR (cd.enrollment_id IS NULL AND cd.batch_id IS NULL AND cd.user_id = sce.user_id
+              AND LOWER(TRIM(cd.course_name)) = LOWER(TRIM(sce.course_name))
+              AND (SELECT COUNT(*) FROM student_course_enrollments sce2 WHERE sce2.user_id = sce.user_id AND LOWER(TRIM(sce2.course_name)) = LOWER(TRIM(sce.course_name))) = 1)
+        )
+        WHERE sce.course_definition_id IS NOT NULL
+      `).get()?.count || 0;
+
       const certificatesIssued = { count: (legacyCertificates?.count || 0) + definedCertsCount };
 
       // Failed / Dropped (global)

@@ -10,11 +10,11 @@ function getOrdinalSuffix(n) {
   return num + (s[(v-20)%10] || s[v] || s[0]) + " Batch";
 }
 
-export default function BatchFormModal({ mode, batch, isOpen, onClose, onSuccess, initialCourseDef }) {
+export default function BatchFormModal({ mode, batch, isOpen, onClose, onSuccess, initialCourseDef, initialCourseName, courseDefinitions: propCourseDefs }) {
   const [form, setForm] = useState({
     batch_name: '',
     batch_number: '',
-    course_name: initialCourseDef?.name || 'Online Filmmaking Course',
+    course_name: initialCourseDef?.name || initialCourseName || 'Online Filmmaking Course',
     status: 'upcoming',
     start_date: '',
     end_date: '',
@@ -25,17 +25,26 @@ export default function BatchFormModal({ mode, batch, isOpen, onClose, onSuccess
   const [errors, setErrors] = useState({});
   const [apiError, setApiError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [publishedDefs, setPublishedDefs] = useState(initialCourseDef ? [initialCourseDef] : []);
+  const [courseDefs, setCourseDefs] = useState(initialCourseDef ? [initialCourseDef] : (propCourseDefs || []));
 
-  // Available courses
-  const courseOptions = ['Online Filmmaking Course', 'Film Appreciation Course'];
+  // Standard registered courses
+  const standardCourses = [
+    'Online Filmmaking Course',
+    'Film Appreciation Course',
+    'Script Writing',
+    'Cinematography',
+    'Acting'
+  ];
 
   const [isCustom, setIsCustom] = useState(false);
   const [customCourseName, setCustomCourseName] = useState('');
 
-  // Fetch published course definitions
+  // Fetch course definitions from Course Maker (both published and draft)
   useEffect(() => {
     if (isOpen) {
+      if (propCourseDefs && propCourseDefs.length > 0) {
+        setCourseDefs(propCourseDefs);
+      }
       const token = localStorage.getItem('token');
       fetch('/api/admin/course-definitions', {
         headers: { Authorization: `Bearer ${token}` }
@@ -43,23 +52,31 @@ export default function BatchFormModal({ mode, batch, isOpen, onClose, onSuccess
         .then(r => r.ok ? r.json() : [])
         .then(data => {
           const list = Array.isArray(data) ? data : (data.definitions || []);
-          let filtered = list.filter(d => d.status === 'published');
-          if (initialCourseDef && !filtered.some(d => d.id === initialCourseDef.id)) {
-            filtered = [initialCourseDef, ...filtered];
+          const activeList = list.filter(d => d.status !== 'archived');
+          // Prioritize published first, then drafts, alphabetical
+          activeList.sort((a, b) => {
+            if (a.status === 'published' && b.status !== 'published') return -1;
+            if (b.status === 'published' && a.status !== 'published') return 1;
+            return (a.name || '').localeCompare(b.name || '');
+          });
+          if (initialCourseDef && !activeList.some(d => d.id === initialCourseDef.id)) {
+            activeList.unshift(initialCourseDef);
           }
-          setPublishedDefs(filtered);
+          setCourseDefs(activeList);
         })
-        .catch(err => console.error('Failed to load published course definitions', err));
+        .catch(err => console.error('Failed to load course definitions', err));
     }
-  }, [isOpen, initialCourseDef]);
+  }, [isOpen, initialCourseDef, propCourseDefs]);
 
   // Initialize form when modal opens or batch changes
   useEffect(() => {
     if (isOpen) {
       if (mode === 'edit' && batch) {
-        const isPred = courseOptions.includes(batch.course_name);
-        setIsCustom(!isPred);
-        setCustomCourseName(!isPred ? batch.course_name : '');
+        const isStandard = standardCourses.includes(batch.course_name);
+        const hasDef = courseDefs.some(d => d.id === batch.course_definition_id || d.name === batch.course_name);
+        const isCust = !isStandard && !hasDef && !batch.course_definition_id;
+        setIsCustom(isCust);
+        setCustomCourseName(isCust ? batch.course_name : '');
         setForm({
           batch_name: batch.batch_name || '',
           batch_number: batch.batch_number || '',
@@ -71,25 +88,54 @@ export default function BatchFormModal({ mode, batch, isOpen, onClose, onSuccess
           course_definition_id: batch.course_definition_id || null
         });
       } else {
-        const hasInitDef = !!initialCourseDef;
-        setIsCustom(false);
-        setCustomCourseName('');
+        let defaultCourseName = 'Online Filmmaking Course';
+        let defaultDefId = null;
+        let defaultIsCustom = false;
+        let defaultCustomName = '';
+
+        if (initialCourseDef) {
+          defaultCourseName = initialCourseDef.name;
+          defaultDefId = initialCourseDef.id;
+        } else if (initialCourseName) {
+          const matchDef = courseDefs.find(d => d.name === initialCourseName) ||
+                           (propCourseDefs && propCourseDefs.find(d => d.name === initialCourseName));
+          if (matchDef) {
+            defaultCourseName = matchDef.name;
+            defaultDefId = matchDef.id;
+          } else if (standardCourses.includes(initialCourseName)) {
+            defaultCourseName = initialCourseName;
+          } else {
+            defaultCourseName = initialCourseName;
+            defaultIsCustom = true;
+            defaultCustomName = initialCourseName;
+          }
+        } else if (courseDefs.length > 0) {
+          // If there are defined courses, select the first published one, or first course
+          const preferred = courseDefs.find(d => d.status === 'published') || courseDefs[0];
+          if (preferred) {
+            defaultCourseName = preferred.name;
+            defaultDefId = preferred.id;
+          }
+        }
+
+        setIsCustom(defaultIsCustom);
+        setCustomCourseName(defaultCustomName);
         setForm({
           batch_name: '',
           batch_number: '',
-          course_name: initialCourseDef?.name || 'Online Filmmaking Course',
+          course_name: defaultCourseName,
           status: 'upcoming',
           start_date: '',
           end_date: '',
           description: '',
-          course_definition_id: initialCourseDef?.id || null
+          course_definition_id: defaultDefId
         });
       }
       setErrors({});
       setApiError('');
       setIsSubmitting(false);
     }
-  }, [isOpen, mode, batch, initialCourseDef]);
+  }, [isOpen, mode, batch, initialCourseDef, initialCourseName]);
 
   // Handle Escape key
   useEffect(() => {
@@ -283,97 +329,156 @@ export default function BatchFormModal({ mode, batch, isOpen, onClose, onSuccess
 
             {/* Course Selection */}
             <div className="batch-form-field">
-              <label>
-                Course Program
-                {mode === 'edit' && <Lock size={14} title="Course cannot be changed after creation" />}
+              <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <span>Course Program <span style={{ color: '#ef4444' }}>*</span></span>
+                {mode === 'edit' && <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', gap: '4px' }}><Lock size={12} /> Locked</span>}
               </label>
-              <div className="batch-course-toggle">
-                {courseOptions.map(course => (
-                  <button
-                    key={course}
-                    type="button"
-                    className={`course-toggle-btn ${!isCustom && form.course_name === course ? 'selected' : ''}`}
-                    onClick={() => {
-                      setIsCustom(false);
-                      handleChange('course_name', course);
-                    }}
-                    disabled={mode === 'edit'}
-                    title={mode === 'edit' ? "Course cannot be changed after creation" : ""}
-                  >
-                    {course === 'Online Filmmaking Course' ? '🎬' : '🎞'} {course}
-                  </button>
-                ))}
-                <button
-                  type="button"
-                  className={`course-toggle-btn ${isCustom ? 'selected' : ''}`}
-                  onClick={() => {
-                    setIsCustom(true);
-                    handleChange('course_name', customCourseName);
-                  }}
-                  disabled={mode === 'edit'}
-                  title={mode === 'edit' ? "Course cannot be changed after creation" : ""}
-                >
-                  ⚙️ Custom Program
-                </button>
-              </div>
-              {publishedDefs.length > 0 && mode !== 'edit' && (
-                <div style={{ marginTop: '0.65rem' }}>
-                  <label style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '0.25rem', display: 'block' }}>
-                    Or link to a defined course (Course Maker):
-                  </label>
+
+              {mode === 'edit' ? (
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  padding: '0.65rem 0.85rem',
+                  background: 'rgba(255, 255, 255, 0.03)',
+                  border: '1px solid rgba(255, 255, 255, 0.1)',
+                  borderRadius: '8px'
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <span style={{ fontSize: '1.1rem' }}>🎓</span>
+                    <strong style={{ color: 'var(--text-primary)' }}>{form.course_name}</strong>
+                    {form.course_definition_id && (
+                      <span style={{
+                        fontSize: '0.72rem',
+                        padding: '2px 8px',
+                        borderRadius: '999px',
+                        background: 'rgba(99, 102, 241, 0.15)',
+                        color: '#818cf8',
+                        fontWeight: 600
+                      }}>
+                        CourseMaker
+                      </span>
+                    )}
+                  </div>
+                  <Lock size={14} style={{ color: 'var(--text-muted)' }} />
+                </div>
+              ) : (
+                <>
                   <select
-                    value={form.course_definition_id || ''}
+                    value={isCustom ? '__custom__' : (form.course_definition_id ? `def_${form.course_definition_id}` : `std_${form.course_name}`)}
                     onChange={(e) => {
-                      const defId = parseInt(e.target.value, 10);
-                      if (defId) {
-                        const selectedDef = publishedDefs.find(d => d.id === defId);
-                        if (selectedDef) {
+                      const val = e.target.value;
+                      if (val === '__custom__') {
+                        setIsCustom(true);
+                        setForm(prev => ({ ...prev, course_definition_id: null, course_name: customCourseName }));
+                      } else if (val.startsWith('def_')) {
+                        const id = parseInt(val.replace('def_', ''), 10);
+                        const def = courseDefs.find(d => d.id === id);
+                        if (def) {
                           setIsCustom(false);
                           setForm(prev => ({
                             ...prev,
-                            course_name: selectedDef.name,
-                            course_definition_id: selectedDef.id
+                            course_name: def.name,
+                            course_definition_id: def.id
                           }));
+                          handleChange('course_name', def.name);
                         }
-                      } else {
-                        setForm(prev => ({ ...prev, course_definition_id: null }));
+                      } else if (val.startsWith('std_')) {
+                        const name = val.replace('std_', '');
+                        setIsCustom(false);
+                        setForm(prev => ({
+                          ...prev,
+                          course_name: name,
+                          course_definition_id: null
+                        }));
+                        handleChange('course_name', name);
                       }
                     }}
                     style={{
                       width: '100%',
-                      padding: '0.5rem 0.75rem',
-                      background: 'rgba(255,255,255,0.05)',
-                      border: form.course_definition_id ? '1px solid var(--accent-primary)' : '1px solid var(--glass-border)',
-                      borderRadius: '6px',
-                      color: 'var(--text-primary)',
-                      fontSize: '0.85rem'
+                      padding: '0.65rem 0.85rem',
+                      borderRadius: '8px',
+                      fontSize: '0.9rem',
+                      background: '#18181b',
+                      color: '#f8fafc',
+                      border: form.course_definition_id ? '1px solid var(--accent-primary, #6366f1)' : '1px solid rgba(255,255,255,0.15)',
+                      outline: 'none',
+                      cursor: 'pointer'
                     }}
                   >
-                    <option value="" style={{ background: '#18181b', color: '#fff' }}>-- Select Defined Course (1–5 Phases) --</option>
-                    {publishedDefs.map(d => (
-                      <option key={d.id} value={d.id} style={{ background: '#18181b', color: '#fff' }}>
-                        {d.name} ({d.phase_count} {d.phase_count === 1 ? 'Phase' : 'Phases'}) • v{d.version}
+                    {courseDefs.length > 0 && (
+                      <optgroup label="🌟 Defined Courses (Course Maker)" style={{ background: '#18181b', color: '#818cf8', fontWeight: 700 }}>
+                        {courseDefs.map(d => (
+                          <option key={`def_${d.id}`} value={`def_${d.id}`} style={{ background: '#18181b', color: '#fff', fontWeight: 400 }}>
+                            🎓 {d.name} ({d.phase_count} {d.phase_count === 1 ? 'Phase' : 'Phases'}) {d.status === 'draft' ? '• (Draft)' : '• (Published)'}
+                          </option>
+                        ))}
+                      </optgroup>
+                    )}
+                    <optgroup label="🎬 Standard Programs" style={{ background: '#18181b', color: '#38bdf8', fontWeight: 700 }}>
+                      {standardCourses.map(c => (
+                        <option key={`std_${c}`} value={`std_${c}`} style={{ background: '#18181b', color: '#fff', fontWeight: 400 }}>
+                          🎬 {c}
+                        </option>
+                      ))}
+                    </optgroup>
+                    <optgroup label="⚙️ Custom Program" style={{ background: '#18181b', color: '#94a3b8', fontWeight: 700 }}>
+                      <option value="__custom__" style={{ background: '#18181b', color: '#fff', fontWeight: 400 }}>
+                        + Enter Custom Course Name...
                       </option>
-                    ))}
+                    </optgroup>
                   </select>
-                </div>
+
+                  {/* Connected to CourseMaker banner */}
+                  {form.course_definition_id && (
+                    <div style={{
+                      marginTop: '0.5rem',
+                      padding: '0.5rem 0.75rem',
+                      background: 'rgba(99, 102, 241, 0.08)',
+                      border: '1px solid rgba(99, 102, 241, 0.25)',
+                      borderRadius: '6px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      fontSize: '0.8rem'
+                    }}>
+                      <span style={{ color: '#818cf8', display: 'flex', alignItems: 'center', gap: '0.4rem', fontWeight: 500 }}>
+                        <span>✨</span> Connected to CourseMaker: {form.course_name}
+                      </span>
+                      <span style={{ color: 'var(--text-secondary)', fontSize: '0.75rem' }}>
+                        {courseDefs.find(d => d.id === form.course_definition_id)?.phase_count || 1} Phases • v{courseDefs.find(d => d.id === form.course_definition_id)?.version || 1}
+                      </span>
+                    </div>
+                  )}
+
+                  {/* Custom program input */}
+                  {isCustom && (
+                    <div style={{ marginTop: '0.5rem' }}>
+                      <input
+                        type="text"
+                        placeholder="Enter custom course name (e.g. Script Writing Workshop)"
+                        value={customCourseName}
+                        onChange={e => {
+                          const val = e.target.value;
+                          setCustomCourseName(val);
+                          handleChange('course_name', val);
+                        }}
+                        onBlur={() => handleBlur('course_name')}
+                        style={{
+                          width: '100%',
+                          padding: '0.65rem 0.85rem',
+                          borderRadius: '8px',
+                          background: 'rgba(255,255,255,0.05)',
+                          border: '1px solid rgba(255,255,255,0.15)',
+                          color: 'var(--text-primary)',
+                          fontSize: '0.85rem'
+                        }}
+                      />
+                    </div>
+                  )}
+                </>
               )}
-              {isCustom && (
-                <div className="batch-form-field" style={{ marginTop: '0.5rem' }}>
-                  <input
-                    type="text"
-                    placeholder="Enter custom course name (e.g. Screenplay Workshop)"
-                    value={customCourseName}
-                    onChange={e => {
-                      const val = e.target.value;
-                      setCustomCourseName(val);
-                      handleChange('course_name', val);
-                    }}
-                    onBlur={() => handleBlur('course_name')}
-                    disabled={mode === 'edit'}
-                  />
-                </div>
-              )}
+
               {errors.course_name && <div className="batch-field-error">{errors.course_name}</div>}
             </div>
 

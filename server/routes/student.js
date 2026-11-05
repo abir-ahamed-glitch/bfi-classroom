@@ -6,8 +6,9 @@ const __dirname = path.dirname(__filename);
 import express from 'express';
 import bcrypt from 'bcryptjs';
 import db from '../db/database.js';
-import { authenticateToken, sanitizeInput, validatePassword, sensitiveEndpointLimiter, hasPermission, isSuperAdmin } from '../middleware/auth.js';
-import courseProgressService from '../services/courseProgressService.js';
+import { authenticateToken, sanitizeInput, validatePassword, sensitiveEndpointLimiter, hasPermission, hasAnyPermission, isSuperAdmin } from '../middleware/auth.js';
+import courseProgressService, { resolvePhaseRoutine } from '../services/courseProgressService.js';
+import { isTeacherAssignedToBatch } from './teacher.js';
 
 const router = express.Router();
 
@@ -568,6 +569,177 @@ router.put('/privacy', authenticateToken, (req, res) => {
   } catch (error) {
     console.error('Privacy update error:', error);
     res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+function sanitizeRoutineSlots(routine = []) {
+  if (!Array.isArray(routine)) return [];
+  return routine.map((slot, idx) => ({
+    id: slot.id || `slot_${idx + 1}`,
+    date: slot.date ? String(slot.date).trim() : '',
+    weekday: slot.weekday || '',
+    startTime: slot.startTime || '19:00',
+    endTime: slot.endTime || '21:00',
+    timezone: slot.timezone || 'Asia/Dhaka',
+    subjectName: slot.subjectName ? String(slot.subjectName).trim() : '',
+    classTitle: slot.classTitle ? String(slot.classTitle).trim() : '',
+    teacherName: slot.teacherName ? String(slot.teacherName).trim() : '',
+    teacherUserId: slot.teacherUserId ? Number(slot.teacherUserId) : null,
+    deliveryMode: slot.deliveryMode ? String(slot.deliveryMode).trim() : 'live',
+    category: slot.category ? String(slot.category).trim() : 'theory',
+    platform: slot.platform ? String(slot.platform).trim() : ''
+  }));
+}
+
+// Student Batch Routine View - Specific Batch (Authoritative, Read-Only)
+router.get('/batches/:id/schedule', authenticateToken, (req, res) => {
+  try {
+    // Validate positive integer batch ID
+    const rawId = req.params.id;
+    const batchId = parseInt(rawId, 10);
+    if (!Number.isInteger(batchId) || batchId <= 0 || String(batchId) !== String(rawId).trim()) {
+      return res.status(400).json({ error: 'Invalid batch ID: must be a positive integer.' });
+    }
+
+    // Query batch enforcing active policy (not deleted and not archived)
+    const batch = db.prepare('SELECT * FROM batches WHERE id = ? AND deleted_at IS NULL').get(batchId);
+    if (!batch || batch.status === 'archived') {
+      return res.status(404).json({ error: 'Batch not found or unavailable.' });
+    }
+
+    // Explicit role authorization and fail-closed security
+    if (req.user.role === 'student') {
+      const isEnrolled = db.prepare(`
+        SELECT 1 FROM batch_students WHERE batch_id = ? AND student_id = ?
+        UNION
+        SELECT 1 FROM student_course_enrollments WHERE batch_id = ? AND user_id = ?
+      `).get(batchId, req.user.id, batchId, req.user.id);
+
+      if (!isEnrolled) {
+        return res.status(403).json({ error: 'Forbidden: You are not enrolled in this batch.' });
+      }
+    } else if (req.user.role === 'instructor') {
+      // Close student-route bypass: instructors calling this route must be assigned to this batch
+      const isAssigned = isTeacherAssignedToBatch(db, req.user.id, batch);
+      if (!isAssigned) {
+        return res.status(403).json({ error: 'Forbidden: You are not assigned to instruct this batch.' });
+      }
+    } else if (req.user.role === 'admin') {
+      // Administrative access requires appropriate permissions
+      const canView = isSuperAdmin(req.user) || hasAnyPermission(req.user, 'batches:view', 'courses:view', 'students:academic_records');
+      if (!canView) {
+        return res.status(403).json({ error: "Access denied: missing required view permission ('batches:view' or 'courses:view')." });
+      }
+    } else {
+      // Unintended roles fail closed
+      return res.status(403).json({ error: 'Forbidden: Unauthorized role.' });
+    }
+
+    let phases = [];
+    if (batch.course_definition_id) {
+      const defRow = db.prepare('SELECT definition_json FROM course_definitions WHERE id = ?').get(batch.course_definition_id);
+      if (defRow?.definition_json) {
+        try {
+          const def = JSON.parse(defRow.definition_json);
+          const rawPhases = Array.isArray(def.phases) ? def.phases : [];
+          phases = rawPhases.map((phase, pIdx) => {
+            const phaseId = phase.id || `phase_${phase.phaseIndex || pIdx + 1}`;
+            const resolved = resolvePhaseRoutine(db, batch.course_definition_id, batch.id, phaseId, phase.routine);
+            return {
+              phaseId,
+              title: phase.title || `Phase ${pIdx + 1}`,
+              phaseIndex: phase.phaseIndex || pIdx + 1,
+              source: resolved.source,
+              schedule: sanitizeRoutineSlots(resolved.routine)
+            };
+          });
+        } catch (e) {
+          console.error('Error parsing course definition JSON:', e);
+        }
+      }
+    }
+
+    return res.json({
+      batchId: batch.id,
+      batchName: batch.batch_name,
+      batchNumber: batch.batch_number,
+      courseName: batch.course_name,
+      courseDefinitionId: batch.course_definition_id,
+      phases
+    });
+  } catch (error) {
+    console.error('Error fetching student batch schedule:', error);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Student All Enrolled Batches Routine View (Authoritative, Read-Only)
+router.get('/schedule', authenticateToken, (req, res) => {
+  try {
+    if (req.user.role === 'student') {
+      const enrolledBatches = db.prepare(`
+        SELECT DISTINCT b.id, b.batch_name, b.batch_number, b.course_name, b.course_definition_id
+        FROM batches b
+        LEFT JOIN batch_students bs ON bs.batch_id = b.id
+        LEFT JOIN student_course_enrollments sce ON sce.batch_id = b.id
+        WHERE (bs.student_id = ? OR sce.user_id = ?)
+          AND b.deleted_at IS NULL
+          AND (b.status IS NULL OR b.status != 'archived')
+        ORDER BY b.id DESC
+      `).all(req.user.id, req.user.id);
+
+      const schedules = enrolledBatches.map(batch => {
+        let phases = [];
+        if (batch.course_definition_id) {
+          const defRow = db.prepare('SELECT definition_json FROM course_definitions WHERE id = ?').get(batch.course_definition_id);
+          if (defRow?.definition_json) {
+            try {
+              const def = JSON.parse(defRow.definition_json);
+              const rawPhases = Array.isArray(def.phases) ? def.phases : [];
+              phases = rawPhases.map((phase, pIdx) => {
+                const phaseId = phase.id || `phase_${phase.phaseIndex || pIdx + 1}`;
+                const resolved = resolvePhaseRoutine(db, batch.course_definition_id, batch.id, phaseId, phase.routine);
+                return {
+                  phaseId,
+                  title: phase.title || `Phase ${pIdx + 1}`,
+                  phaseIndex: phase.phaseIndex || pIdx + 1,
+                  source: resolved.source,
+                  schedule: sanitizeRoutineSlots(resolved.routine)
+                };
+              });
+            } catch (e) {
+              console.error('Error parsing course definition JSON for schedule:', e);
+            }
+          }
+        }
+        return {
+          batchId: batch.id,
+          batchName: batch.batch_name,
+          batchNumber: batch.batch_number,
+          courseName: batch.course_name,
+          courseDefinitionId: batch.course_definition_id,
+          phases
+        };
+      });
+
+      return res.json({
+        studentId: req.user.id,
+        batches: schedules
+      });
+    } else if (req.user.role === 'instructor') {
+      return res.status(403).json({ error: 'Forbidden: Student access required. Instructors must use /api/teacher/schedule.' });
+    } else if (req.user.role === 'admin') {
+      const canView = isSuperAdmin(req.user) || hasAnyPermission(req.user, 'batches:view', 'courses:view');
+      if (!canView) {
+        return res.status(403).json({ error: 'Access denied: missing required view permission.' });
+      }
+      return res.json({ studentId: req.user.id, batches: [] });
+    } else {
+      return res.status(403).json({ error: 'Forbidden: Unauthorized role.' });
+    }
+  } catch (error) {
+    console.error('Error fetching student all schedules:', error);
+    return res.status(500).json({ error: 'Internal server error' });
   }
 });
 

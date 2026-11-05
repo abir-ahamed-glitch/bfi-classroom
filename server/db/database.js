@@ -19,6 +19,7 @@ const { runAdminAccountabilityMigration } = require('./migrations/20261025_admin
 const { runAdminArchivingAndResetMigration } = require('./migrations/20261028_admin_archiving_and_reset.cjs');
 const { runUniversalMfaAndSuperAdminMigration } = require('./migrations/20261029_universal_mfa_and_super_admin.cjs');
 const { runSchemaRepairsAndKeyPairMigration } = require('./migrations/20261030_schema_repairs_and_key_pair.cjs');
+const { runBatchInstructorsAndCertificateDownloadsMigration } = require('./migrations/20261104_batch_instructors_and_certificate_downloads.cjs');
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -508,6 +509,10 @@ export function initializeDatabase() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER NOT NULL,
       course_name TEXT NOT NULL,
+      enrollment_id INTEGER REFERENCES student_course_enrollments(id) ON DELETE CASCADE,
+      batch_id INTEGER REFERENCES batches(id) ON DELETE SET NULL,
+      course_definition_id INTEGER REFERENCES course_definitions(id) ON DELETE SET NULL,
+      downloaded_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
       downloaded_at TEXT DEFAULT (datetime('now')),
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
@@ -609,9 +614,21 @@ export function initializeDatabase() {
       UNIQUE(batch_id, student_id)
     );
 
+    -- Batch instructors association table
+    CREATE TABLE IF NOT EXISTS batch_instructors (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      batch_id INTEGER NOT NULL REFERENCES batches(id) ON DELETE CASCADE,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      assigned_by INTEGER REFERENCES users(id),
+      assigned_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(batch_id, user_id)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_bcf_lookup ON batch_course_fees(batch_id, course_name, batch_number);
     CREATE INDEX IF NOT EXISTS idx_batch_students_batch_id ON batch_students(batch_id);
     CREATE INDEX IF NOT EXISTS idx_batch_students_student_id ON batch_students(student_id);
+    CREATE INDEX IF NOT EXISTS idx_batch_instructors_batch ON batch_instructors(batch_id);
+    CREATE INDEX IF NOT EXISTS idx_batch_instructors_user ON batch_instructors(user_id);
     CREATE INDEX IF NOT EXISTS idx_sce_batch_id ON student_course_enrollments(batch_id);
     CREATE INDEX IF NOT EXISTS idx_sce_batch_step2 ON student_course_enrollments(batch_id, step2_completed);
     CREATE INDEX IF NOT EXISTS idx_batches_deleted_status ON batches(deleted_at, status);
@@ -974,6 +991,20 @@ export function initializeDatabase() {
     "ALTER TABLE student_course_enrollments ADD COLUMN fee_details TEXT"
   ];
   for (const migration of enrollmentMigrations) {
+    try {
+      db.prepare(migration).run();
+    } catch {
+      // Column probably already exists
+    }
+  }
+
+  const certificateDownloadMigrations = [
+    "ALTER TABLE certificate_downloads ADD COLUMN enrollment_id INTEGER REFERENCES student_course_enrollments(id) ON DELETE CASCADE",
+    "ALTER TABLE certificate_downloads ADD COLUMN batch_id INTEGER REFERENCES batches(id) ON DELETE SET NULL",
+    "ALTER TABLE certificate_downloads ADD COLUMN course_definition_id INTEGER REFERENCES course_definitions(id) ON DELETE SET NULL",
+    "ALTER TABLE certificate_downloads ADD COLUMN downloaded_by INTEGER REFERENCES users(id) ON DELETE SET NULL"
+  ];
+  for (const migration of certificateDownloadMigrations) {
     try {
       db.prepare(migration).run();
     } catch {
@@ -1539,6 +1570,9 @@ export function initializeDatabase() {
 
     // Run Additive Schema Repairs & Key-Pair migration
     runSchemaRepairsAndKeyPairMigration(db);
+
+    // Run Batch Instructors & Certificate Downloads schema migration
+    runBatchInstructorsAndCertificateDownloadsMigration(db);
 
     console.log('✅ Course Maker tables and columns verified');
   } catch (err) {

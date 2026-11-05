@@ -2,7 +2,7 @@ import express from 'express';
 import db from '../db/database.js';
 import { authenticateToken, requireRole, requirePermission, isSuperAdmin } from '../middleware/auth.js';
 import { recordAuditEventFromReq } from '../services/auditLedgerService.js';
-import { resolvePhaseRoutine } from '../services/courseProgressService.js';
+import { resolvePhaseRoutine, getCanonicalPhaseInfo } from '../services/courseProgressService.js';
 
 const router = express.Router();
 
@@ -21,13 +21,73 @@ const ALLOWED_COURSE_TYPES = [
 ];
 
 // classCount is derived data: always reconcile it with the classes actually defined.
-function reconcileClassCounts(phases) {
+export function validateAndSanitizeInstructorId(database, teacherUserId) {
+  // Preserve null/empty/unassigned
+  if (teacherUserId === undefined || teacherUserId === null || teacherUserId === '') {
+    return null;
+  }
+
+  // Strictly disallow booleans, arrays, objects, functions, etc.
+  if (typeof teacherUserId === 'boolean' || Array.isArray(teacherUserId) || typeof teacherUserId === 'object') {
+    return null;
+  }
+
+  let parsedTid;
+  if (typeof teacherUserId === 'number') {
+    // Must be a safe, positive integer (rejects 20.8, -20, 0, NaN, Infinity)
+    if (!Number.isInteger(teacherUserId) || teacherUserId <= 0) {
+      return null;
+    }
+    parsedTid = teacherUserId;
+  } else if (typeof teacherUserId === 'string') {
+    const trimmed = teacherUserId.trim();
+    // Must be an exact positive integer string (rejects "20abc", "20.8", "0", "-5", etc.)
+    if (!/^[1-9]\d*$/.test(trimmed)) {
+      return null;
+    }
+    parsedTid = Number(trimmed);
+  } else {
+    return null;
+  }
+
+  if (!database) {
+    return null;
+  }
+
+  try {
+    const teacherUser = database.prepare("SELECT id FROM users WHERE id = ? AND role = 'instructor' AND is_active = 1 AND deleted_at IS NULL").get(parsedTid);
+    return teacherUser ? teacherUser.id : null;
+  } catch (err) {
+    console.error('validateAndSanitizeInstructorId: instructor verification query failed:', err?.message || err);
+    return null;
+  }
+}
+
+function reconcileClassCounts(phases, database = db) {
   if (!Array.isArray(phases)) return phases;
-  return phases.map(phase => (
-    phase && Array.isArray(phase.classes)
-      ? { ...phase, classCount: phase.classes.length }
-      : phase
-  ));
+  return phases.map(phase => {
+    if (!phase) return phase;
+    const reconciledClasses = Array.isArray(phase.classes)
+      ? phase.classes.map(cls => ({
+          ...cls,
+          teacherUserId: validateAndSanitizeInstructorId(database, cls.teacherUserId)
+        }))
+      : phase.classes;
+
+    const reconciledRoutine = Array.isArray(phase.routine)
+      ? phase.routine.map(slot => ({
+          ...slot,
+          teacherUserId: validateAndSanitizeInstructorId(database, slot.teacherUserId)
+        }))
+      : phase.routine;
+
+    return {
+      ...phase,
+      classes: reconciledClasses,
+      routine: reconciledRoutine,
+      classCount: Array.isArray(reconciledClasses) ? reconciledClasses.length : (phase.classCount || 0)
+    };
+  });
 }
 
 function slugify(text) {
@@ -431,11 +491,13 @@ router.get('/:idOrSlug', authenticateToken, (req, res) => {
 
     const batchIdParam = req.query.batch_id ? parseInt(req.query.batch_id, 10) : null;
     if (Array.isArray(parsed.phases)) {
-      parsed.phases = parsed.phases.map((p, idx) => {
-        const phaseId = p.id || `p_${idx + 1}`;
-        const resRoutine = resolvePhaseRoutine(db, row.id, batchIdParam, phaseId, p.routine);
+      const { mappedPhases } = getCanonicalPhaseInfo(parsed.phases);
+      parsed.phases = mappedPhases.map((m) => {
+        const resRoutine = resolvePhaseRoutine(db, row.id, batchIdParam, m.canonicalId, m.phase.routine);
         return {
-          ...p,
+          ...m.phase,
+          id: m.canonicalId,
+          phaseIndex: m.phaseNumber,
           routine: resRoutine.routine,
           routineSource: resRoutine.source
         };
@@ -516,7 +578,7 @@ router.post('/', authenticateToken, requireRole('admin'), requirePermission('cou
       phase_count = 1,
       completionPolicy = {}
     } = req.body;
-    const phases = reconcileClassCounts(req.body.phases || []);
+    const phases = reconcileClassCounts(req.body.phases || [], db);
 
     const slug = slugify(name);
 
@@ -619,7 +681,7 @@ router.put('/:id', authenticateToken, requireRole('admin'), requirePermission('c
       phase_count = 1,
       completionPolicy = {}
     } = req.body;
-    const phases = reconcileClassCounts(req.body.phases || []);
+    const phases = reconcileClassCounts(req.body.phases || [], db);
 
     const fullDefinition = {
       basics: { name, type: course_type, description, duration: { value: duration_value, unit: duration_unit }, phaseCount: phase_count },
@@ -735,7 +797,7 @@ router.post('/:id/publish', authenticateToken, requireRole('admin'), requirePerm
     }
 
     // Reconcile derived classCount with the classes actually defined (fixes stale drafts)
-    parsed.phases = reconcileClassCounts(parsed.phases || []);
+    parsed.phases = reconcileClassCounts(parsed.phases || [], db);
 
     // Run strict publishing validation
     const validationData = {
@@ -798,9 +860,10 @@ router.post('/:id/publish', authenticateToken, requireRole('admin'), requirePerm
 router.put('/:id/routine', authenticateToken, (req, res) => {
   try {
     const { id } = req.params;
-    const { phase_id, batch_id = null, routine, reason = 'Routine update' } = req.body;
+    const { phase_id, batch_id = null, routine, reason = 'Routine update', action, revert } = req.body;
+    const isRevertAction = action === 'revert' || revert === true;
 
-    if (!phase_id || !Array.isArray(routine)) {
+    if (!phase_id || (!isRevertAction && !Array.isArray(routine))) {
       return res.status(400).json({ error: 'phase_id and routine array are required' });
     }
 
@@ -830,9 +893,18 @@ router.put('/:id/routine', authenticateToken, (req, res) => {
     }
 
     if (req.user.role === 'admin' && !isSuperAdmin(req.user)) {
-      const has = db.prepare('SELECT 1 FROM admin_permissions WHERE user_id = ? AND permission = ?').get(req.user.id, 'courses:edit');
-      if (!has) {
-        return res.status(403).json({ error: "Access denied: missing required permission 'courses:edit'", requiredPermission: 'courses:edit' });
+      if (resolvedBatchId > 0) {
+        const has = db.prepare(`
+          SELECT 1 FROM admin_permissions WHERE user_id = ? AND permission IN ('batches:edit', 'courses:edit')
+        `).get(req.user.id);
+        if (!has) {
+          return res.status(403).json({ error: "Access denied: requires 'batches:edit' or 'courses:edit' permission.", requiredPermission: 'batches:edit' });
+        }
+      } else {
+        const has = db.prepare('SELECT 1 FROM admin_permissions WHERE user_id = ? AND permission = ?').get(req.user.id, 'courses:edit');
+        if (!has) {
+          return res.status(403).json({ error: "Access denied: missing required permission 'courses:edit'", requiredPermission: 'courses:edit' });
+        }
       }
     }
 
@@ -853,9 +925,67 @@ router.put('/:id/routine', authenticateToken, (req, res) => {
     }
 
     const parsed = JSON.parse(definition.definition_json);
-    const phase = (parsed.phases || []).find(p => p.id === phase_id);
-    if (!phase) {
+    const { matched, isAmbiguous, reason: ambiguityReason } = getCanonicalPhaseInfo(parsed.phases, phase_id);
+    if (isAmbiguous) {
+      return res.status(400).json({ error: `Ambiguous phase identifier "${phase_id}": ${ambiguityReason || "matches multiple phases in this definition"}.` });
+    }
+    if (!matched) {
       return res.status(404).json({ error: `Phase with id "${phase_id}" not found in definition.` });
+    }
+
+    const canonicalPhaseId = matched.canonicalId;
+    const phase = matched.phase;
+    const lowerAliases = Array.from(new Set(matched.aliases.map(a => a.toLowerCase())));
+    const aliasPlaceholders = lowerAliases.map(() => '?').join(', ');
+
+    // Support revert action to clear batch override and inherit course template (ATOMIC TRANSACTION)
+    if (req.body.action === 'revert' || req.body.revert === true) {
+      if (resolvedBatchId <= 0) {
+        return res.status(400).json({ error: 'Reverting routine requires a specific batch_id.' });
+      }
+
+      // 1. Calculate effective routine BEFORE revert (the active batch routine)
+      const currentRoutineRes = resolvePhaseRoutine(db, id, resolvedBatchId, canonicalPhaseId, phase.routine);
+      const effectiveBeforeRoutine = currentRoutineRes.routine || [];
+
+      // 2. Calculate effective routine AFTER revert (course-level override if exists, else baseline)
+      const inheritedRoutineRes = resolvePhaseRoutine(db, id, 0, canonicalPhaseId, phase.routine);
+      const effectiveAfterRoutine = inheritedRoutineRes.routine || [];
+
+      // 3. Execute atomic revert inside single database transaction
+      const revertTx = db.transaction(() => {
+        // Delete any batch override rows under any alias for this batch and phase
+        db.prepare(`
+          DELETE FROM course_routine_overrides
+          WHERE course_definition_id = ? AND batch_id = ? AND LOWER(phase_id) IN (${aliasPlaceholders})
+        `).run(id, resolvedBatchId, ...lowerAliases);
+
+        // Record audit with the exact effective before and after routines
+        db.prepare(`
+          INSERT INTO course_routine_audits (
+            course_definition_id, batch_id, phase_id, old_routine, new_routine, changed_by, reason
+          ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          id,
+          resolvedBatchId,
+          canonicalPhaseId,
+          JSON.stringify(effectiveBeforeRoutine),
+          JSON.stringify(effectiveAfterRoutine),
+          req.user.id,
+          reason ? String(reason).trim() : 'Reverted batch schedule to course default template'
+        );
+      });
+
+      revertTx();
+
+      return res.json({
+        success: true,
+        message: 'Batch schedule reverted to course default template.',
+        reverted: true,
+        phase_id: canonicalPhaseId,
+        effectiveRoutine: effectiveAfterRoutine,
+        effectiveSource: inheritedRoutineRes.source
+      });
     }
 
     // Validate routine slots
@@ -885,10 +1015,13 @@ router.put('/:id/routine', authenticateToken, (req, res) => {
         ? `date:${String(slot.date).trim()}`
         : `weekday:${slot.weekday}`;
       const previousSlots = scheduleSlots.get(conflictKey) || [];
-      if (previousSlots.some(previous => Math.max(start, previous.start) < Math.min(end, previous.end))) {
-        return res.status(400).json({ error: `Overlapping routine schedule detected on ${slot.date || slot.weekday}.` });
+      const conflict = previousSlots.find(previous => Math.max(start, previous.start) < Math.min(end, previous.end));
+      if (conflict) {
+        return res.status(400).json({
+          error: `Overlapping routine schedule detected: Slot #${conflict.slotNum} and Slot #${rIdx + 1} conflict on ${slot.date || slot.weekday} (${slot.startTime}–${slot.endTime} overlaps with ${conflict.startTime}–${conflict.endTime}).`
+        });
       }
-      previousSlots.push({ start, end });
+      previousSlots.push({ start, end, startTime: slot.startTime, endTime: slot.endTime, slotNum: rIdx + 1 });
       scheduleSlots.set(conflictKey, previousSlots);
 
       if (slot.deliveryMode && !ALLOWED_DELIVERY_MODES.includes(slot.deliveryMode)) {
@@ -899,50 +1032,45 @@ router.put('/:id/routine', authenticateToken, (req, res) => {
       }
     }
 
-    // Sanitize routine slots to preserve full metadata
-    const sanitizedRoutine = routine.map(slot => ({
-      date: slot.date ? String(slot.date).trim() : '',
-      weekday: slot.weekday,
-      startTime: slot.startTime,
-      endTime: slot.endTime,
-      timezone: slot.timezone || 'Asia/Dhaka',
-      subjectName: slot.subjectName ? String(slot.subjectName).trim() : '',
-      classTitle: slot.classTitle ? String(slot.classTitle).trim() : '',
-      teacherName: slot.teacherName ? String(slot.teacherName).trim() : '',
-      deliveryMode: slot.deliveryMode ? String(slot.deliveryMode).trim() : 'live',
-      category: slot.category ? String(slot.category).trim() : 'theory',
-      platform: slot.platform ? String(slot.platform).trim() : ''
-    }));
+    // Sanitize routine slots to preserve full metadata and strictly validated teacherUserId
+    const sanitizedRoutine = routine.map(slot => {
+      // Strictly validate instructor ID: must be active instructor and not deleted
+      // Strictly NEVER guess teacherUserId from slot.teacherName!
+      const validatedTeacherUserId = validateAndSanitizeInstructorId(db, slot.teacherUserId);
 
-    // Determine old routine: check if there was a previous override or take base phase routine
-    const existingOverride = db.prepare(`
-      SELECT routine_json FROM course_routine_overrides
-      WHERE course_definition_id = ? AND batch_id = ? AND phase_id = ?
-    `).get(id, resolvedBatchId, phase_id);
+      return {
+        id: slot.id,
+        date: slot.date ? String(slot.date).trim() : '',
+        weekday: slot.weekday,
+        startTime: slot.startTime,
+        endTime: slot.endTime,
+        timezone: slot.timezone || 'Asia/Dhaka',
+        subjectName: slot.subjectName ? String(slot.subjectName).trim() : '',
+        classTitle: slot.classTitle ? String(slot.classTitle).trim() : '',
+        teacherName: slot.teacherName ? String(slot.teacherName).trim() : '',
+        teacherUserId: validatedTeacherUserId,
+        deliveryMode: slot.deliveryMode ? String(slot.deliveryMode).trim() : 'live',
+        category: slot.category ? String(slot.category).trim() : 'theory',
+        platform: slot.platform ? String(slot.platform).trim() : ''
+      };
+    });
 
-    const oldRoutine = existingOverride
-      ? JSON.parse(existingOverride.routine_json)
-      : (phase.routine || []);
+    // Determine effective old routine before saving
+    const currentRoutineRes = resolvePhaseRoutine(db, id, resolvedBatchId, canonicalPhaseId, phase.routine);
+    const oldRoutine = currentRoutineRes.routine || [];
 
     const tx = db.transaction(() => {
-      // 1. Audit log with actor, reason, old/new routine, batch_id
-      db.prepare(`
-        INSERT INTO course_routine_audits (
-          course_definition_id, batch_id, phase_id, old_routine, new_routine, changed_by, reason
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        id,
-        resolvedBatchId,
-        phase_id,
-        JSON.stringify(oldRoutine),
-        JSON.stringify(sanitizedRoutine),
-        req.user.id,
-        reason.trim()
-      );
+      // 1. Cleanse any stale alias rows for this batch/course and phase (other than canonicalPhaseId)
+      const staleAliases = lowerAliases.filter(a => a !== canonicalPhaseId.toLowerCase());
+      if (staleAliases.length > 0) {
+        const stalePlaceholders = staleAliases.map(() => '?').join(', ');
+        db.prepare(`
+          DELETE FROM course_routine_overrides
+          WHERE course_definition_id = ? AND batch_id = ? AND LOWER(phase_id) IN (${stalePlaceholders})
+        `).run(id, resolvedBatchId, ...staleAliases);
+      }
 
-      // 2. Issue 2: Store operational routine overrides separately!
-      // If definition is published, DO NOT mutate definition_json on course_definitions!
-      // Keep published grading rules permanently immutable.
+      // 2. Persist to course_routine_overrides table under canonical phase identity
       db.prepare(`
         INSERT INTO course_routine_overrides (
           course_definition_id, batch_id, phase_id, routine_json, updated_by, updated_at
@@ -951,7 +1079,22 @@ router.put('/:id/routine', authenticateToken, (req, res) => {
           routine_json = excluded.routine_json,
           updated_by = excluded.updated_by,
           updated_at = excluded.updated_at
-      `).run(id, resolvedBatchId, phase_id, JSON.stringify(sanitizedRoutine), req.user.id);
+      `).run(id, resolvedBatchId, canonicalPhaseId, JSON.stringify(sanitizedRoutine), req.user.id);
+
+      // 3. Audit log with actor, reason, effective old/new routine under canonical phase identity
+      db.prepare(`
+        INSERT INTO course_routine_audits (
+          course_definition_id, batch_id, phase_id, old_routine, new_routine, changed_by, reason
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        id,
+        resolvedBatchId,
+        canonicalPhaseId,
+        JSON.stringify(oldRoutine),
+        JSON.stringify(sanitizedRoutine),
+        req.user.id,
+        reason ? String(reason).trim() : 'Routine updated'
+      );
 
       // If definition is still a draft, update draft definition_json as well
       if (definition.status === 'draft') {
@@ -970,7 +1113,11 @@ router.put('/:id/routine', authenticateToken, (req, res) => {
 
     res.json({
       success: true,
-      message: 'Routine updated and audited successfully.',
+      message: resolvedBatchId > 0
+        ? 'Batch-specific routine adjusted successfully.'
+        : 'Course definition baseline routine updated successfully.',
+      phase_id: canonicalPhaseId,
+      routine: sanitizedRoutine,
       is_operational_override: definition.status === 'published'
     });
   } catch (err) {

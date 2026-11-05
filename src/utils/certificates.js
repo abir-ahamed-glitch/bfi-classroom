@@ -1,6 +1,8 @@
 import { jsPDF } from 'jspdf';
 import html2canvas from 'html2canvas';
 
+export { jsPDF };
+
 const backendOrigin = import.meta.env.VITE_API_URL || (window.location.hostname === 'localhost' ? 'http://localhost:3001' : '');
 
 function resolveAssetUrl(url) {
@@ -71,7 +73,7 @@ function ensureFontsLoaded() {
   }
 }
 
-export async function downloadCertificatePdf(certificate, template = {}) {
+export async function downloadCertificatePdf(certificate, template = {}, options = {}) {
   ensureFontsLoaded();
   await document.fonts.ready;
 
@@ -79,7 +81,10 @@ export async function downloadCertificatePdf(certificate, template = {}) {
   const dateStr = new Date(completionDate).toLocaleDateString('en-GB');
 
   let positions = normalizePositions();
-  let bodyTemplate = 'This is to certify that Mr./Ms. {Student Name} has passed the Three Month Long Online Filmmaking Course of {Batch Number} Batch directed by Tanvir Mokammel and organized by Bangladesh Film Institute (BFI).';
+  const courseDisplayName = certificate.courseName || 'Online Filmmaking Course';
+  let bodyTemplate = courseDisplayName === 'Online Filmmaking Course'
+    ? 'This is to certify that Mr./Ms. {Student Name} has passed the Three Month Long Online Filmmaking Course of {Batch Number} Batch directed by Tanvir Mokammel and organized by Bangladesh Film Institute (BFI).'
+    : 'This is to certify that Mr./Ms. {Student Name} has successfully completed the {Course Name} of {Batch Number} Batch organized by Bangladesh Film Institute (BFI).';
 
   if (template.layout_json) {
     try {
@@ -191,10 +196,15 @@ const getOrdinalSuffixHTML = (str) => {
       (_match, before, _between, after) => `${before}${value || ''}${after}`
     );
   const fillTemplatePlaceholders = (html) => fillRichPlaceholder(
-    fillRichPlaceholder(html, 'Student', 'Name', fullName),
-    'Batch',
-    'Number',
-    getOrdinalSuffixHTML(batchNumber)
+    fillRichPlaceholder(
+      fillRichPlaceholder(html, 'Student', 'Name', fullName),
+      'Batch',
+      'Number',
+      getOrdinalSuffixHTML(batchNumber)
+    ),
+    'Course',
+    'Name',
+    certificate.courseName || 'Course'
   );
 
   const fullSentence = fillTemplatePlaceholders(bodyTemplate);
@@ -224,7 +234,25 @@ const getOrdinalSuffixHTML = (str) => {
   const pdfHeight = doc.internal.pageSize.getHeight();
   doc.addImage(imgData, 'JPEG', 0, 0, pdfWidth, pdfHeight);
 
+  // Embed searchable and accessible text layer into PDF artifact
+  const cleanBodyText = fullSentence
+    .replace(/<sup[^>]*>/gi, '')
+    .replace(/<\/sup>/gi, '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  doc.setFont('times', 'normal');
+  doc.setFontSize(12);
+  doc.text(cleanBodyText, pdfWidth / 2, 120, { maxWidth: pdfWidth - 50, align: 'center', renderingMode: 'invisible' });
+  doc.text("Student ID: " + studentId, 30, 180, { renderingMode: "invisible" });
+  doc.text("Completion Date: " + dateStr, pdfWidth - 70, 180, { renderingMode: "invisible" });
+
   const safeCourseName = certificate.courseName.replace(/[^a-z0-9]+/gi, '-').toLowerCase();
   const safeStudentId  = String(studentId).replace(/[^a-z0-9]+/gi, '-').toLowerCase();
-  doc.save(`bfi-certificate-${safeStudentId}-${safeCourseName}.pdf`);
+  const filename = `bfi-certificate-${safeStudentId}-${safeCourseName}.pdf`;
+  if (!options.skipSave) {
+    doc.save(filename);
+  }
+  return { doc, filename };
 }

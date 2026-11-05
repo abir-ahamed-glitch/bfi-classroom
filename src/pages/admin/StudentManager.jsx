@@ -99,13 +99,39 @@ export default function StudentManager() {
     courses: ['Online Filmmaking Course'] // Default
   });
 
-  const availableCourses = [
-    { name: 'Online Filmmaking Course', type: 'filmmaking' },
-    { name: 'Film Appreciation Course', type: 'workshop' },
-    { name: 'Script Writing', type: 'workshop' },
-    { name: 'Cinematography', type: 'workshop' },
-    { name: 'Acting', type: 'workshop' }
-  ];
+  const [courseDefs, setCourseDefs] = useState([]);
+
+  useEffect(() => {
+    const fetchCourseDefs = async () => {
+      try {
+        const token = localStorage.getItem('token');
+        const res = await fetch('/api/admin/course-definitions', {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (res.ok) {
+          const d = await res.json();
+          setCourseDefs(Array.isArray(d) ? d : (d.definitions || []));
+        }
+      } catch { /* ignore */ }
+    };
+    fetchCourseDefs();
+  }, []);
+
+  const availableCourses = useMemo(() => {
+    const list = [
+      { name: 'Online Filmmaking Course', type: 'filmmaking' },
+      { name: 'Film Appreciation Course', type: 'workshop' },
+      { name: 'Script Writing', type: 'workshop' },
+      { name: 'Cinematography', type: 'workshop' },
+      { name: 'Acting', type: 'workshop' }
+    ];
+    courseDefs.forEach(d => {
+      if (d && d.name && d.status !== 'archived' && !list.some(c => c.name === d.name)) {
+        list.push({ name: d.name, type: d.course_type || 'workshop' });
+      }
+    });
+    return list;
+  }, [courseDefs]);
 
   const fetchStudents = async () => {
     if (window.location.hostname.includes('github.io')) {

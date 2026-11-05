@@ -3,9 +3,9 @@ import db from '../db/database.js';
 import { authenticateToken, requireRole, requirePermission } from '../middleware/auth.js';
 import { recordAuditEventFromReq } from '../services/auditLedgerService.js';
 import { runBatchStatusAutomation } from '../utils/batchStatusAutomation.js';
-import { getBatchFee, createFeeResolverContext } from '../utils/feeResolver.js';
+import { getBatchFee, createFeeResolverContext, resolveEnrollmentFinancials } from '../utils/feeResolver.js';
 import { logTrashAction } from '../utils/trashLogger.js';
-import { courseProgressService, getEnrollmentProgressSync, resolvePhaseRoutine } from '../services/courseProgressService.js';
+import { courseProgressService, getEnrollmentProgressSync, resolvePhaseRoutine, getCanonicalPhaseInfo } from '../services/courseProgressService.js';
 
 const router = express.Router();
 
@@ -229,11 +229,13 @@ router.get('/:id', authenticateToken, requireRole('admin'), requirePermission('b
         try {
           parsed = JSON.parse(def.definition_json || '{}');
           if (Array.isArray(parsed.phases)) {
-            parsed.phases = parsed.phases.map((p, idx) => {
-              const phaseId = p.id || `p_${idx + 1}`;
-              const resRoutine = resolvePhaseRoutine(db, def.id, batch.id, phaseId, p.routine);
+            const { mappedPhases } = getCanonicalPhaseInfo(parsed.phases);
+            parsed.phases = mappedPhases.map((m) => {
+              const resRoutine = resolvePhaseRoutine(db, def.id, batch.id, m.canonicalId, m.phase.routine);
               return {
-                ...p,
+                ...m.phase,
+                id: m.canonicalId,
+                phaseIndex: m.phaseNumber,
                 routine: resRoutine.routine,
                 routineSource: resRoutine.source
               };
@@ -1110,7 +1112,9 @@ router.get('/:id/progress', authenticateToken, requireRole('admin'), requirePerm
         sce.phase2_editing_attended,
         sce.exam_written,
         sce.fee_details,
-        u.id as student_id
+        u.id as student_id,
+        u.id as user_id,
+        sce.user_id as enrollment_user_id
       FROM batch_students bs
       JOIN users u ON u.id = bs.student_id
       LEFT JOIN student_course_enrollments sce ON sce.user_id = u.id AND (sce.batch_id = bs.batch_id OR (sce.batch_id IS NULL AND sce.course_name = ?))
@@ -1184,11 +1188,12 @@ router.get('/:id/progress', authenticateToken, requireRole('admin'), requirePerm
 
     // 2. Aggregate student metrics
     let definedPhasesMetrics = [];
+    let defObj = null;
     if (batch.course_definition_id) {
       const courseDef = db.prepare('SELECT definition_json, phase_count FROM course_definitions WHERE id = ?').get(batch.course_definition_id);
       if (courseDef?.definition_json) {
         try {
-          const defObj = JSON.parse(courseDef.definition_json);
+          defObj = JSON.parse(courseDef.definition_json);
           const phases = defObj.phases || [];
 
           // Pre-fetch all student_phase_results for this batch
@@ -1214,7 +1219,7 @@ router.get('/:id/progress', authenticateToken, requireRole('admin'), requirePerm
               phaseId: pId,
               phaseIndex: pIdx + 1,
               title: p.title || `Phase ${pIdx + 1}`,
-              admitted: students.length,
+              admitted: pIdx === 0 ? students.length : 0,
               attendance_qualified: 0,
               attendance_not_qualified: 0,
               assignments_completed: 0,
@@ -1226,6 +1231,9 @@ router.get('/:id/progress', authenticateToken, requireRole('admin'), requirePerm
             for (const s of students) {
               const pr = sprByPhaseAndEnrollment.get(`${pId}_${s.enrollment_id}`);
               if (pr) {
+                if (pIdx > 0 && pr.admitted === 1) {
+                  metric.admitted++;
+                }
                 if (pr.attendance_percentage >= minAtt) {
                   metric.attendance_qualified++;
                 } else {
@@ -1257,7 +1265,7 @@ router.get('/:id/progress', authenticateToken, requireRole('admin'), requirePerm
         } catch { /* empty */ }
       }
     }
-
+    const feeContext = createFeeResolverContext(db);
     for (const s of students) {
       // Core progress metrics
       if (batch.course_definition_id && definedPhasesMetrics.length > 0) {
@@ -1317,88 +1325,28 @@ router.get('/:id/progress', authenticateToken, requireRole('admin'), requirePerm
         }
       }
 
-      // Safe Fee aggregation
-      if (s.fee_details) {
-        try {
-          const feeDetails = JSON.parse(s.fee_details);
-          if (Array.isArray(feeDetails.phases) && feeDetails.phases.length > 0) {
-            // Defined course fee details array
-            let collected = 0;
-            let outstanding = 0;
-            let allPaid = true;
-
-            for (const p of feeDetails.phases) {
-              const f = parseFloat(p.full_fee || 0);
-              const paid = parseFloat(p.amount_paid || 0);
-              const d = parseFloat(p.discount || 0);
-              collected += paid;
-              outstanding += Math.max(0, f - d - paid);
-              if (!(p.status === 'Paid Full' || (f > 0 && paid + d >= f))) {
-                allPaid = false;
-              }
-            }
-
-            fees.total_collected += collected;
-            fees.total_outstanding += outstanding;
-
-            if (allPaid) {
-              fees.fully_paid++;
-            } else if (collected > 0) {
-              fees.partial++;
-            } else {
-              fees.due++;
-            }
-          } else if (batch.course_name === 'Online Filmmaking Course' || feeDetails.phase1 || feeDetails.phase2) {
-            // Filmmaking course has phase1 and phase2 fee details
-            const p1 = feeDetails.phase1 || {};
-            const p2 = feeDetails.phase2 || {};
-
-            const f1 = parseFloat(p1.full_fee || 0);
-            const paid1 = parseFloat(p1.amount_paid || 0);
-            const d1 = parseFloat(p1.discount || 0);
-
-            const f2 = parseFloat(p2.full_fee || 0);
-            const paid2 = parseFloat(p2.amount_paid || 0);
-            const d2 = parseFloat(p2.discount || 0);
-
-            const collected = paid1 + paid2;
-            const outstanding = Math.max(0, f1 - d1 - paid1) + Math.max(0, f2 - d2 - paid2);
-
-            fees.total_collected += collected;
-            fees.total_outstanding += outstanding;
-
-            const isP1Paid = p1.status === 'Paid Full' || (f1 > 0 && paid1 + d1 >= f1);
-            const isP2Paid = p2.status === 'Paid Full' || (f2 > 0 && paid2 + d2 >= f2);
-
-            if (isP1Paid && isP2Paid) {
-              fees.fully_paid++;
-            } else if (collected > 0) {
-              fees.partial++;
-            } else {
-              fees.due++;
-            }
-          } else {
-            // Workshop course fee details (flat object)
-            const f = parseFloat(feeDetails.full_fee || 0);
-            const paid = parseFloat(feeDetails.amount_paid || 0);
-            const d = parseFloat(feeDetails.discount || 0);
-            const outstanding = Math.max(0, f - d - paid);
-
-            fees.total_collected += paid;
-            fees.total_outstanding += outstanding;
-
-            const status = feeDetails.status;
-            if (status === 'Paid Full' || (f > 0 && paid + d >= f)) {
-              fees.fully_paid++;
-            } else if (paid > 0) {
-              fees.partial++;
-            } else {
-              fees.due++;
-            }
-          }
-        } catch {
-          // Safe fallback if parsing fails
+      // Authoritative Fee aggregation via canonical financial resolver
+      const fin = resolveEnrollmentFinancials(
+        s.fee_details,
+        s.course_type || (batch.course_name === 'Online Filmmaking Course' ? 'filmmaking' : 'short'),
+        null,
+        {
+          courseDefinition: defObj,
+          courseDefId: batch.course_definition_id,
+          courseName: batch.course_name,
+          batchNumber: batch.batch_number,
+          batchId: batch.id,
+          feeContext
         }
+      );
+
+      fees.total_collected += fin.cashCollected;
+      fees.total_outstanding += fin.outstanding;
+
+      if (fin.status === 'paid') {
+        fees.fully_paid++;
+      } else if (fin.status === 'partial') {
+        fees.partial++;
       } else {
         fees.due++;
       }
@@ -1409,58 +1357,78 @@ router.get('/:id/progress', authenticateToken, requireRole('admin'), requirePerm
       phase1.exam_failed = Math.max(0, totalStudents - phase1.exam_passed);
     }
 
-    // 3. Aggregate Certificates
+    // 3. Aggregate Certificates: Keep Eligibility, Issuance, and Download distinct!
     let certificatesIssued = 0;
     let certificatesPending = 0;
 
     if (batch.course_definition_id) {
-      // Defined course certificate calculation
-      const courseDef = db.prepare('SELECT phase_count FROM course_definitions WHERE id = ?').get(batch.course_definition_id);
-      const totalPhases = courseDef?.phase_count || 1;
+      // Defined course certificate calculation: distinct issuance vs eligibility
+      // Check downloads scoped by exact enrollment, batch, or unambiguous single enrollment
+      const checkEnrollmentDownloaded = db.prepare(`
+        SELECT 1 FROM certificate_downloads cd
+        WHERE cd.enrollment_id = ?
+           OR (cd.enrollment_id IS NULL AND cd.batch_id = ? AND cd.user_id = ?)
+           OR (cd.enrollment_id IS NULL AND cd.batch_id IS NULL AND cd.user_id = ? AND LOWER(TRIM(cd.course_name)) = LOWER(TRIM(?))
+               AND (SELECT COUNT(*) FROM student_course_enrollments sce WHERE sce.user_id = ? AND LOWER(TRIM(sce.course_name)) = LOWER(TRIM(?))) = 1)
+        LIMIT 1
+      `);
 
-      const completedStudents = db.prepare(`
-        SELECT sce.id, sce.user_id, sce.course_type, sce.fee_details, COUNT(spr.phase_id) as passed_phases
-        FROM student_course_enrollments sce
-        JOIN batch_students bs ON bs.student_id = sce.user_id AND bs.batch_id = sce.batch_id
-        JOIN student_phase_results spr ON spr.enrollment_id = sce.id AND spr.is_passed = 1
-        WHERE bs.batch_id = ?
-        GROUP BY sce.id
-        HAVING passed_phases >= ?
-      `).all(batchId, totalPhases);
-
-      for (const cs of completedStudents) {
-        let isFeePending = false;
-        if (cs.fee_details) {
-          try {
-            const fd = typeof cs.fee_details === 'string' ? JSON.parse(cs.fee_details) : cs.fee_details;
-            if (Array.isArray(fd.phases)) {
-              isFeePending = fd.phases.some(p => p.status !== 'Paid Full' && p.status !== 'Waived');
-            } else if (fd.status && fd.status !== 'Paid Full' && fd.status !== 'Waived') {
-              isFeePending = true;
-            }
-          } catch { /* empty */ }
-        }
-        if (isFeePending) {
+      for (const s of students) {
+        const progress = getEnrollmentProgressSync(s.enrollment_id, db);
+        const isEligible = Boolean(progress?.certificateEligible);
+        const isDownloaded = !!checkEnrollmentDownloaded.get(
+          s.enrollment_id,
+          batchId,
+          s.user_id,
+          s.user_id,
+          batch.course_name,
+          s.user_id,
+          batch.course_name
+        );
+        // Telemetry distinction: Download record alone must never grant issuance without authoritative eligibility
+        const isIssued = isEligible && (isDownloaded || s.step4_completed === 1);
+        if (isIssued) {
+          certificatesIssued++;
+        } else if (isEligible) {
           certificatesPending++;
         } else {
-          certificatesIssued++;
+          // Academically completed (all required phases passed) but blocked by fees or requirements
+          const reqPhasesPassed = progress && Array.isArray(progress.phases) && progress.phases.length > 0 &&
+            progress.phases.every(p => p.isPassed || p.requirements?.completionRequired === false);
+          if (reqPhasesPassed) {
+            certificatesPending++;
+          }
         }
       }
     } else if (batch.course_name === 'Online Filmmaking Course') {
-      certificatesIssued = db.prepare(`
-        SELECT COUNT(DISTINCT sce.user_id) as count 
-        FROM student_course_enrollments sce 
-        JOIN batch_students bs ON bs.student_id = sce.user_id 
-        WHERE bs.batch_id = ? AND (sce.batch_id = bs.batch_id OR (sce.batch_id IS NULL AND sce.course_name = ?)) AND sce.step4_completed = 1
-      `).get(batchId, batch.course_name).count || 0;
+      const checkLegacyDownloaded = db.prepare(`
+        SELECT 1 FROM certificate_downloads cd
+        WHERE cd.enrollment_id = ?
+           OR (cd.enrollment_id IS NULL AND cd.batch_id = ? AND cd.user_id = ?)
+           OR (cd.enrollment_id IS NULL AND cd.batch_id IS NULL AND cd.user_id = ? AND LOWER(TRIM(cd.course_name)) = LOWER(TRIM(?))
+               AND (SELECT COUNT(*) FROM student_course_enrollments sce WHERE sce.user_id = ? AND LOWER(TRIM(sce.course_name)) = LOWER(TRIM(?))) = 1)
+        LIMIT 1
+      `);
 
-      certificatesPending = db.prepare(`
-        SELECT COUNT(DISTINCT sce.user_id) as count 
-        FROM student_course_enrollments sce 
-        JOIN batch_students bs ON bs.student_id = sce.user_id 
-        JOIN student_profiles sp ON sp.user_id = sce.user_id
-        WHERE bs.batch_id = ? AND (sce.batch_id = bs.batch_id OR (sce.batch_id IS NULL AND sce.course_name = ?)) AND sp.phase2_completed = 1 AND COALESCE(sce.step4_completed, 0) = 0
-      `).get(batchId, batch.course_name).count || 0;
+      for (const s of students) {
+        const isDownloaded = !!checkLegacyDownloaded.get(
+          s.enrollment_id,
+          batchId,
+          s.user_id,
+          s.user_id,
+          batch.course_name,
+          s.user_id,
+          batch.course_name
+        );
+        const sp = db.prepare('SELECT phase2_completed FROM student_profiles WHERE user_id = ?').get(s.user_id);
+        const isEligible = s.step4_completed === 1 || (sp && sp.phase2_completed === 1);
+        const isIssued = isEligible && (isDownloaded || s.step4_completed === 1);
+        if (isIssued) {
+          certificatesIssued++;
+        } else if (isEligible) {
+          certificatesPending++;
+        }
+      }
     } else {
       certificatesIssued = db.prepare(`
         SELECT COUNT(DISTINCT sce.user_id) as count 

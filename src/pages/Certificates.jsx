@@ -64,7 +64,12 @@ export default function Certificates() {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${localStorage.getItem('token')}`
           },
-          body: JSON.stringify({ courseName: cert.courseName })
+          body: JSON.stringify({
+            courseName: cert.courseName,
+            enrollmentId: cert.enrollmentId,
+            batchId: cert.batchId,
+            courseDefinitionId: cert.courseDefinitionId
+          })
         });
       } catch (logErr) {
         console.error('Failed to log certificate download:', logErr);

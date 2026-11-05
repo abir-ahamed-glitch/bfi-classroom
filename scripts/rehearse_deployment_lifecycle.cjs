@@ -353,7 +353,7 @@ async function runRehearsals() {
 
       if (u1.is_super_admin !== 1) throw new Error('User 1 was not promoted to Super Admin');
       if (perms !== 36) throw new Error(`Expected 36 permissions, got ${perms}`);
-      if (appMig !== 8) throw new Error(`Expected 8 migrations, got ${appMig}`);
+      if (appMig < 8) throw new Error(`Expected at least 8 migrations, got ${appMig}`);
 
       console.log('✅ SCENARIO 1 PASSED: Full canonical deployment executed and verified.\n');
       passedScenarios++;
