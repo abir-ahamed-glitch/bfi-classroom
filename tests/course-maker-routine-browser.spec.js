@@ -4,6 +4,10 @@ import jwt from 'jsonwebtoken';
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 import { 
   assertIsolatedTestDatabase, 
   getTestDbPath, 
@@ -410,5 +414,49 @@ test.describe('Course Maker Batch Routine End-to-End Browser Verification', () =
     await closeBtn.click();
 
     console.log('🎉 ACADEMIC PROGRESS MODAL BROWSER VERIFICATION PASSED WITH 100% SUCCESS!');
+  });
+
+  test('Security & Serving Parity: Synthetic hidden files in build directory are not served (404), while ordinary assets and SPA routes resolve cleanly', async ({ request }) => {
+    const distPath = path.resolve(__dirname, '../dist');
+    const secretPath = path.join(distPath, '.hidden-secret-token');
+    fs.writeFileSync(secretPath, 'CONFIDENTIAL_STAGING_KEY_999888');
+
+    try {
+      // 1. Synthetic hidden file requested directly under /bfi-classroom/ -> 404 Not Found
+      const resHiddenPrefix = await request.get('http://127.0.0.1:3098/bfi-classroom/.hidden-secret-token');
+      expect(resHiddenPrefix.status()).toBe(404);
+      const textHiddenPrefix = await resHiddenPrefix.text();
+      expect(textHiddenPrefix.includes('CONFIDENTIAL_STAGING_KEY_999888')).toBe(false);
+
+      // 2. Synthetic hidden file requested at root -> 404 Not Found
+      const resHiddenRoot = await request.get('http://127.0.0.1:3098/.hidden-secret-token');
+      expect(resHiddenRoot.status()).toBe(404);
+      const textHiddenRoot = await resHiddenRoot.text();
+      expect(textHiddenRoot.includes('CONFIDENTIAL_STAGING_KEY_999888')).toBe(false);
+
+      // 3. Dotfile like .env -> 404 Not Found
+      const resEnv = await request.get('http://127.0.0.1:3098/bfi-classroom/.env');
+      expect(resEnv.status()).toBe(404);
+
+      // 4. Ordinary asset resolves cleanly with 200 OK
+      const resAsset = await request.get('http://127.0.0.1:3098/bfi-classroom/index.html');
+      expect(resAsset.status()).toBe(200);
+      const textAsset = await resAsset.text();
+      expect(textAsset).toContain('<!DOCTYPE html>');
+
+      // 5. Production bundle asset verification: Ensure browser loads candidate dist bundle, not Vite dev
+      expect(textAsset).not.toContain('/@vite/client');
+      expect(textAsset).toContain('/bfi-classroom/assets/main-');
+
+      // 6. SPA Route resolves index.html with 200 OK
+      const resSpa = await request.get('http://127.0.0.1:3098/bfi-classroom/admin/batches/100082');
+      expect(resSpa.status()).toBe(200);
+      const textSpa = await resSpa.text();
+      expect(textSpa).toContain('<!DOCTYPE html>');
+
+      console.log('🛡️ Negative dotfile security checks and production bundle loading verified successfully');
+    } finally {
+      if (fs.existsSync(secretPath)) fs.unlinkSync(secretPath);
+    }
   });
 });

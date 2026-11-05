@@ -256,8 +256,3 @@ const getOrdinalSuffixHTML = (str) => {
   }
   return { doc, filename };
 }
-
-
-if (typeof window !== 'undefined') {
-  window.downloadCertificatePdf = downloadCertificatePdf;
-}

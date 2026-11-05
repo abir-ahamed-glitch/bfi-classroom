@@ -929,21 +929,25 @@ const SOCIAL_BOT_REGEX = /facebookexternalhit|Facebot|Twitterbot|WhatsApp|Telegr
 app.get('/', (req, res) => {
   const userAgent = req.headers['user-agent'] || '';
   if (SOCIAL_BOT_REGEX.test(userAgent)) {
-    return res.sendFile(path.join(clientBuildPath, 'index.html'));
+    return res.sendFile('index.html', { root: clientBuildPath });
   }
   res.redirect('/bfi-classroom');
 });
 
-app.use('/bfi-classroom/assets', express.static(clientAssetsPath, { dotfiles: 'allow' }));
-app.use('/bfi-classroom', express.static(clientBuildPath, { redirect: false, dotfiles: 'allow' }));
-app.use(express.static(clientBuildPath, { dotfiles: 'allow' }));
+app.use('/bfi-classroom/assets', express.static(clientAssetsPath));
+app.use('/bfi-classroom', express.static(clientBuildPath, { redirect: false }));
+app.use(express.static(clientBuildPath));
 
-const serveSpaIndex = (_req, res) => {
+const serveSpaIndex = (req, res) => {
+  const urlParts = (req.path || '').split('/');
+  if (urlParts.some((part) => part.startsWith('.') && part.length > 1)) {
+    return res.status(404).send('Not Found');
+  }
   const indexHtml = path.join(clientBuildPath, 'index.html');
   if (!fs.existsSync(indexHtml)) {
     return res.status(404).send('Not Found');
   }
-  return res.sendFile(indexHtml, { dotfiles: 'allow' }, (err) => {
+  return res.sendFile('index.html', { root: clientBuildPath }, (err) => {
     if (err && !res.headersSent) res.status(404).end();
   });
 };
