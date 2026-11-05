@@ -33,15 +33,14 @@ const __dirname = path.dirname(__filename);
  *      effect immediately upon process restart.
  */
 
-if (process.env.IS_STAGING_SERVER === 'true') {
-  // Mode 1: Guarded Staging — validated staging configuration is authoritative
-} else if (process.env.IS_TEST_SERVER === 'true' || process.env.NODE_ENV === 'test') {
-  // Mode 2: Isolated Test Mode — preserve test sentinels & flags against default dev/prod config
+if (process.env.IS_STAGING_SERVER === 'true' || process.env.IS_TEST_SERVER === 'true' || process.env.NODE_ENV === 'test') {
+  // Mode 1 & 2: Guarded Staging & Isolated Test Mode — preserve test/staging sentinels & flags against default config
   const testSentinels = {
     PORT: process.env.PORT,
     DATABASE_PATH: process.env.DATABASE_PATH,
     NODE_ENV: process.env.NODE_ENV,
     IS_TEST_SERVER: process.env.IS_TEST_SERVER,
+    IS_STAGING_SERVER: process.env.IS_STAGING_SERVER,
     APP_URL: process.env.APP_URL,
     CLIENT_URL: process.env.CLIENT_URL,
     DISABLE_OUTBOUND_NOTIFICATIONS: process.env.DISABLE_OUTBOUND_NOTIFICATIONS,

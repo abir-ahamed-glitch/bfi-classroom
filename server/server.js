@@ -447,7 +447,7 @@ const apiLimiter = rateLimit({
 
 
 // Apply rate limiter specifically to /api routes
-app.use('/api', apiLimiter);
+app.use(['/api', '/bfi-classroom/api'], apiLimiter);
 
 app.use(cors(corsOptions));
 
@@ -561,36 +561,39 @@ app.use(['/bfi-classroom/media', '/media'], (req, res, next) => {
 app.use('/bfi-classroom/media', express.static(path.join(__dirname, '..', 'uploads'), serveStaticOptions));
 app.use('/media', express.static(path.join(__dirname, '..', 'uploads'), serveStaticOptions)); // Keep root for backwards compatibility
 
-app.use('/api/auth', authRoutes);
-app.use('/api/admin', adminRoutes);
-app.use('/api/admin', feesRoutes);
-app.use('/api/admin', feeTrackerRoutes);
-app.use('/api/student', studentRoutes);
-app.use('/api/portfolio', portfolioRoutes);
-app.use('/api/community', communityRoutes);
-app.use('/api/courses', courseRoutes);
-app.use('/api/inbox', inboxRoutes);
-app.use('/api/bfiaa', bfiaaRoutes);
-app.use('/api/certification', certificationRoutes);
-app.use('/api/experience', experienceRoutes);
-app.use('/api/registry', registryRoutes);
-app.use('/api/notifications', notificationsRoutes);
-app.use('/api/analytics', analyticsRoutes);
-app.use('/api/reports', reportsRoutes);
-app.use('/api/admin/batches', batchRoutes);
-app.use('/api/student-export', studentExportRoutes);
-app.use('/api/admin/broadcast', broadcastRoutes);
-app.use('/api/admin/trash', trashRoutes);
-app.use('/api/admin/course-settings', courseSettingsRoutes);
-app.use('/api/admin/course-definitions', courseDefinitionsRoutes);
-app.use('/api/course-definitions', courseDefinitionsRoutes);
-app.use('/api/admin', adminManagementRoutes);
-app.use('/api/teacher', teacherRoutes);
-app.use('/api/instructor', teacherRoutes);
+const apiMountPrefixes = ['/api', '/bfi-classroom/api'];
+for (const prefix of apiMountPrefixes) {
+  app.use(`${prefix}/auth`, authRoutes);
+  app.use(`${prefix}/admin`, adminRoutes);
+  app.use(`${prefix}/admin`, feesRoutes);
+  app.use(`${prefix}/admin`, feeTrackerRoutes);
+  app.use(`${prefix}/student`, studentRoutes);
+  app.use(`${prefix}/portfolio`, portfolioRoutes);
+  app.use(`${prefix}/community`, communityRoutes);
+  app.use(`${prefix}/courses`, courseRoutes);
+  app.use(`${prefix}/inbox`, inboxRoutes);
+  app.use(`${prefix}/bfiaa`, bfiaaRoutes);
+  app.use(`${prefix}/certification`, certificationRoutes);
+  app.use(`${prefix}/experience`, experienceRoutes);
+  app.use(`${prefix}/registry`, registryRoutes);
+  app.use(`${prefix}/notifications`, notificationsRoutes);
+  app.use(`${prefix}/analytics`, analyticsRoutes);
+  app.use(`${prefix}/reports`, reportsRoutes);
+  app.use(`${prefix}/admin/batches`, batchRoutes);
+  app.use(`${prefix}/student-export`, studentExportRoutes);
+  app.use(`${prefix}/admin/broadcast`, broadcastRoutes);
+  app.use(`${prefix}/admin/trash`, trashRoutes);
+  app.use(`${prefix}/admin/course-settings`, courseSettingsRoutes);
+  app.use(`${prefix}/admin/course-definitions`, courseDefinitionsRoutes);
+  app.use(`${prefix}/course-definitions`, courseDefinitionsRoutes);
+  app.use(`${prefix}/admin`, adminManagementRoutes);
+  app.use(`${prefix}/teacher`, teacherRoutes);
+  app.use(`${prefix}/instructor`, teacherRoutes);
+}
 
 // Test environment and database identity verification endpoint (strictly restricted to test servers)
-app.get('/api/test/db-identity', (req, res) => {
-  const isTestServer = Boolean(process.env.IS_TEST_SERVER === 'true');
+app.get(['/api/test/db-identity', '/bfi-classroom/api/test/db-identity'], (req, res) => {
+  const isTestServer = Boolean(process.env.IS_TEST_SERVER === 'true' || process.env.IS_STAGING_SERVER === 'true');
   const isTestEnv = process.env.NODE_ENV === 'test';
 
   if (!isTestServer && !isTestEnv) {
@@ -613,7 +616,7 @@ app.get('/api/test/db-identity', (req, res) => {
   });
 });
 
-app.use('/api', (req, res) => {
+app.use(['/api', '/bfi-classroom/api'], (req, res) => {
   res.status(404).json({ error: `API route not found: ${req.method} ${req.originalUrl}` });
 });
 
@@ -931,16 +934,16 @@ app.get('/', (req, res) => {
   res.redirect('/bfi-classroom');
 });
 
-app.use('/bfi-classroom/assets', express.static(clientAssetsPath));
-app.use('/bfi-classroom', express.static(clientBuildPath, { redirect: false }));
-app.use(express.static(clientBuildPath));
+app.use('/bfi-classroom/assets', express.static(clientAssetsPath, { dotfiles: 'allow' }));
+app.use('/bfi-classroom', express.static(clientBuildPath, { redirect: false, dotfiles: 'allow' }));
+app.use(express.static(clientBuildPath, { dotfiles: 'allow' }));
 
 const serveSpaIndex = (_req, res) => {
   const indexHtml = path.join(clientBuildPath, 'index.html');
   if (!fs.existsSync(indexHtml)) {
     return res.status(404).send('Not Found');
   }
-  return res.sendFile(indexHtml, (err) => {
+  return res.sendFile(indexHtml, { dotfiles: 'allow' }, (err) => {
     if (err && !res.headersSent) res.status(404).end();
   });
 };
