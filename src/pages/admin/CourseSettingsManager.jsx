@@ -1,18 +1,17 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import {
   Settings, Plus, Trash2, CheckCircle2, AlertCircle, X, Search, Edit3, RefreshCw
 } from 'lucide-react';
 import { useModal } from '../../components/BFIModal';
 import { useCourseSettings } from '../../hooks/useCourseSettings';
+import { apiClient } from '../../utils/apiClient';
 import './BatchFeeManager.css';
 
 const API_BASE = '/api/admin';
 
 async function apiFetch(endpoint, options = {}) {
-  const token = localStorage.getItem('token');
-  const res = await fetch(`${API_BASE}${endpoint}`, {
+  const res = await apiClient(`${API_BASE}${endpoint}`, {
     headers: {
-      Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
       ...options.headers,
     },
@@ -70,16 +69,13 @@ export default function CourseSettingsManager() {
   useEffect(() => {
     const fetchCourseDefs = async () => {
       try {
-        const token = localStorage.getItem('token');
-        const res = await fetch('/api/admin/course-definitions', {
-          headers: { Authorization: `Bearer ${token}` }
-        });
+        const res = await apiClient('/api/admin/course-definitions');
         if (res.ok) {
           const data = await res.json();
           const list = Array.isArray(data) ? data : (data.definitions || []);
           setDefinedCourses(list);
         }
-      } catch (err) { /* ignore */ }
+      } catch { /* ignore */ }
     };
     fetchCourseDefs();
   }, []);
@@ -104,7 +100,7 @@ export default function CourseSettingsManager() {
       try {
         const res = await apiFetch('/batches');
         setAvailableBatches(res);
-      } catch (err) { /* ignore batch fetch error */ }
+      } catch { /* ignore batch fetch error */ }
     };
     fetchBatches();
   }, []);

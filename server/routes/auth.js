@@ -131,7 +131,7 @@ function setRefreshCookie(req, res, token) {
 function issueRefreshToken(req, res, user) {
   const isSuper = user.role === 'admin' && (user.is_super_admin === 1 || user.is_super_admin === true || user.isSuperAdmin === true);
   const refreshToken = jwt.sign(
-    { id: user.id, username: user.username, role: user.role, is_super_admin: isSuper ? 1 : 0, token_version: user.token_version || 1 },
+    { id: user.id, username: user.username, role: user.role, is_super_admin: isSuper ? 1 : 0, token_version: user.token_version || 1, jti: crypto.randomUUID() },
     getJwtRefreshSecret(),
     { expiresIn: '7d' }
   );
@@ -902,7 +902,7 @@ router.post('/refresh', (req, res) => {
 
     // Refresh token rotation
     const newRefreshToken = jwt.sign(
-      { id: user.id, username: user.username, role: user.role, is_super_admin: user.is_super_admin, token_version: user.token_version || 1 },
+      { id: user.id, username: user.username, role: user.role, is_super_admin: user.is_super_admin, token_version: user.token_version || 1, jti: crypto.randomUUID() },
       getJwtRefreshSecret(),
       { expiresIn: '7d' }
     );

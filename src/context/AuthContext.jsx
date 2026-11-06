@@ -5,6 +5,7 @@ import {
   encryptPrivateKeyWithPassword,
   getOrGenerateKeyPair,
 } from '../utils/e2eCrypto';
+import { refreshAccessToken } from '../utils/apiClient';
 
 const AuthContext = createContext();
 const AUTH_USER_CACHE_KEY = 'auth_user_cache';
@@ -18,6 +19,23 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(true);
 
   // Load user from local storage or validate token on mount
+
+  useEffect(() => {
+    const handleSessionExpired = () => {
+      clearSession();
+    };
+    const handleTokenRefreshed = (e) => {
+      if (e?.detail?.user) {
+        persistUser(e.detail.user);
+      }
+    };
+    window.addEventListener('bfi:session-expired', handleSessionExpired);
+    window.addEventListener('bfi:token-refreshed', handleTokenRefreshed);
+    return () => {
+      window.removeEventListener('bfi:session-expired', handleSessionExpired);
+      window.removeEventListener('bfi:token-refreshed', handleTokenRefreshed);
+    };
+  }, []);
 
   useEffect(() => {
     const token = localStorage.getItem('token');
@@ -167,22 +185,19 @@ export function AuthProvider({ children }) {
   };
 
   const refreshSession = async () => {
-    const response = await fetch('/api/auth/refresh', {
-      method: 'POST',
-      credentials: 'include',
-    });
-
-    if (!response.ok) return false;
-
-    const data = await response.json();
-    if (!data.token || !data.user) return false;
-
-    localStorage.setItem('token', data.token);
-    if (data.user.profilePicture && !data.user.profile_picture) {
-      data.user.profile_picture = data.user.profilePicture;
+    try {
+      const newToken = await refreshAccessToken();
+      const cached = localStorage.getItem(AUTH_USER_CACHE_KEY);
+      if (cached) {
+        try {
+          const userObj = JSON.parse(cached);
+          persistUser(await ensureSecureMessagingKey(userObj, newToken));
+        } catch { /* ignore cache parse failure */ }
+      }
+      return true;
+    } catch {
+      return false;
     }
-    persistUser(await ensureSecureMessagingKey(data.user, data.token));
-    return true;
   };
 
   const fetchUser = async (token) => {
@@ -393,6 +408,7 @@ export function AuthProvider({ children }) {
     verifyMfa,
     logout,
     updateUser,
+    refreshSession,
   };
 
   return (
