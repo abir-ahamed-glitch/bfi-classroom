@@ -67,15 +67,9 @@ async function executeRefreshHttpCall() {
   if (response.status === 401 || response.status === 403) {
     // Session is dead on the server
     localStorage.removeItem('token');
+    localStorage.setItem('bfi_session_dead', 'true');
     if (typeof sessionStorage !== 'undefined') {
       sessionStorage.setItem('bfi_session_expired', 'true');
-    }
-    if (typeof window !== 'undefined') {
-      window.dispatchEvent(
-        new CustomEvent('bfi:session-expired', {
-          detail: { reason: 'SESSION_EXPIRED', status: response.status },
-        })
-      );
     }
     let errBody = {};
     try {
@@ -83,11 +77,26 @@ async function executeRefreshHttpCall() {
     } catch {
       /* ignore json parse error */
     }
+    const reasonCode = errBody.code || 'SESSION_EXPIRED';
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(
+        new CustomEvent('bfi:session-expired', {
+          detail: { reason: reasonCode, status: response.status },
+        })
+      );
+    }
+    try {
+      if (typeof BroadcastChannel !== 'undefined') {
+        const bc = new BroadcastChannel('bfi_auth_channel');
+        bc.postMessage({ type: 'SESSION_EXPIRED', reason: reasonCode, status: response.status });
+        bc.close();
+      }
+    } catch { /* ignore */ }
     const error = new SessionExpiredError(
       errBody.error || 'Your session has expired. Please sign in again to continue.'
     );
     error.status = response.status;
-    error.code = errBody.code || 'SESSION_EXPIRED';
+    error.code = reasonCode;
     throw error;
   }
 
@@ -160,37 +169,70 @@ export async function refreshAccessToken(failedToken = null) {
     return inFlightRefreshPromise;
   }
 
-  // 3. Multi-tab coordination via Web Locks API where supported, or cooperative storage lock fallback
+  // 3. Multi-tab coordination
   const runWithLock = async () => {
-    if (typeof navigator !== 'undefined' && navigator.locks && navigator.locks.request) {
+    // A. Supported modern browsers: Web Locks API (Platform-level atomic synchronization)
+    if (typeof navigator !== 'undefined' && navigator.locks && typeof navigator.locks.request === 'function') {
       return navigator.locks.request('bfi_auth_refresh_lock', async () => {
-        // Re-check timestamp once inside lock
+        // Re-check once lock is acquired
         const tokenNow = localStorage.getItem('token');
         const refreshedAt = parseInt(localStorage.getItem('bfi_token_refreshed_at') || '0', 10);
         if (tokenNow && (!failedToken || tokenNow !== failedToken) && Date.now() - refreshedAt < 15000) {
           return tokenNow;
         }
+
+        // Check if session was marked dead by another tab while waiting for lock
+        if (
+          localStorage.getItem('bfi_session_dead') ||
+          (typeof sessionStorage !== 'undefined' && sessionStorage.getItem('bfi_session_expired'))
+        ) {
+          throw new SessionExpiredError('Session has expired.');
+        }
+
         return executeRefreshHttpCall();
       });
     }
 
-    // Fallback when Web Locks API is unavailable:
-    // Check if another tab is currently performing a refresh via cooperative localStorage timestamp
+    // B. Fallback when Web Locks API is unavailable (unsupported browsers):
+    // Note: localStorage check-and-set is NOT an atomic mutex.
+    // We provide cooperative waiting to reduce collision probability during transient delays,
+    // but if concurrent requests race, the server strictly enforces single-use replay rejection
+    // (401 TOKEN_ALREADY_ROTATED), and the client fails safely: persists the unsaved draft
+    // to author-scoped localStorage and redirects to login for re-authentication.
     if (typeof localStorage !== 'undefined') {
       const inProgressAt = parseInt(localStorage.getItem('bfi_refresh_in_progress') || '0', 10);
-      if (inProgressAt && Date.now() - inProgressAt < 3000) {
-        // Another tab is actively refreshing; wait up to 1.5s for it to finish
-        for (let i = 0; i < 30; i++) {
-          await new Promise((resolve) => setTimeout(resolve, 50));
+
+      if (inProgressAt && Date.now() - inProgressAt < 6000) {
+        // Wait up to 6 seconds (60 * 100ms) for leader to finish
+        for (let i = 0; i < 60; i++) {
+          await new Promise((resolve) => setTimeout(resolve, 100));
+
           const freshToken = localStorage.getItem('token');
           const freshAt = parseInt(localStorage.getItem('bfi_token_refreshed_at') || '0', 10);
           if (freshToken && (!failedToken || freshToken !== failedToken) && Date.now() - freshAt < 15000) {
             return freshToken;
           }
+
+          if (
+            localStorage.getItem('bfi_session_dead') ||
+            (typeof sessionStorage !== 'undefined' && sessionStorage.getItem('bfi_session_expired'))
+          ) {
+            throw new SessionExpiredError('Session has expired.');
+          }
+
+          if (!localStorage.getItem('bfi_refresh_in_progress')) {
+            break;
+          }
         }
       }
 
-      // Mark this tab as leader in progress
+      // Check one final time before attempting HTTP call
+      const freshTokenAfterWait = localStorage.getItem('token');
+      const freshAtAfterWait = parseInt(localStorage.getItem('bfi_token_refreshed_at') || '0', 10);
+      if (freshTokenAfterWait && (!failedToken || freshTokenAfterWait !== failedToken) && Date.now() - freshAtAfterWait < 15000) {
+        return freshTokenAfterWait;
+      }
+
       localStorage.setItem('bfi_refresh_in_progress', String(Date.now()));
       try {
         return await executeRefreshHttpCall();
@@ -347,12 +389,21 @@ export async function apiClient(input, init = {}) {
 
 /**
  * Convenience helper to clear auth session credentials.
+ * Also clears the bfi_session_dead cooperative signaling flag so that
+ * a successful re-login does not leave waiting tabs stuck in the dead-session path.
+ *
+ * NOTE: bfi_session_expired in sessionStorage is intentionally NOT cleared here.
+ * ProtectedRoute reads that flag after currentUser becomes null to decide whether to
+ * append ?session_expired=true to the login redirect URL. The flag is cleared only
+ * after a successful re-login (in AuthContext.login() and AuthContext.verifyMfa()).
  */
 export function clearSession() {
   if (typeof localStorage !== 'undefined') {
     localStorage.removeItem('token');
     localStorage.removeItem('auth_user_cache');
     localStorage.removeItem('bfi_token_refreshed_at');
+    localStorage.removeItem('bfi_refresh_in_progress');
+    localStorage.removeItem('bfi_session_dead');
   }
 }
 
@@ -370,6 +421,19 @@ if (typeof window !== 'undefined') {
         if (event.data?.type === 'TOKEN_REFRESHED' && event.data.token) {
           localStorage.setItem('token', event.data.token);
           localStorage.setItem('bfi_token_refreshed_at', String(event.data.refreshedAt || Date.now()));
+        } else if (event.data?.type === 'SESSION_EXPIRED') {
+          // A sibling tab's refresh attempt was rejected — mark session dead locally.
+          localStorage.setItem('bfi_session_dead', 'true');
+          if (typeof sessionStorage !== 'undefined') {
+            sessionStorage.setItem('bfi_session_expired', 'true');
+          }
+          if (typeof window !== 'undefined') {
+            window.dispatchEvent(
+              new CustomEvent('bfi:session-expired', {
+                detail: { reason: event.data.reason, status: event.data.status },
+              })
+            );
+          }
         }
       };
     } catch {

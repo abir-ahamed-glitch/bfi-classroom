@@ -1,4 +1,4 @@
-/* eslint-disable react-refresh/only-export-components */
+﻿/* eslint-disable react-refresh/only-export-components */
 import { createContext, useContext, useState, useEffect } from 'react';
 import {
   decryptPrivateKeyWithPassword,
@@ -87,7 +87,7 @@ export function AuthProvider({ children }) {
     const storageKey = `e2e_keys_${user.id}`;
 
     try {
-      // ── Step 1: Check localStorage ───────────────────────────────────────
+      // â”€â”€ Step 1: Check localStorage â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       let localKeys = null;
       const stored = localStorage.getItem(storageKey);
       if (stored) {
@@ -101,7 +101,7 @@ export function AuthProvider({ children }) {
         }
       }
 
-      // ── Step 2: Restore from server (only possible when password is known) ─
+      // â”€â”€ Step 2: Restore from server (only possible when password is known) â”€
       if (!localKeys && password) {
         try {
           const res = await fetch('/api/auth/key-pair', {
@@ -113,10 +113,10 @@ export function AuthProvider({ children }) {
               let privateKeyJwk = null;
 
               if (data.private_key.startsWith('pkenc:v1:')) {
-                // ✅ New secure format — decrypt with user's password
+                // âœ… New secure format â€” decrypt with user's password
                 privateKeyJwk = await decryptPrivateKeyWithPassword(data.private_key, password);
               } else {
-                // ⚠️  Legacy raw format (migration) — parse directly, will be
+                // âš ï¸  Legacy raw format (migration) â€” parse directly, will be
                 //     re-encrypted with password and re-uploaded in Step 4.
                 try { privateKeyJwk = JSON.parse(data.private_key); } catch { /* skip */ }
               }
@@ -135,7 +135,7 @@ export function AuthProvider({ children }) {
         }
       }
 
-      // ── Step 3: Nothing anywhere — generate a fresh key pair ─────────────
+      // â”€â”€ Step 3: Nothing anywhere â€” generate a fresh key pair â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       if (!localKeys) {
         if (!password) {
           // No password available on this call path (e.g. page refresh).
@@ -149,7 +149,7 @@ export function AuthProvider({ children }) {
       const { publicKeyJwk, privateKeyJwk } = localKeys;
       const publicKeyStr = JSON.stringify(publicKeyJwk);
 
-      // ── Step 4: Upload password-encrypted private key to server ───────────
+      // â”€â”€ Step 4: Upload password-encrypted private key to server â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       // Only possible when password is known. Re-encrypts on every login so
       // the stored blob rotates (new salt + IV each time).
       if (password) {
@@ -163,7 +163,7 @@ export function AuthProvider({ children }) {
             },
             body: JSON.stringify({
               publicKey: publicKeyStr,
-              privateKey: encryptedPrivateKey,   // opaque blob — server cannot read this
+              privateKey: encryptedPrivateKey,   // opaque blob â€” server cannot read this
             }),
           });
         } catch (uploadErr) {
@@ -181,6 +181,13 @@ export function AuthProvider({ children }) {
   const clearSession = () => {
     localStorage.removeItem('token');
     localStorage.removeItem(AUTH_USER_CACHE_KEY);
+    // Clear localStorage cooperative-signaling flags so the refresh machinery starts fresh.
+    // IMPORTANT: bfi_session_expired in sessionStorage is intentionally NOT cleared here.
+    // ProtectedRoute reads that flag synchronously after currentUser becomes null, to decide
+    // whether to append ?session_expired=true to the login redirect URL.
+    // The flag is cleared only after a successful re-login (in login() and verifyMfa()).
+    localStorage.removeItem('bfi_session_dead');
+    localStorage.removeItem('bfi_refresh_in_progress');
     setCurrentUser(null);
   };
 
@@ -282,7 +289,7 @@ export function AuthProvider({ children }) {
         throw new Error('Unable to reach the BFI Classroom server. Please check your internet connection and try again.');
       }
 
-      // Safely parse JSON — guard against empty or HTML error responses
+      // Safely parse JSON â€” guard against empty or HTML error responses
       const contentType = response.headers.get('content-type') || '';
       let data = {};
       try {
@@ -329,6 +336,11 @@ export function AuthProvider({ children }) {
       }
 
       localStorage.setItem('token', data.token);
+      // Clear any dead-session flags left over from an expired session so the refresh machinery starts fresh.
+      localStorage.removeItem('bfi_session_dead');
+      if (typeof sessionStorage !== 'undefined') {
+        sessionStorage.removeItem('bfi_session_expired');
+      }
       // Normalize: the API returns camelCase 'profilePicture' but the app uses snake_case 'profile_picture'
       if (data.user.profilePicture && !data.user.profile_picture) {
         data.user.profile_picture = data.user.profilePicture;
@@ -371,6 +383,11 @@ export function AuthProvider({ children }) {
       }
 
       localStorage.setItem('token', data.token);
+      // Clear any dead-session flags left over from an expired session so the refresh machinery starts fresh.
+      localStorage.removeItem('bfi_session_dead');
+      if (typeof sessionStorage !== 'undefined') {
+        sessionStorage.removeItem('bfi_session_expired');
+      }
       if (data.user?.profilePicture && !data.user.profile_picture) {
         data.user.profile_picture = data.user.profilePicture;
       }
