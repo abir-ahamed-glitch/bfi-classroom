@@ -1380,6 +1380,7 @@ export function initializeDatabase() {
         updated_by INTEGER NOT NULL,
         created_at TEXT DEFAULT (datetime('now', 'localtime')),
         updated_at TEXT DEFAULT (datetime('now', 'localtime')),
+        client_draft_id TEXT,
         UNIQUE(slug, version)
       );
 
@@ -1574,6 +1575,7 @@ export function initializeDatabase() {
     // Run Batch Instructors & Certificate Downloads schema migration
     runBatchInstructorsAndCertificateDownloadsMigration(db);
 
+    ensureSessionGraceAndIdempotencySchema(db);
     console.log('✅ Course Maker tables and columns verified');
   } catch (err) {
     console.error('Error initializing Course Maker schema:', err);
@@ -1583,6 +1585,26 @@ export function initializeDatabase() {
 
 export function getDbPath() {
   return dbPath;
+}
+
+export function ensureSessionGraceAndIdempotencySchema(database) {
+  try {
+    const sessionCols = database.prepare('PRAGMA table_info(sessions)').all().map(c => c.name);
+    if (!sessionCols.includes('prev_token_hash')) {
+      database.prepare('ALTER TABLE sessions ADD COLUMN prev_token_hash TEXT').run();
+    }
+    if (!sessionCols.includes('last_rotated_at')) {
+      database.prepare('ALTER TABLE sessions ADD COLUMN last_rotated_at TEXT').run();
+    }
+
+    const courseDefCols = database.prepare('PRAGMA table_info(course_definitions)').all().map(c => c.name);
+    if (!courseDefCols.includes('client_draft_id')) {
+      database.prepare('ALTER TABLE course_definitions ADD COLUMN client_draft_id TEXT').run();
+    }
+    database.prepare('CREATE INDEX IF NOT EXISTS idx_course_defs_client_draft_id ON course_definitions(client_draft_id)').run();
+  } catch (err) {
+    console.error('Error ensuring session grace and idempotency schema:', err.message);
+  }
 }
 
 export default db;

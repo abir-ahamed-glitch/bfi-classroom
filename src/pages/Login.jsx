@@ -1,6 +1,6 @@
 import TurnstileWidget from '../components/TurnstileWidget';
 import { useState } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate, useSearchParams, Link } from 'react-router-dom';
 import { Film, User, Lock, ArrowRight, Loader2, Eye, EyeOff, ShieldAlert, KeyRound } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import './Login.css'; // Add a specific CSS file for Login
@@ -25,6 +25,16 @@ export default function Login() {
 
   const { login, verifyMfa } = useAuth();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+
+  const getSafeRedirect = () => {
+    if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem('bfi_session_expired');
+    const redirect = searchParams.get('redirect');
+    if (redirect && redirect.startsWith('/') && !redirect.startsWith('//')) {
+      return redirect;
+    }
+    return '/';
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -50,7 +60,7 @@ export default function Login() {
         setUseRecovery(false);
         return;
       }
-      navigate('/', { replace: true });
+      navigate(getSafeRedirect(), { replace: true });
     } catch (err) {
       setError(err.message || 'Failed to login. Please check your credentials.');
       setErrorField(err.field || '');
@@ -71,7 +81,7 @@ export default function Login() {
         code: useRecovery ? undefined : totpCode.trim(),
         recoveryCode: useRecovery ? recoveryCode.trim() : undefined,
       });
-      navigate('/', { replace: true });
+      navigate(getSafeRedirect(), { replace: true });
     } catch (err) {
       setMfaError(err.message || 'Invalid verification code. Please try again.');
     } finally {

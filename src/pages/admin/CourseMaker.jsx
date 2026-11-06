@@ -133,15 +133,9 @@ function buildDefaultForm() {
 
 export default function CourseMaker() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const { currentUser, login, verifyMfa } = useAuth();
+  const { currentUser } = useAuth();
   const isSubmittingRef = useRef(false);
-  const [showSessionExpiredModal, setShowSessionExpiredModal] = useState(false);
-  const [reauthUsername, setReauthUsername] = useState('');
-  const [reauthPassword, setReauthPassword] = useState('');
-  const [reauthMfaCode, setReauthMfaCode] = useState('');
-  const [reauthMfaChallenge, setReauthMfaChallenge] = useState(null);
-  const [reauthLoading, setReauthLoading] = useState(false);
-  const [reauthError, setReauthError] = useState('');
+  const clientDraftIdRef = useRef(null);
   const currentUserId = currentUser?.id || (() => {
     try {
       return JSON.parse(localStorage.getItem('auth_user_cache') || '{}').id;
@@ -239,17 +233,28 @@ export default function CourseMaker() {
     }
   };
 
-  // Listen for session expiration events dispatched by apiClient
+  // Listen for session expiration events: ensure draft is safely persisted
   useEffect(() => {
     const handleSessionExpired = () => {
-      if (currentUser?.username) {
-        setReauthUsername(currentUser.username);
+      if (currentUserId && isDirty) {
+        const storageKey = getDraftStorageKey(currentUserId);
+        const payload = {
+          form,
+          editingDefId,
+          activePhaseTab,
+          viewMode,
+          isDirty: true,
+          client_draft_id: clientDraftIdRef.current,
+          savedAt: new Date().toISOString()
+        };
+        try {
+          localStorage.setItem(storageKey, JSON.stringify(payload));
+        } catch { /* ignore quota */ }
       }
-      setShowSessionExpiredModal(true);
     };
     window.addEventListener('bfi:session-expired', handleSessionExpired);
     return () => window.removeEventListener('bfi:session-expired', handleSessionExpired);
-  }, [currentUser]);
+  }, [currentUserId, isDirty, form, editingDefId, activePhaseTab, viewMode]);
 
   // Synchronize state from URL and localStorage on mount
   useEffect(() => {
@@ -355,6 +360,7 @@ export default function CourseMaker() {
 
       if (urlMode === 'builder' || urlMode === 'review') {
         if (localDraft && localDraft.form && !localDraft.editingDefId) {
+          clientDraftIdRef.current = localDraft.client_draft_id || ('draft_' + Date.now() + '_' + Math.random().toString(36).slice(2, 9));
           setForm(localDraft.form);
           setEditingDefId(null);
           const maxPhases = localDraft.form.phases ? localDraft.form.phases.length : 1;
@@ -364,6 +370,7 @@ export default function CourseMaker() {
           setLastSavedTime(localDraft.savedAt ? new Date(localDraft.savedAt).toLocaleTimeString() : null);
           setViewMode(urlMode);
         } else {
+          clientDraftIdRef.current = 'draft_' + Date.now() + '_' + Math.random().toString(36).slice(2, 9);
           const defaultF = buildDefaultForm();
           baselineFormJsonRef.current = JSON.stringify(defaultF);
           setForm(defaultF);
@@ -431,6 +438,7 @@ export default function CourseMaker() {
       activePhaseTab,
       viewMode,
       isDirty: true,
+      client_draft_id: clientDraftIdRef.current,
       savedAt: new Date().toISOString()
     };
 
@@ -944,7 +952,8 @@ export default function CourseMaker() {
         duration_unit: form.duration.unit,
         phase_count: form.phaseCount,
         phases: form.phases,
-        completionPolicy: form.completionPolicy
+        completionPolicy: form.completionPolicy,
+        client_draft_id: clientDraftIdRef.current
       };
 
       const url = editingDefId ? `${API_BASE}/${editingDefId}` : API_BASE;
@@ -980,10 +989,6 @@ export default function CourseMaker() {
       syncUrl('list', null, null);
       setViewMode('list');
     } catch (err) {
-      if (err.name === 'SessionExpiredError' || err.code === 'SESSION_EXPIRED' || err.message?.includes('session expired') || err.message?.includes('Sign in again')) {
-        if (currentUser?.username) setReauthUsername(currentUser.username);
-        setShowSessionExpiredModal(true);
-      }
       showToast(err.message, 'error');
     } finally {
       setLoading(false);
@@ -993,95 +998,57 @@ export default function CourseMaker() {
 
   const handlePublish = async (courseIdToPublish = null) => {
     if (loading || isSubmittingRef.current) return;
-    const targetId = courseIdToPublish || editingDefId;
+    let targetId = courseIdToPublish || editingDefId;
 
-    if (!targetId) {
-      // Must save draft first if new
-      const errs = validateForm(true);
-      if (errs.length > 0) {
-        showToast(errs[0], 'error');
-        return;
-      }
-      isSubmittingRef.current = true;
-      try {
-        setLoading(true);
-        const payload = {
-          name: form.name.trim(),
-          course_type: form.course_type,
-          description: form.description,
-          duration_value: form.duration.value,
-          duration_unit: form.duration.unit,
-          phase_count: form.phaseCount,
-          phases: form.phases,
-          completionPolicy: form.completionPolicy
-        };
+    const errs = validateForm(true);
+    if (errs.length > 0) {
+      showToast(errs[0], 'error');
+      return;
+    }
+
+    isSubmittingRef.current = true;
+    try {
+      setLoading(true);
+      const payload = {
+        name: form.name.trim(),
+        course_type: form.course_type,
+        description: form.description,
+        duration_value: form.duration.value,
+        duration_unit: form.duration.unit,
+        phase_count: form.phaseCount,
+        phases: form.phases,
+        completionPolicy: form.completionPolicy,
+        client_draft_id: clientDraftIdRef.current
+      };
+
+      // 1. ALWAYS persist latest edits before publishing (covers new creation and updates to existing drafts)
+      if (!targetId) {
         const createRes = await apiClient(API_BASE, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload)
         });
         const createData = await createRes.json();
         if (!createRes.ok) throw new Error(createData.error || 'Failed to create draft');
-
-        const newDefId = createData.definition.id;
-        // Immediately track definition ID so retry or recovery acts on existing draft without duplicating
-        setEditingDefId(newDefId);
-        const storageKey = getDraftStorageKey(currentUserId);
-        try {
-          const draftPayload = {
-            form,
-            editingDefId: newDefId,
-            activePhaseTab,
-            viewMode,
-            isDirty: true,
-            savedAt: new Date().toISOString()
-          };
-          localStorage.setItem(storageKey, JSON.stringify(draftPayload));
-        } catch { /* ignore draft caching failure */ }
-
-        // Now publish
-        const pubRes = await apiClient(`${API_BASE}/${newDefId}/publish`, {
-          method: 'POST'
+        targetId = createData.id || (createData.definition && createData.definition.id);
+        setEditingDefId(targetId);
+      } else {
+        const updateRes = await apiClient(`${API_BASE}/${targetId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
         });
-        const pubData = await pubRes.json();
-        if (!pubRes.ok && pubData.error !== 'Course definition is already published.') {
-          throw new Error(pubData.error || 'Failed to publish');
-        }
-
-        // Clear local unsaved draft
-        localStorage.removeItem(storageKey);
-        setIsDirty(false);
-        setHasUnsavedDraftInStorage(false);
-
-        showToast('Course published successfully! Structure is now locked.');
-        fetchCourses();
-        syncUrl('list', null, null);
-        setViewMode('list');
-      } catch (err) {
-        if (err.name === 'SessionExpiredError' || err.code === 'SESSION_EXPIRED' || err.message?.includes('session expired') || err.message?.includes('Sign in again')) {
-          if (currentUser?.username) setReauthUsername(currentUser.username);
-          setShowSessionExpiredModal(true);
-        }
-        showToast(err.message, 'error');
-      } finally {
-        setLoading(false);
-        isSubmittingRef.current = false;
+        const updateData = await updateRes.json();
+        if (!updateRes.ok) throw new Error(updateData.error || 'Failed to save updated draft before publishing');
       }
-      return;
-    }
 
-    // Existing targetId
-    isSubmittingRef.current = true;
-    try {
-      setLoading(true);
-      const res = await apiClient(`${API_BASE}/${targetId}/publish`, {
+      // 2. Publish the confirmed definition
+      const pubRes = await apiClient(`${API_BASE}/${targetId}/publish`, {
         method: 'POST'
       });
-      const data = await res.json();
-      if (!res.ok && data.error !== 'Course definition is already published.') {
-        throw new Error(data.error || 'Failed to publish course');
+      const pubData = await pubRes.json();
+      if (!pubRes.ok && pubData.error !== 'Course definition is already published.') {
+        throw new Error(pubData.error || 'Failed to publish');
       }
 
       // Clear local unsaved draft
@@ -1091,15 +1058,11 @@ export default function CourseMaker() {
       setIsDirty(false);
       setHasUnsavedDraftInStorage(false);
 
-      showToast('Course definition published successfully!');
+      showToast('Course published successfully! Structure is now locked.');
       fetchCourses();
       syncUrl('list', null, null);
       setViewMode('list');
     } catch (err) {
-      if (err.name === 'SessionExpiredError' || err.code === 'SESSION_EXPIRED' || err.message?.includes('session expired') || err.message?.includes('Sign in again')) {
-        if (currentUser?.username) setReauthUsername(currentUser.username);
-        setShowSessionExpiredModal(true);
-      }
       showToast(err.message, 'error');
     } finally {
       setLoading(false);
@@ -1148,64 +1111,6 @@ export default function CourseMaker() {
     }
   };
 
-  const completeReauth = (authenticatedUser) => {
-    setReauthLoading(false);
-    setShowSessionExpiredModal(false);
-    setReauthPassword('');
-    setReauthMfaCode('');
-    setReauthMfaChallenge(null);
-    setReauthError('');
-
-    if (authenticatedUser?.id && currentUserId && authenticatedUser.id !== currentUserId) {
-      // Switched user accounts: load their own draft or blank form, never expose previous user's draft
-      showToast('Signed in with a different administrator account. Switching workspace...', 'info');
-      const newStorageKey = getDraftStorageKey(authenticatedUser.id);
-      const userDraftRaw = localStorage.getItem(newStorageKey);
-      if (userDraftRaw) {
-        try {
-          const userDraft = JSON.parse(userDraftRaw);
-          setForm(userDraft.form || buildDefaultForm());
-          setEditingDefId(userDraft.editingDefId || null);
-          setIsDirty(Boolean(userDraft.isDirty));
-        } catch {
-          setForm(buildDefaultForm());
-          setEditingDefId(null);
-          setIsDirty(false);
-        }
-      } else {
-        setForm(buildDefaultForm());
-        setEditingDefId(null);
-        setIsDirty(false);
-      }
-      fetchCourses();
-    } else {
-      showToast('Authentication restored! You can now publish or save your draft.');
-    }
-  };
-
-  const handleReauthSubmit = async (e) => {
-    e.preventDefault();
-    setReauthError('');
-    setReauthLoading(true);
-
-    try {
-      if (reauthMfaChallenge) {
-        const res = await verifyMfa(reauthMfaChallenge.mfaToken, { code: reauthMfaCode.trim() });
-        completeReauth(res.user);
-      } else {
-        const res = await login(reauthUsername.trim(), reauthPassword, 'admin');
-        if (res.requireMfa) {
-          setReauthMfaChallenge(res);
-          setReauthLoading(false);
-          return;
-        }
-        completeReauth(res.user);
-      }
-    } catch (err) {
-      setReauthError(err.message || 'Authentication failed. Please verify credentials.');
-      setReauthLoading(false);
-    }
-  };
 
   const handleAuditPhaseChange = (phaseId) => {
     setAuditSelectedPhaseId(phaseId);
@@ -3323,114 +3228,7 @@ export default function CourseMaker() {
         document.body
       )}
 
-            {/* ── MODAL: RE-AUTHENTICATION / SESSION RECOVERY ── */}
-      {showSessionExpiredModal && typeof document !== 'undefined' && createPortal(
-        <div className="cm-modal-overlay" style={{ zIndex: 10000 }}>
-          <div className="cm-modal-dialog" style={{ maxWidth: '440px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1rem' }}>
-              <div className="cm-modal-danger-icon" style={{ background: 'rgba(234, 179, 8, 0.15)', color: '#eab308' }}>
-                <AlertCircle size={22} />
-              </div>
-              <div>
-                <h3 style={{ margin: 0, fontSize: '1.15rem', fontWeight: 600, color: 'var(--text-primary)' }}>
-                  Session Expired
-                </h3>
-                <p style={{ margin: '0.2rem 0 0', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-                  Your unsaved course draft is safely preserved.
-                </p>
-              </div>
-            </div>
-
-            <p style={{ margin: '0 0 1rem', fontSize: '0.9rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-              Your administrator session timed out while editing. Please re-authenticate below to continue without losing your draft changes.
-            </p>
-
-            {reauthError && (
-              <div style={{ padding: '0.6rem 0.8rem', background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.3)', borderRadius: '8px', color: '#f87171', fontSize: '0.85rem', marginBottom: '1rem' }}>
-                {reauthError}
-              </div>
-            )}
-
-            <form onSubmit={handleReauthSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-              {!reauthMfaChallenge ? (
-                <>
-                  <div>
-                    <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 500, color: 'var(--text-secondary)', marginBottom: '0.3rem' }}>
-                      Username
-                    </label>
-                    <input
-                      type="text"
-                      className="cm-input"
-                      style={{ width: '100%' }}
-                      value={reauthUsername}
-                      onChange={(e) => setReauthUsername(e.target.value)}
-                      placeholder="Admin username"
-                      required
-                      disabled={reauthLoading}
-                    />
-                  </div>
-                  <div>
-                    <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 500, color: 'var(--text-secondary)', marginBottom: '0.3rem' }}>
-                      Password
-                    </label>
-                    <input
-                      type="password"
-                      className="cm-input"
-                      style={{ width: '100%' }}
-                      value={reauthPassword}
-                      onChange={(e) => setReauthPassword(e.target.value)}
-                      placeholder="Enter your password"
-                      required
-                      autoFocus
-                      disabled={reauthLoading}
-                    />
-                  </div>
-                </> 
-              ) : (
-                <div>
-                  <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 500, color: 'var(--text-secondary)', marginBottom: '0.3rem' }}>
-                    Two-Factor Authentication Code
-                  </label>
-                  <input
-                    type="text"
-                    className="cm-input"
-                    style={{ width: '100%', letterSpacing: '0.2em', textAlign: 'center', fontSize: '1.2rem' }}
-                    value={reauthMfaCode}
-                    onChange={(e) => setReauthMfaCode(e.target.value.trim())}
-                    placeholder="000000"
-                    maxLength={6}
-                    required
-                    autoFocus
-                    disabled={reauthLoading}
-                  />
-                </div>
-              )}
-
-              <div className="cm-modal-actions" style={{ marginTop: '0.75rem', justifyContent: 'space-between' }}>
-                <button
-                  type="button"
-                  onClick={() => {
-                    navigate('/login');
-                  }}
-                  className="cm-btn cm-btn-secondary"
-                  disabled={reauthLoading}
-                >
-                  Go to Login
-                </button>
-                <button
-                  type="submit"
-                  className="cm-btn cm-btn-primary"
-                  disabled={reauthLoading}
-                >
-                  {reauthLoading ? 'Signing in...' : (reauthMfaChallenge ? 'Verify & Continue' : 'Sign In & Continue')}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>,
-        document.body
-      )}
-
+      
       {/* ── MODAL: DISCARD DRAFT CONFIRMATION ── */}
       {showDiscardModal && typeof document !== 'undefined' && createPortal(
         <div className="cm-modal-overlay">

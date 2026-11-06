@@ -576,8 +576,22 @@ router.post('/', authenticateToken, requireRole('admin'), requirePermission('cou
       duration_value = 1,
       duration_unit = 'months',
       phase_count = 1,
-      completionPolicy = {}
+      completionPolicy = {},
+      client_draft_id = null
     } = req.body;
+
+    const trimmedDraftId = typeof client_draft_id === 'string' && client_draft_id.trim() ? client_draft_id.trim() : null;
+    if (trimmedDraftId) {
+      const existingByIdempotency = db.prepare('SELECT * FROM course_definitions WHERE client_draft_id = ? LIMIT 1').get(trimmedDraftId);
+      if (existingByIdempotency) {
+        return res.status(200).json({
+          success: true,
+          id: existingByIdempotency.id,
+          definition: existingByIdempotency,
+          is_idempotent: true
+        });
+      }
+    }
     const phases = reconcileClassCounts(req.body.phases || [], db);
 
     const slug = slugify(name);
@@ -585,6 +599,14 @@ router.post('/', authenticateToken, requireRole('admin'), requirePermission('cou
     // Check if a draft already exists with this slug
     const existingDraft = db.prepare("SELECT * FROM course_definitions WHERE slug = ? AND status = 'draft'").get(slug);
     if (existingDraft) {
+      if (existingDraft.created_by === req.user.id) {
+        return res.status(200).json({
+          success: true,
+          id: existingDraft.id,
+          definition: existingDraft,
+          is_idempotent: true
+        });
+      }
       return res.status(409).json({ error: `A draft for "${name}" already exists. Edit the existing draft instead.` });
     }
 
@@ -601,8 +623,8 @@ router.post('/', authenticateToken, requireRole('admin'), requirePermission('cou
     const stmt = db.prepare(`
       INSERT INTO course_definitions (
         slug, version, name, course_type, description, duration_value, duration_unit, phase_count,
-        status, definition_json, created_by, updated_by
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?)
+        status, definition_json, created_by, updated_by, client_draft_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?)
     `);
 
     const createCourseTx = db.transaction(() => {
@@ -617,7 +639,8 @@ router.post('/', authenticateToken, requireRole('admin'), requirePermission('cou
         phase_count,
         JSON.stringify(fullDefinition),
         req.user.id,
-        req.user.id
+        req.user.id,
+        trimmedDraftId
       );
 
       const newId = result.lastInsertRowid;
@@ -639,6 +662,7 @@ router.post('/', authenticateToken, requireRole('admin'), requirePermission('cou
     res.status(201).json({
       success: true,
       id: created.id,
+      definition: { id: created.id, slug: created.slug, version: created.version, phase_count: created.phase_count, status: 'draft' },
       slug: created.slug,
       version: created.version,
       phase_count: created.phase_count,
@@ -702,6 +726,7 @@ router.put('/:id', authenticateToken, requireRole('admin'), requirePermission('c
           phase_count = ?,
           definition_json = ?,
           updated_by = ?,
+          client_draft_id = COALESCE(?, client_draft_id),
           updated_at = datetime('now', 'localtime')
         WHERE id = ?
       `).run(
@@ -713,6 +738,7 @@ router.put('/:id', authenticateToken, requireRole('admin'), requirePermission('c
         phase_count,
         JSON.stringify(fullDefinition),
         req.user.id,
+        (typeof req.body.client_draft_id === 'string' && req.body.client_draft_id.trim()) ? req.body.client_draft_id.trim() : null,
         id
       );
 

@@ -1,6 +1,6 @@
 import TurnstileWidget from '../components/TurnstileWidget';
 import { useState } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate, useSearchParams, Link } from 'react-router-dom';
 import { User, Lock, ArrowRight, ArrowLeft, Loader2, ShieldAlert, KeyRound, Eye, EyeOff } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import './Login.css';
@@ -12,8 +12,6 @@ export default function AdminLogin() {
   const [isLoading, setIsLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [turnstileToken, setTurnstileToken] = useState('');
-  const [errorField, setErrorField] = useState('');
-  const [turnstileResetKey, setTurnstileResetKey] = useState(0);
 
   // MFA Challenge State
   const [mfaPending, setMfaPending] = useState(false);
@@ -26,6 +24,16 @@ export default function AdminLogin() {
 
   const { login, verifyMfa } = useAuth();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+
+  const getSafeRedirect = () => {
+    if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem('bfi_session_expired');
+    const redirect = searchParams.get('redirect');
+    if (redirect && redirect.startsWith('/') && !redirect.startsWith('//')) {
+      return redirect;
+    }
+    return '/';
+  };
 
   // Strip the 'admin@' prefix from display value (it is always locked/prepended)
   const usernameDisplay = username.startsWith('admin@') ? username.slice(6) : username;
@@ -60,7 +68,7 @@ export default function AdminLogin() {
         setUseRecovery(false);
         return;
       }
-      navigate('/', { replace: true });
+      navigate(getSafeRedirect(), { replace: true });
     } catch (err) {
       setError(err.message || 'Failed to login. Please check your credentials.');
     } finally {
@@ -78,7 +86,7 @@ export default function AdminLogin() {
         code: useRecovery ? undefined : totpCode.trim(),
         recoveryCode: useRecovery ? recoveryCode.trim() : undefined,
       });
-      navigate('/', { replace: true });
+      navigate(getSafeRedirect(), { replace: true });
     } catch (err) {
       setMfaError(err.message || 'Invalid verification code. Please try again.');
     } finally {

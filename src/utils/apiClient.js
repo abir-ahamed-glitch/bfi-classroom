@@ -3,16 +3,19 @@
  *
  * Central authenticated HTTP client for BFI Classroom.
  *
- * Features:
+ * Key Capabilities:
  * 1. Automatic Bearer token injection from localStorage.
  * 2. Automatic credentials: 'include' for session cookies (including httpOnly refresh tokens).
- * 3. Concurrent Refresh Coordination (Mutex / In-Flight Promise Sharing):
- *    Multiple simultaneous 401 responses share a single /api/auth/refresh call,
- *    preventing duplicate refresh token consumption and cookie collision.
- * 4. Transparent Retry: Requests failing with 401 TOKEN_EXPIRED are retried with the fresh token.
- * 5. Safe Failure / Session Expired Signaling:
- *    When refresh fails (revoked or expired refresh token), fires 'bfi:session-expired'
- *    and clears only the invalid access token, preserving user drafts and form states.
+ * 3. Multi-Tab & In-Flight Concurrency Coordination:
+ *    - Uses navigator.locks ('bfi_auth_refresh_lock') where supported, plus in-flight promise sharing.
+ *    - Inspects 'bfi_token_refreshed_at' timestamp: if another tab refreshed the token within 15 seconds,
+ *      reuses the newly updated token without issuing a redundant network request.
+ * 4. Transparent Request Retry: Requests failing with 401 TOKEN_EXPIRED are retried with the fresh token.
+ * 5. Strict Error Discrimination:
+ *    - ONLY explicit 401/403 authentication rejections from the refresh endpoint trigger 'bfi:session-expired'
+ *      and remove the invalid access token.
+ *    - Network errors (TypeError / offline) and 5xx server errors NEVER destroy valid credentials or falsely
+ *      claim session expiration.
  */
 
 export class SessionExpiredError extends Error {
@@ -24,89 +27,149 @@ export class SessionExpiredError extends Error {
   }
 }
 
-// In-flight refresh promise mutex
+export class AuthServerError extends Error {
+  constructor(message = 'Authentication server temporarily unavailable.', status = 500) {
+    super(message);
+    this.name = 'AuthServerError';
+    this.code = 'AUTH_SERVER_ERROR';
+    this.status = status;
+  }
+}
+
+// In-flight refresh promise mutex (single tab / single JS context)
 let inFlightRefreshPromise = null;
 
 /**
+ * Performs the actual network request to /api/auth/refresh.
+ * Strict error discrimination:
+ * - 401 / 403 => Session truly expired / revoked. Clears token, emits bfi:session-expired, throws SessionExpiredError.
+ * - 5xx => Server error. Preserves credentials, throws AuthServerError.
+ * - Network exception => Network failure. Preserves credentials, throws Error.
+ */
+async function executeRefreshHttpCall() {
+  let response;
+  try {
+    response = await window.fetch('/api/auth/refresh', {
+      method: 'POST',
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      },
+    });
+  } catch (netErr) {
+    // Network offline / connection reset: do NOT destroy credentials
+    const err = new Error(netErr.message || 'Network error during authentication refresh');
+    err.isNetworkError = true;
+    throw err;
+  }
+
+  if (response.status === 401 || response.status === 403) {
+    // Session is dead on the server
+    localStorage.removeItem('token');
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(
+        new CustomEvent('bfi:session-expired', {
+          detail: { reason: 'SESSION_EXPIRED', status: response.status },
+        })
+      );
+    }
+    let errBody = {};
+    try {
+      errBody = await response.json();
+    } catch {
+      /* ignore json parse error */
+    }
+    const error = new SessionExpiredError(
+      errBody.error || 'Your session has expired. Please sign in again to continue.'
+    );
+    error.status = response.status;
+    error.code = errBody.code || 'SESSION_EXPIRED';
+    throw error;
+  }
+
+  if (response.status >= 500) {
+    // Temporary server malfunction: do NOT destroy credentials
+    throw new AuthServerError(
+      `Authentication service is temporarily unavailable (${response.status}).`,
+      response.status
+    );
+  }
+
+  if (!response.ok) {
+    throw new Error(`Authentication refresh failed with status ${response.status}`);
+  }
+
+  const data = await response.json();
+  if (!data || !data.token) {
+    throw new SessionExpiredError('Invalid authentication response from server.');
+  }
+
+  const now = Date.now();
+  localStorage.setItem('token', data.token);
+  localStorage.setItem('bfi_token_refreshed_at', String(now));
+
+  if (data.user) {
+    if (data.user.profilePicture && !data.user.profile_picture) {
+      data.user.profile_picture = data.user.profilePicture;
+    }
+    try {
+      localStorage.setItem('auth_user_cache', JSON.stringify(data.user));
+    } catch {
+      /* ignore quota errors */
+    }
+  }
+
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(
+      new CustomEvent('bfi:token-refreshed', {
+        detail: { token: data.token, user: data.user },
+      })
+    );
+  }
+
+  return data.token;
+}
+
+/**
  * Refreshes the access token using the httpOnly refresh cookie.
- * Coordinates concurrent callers so only one /api/auth/refresh request is dispatched.
+ * Coordinates concurrent callers within the same tab and across separate browser tabs.
  *
  * @returns {Promise<string>} The new access token
  */
 export async function refreshAccessToken() {
+  // 1. Check if token was refreshed by another request/tab within the last 15 seconds
+  const currentToken = typeof localStorage !== 'undefined' ? localStorage.getItem('token') : null;
+  const lastRefreshAt = typeof localStorage !== 'undefined' ? parseInt(localStorage.getItem('bfi_token_refreshed_at') || '0', 10) : 0;
+  if (currentToken && Date.now() - lastRefreshAt < 15000) {
+    return currentToken;
+  }
+
+  // 2. Intra-tab mutex: reuse active in-flight promise if available
   if (inFlightRefreshPromise) {
     return inFlightRefreshPromise;
   }
 
-  inFlightRefreshPromise = (async () => {
-    try {
-      const response = await window.fetch('/api/auth/refresh', {
-        method: 'POST',
-        credentials: 'include',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-        },
+  // 3. Multi-tab coordination via Web Locks API where supported
+  const runWithLock = async () => {
+    if (typeof navigator !== 'undefined' && navigator.locks && navigator.locks.request) {
+      return navigator.locks.request('bfi_auth_refresh_lock', async () => {
+        // Re-check timestamp once inside lock
+        const tokenNow = localStorage.getItem('token');
+        const refreshedAt = parseInt(localStorage.getItem('bfi_token_refreshed_at') || '0', 10);
+        if (tokenNow && Date.now() - refreshedAt < 15000) {
+          return tokenNow;
+        }
+        return executeRefreshHttpCall();
       });
-
-      if (!response.ok) {
-        let errData = {};
-        try {
-          errData = await response.json();
-        } catch {
-          errData = {};
-        }
-        const error = new SessionExpiredError(
-          errData.error || 'Your session has expired. Please sign in again to continue.'
-        );
-        error.status = response.status;
-        error.code = errData.code || 'SESSION_EXPIRED';
-        throw error;
-      }
-
-      const data = await response.json();
-      if (!data || !data.token) {
-        throw new SessionExpiredError('Invalid authentication response from server.');
-      }
-
-      localStorage.setItem('token', data.token);
-
-      if (data.user) {
-        if (data.user.profilePicture && !data.user.profile_picture) {
-          data.user.profile_picture = data.user.profilePicture;
-        }
-        try {
-          localStorage.setItem('auth_user_cache', JSON.stringify(data.user));
-        } catch {
-          // Ignore localStorage quota errors
-        }
-      }
-
-      if (typeof window !== 'undefined') {
-        window.dispatchEvent(
-          new CustomEvent('bfi:token-refreshed', {
-            detail: { token: data.token, user: data.user },
-          })
-        );
-      }
-
-      return data.token;
-    } catch (err) {
-      // Refresh session is invalid, expired, or revoked
-      localStorage.removeItem('token');
-
-      if (typeof window !== 'undefined') {
-        window.dispatchEvent(
-          new CustomEvent('bfi:session-expired', {
-            detail: { error: err.message || 'Session expired' },
-          })
-        );
-      }
-      throw err;
-    } finally {
-      inFlightRefreshPromise = null;
     }
-  })();
+    // Fallback: direct execution
+    return executeRefreshHttpCall();
+  };
+
+  inFlightRefreshPromise = runWithLock().finally(() => {
+    inFlightRefreshPromise = null;
+  });
 
   return inFlightRefreshPromise;
 }
@@ -192,13 +255,11 @@ export async function apiClient(input, init = {}) {
       data.code === 'TOKEN_EXPIRED' ||
       data.error === 'Token expired' ||
       data.error === 'jwt expired' ||
-      // Or any 401 where an access token was provided and not revoked
       Boolean(token && data.code !== 'SESSION_REVOKED')
     ) {
       shouldRefresh = true;
     }
   } catch {
-    // If body is not JSON but 401 was returned with a token present, attempt refresh
     shouldRefresh = Boolean(token);
   }
 
@@ -211,7 +272,7 @@ export async function apiClient(input, init = {}) {
   try {
     newToken = await refreshAccessToken();
   } catch {
-    // Refresh failed - session is dead
+    // If refresh failed (whether expired or network error), return original 401 response
     return response;
   }
 
@@ -235,6 +296,7 @@ export function clearSession() {
   if (typeof localStorage !== 'undefined') {
     localStorage.removeItem('token');
     localStorage.removeItem('auth_user_cache');
+    localStorage.removeItem('bfi_token_refreshed_at');
   }
 }
 

@@ -55,6 +55,7 @@ import NotificationToast from './components/NotificationToast';
 // Protected Route Wrapper
 const ProtectedRoute = ({ children, requiredRole, requireSuperAdmin = false, requiredPermission = null, requiredAnyPermission = null }) => {
   const { currentUser, loading } = useAuth();
+  const location = useLocation();
 
   if (loading) {
     return (
@@ -65,7 +66,12 @@ const ProtectedRoute = ({ children, requiredRole, requireSuperAdmin = false, req
   }
 
   if (!currentUser) {
-    return <Navigate to="/login" replace />;
+    const isSessionExpired = typeof sessionStorage !== 'undefined' && sessionStorage.getItem('bfi_session_expired');
+    const redirectUrl = location.pathname + location.search;
+    const loginTarget = isSessionExpired
+      ? `/login?session_expired=true&redirect=${encodeURIComponent(redirectUrl)}`
+      : `/login?redirect=${encodeURIComponent(redirectUrl)}`;
+    return <Navigate to={loginTarget} replace />;
   }
 
   if (requiredRole && !requiredRole.includes(currentUser.role)) {

@@ -867,13 +867,20 @@ router.post('/refresh', (req, res) => {
     const decoded = jwt.verify(refreshToken, getJwtRefreshSecret());
     const tokenHash = hashToken(refreshToken);
     const session = db.prepare(`
-      SELECT id
+      SELECT id, token_hash, prev_token_hash, last_rotated_at
       FROM sessions
       WHERE user_id = ?
-        AND token_hash = ?
+        AND (
+          token_hash = ?
+          OR (
+            prev_token_hash = ?
+            AND last_rotated_at IS NOT NULL
+            AND datetime(last_rotated_at, '+30 seconds') > datetime('now')
+          )
+        )
         AND datetime(expires_at) > datetime('now')
       LIMIT 1
-    `).get(decoded.id, tokenHash);
+    `).get(decoded.id, tokenHash, tokenHash);
 
     if (!session) {
       res.clearCookie(REFRESH_COOKIE_NAME, { path: '/' });
@@ -900,20 +907,30 @@ router.post('/refresh', (req, res) => {
       return res.status(401).json({ error: 'Session revoked' });
     }
 
-    // Refresh token rotation
-    const newRefreshToken = jwt.sign(
-      { id: user.id, username: user.username, role: user.role, is_super_admin: user.is_super_admin, token_version: user.token_version || 1, jti: crypto.randomUUID() },
-      getJwtRefreshSecret(),
-      { expiresIn: '7d' }
-    );
-    const newExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
-    db.prepare(`
-      UPDATE sessions 
-      SET token_hash = ?, expires_at = ?, last_activity = datetime('now')
-      WHERE id = ?
-    `).run(hashToken(newRefreshToken), newExpiresAt, session.id);
+    // If the request matched prev_token_hash, another concurrent request already rotated the token within the grace window.
+    // In that case, issue a fresh access token for the active session without rotating again, preventing race conditions across tabs.
+    const isGraceMatch = session.prev_token_hash === tokenHash && session.token_hash !== tokenHash;
 
-    setRefreshCookie(req, res, newRefreshToken);
+    if (!isGraceMatch) {
+      // Refresh token rotation
+      const newRefreshToken = jwt.sign(
+        { id: user.id, username: user.username, role: user.role, is_super_admin: user.is_super_admin, token_version: user.token_version || 1, jti: crypto.randomUUID() },
+        getJwtRefreshSecret(),
+        { expiresIn: '7d' }
+      );
+      const newExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+      db.prepare(`
+        UPDATE sessions 
+        SET prev_token_hash = token_hash,
+            token_hash = ?,
+            expires_at = ?,
+            last_activity = datetime('now'),
+            last_rotated_at = datetime('now')
+        WHERE id = ?
+      `).run(hashToken(newRefreshToken), newExpiresAt, session.id);
+
+      setRefreshCookie(req, res, newRefreshToken);
+    }
 
     return res.json({
       token: signAccessToken(user, session.id),
