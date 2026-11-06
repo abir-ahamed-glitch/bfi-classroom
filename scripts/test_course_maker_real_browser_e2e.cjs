@@ -267,7 +267,7 @@ async function main() {
       ]);
 
       assert.strictEqual(r1.status, 200, 'Tab 1 must succeed even without Web Locks');
-      assert.strictEqual(r2.status, 200, 'Tab 2 must succeed via 15s concurrency grace window');
+      assert.strictEqual(r2.status, 200, 'Tab 2 must succeed via cooperative localStorage lock');
       assert.ok(r1.token, 'Tab 1 must receive valid access token');
       assert.ok(r2.token, 'Tab 2 must receive valid access token');
 

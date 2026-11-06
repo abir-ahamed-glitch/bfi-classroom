@@ -900,32 +900,14 @@ router.post('/refresh', (req, res) => {
       return res.status(401).json({ error: 'Session revoked' });
     }
 
-    // Concurrency Tolerance & RFC 6819 Automatic Reuse Detection:
-    // If the presented token matches prev_token_hash rather than the active token_hash:
+    // STRICT SINGLE-USE ROTATION & RFC 6819 REUSE DETECTION:
+    // If the presented token matches prev_token_hash rather than the active token_hash,
+    // this bearer refresh token has ALREADY been consumed.
+    // Under no circumstances do we issue an access token or new refresh token for a consumed token.
+    // In accordance with RFC 6819 Section 5.2.2.3 & OAuth 2.0 Security BCP,
+    // we immediately revoke the compromised session, bump the user's token_version,
+    // clear the refresh cookie, and return 401 TOKEN_ALREADY_ROTATED.
     if (session.prev_token_hash === tokenHash && session.token_hash !== tokenHash) {
-      // 1. Check if this request arrived within the legitimate concurrency grace window (15 seconds)
-      const isWithinGrace = session.last_rotated_at && db.prepare(`
-        SELECT 1 FROM sessions
-        WHERE id = ?
-          AND last_rotated_at IS NOT NULL
-          AND datetime(last_rotated_at, '+15 seconds') > datetime('now')
-      `).get(session.id);
-
-      if (isWithinGrace) {
-        // Legitimate concurrent tab request: another tab rotated this session within the last 15 seconds.
-        // Issue a fresh access token for the active session without rotating again,
-        // safely coordinating concurrent tabs (even when Web Locks or BroadcastChannel are unavailable)
-        // without creating branching sessions.
-        return res.json({
-          token: signAccessToken(user, session.id),
-          user: buildUserPayload(user),
-        });
-      }
-
-      // 2. Outside the 15-second grace window: RFC 6819 Section 5.2.2.3 Automatic Reuse Detection!
-      // This token was already consumed and rotated more than 15 seconds ago.
-      // In accordance with OAuth 2.0 Security BCP, we immediately revoke the compromised session
-      // and bump user.token_version so neither token can be used by an attacker.
       db.prepare('DELETE FROM sessions WHERE id = ?').run(session.id);
       db.prepare('UPDATE users SET token_version = token_version + 1 WHERE id = ?').run(user.id);
       res.clearCookie(REFRESH_COOKIE_NAME, { path: '/' });

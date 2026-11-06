@@ -160,7 +160,7 @@ export async function refreshAccessToken(failedToken = null) {
     return inFlightRefreshPromise;
   }
 
-  // 3. Multi-tab coordination via Web Locks API where supported
+  // 3. Multi-tab coordination via Web Locks API where supported, or cooperative storage lock fallback
   const runWithLock = async () => {
     if (typeof navigator !== 'undefined' && navigator.locks && navigator.locks.request) {
       return navigator.locks.request('bfi_auth_refresh_lock', async () => {
@@ -173,7 +173,32 @@ export async function refreshAccessToken(failedToken = null) {
         return executeRefreshHttpCall();
       });
     }
-    // Fallback: direct execution
+
+    // Fallback when Web Locks API is unavailable:
+    // Check if another tab is currently performing a refresh via cooperative localStorage timestamp
+    if (typeof localStorage !== 'undefined') {
+      const inProgressAt = parseInt(localStorage.getItem('bfi_refresh_in_progress') || '0', 10);
+      if (inProgressAt && Date.now() - inProgressAt < 3000) {
+        // Another tab is actively refreshing; wait up to 1.5s for it to finish
+        for (let i = 0; i < 30; i++) {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          const freshToken = localStorage.getItem('token');
+          const freshAt = parseInt(localStorage.getItem('bfi_token_refreshed_at') || '0', 10);
+          if (freshToken && (!failedToken || freshToken !== failedToken) && Date.now() - freshAt < 15000) {
+            return freshToken;
+          }
+        }
+      }
+
+      // Mark this tab as leader in progress
+      localStorage.setItem('bfi_refresh_in_progress', String(Date.now()));
+      try {
+        return await executeRefreshHttpCall();
+      } finally {
+        localStorage.removeItem('bfi_refresh_in_progress');
+      }
+    }
+
     return executeRefreshHttpCall();
   };
 
@@ -333,7 +358,7 @@ export function clearSession() {
 
 export default apiClient;
 
-// Cross-tab real-time sync via BroadcastChannel
+// Cross-tab real-time sync via BroadcastChannel and Storage Events
 if (typeof window !== 'undefined') {
   window.apiClient = apiClient;
   window.refreshAccessToken = refreshAccessToken;
@@ -350,5 +375,18 @@ if (typeof window !== 'undefined') {
     } catch {
       /* ignore channel error */
     }
+  }
+
+  // Cross-tab sync fallback for browsers lacking BroadcastChannel
+  if (typeof window.addEventListener === 'function') {
+    window.addEventListener('storage', (event) => {
+      if (event.key === 'token' && event.newValue) {
+        window.dispatchEvent(
+          new CustomEvent('bfi:token-refreshed', {
+            detail: { token: event.newValue },
+          })
+        );
+      }
+    });
   }
 }

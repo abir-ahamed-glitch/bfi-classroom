@@ -221,9 +221,9 @@ async function main() {
       assert.strictEqual(defs[0].status, 'published', 'Course definition status must be published');
     });
 
-    // ── TEST 2A: Concurrency: Legitimate Concurrent Refresh Within 15s Grace Window Succeeds ──
-    await runTest('Concurrency: Legitimate concurrent refresh within 15s grace window succeeds without session revocation', async () => {
-      const { refreshJwt, sessionId } = createAdminSession(1);
+    // ── TEST 2A: Security: Immediate Replay of Consumed Refresh Token is Strictly Rejected (0 Tokens Issued) ──
+    await runTest('Security: Immediate replay of consumed token is rejected with 401 and revokes session', async () => {
+      const { refreshJwt, sessionId, user } = createAdminSession(1);
 
       // Tab 1 rotates Token A -> Token B
       const rotRes = await fetch(`${baseUrl}/api/auth/refresh`, {
@@ -234,22 +234,27 @@ async function main() {
       const rotData = await rotRes.json();
       assert.ok(rotData.token, 'Must return valid access token');
 
-      // Tab 2 arrives concurrently (e.g. within 15 seconds) presenting Token A
-      const concurrentRes = await fetch(`${baseUrl}/api/auth/refresh`, {
+      // Attacker or concurrent client replays Token A immediately (e.g. 5ms later)
+      const immediateReplayRes = await fetch(`${baseUrl}/api/auth/refresh`, {
         method: 'POST',
         headers: { 'Cookie': `bfi_refresh_token=${refreshJwt}` }
       });
-      assert.strictEqual(concurrentRes.status, 200, 'Concurrent request within grace window must succeed with 200');
-      const concurrentData = await concurrentRes.json();
-      assert.ok(concurrentData.token, 'Concurrent tab must receive valid access token');
+      assert.strictEqual(immediateReplayRes.status, 401, 'Immediate replay of consumed token must be strictly rejected with 401');
+      const immediateReplayData = await immediateReplayRes.json();
+      assert.strictEqual(immediateReplayData.code, 'TOKEN_ALREADY_ROTATED', 'Must identify token reuse');
+      assert.strictEqual(immediateReplayData.token, undefined, 'Zero access tokens issued for consumed token');
 
-      // Session in DB must still be alive and active!
+      // Session in DB must be immediately deleted upon reuse detection!
       const sessInDb = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId);
-      assert.ok(sessInDb, 'Active session must NOT be revoked during legitimate concurrency');
+      assert.strictEqual(sessInDb, undefined, 'Compromised session MUST be deleted from SQLite upon immediate replay');
+
+      // User token_version must be bumped
+      const userAfter = db.prepare('SELECT token_version FROM users WHERE id = ?').get(user.id);
+      assert.ok(userAfter.token_version > (user.token_version || 1), 'User token_version must be bumped');
     });
 
-    // ── TEST 2B: Security: Replay Outside 15s Grace Window Triggers RFC 6819 Automatic Reuse Detection ──
-    await runTest('Security: Replay outside 15s grace window triggers RFC 6819 reuse detection and revokes session', async () => {
+    // ── TEST 2B: Security: Delayed Replay of Consumed Refresh Token is Strictly Rejected (0 Tokens Issued) ──
+    await runTest('Security: Delayed replay of consumed token is rejected with 401 and revokes session', async () => {
       const { refreshJwt, sessionId, user } = createAdminSession(1);
 
       // Legitimate rotation (Token A -> Token B)
@@ -261,30 +266,31 @@ async function main() {
       const setCookie = rotRes.headers.get('set-cookie');
       const newRefreshJwt = setCookie.match(/bfi_refresh_token=([^;]+)/)[1];
 
-      // Simulate passage of time beyond the 15-second grace window (e.g. 20 seconds ago)
+      // Simulate passage of time (e.g. 20 seconds ago)
       db.prepare(`
         UPDATE sessions
         SET last_rotated_at = datetime('now', '-20 seconds')
         WHERE id = ?
       `).run(sessionId);
 
-      // Attacker replays consumed token A outside the grace window
+      // Attacker replays consumed token A 20 seconds later
       const replayRes = await fetch(`${baseUrl}/api/auth/refresh`, {
         method: 'POST',
         headers: { 'Cookie': `bfi_refresh_token=${refreshJwt}` }
       });
 
       // Assert: Replay is rejected with 401 TOKEN_ALREADY_ROTATED
-      assert.strictEqual(replayRes.status, 401, 'Replay of previous token outside grace must be rejected with 401');
+      assert.strictEqual(replayRes.status, 401, 'Delayed replay of previous token must be rejected with 401');
       const replayData = await replayRes.json();
       assert.strictEqual(replayData.code, 'TOKEN_ALREADY_ROTATED', 'Must identify token reuse');
+      assert.strictEqual(replayData.token, undefined, 'Zero access tokens issued for delayed replay');
 
       // Assert: Compromised session deleted from database immediately
       const sessInDb = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId);
       assert.strictEqual(sessInDb, undefined, 'Compromised session MUST be deleted from SQLite upon replay detection');
 
       const userAfter = db.prepare('SELECT token_version FROM users WHERE id = ?').get(user.id);
-      assert.ok(userAfter.token_version > (user.token_version || 1), 'User token_version must be bumped to invalidate all derived tokens');
+      assert.ok(userAfter.token_version > (user.token_version || 1), 'User token_version must be bumped');
 
       // Even token B is now dead
       const followUpRes = await fetch(`${baseUrl}/api/auth/refresh`, {
@@ -295,7 +301,7 @@ async function main() {
     });
 
     // ── TEST 2C: Lost Refresh Response Handling ──
-    await runTest('Security: Lost refresh response retried outside grace window forces secure re-authentication', async () => {
+    await runTest('Security: Lost refresh response retrying consumed token is strictly rejected and forces safe re-auth', async () => {
       const { refreshJwt, sessionId } = createAdminSession(1);
 
       // Server rotates token A -> token B
@@ -305,16 +311,15 @@ async function main() {
       });
       assert.strictEqual(rotRes.status, 200);
 
-      // Client lost connection and retried after 20 seconds
-      db.prepare("UPDATE sessions SET last_rotated_at = datetime('now', '-20 seconds') WHERE id = ?").run(sessionId);
-
+      // Client lost connection and retried presenting the consumed token A
       const retryRes = await fetch(`${baseUrl}/api/auth/refresh`, {
         method: 'POST',
         headers: { 'Cookie': `bfi_refresh_token=${refreshJwt}` }
       });
-      assert.strictEqual(retryRes.status, 401, 'Client retrying with old token after grace window must be rejected');
+      assert.strictEqual(retryRes.status, 401, 'Client retrying with old token must be strictly rejected');
       const err = await retryRes.json();
       assert.strictEqual(err.code, 'TOKEN_ALREADY_ROTATED');
+      assert.strictEqual(err.token, undefined, 'Zero access tokens issued for lost response replay');
     });
 
     // ── TEST 3: Security: Stale/Rotated Refresh Token Replay After Logout is Rejected ──
