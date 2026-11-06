@@ -334,16 +334,21 @@ export function clearSession() {
 export default apiClient;
 
 // Cross-tab real-time sync via BroadcastChannel
-if (typeof window !== 'undefined' && typeof BroadcastChannel !== 'undefined') {
-  try {
-    const authChannel = new BroadcastChannel('bfi_auth_channel');
-    authChannel.onmessage = (event) => {
-      if (event.data?.type === 'TOKEN_REFRESHED' && event.data.token) {
-        localStorage.setItem('token', event.data.token);
-        localStorage.setItem('bfi_token_refreshed_at', String(event.data.refreshedAt || Date.now()));
-      }
-    };
-  } catch {
-    /* ignore channel error */
+if (typeof window !== 'undefined') {
+  window.apiClient = apiClient;
+  window.refreshAccessToken = refreshAccessToken;
+
+  if (typeof BroadcastChannel !== 'undefined') {
+    try {
+      const authChannel = new BroadcastChannel('bfi_auth_channel');
+      authChannel.onmessage = (event) => {
+        if (event.data?.type === 'TOKEN_REFRESHED' && event.data.token) {
+          localStorage.setItem('token', event.data.token);
+          localStorage.setItem('bfi_token_refreshed_at', String(event.data.refreshedAt || Date.now()));
+        }
+      };
+    } catch {
+      /* ignore channel error */
+    }
   }
 }

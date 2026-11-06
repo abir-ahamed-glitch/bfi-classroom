@@ -8,17 +8,10 @@
  * real SQLite database, and real Chromium browser.
  *
  * Scenarios Tested:
- * 1. Multi-Tab Real Browser Coordination:
- *    Two real browser tabs open simultaneously with expired access tokens.
- *    Both trigger API calls; Web Locks & BroadcastChannel coordinate so both succeed.
- * 2. Real Course Maker UI Creation, Review Mode Edit, and Token Expiry on Publish:
- *    User creates course in Builder mode, switches to Review mode, edits description,
- *    experiences access token expiration, clicks "Publish Course Definition".
- *    Transparent refresh succeeds and course is published with latest Review edits saved.
- * 3. Session Revocation, Login Redirect, Cross-Account Isolation & Draft Restoration:
- *    User has unsaved draft; server revokes session; ProtectedRoute redirects to login
- *    with session_expired notice; different user logs in and sees blank form;
- *    original user logs in and draft is fully restored; course publishes cleanly.
+ * 1. [Seeded Auth] Multi-Tab Concurrency via Web Locks & BroadcastChannel using real application apiClient.
+ * 2. [Seeded Auth] Multi-Tab Concurrency in browsers without Web Locks or BroadcastChannel.
+ * 3. [Real Login & MFA] Complete Workshop Flow on Desktop (1280x800), Token Expiry on Publish, Page Reload & Persistence.
+ * 4. [Real Login & MFA] Mobile Viewport (390x844), Session Revocation, Draft Isolation & Same-Account Recovery.
  */
 
 'use strict';
@@ -129,7 +122,6 @@ async function main() {
   app.get(['/api/inbox/conversations', '/bfi-classroom/api/inbox/conversations'], (_req, res) => res.json([]));
   app.get(['/api/reports/admin/unread-count', '/bfi-classroom/api/reports/admin/unread-count'], (_req, res) => res.json({ count: 0 }));
 
-
   // Serve static assets from dist
   const clientAssetsPath = path.join(distPath, 'assets');
   app.use('/bfi-classroom/assets', express.static(clientAssetsPath));
@@ -200,8 +192,8 @@ async function main() {
       return { refreshJwt, accessToken, sessionId, user: u };
     }
 
-    // ── STEP 1: Multi-Tab Real Browser Tab Coordination ──
-    await runStep('Simultaneous real browser tabs coordinate refresh via Web Locks & BroadcastChannel', async () => {
+    // ── STEP 1: [Seeded Auth] Multi-Tab Concurrency via Web Locks & BroadcastChannel using REAL apiClient ──
+    await runStep('[Seeded Auth] Multi-tab concurrency via Web Locks & BroadcastChannel using real application apiClient', async () => {
       const { refreshJwt, accessToken } = seedBrowserAuth(1, true); // Expired access token
 
       await context.addCookies([
@@ -216,181 +208,85 @@ async function main() {
       await page2.goto(`${baseUrl}/`);
       await page2.evaluate((t) => localStorage.setItem('token', t), accessToken);
 
-      const [token1, token2] = await Promise.all([
+      // Concurrently execute the real application apiClient in both tabs
+      const [res1, res2] = await Promise.all([
         page1.evaluate(async () => {
-          async function doCoordinatedRefresh() {
-            if (navigator.locks) {
-              return await navigator.locks.request('bfi_auth_refresh_lock', async () => {
-                const refreshedAt = parseInt(localStorage.getItem('bfi_token_refreshed_at') || '0', 10);
-                if (Date.now() - refreshedAt < 15000 && localStorage.getItem('token')) {
-                  return localStorage.getItem('token');
-                }
-                const res = await window.fetch('/api/auth/refresh', { method: 'POST' });
-                const data = await res.json();
-                if (data.token) {
-                  localStorage.setItem('token', data.token);
-                  localStorage.setItem('bfi_token_refreshed_at', String(Date.now()));
-                  try {
-                    const bc = new BroadcastChannel('bfi_auth_channel');
-                    bc.postMessage({ type: 'TOKEN_REFRESHED', token: data.token, refreshedAt: Date.now() });
-                    bc.close();
-                  } catch {}
-                  return data.token;
-                }
-                return null;
-              });
-            }
-          }
-
-          const res = await window.fetch('/api/admin/course-definitions', {
-            headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
-          });
-          if (res.status === 401) {
-            return await doCoordinatedRefresh();
-          }
-          return localStorage.getItem('token');
+          if (typeof window.apiClient !== 'function') throw new Error('window.apiClient is not available on page');
+          const resp = await window.apiClient('/api/admin/course-definitions');
+          return { status: resp.status, token: localStorage.getItem('token') };
         }),
         page2.evaluate(async () => {
-          async function doCoordinatedRefresh() {
-            if (navigator.locks) {
-              return await navigator.locks.request('bfi_auth_refresh_lock', async () => {
-                const refreshedAt = parseInt(localStorage.getItem('bfi_token_refreshed_at') || '0', 10);
-                if (Date.now() - refreshedAt < 15000 && localStorage.getItem('token')) {
-                  return localStorage.getItem('token');
-                }
-                const res = await window.fetch('/api/auth/refresh', { method: 'POST' });
-                const data = await res.json();
-                if (data.token) {
-                  localStorage.setItem('token', data.token);
-                  localStorage.setItem('bfi_token_refreshed_at', String(Date.now()));
-                  try {
-                    const bc = new BroadcastChannel('bfi_auth_channel');
-                    bc.postMessage({ type: 'TOKEN_REFRESHED', token: data.token, refreshedAt: Date.now() });
-                    bc.close();
-                  } catch {}
-                  return data.token;
-                }
-                return null;
-              });
-            }
-          }
-
-          const res = await window.fetch('/api/admin/course-definitions', {
-            headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
-          });
-          if (res.status === 401) {
-            return await doCoordinatedRefresh();
-          }
-          return localStorage.getItem('token');
+          if (typeof window.apiClient !== 'function') throw new Error('window.apiClient is not available on page');
+          const resp = await window.apiClient('/api/admin/course-definitions');
+          return { status: resp.status, token: localStorage.getItem('token') };
         })
       ]);
 
-      assert.ok(token1, 'Tab 1 must obtain a valid token');
-      assert.ok(token2, 'Tab 2 must obtain a valid token');
+      assert.strictEqual(res1.status, 200, 'Tab 1 real apiClient call must succeed with 200 OK');
+      assert.strictEqual(res2.status, 200, 'Tab 2 real apiClient call must succeed with 200 OK');
+      assert.ok(res1.token, 'Tab 1 must possess valid refreshed access token');
+      assert.ok(res2.token, 'Tab 2 must possess valid refreshed access token');
 
       await page1.close();
       await page2.close();
     });
 
-    // ── STEP 2: Real Course Maker UI: Creation, Review Edit & Token Expiry on Publish ──
-    await runStep('Course Maker UI: Build draft, edit in review mode, transparently refresh on publish', async () => {
-      const sess = seedBrowserAuth(1, false); const { refreshJwt, accessToken, user } = sess;
+    // ── STEP 2: [Seeded Auth] Multi-Tab Concurrency in Browsers Without Web Locks or BroadcastChannel ──
+    await runStep('[Seeded Auth] Multi-tab concurrency in browsers without Web Locks or BroadcastChannel', async () => {
+      // Create isolated context simulating legacy browser environment
+      const noLockContext = await browser.newContext();
+      await noLockContext.addInitScript(() => {
+        delete window.navigator.locks;
+        delete window.BroadcastChannel;
+      });
 
-      await context.addCookies([
+      const { refreshJwt, accessToken, sessionId } = seedBrowserAuth(1, true); // Expired access token
+
+      await noLockContext.addCookies([
         { name: 'bfi_refresh_token', value: refreshJwt, domain: '127.0.0.1', path: '/' }
       ]);
 
-      const page = await context.newPage();
-    page.on('console', msg => console.log('PAGE LOG [' + msg.type() + ']:', msg.text()));
-    page.on('pageerror', err => console.log('PAGE ERROR:', err.message));
-    page.on('response', res => { if (res.status() >= 400) console.log('HTTP STATUS ' + res.status() + ':', res.url()); });
-    page.on('requestfailed', req => console.log('REQ FAILED:', req.method(), req.url(), req.failure()?.errorText));
+      const p1 = await noLockContext.newPage();
+      const p2 = await noLockContext.newPage();
 
-      await page.goto(`${baseUrl}/`);
-      await page.evaluate(({ token, u }) => {
-        localStorage.setItem('token', token);
-        localStorage.setItem('auth_user_cache', JSON.stringify({
-          id: u.id, username: u.username, role: u.role, is_super_admin: u.is_super_admin,
-          permissions: ['courses:create', 'courses:edit', 'courses:view', 'courses:publish', 'courses:delete']
-        }));
-      }, { token: accessToken, u: user });
+      await p1.goto(`${baseUrl}/`);
+      await p1.evaluate((t) => localStorage.setItem('token', t), accessToken);
+      await p2.goto(`${baseUrl}/`);
+      await p2.evaluate((t) => localStorage.setItem('token', t), accessToken);
 
-      // Navigate to Course Maker builder
-      await page.goto(`${baseUrl}/admin/course-maker?mode=builder`);
-      console.log('CURRENT PAGE URL:', page.url());
-      console.log('CURRENT BODY TEXT:', (await page.textContent('body')).slice(0, 300));
-      await page.waitForLoadState('domcontentloaded');
-
-      // Fill in course basic details via real React form elements
-      const nameInput = page.locator('input[placeholder*="Masterclass"]').or(page.locator('input[placeholder*="Directing"]')).or(page.locator('input[name="name"]')).first();
-      await nameInput.waitFor({ state: 'visible', timeout: 8000 });
-      await nameInput.fill('Experimental Directing 2026');
-
-      const descInput = page.locator('textarea.cm-textarea').or(page.locator('textarea[placeholder*="summary of skills"]')).first();
-      await descInput.waitFor({ state: 'visible', timeout: 5000 });
-      await descInput.fill('Initial Draft Description from Builder');
-
-      // Add a module title if phase input exists
-      const phaseTitleInput = page.locator('input[placeholder*="Module"]').or(page.locator('input[placeholder*="Phase"]')).first();
-      if (await phaseTitleInput.isVisible()) {
-        await phaseTitleInput.fill('Module 1: Visual Composition');
-      }
-
-      // Navigate to Review mode via UI button
-      const reviewNavBtn = page.getByRole('button', { name: /Review & Publish|Review Rules Before Publishing/i }).first();
-      await reviewNavBtn.waitFor({ state: 'visible', timeout: 5000 });
-      await reviewNavBtn.click();
-      await page.waitForTimeout(300);
-
-      // In Review mode: click "Back to Edit" to verify review edits round-trip
-      const backToEditBtn = page.getByRole('button', { name: /Back to Edit|Back to Editor/i }).first();
-      await backToEditBtn.waitFor({ state: 'visible', timeout: 5000 });
-      await backToEditBtn.click();
-      await page.waitForTimeout(300);
-
-      // Update description with polished final edit in builder
-      const editDescInput = page.locator('textarea.cm-textarea').or(page.locator('textarea[placeholder*="summary of skills"]')).first();
-      await editDescInput.waitFor({ state: 'visible', timeout: 5000 });
-      await editDescInput.fill('Experimental Directing 2026 - Polished Review Edit');
-
-      // Proceed back to Review mode
-      const reviewNavBtn2 = page.getByRole('button', { name: /Review & Publish|Review Rules Before Publishing/i }).first();
-      await reviewNavBtn2.waitFor({ state: 'visible', timeout: 5000 });
-      await reviewNavBtn2.click();
-      await page.waitForTimeout(300);
-
-      // Simulate access token expiration right before clicking Publish
-      const expiredToken = jwt.sign(
-        { id: 1, username: 'admin@lead', role: 'admin', is_super_admin: 1, token_version: 1, sessionId: sess.sessionId, type: 'access' },
-        getJwtSecret(),
-        { expiresIn: -60 }
-      );
-      await page.evaluate((t) => localStorage.setItem('token', t), expiredToken);
-
-      // Click "Publish Course Definition"
-      const publishBtn = page.getByRole('button', { name: /Publish Course Definition/i });
-      await publishBtn.waitFor({ state: 'visible', timeout: 5000 });
-      await Promise.all([
-        page.waitForResponse(res => res.url().includes('/publish') && res.status() === 200, { timeout: 10000 }),
-        publishBtn.click()
+      // Concurrently execute real apiClient calls from both pages
+      const [r1, r2] = await Promise.all([
+        p1.evaluate(async () => {
+          const resp = await window.apiClient('/api/admin/course-definitions');
+          return { status: resp.status, token: localStorage.getItem('token') };
+        }),
+        p2.evaluate(async () => {
+          const resp = await window.apiClient('/api/admin/course-definitions');
+          return { status: resp.status, token: localStorage.getItem('token') };
+        })
       ]);
 
-      // Verify SQLite: exactly 1 published record with the polished review edit!
-      const published = db.prepare('SELECT * FROM course_definitions WHERE name = ?').get('Experimental Directing 2026');
-      assert.ok(published, 'Course definition must be inserted into SQLite');
-      assert.strictEqual(published.status, 'published', 'Course definition status must be published');
-      assert.strictEqual(published.description, 'Experimental Directing 2026 - Polished Review Edit', 'Review edit must be persisted');
+      assert.strictEqual(r1.status, 200, 'Tab 1 must succeed even without Web Locks');
+      assert.strictEqual(r2.status, 200, 'Tab 2 must succeed via 15s concurrency grace window');
+      assert.ok(r1.token, 'Tab 1 must receive valid access token');
+      assert.ok(r2.token, 'Tab 2 must receive valid access token');
 
-      await page.close();
+      // Assert session in SQLite is NOT revoked!
+      const sess = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId);
+      assert.ok(sess, 'Session must NOT be revoked during legitimate multi-tab concurrency');
+
+      await p1.close();
+      await p2.close();
+      await noLockContext.close();
     });
 
-    // ── STEP 3: Actual Login, Real Turnstile/MFA, Session Revocation, Redirect, Draft Isolation & Recovery ──
-    await runStep('Actual login, real Turnstile/MFA, session revocation, redirect, draft isolation & recovery', async () => {
-      // Use clean unauthenticated browser context for actual login testing
-      const testContext = await browser.newContext();
+    // ── STEP 3: [Real Login & MFA] Complete Workshop Flow on Desktop (1280x800) with Expiry & Reload ──
+    await runStep('[Real Login & MFA] Complete workshop flow on desktop (1280x800), expiry on publish, reload & persistence', async () => {
+      const desktopContext = await browser.newContext({
+        viewport: { width: 1280, height: 800 }
+      });
 
-      // Explicitly labeled: Simulated Cloudflare Turnstile provider for automated test environment
-      await testContext.addInitScript(() => {
+      await desktopContext.addInitScript(() => {
         window.turnstile = {
           render: (container, options) => {
             const input = document.createElement('input');
@@ -401,7 +297,7 @@ async function main() {
             if (typeof options === 'object' && typeof options.callback === 'function') {
               setTimeout(() => options.callback('mock_test_turnstile_token'), 50);
             }
-            return 'mock_turnstile_widget_1';
+            return 'mock_turnstile_widget_desktop';
           },
           reset: () => {},
           remove: () => {},
@@ -409,78 +305,197 @@ async function main() {
         };
       });
 
-      const page = await testContext.newPage();
-      page.on('console', msg => console.log('PAGE3 LOG [' + msg.type() + ']:', msg.text()));
-      page.on('response', res => { if (res.status() >= 300) console.log('PAGE3 HTTP ' + res.status() + ':', res.url()); });
+      const page = await desktopContext.newPage();
 
-      // 1. Admin 1 logs in via the actual Admin Login page and completes real MFA
+      // Reset last_totp_timestamp for Admin 1
+      db.prepare('UPDATE users SET last_totp_timestamp = 0 WHERE id = 1').run();
+
+      // 1. Real Login via Admin Login form
       await page.goto(`${baseUrl}/admin/login`);
       await page.waitForLoadState('domcontentloaded');
 
       const userInput = page.locator('#username');
       await userInput.waitFor({ state: 'visible', timeout: 8000 });
-      await userInput.fill('lead'); // AdminLogin prepends 'admin@' automatically
+      await userInput.fill('lead');
 
       const passInput = page.locator('#password');
       await passInput.fill('Password123!');
-
-      // Wait a moment for simulated Turnstile test provider
       await page.waitForTimeout(200);
 
-      // Click submit
-      const submitBtn = page.locator('button[type="submit"]').first();
-      await submitBtn.click();
+      await page.locator('button[type="submit"]').first().click();
 
-      // UI transitions to real Two-Factor Verification form
+      // Real TOTP MFA verification
       const totpInput = page.locator('#totpCode');
       await totpInput.waitFor({ state: 'visible', timeout: 8000 });
-
-      // Generate real TOTP code using the seeded secret
       const totpCode = generateTotpCode(rawTotpSecret);
       await totpInput.fill(totpCode);
+      await page.getByRole('button', { name: /Verify & Continue/i }).click();
 
-      // Submit MFA verification
-      const verifyMfaBtn = page.getByRole('button', { name: /Verify & Continue/i });
-      await verifyMfaBtn.click();
-
-      // Wait for login redirection away from /admin/login
+      // Follows redirect away from login
       await page.waitForFunction(() => !window.location.pathname.includes('/login'), null, { timeout: 10000 });
 
-      // 2. Admin 1 navigates to Course Maker and types an unsaved draft
+      // 2. Open Course Maker in builder mode
+      await page.goto(`${baseUrl}/admin/course-maker?mode=builder`);
+      await page.waitForLoadState('domcontentloaded');
+
+      // Fill in workshop details
+      const nameInput = page.locator('input[placeholder*="Masterclass"]').or(page.locator('input[placeholder*="Directing"]')).or(page.locator('input[name="name"]')).first();
+      await nameInput.waitFor({ state: 'visible', timeout: 8000 });
+      await nameInput.fill('Directing Masterclass Workshop 2026');
+
+      const descInput = page.locator('textarea.cm-textarea').or(page.locator('textarea[placeholder*="summary of skills"]')).first();
+      await descInput.waitFor({ state: 'visible', timeout: 5000 });
+      await descInput.fill('Intensive 3-day practical directing workshop.');
+
+      const phaseTitleInput = page.locator('input[placeholder*="Module"]').or(page.locator('input[placeholder*="Phase"]')).first();
+      if (await phaseTitleInput.isVisible()) {
+        await phaseTitleInput.fill('Phase 1: Scene Coverage & Blocking');
+      }
+
+      // 3. Review Mode Round-Trip
+      const reviewNavBtn = page.getByRole('button', { name: /Review & Publish|Review Rules Before Publishing/i }).first();
+      await reviewNavBtn.waitFor({ state: 'visible', timeout: 5000 });
+      await reviewNavBtn.click();
+      await page.waitForTimeout(300);
+
+      const backToEditBtn = page.getByRole('button', { name: /Back to Edit|Back to Editor/i }).first();
+      await backToEditBtn.waitFor({ state: 'visible', timeout: 5000 });
+      await backToEditBtn.click();
+      await page.waitForTimeout(300);
+
+      // Polish edit
+      await descInput.fill('Directing Masterclass Workshop 2026 - Polished Review Edit');
+
+      // Return to Review Mode
+      await reviewNavBtn.click();
+      await page.waitForTimeout(300);
+
+      // 4. Simulate access token expiration right before clicking Publish
+      const expiredToken = jwt.sign(
+        { id: 1, username: 'admin@lead', role: 'admin', is_super_admin: 1, token_version: 1, type: 'access' },
+        getJwtSecret(),
+        { expiresIn: -60 }
+      );
+      await page.evaluate((t) => localStorage.setItem('token', t), expiredToken);
+
+      // Click Publish Course Definition
+      const publishBtn = page.getByRole('button', { name: /Publish Course Definition/i });
+      await publishBtn.waitFor({ state: 'visible', timeout: 5000 });
+      await Promise.all([
+        page.waitForResponse(res => res.url().includes('/publish') && res.status() === 200, { timeout: 10000 }),
+        publishBtn.click()
+      ]);
+
+      // 5. Assert database: exactly 1 published record with polished review edit
+      const published = db.prepare('SELECT * FROM course_definitions WHERE name = ?').get('Directing Masterclass Workshop 2026');
+      assert.ok(published, 'Course definition must be inserted into SQLite');
+      assert.strictEqual(published.status, 'published', 'Course definition status must be published');
+      assert.strictEqual(published.description, 'Directing Masterclass Workshop 2026 - Polished Review Edit', 'Polished review edit must be persisted');
+
+      // 6. Reload page and verify persisted result in UI!
+      await page.reload();
+      await page.waitForLoadState('domcontentloaded');
+
+      // Wait for React to finish rendering the course definition in the list
+      const courseCard = page.locator('text=Directing Masterclass Workshop 2026').first();
+      await courseCard.waitFor({ state: 'visible', timeout: 10000 });
+      assert.ok(await courseCard.isVisible(), 'UI must render the persisted course after reload');
+
+      await desktopContext.close();
+    });
+
+    // ── STEP 4: [Real Login & MFA] Mobile Viewport (390x844), Session Revocation, Draft Isolation & Recovery ──
+    await runStep('[Real Login & MFA] Mobile viewport (390x844), session revocation, draft isolation & recovery', async () => {
+      // Simulate modern mobile form factor (iPhone 14 / modern Android)
+      const mobileContext = await browser.newContext({
+        viewport: { width: 390, height: 844 },
+        isMobile: true,
+        hasTouch: true
+      });
+
+      await mobileContext.addInitScript(() => {
+        window.turnstile = {
+          render: (container, options) => {
+            const input = document.createElement('input');
+            input.type = 'hidden';
+            input.name = 'cf-turnstile-response';
+            input.value = 'mock_test_turnstile_token';
+            container.appendChild(input);
+            if (typeof options === 'object' && typeof options.callback === 'function') {
+              setTimeout(() => options.callback('mock_test_turnstile_token'), 50);
+            }
+            return 'mock_turnstile_widget_mobile';
+          },
+          reset: () => {},
+          remove: () => {},
+          getResponse: () => 'mock_test_turnstile_token'
+        };
+      });
+
+      const page = await mobileContext.newPage();
+      page.on('console', msg => console.log('MOBILE LOG [' + msg.type() + ']:', msg.text()));
+      page.on('response', res => { if (res.status() >= 400) console.log('MOBILE HTTP ' + res.status() + ':', res.url()); });
+
+      // Reset last_totp_timestamp for Admin 1
+      db.prepare('UPDATE users SET last_totp_timestamp = 0 WHERE id = 1').run();
+
+      // 1. Admin 1 logs in via mobile UI with Turnstile and TOTP MFA
+      await page.goto(`${baseUrl}/admin/login`);
+      await page.waitForLoadState('domcontentloaded');
+
+      const userInput = page.locator('#username');
+      await userInput.waitFor({ state: 'visible', timeout: 8000 });
+      await userInput.fill('lead');
+
+      const passInput = page.locator('#password');
+      await passInput.fill('Password123!');
+      await page.waitForTimeout(200);
+
+      await page.locator('button[type="submit"]').first().click();
+
+      // TOTP MFA Challenge
+      const totpInput = page.locator('#totpCode');
+      await totpInput.waitFor({ state: 'visible', timeout: 8000 });
+      const totpCode = generateTotpCode(rawTotpSecret);
+      await totpInput.fill(totpCode);
+      await page.getByRole('button', { name: /Verify & Continue/i }).click();
+
+      await page.waitForFunction(() => !window.location.pathname.includes('/login'), null, { timeout: 10000 });
+
+      // 2. Open Course Maker on mobile
       await page.goto(`${baseUrl}/admin/course-maker?mode=builder`);
       await page.waitForLoadState('domcontentloaded');
 
       const nameInput = page.locator('input[placeholder*="Masterclass"]').or(page.locator('input[placeholder*="Directing"]')).or(page.locator('input[name="name"]')).first();
       await nameInput.waitFor({ state: 'visible', timeout: 8000 });
-      await nameInput.fill('Cinematography Masterclass 2026');
+      await nameInput.fill('Mobile Cinematography Workshop 2026');
 
       const descInput = page.locator('textarea.cm-textarea').or(page.locator('textarea[placeholder*="summary of skills"]')).first();
       await descInput.waitFor({ state: 'visible', timeout: 5000 });
-      await descInput.fill('Original draft content before session revocation');
+      await descInput.fill('Smartphone cinema masterclass on mobile viewport.');
 
-      // Add phase title so draft passes validation
       const phaseTitleInput = page.locator('input[placeholder*="Module"]').or(page.locator('input[placeholder*="Phase"]')).first();
       if (await phaseTitleInput.isVisible()) {
-        await phaseTitleInput.fill('Phase 1: Camera & Lighting');
+        await phaseTitleInput.fill('Phase 1: Mobile Gimbals & Microphones');
       }
 
-      // 3. Real server-side session revocation
-      // We revoke Admin 1's session by bumping token_version in SQLite (simulating admin password reset or session kill)
+      // 3. Server-side session revocation: simulate admin password reset or session kill
       db.prepare('UPDATE users SET token_version = token_version + 1 WHERE id = 1').run();
 
-      // Now trigger an authenticated operation in Course Maker (click "Save as Draft")
-      const saveDraftBtn = page.getByRole('button', { name: /Save as Draft/i });
+      // Trigger authenticated call in Course Maker: click "Save as Draft"
+      const saveDraftBtn = page.getByRole('button', { name: /Save as Draft/i }).first();
+      await saveDraftBtn.scrollIntoViewIfNeeded();
       await saveDraftBtn.click();
 
-      // The API call fails with 401 Session revoked -> apiClient dispatches bfi:session-expired -> draft saved -> ProtectedRoute redirects
+      // apiClient intercepts 401 SESSION_REVOKED -> saves draft to localStorage -> dispatches bfi:session-expired -> ProtectedRoute navigates to /admin/login
       await page.waitForFunction(() => window.location.pathname.includes('/admin/login'), null, { timeout: 10000 });
-      assert.ok(page.url().includes('session_expired=true'), 'URL must preserve session_expired=true parameter');
-      assert.ok(page.url().includes('redirect='), 'URL must preserve redirect parameter');
+      assert.ok(page.url().includes('session_expired=true'), 'Mobile URL must preserve session_expired=true');
+      assert.ok(page.url().includes('redirect='), 'Mobile URL must preserve redirect target');
 
       const noticeText = await page.textContent('body');
       assert.ok(
         noticeText.includes('session has expired') || noticeText.includes('safely preserved') || noticeText.includes('Restricted Area'),
-        'Login page must display session expired preservation notice'
+        'Mobile login page must display session expired draft preservation notice'
       );
 
       // 4. Different account logs in (Admin 2 / Guest Admin)
@@ -492,27 +507,26 @@ async function main() {
       await user2Pass.fill('Password123!');
       await page.waitForTimeout(200);
 
-      const loginBtn2 = page.locator('button[type="submit"]').first();
-      await loginBtn2.click();
+      await page.locator('button[type="submit"]').first().click();
 
-      // Admin 2 has no MFA, so it immediately completes login and follows redirect to Course Maker
+      // Follows redirect to Course Maker
       await page.waitForFunction(() => window.location.pathname.includes('/admin/course-maker'), null, { timeout: 10000 });
       await page.waitForLoadState('domcontentloaded');
 
-      // Assert: Course Maker title is completely EMPTY! User 2 CANNOT see User 1's draft!
+      // Assert: Admin 2 MUST NOT see Admin 1's draft!
       const admin2TitleInput = page.locator('input[placeholder*="Masterclass"]').or(page.locator('input[placeholder*="Directing"]')).or(page.locator('input[name="name"]')).first();
       await admin2TitleInput.waitFor({ state: 'visible', timeout: 8000 });
       const admin2Title = await admin2TitleInput.inputValue();
-      assert.strictEqual(admin2Title, '', 'Admin 2 MUST NOT see Admin 1 draft! Cross-account draft isolation verified.');
+      assert.strictEqual(admin2Title, '', 'Admin 2 MUST NOT see Admin 1 draft! Cross-account draft isolation verified on mobile.');
 
-      // 5. Admin 2 logs out, and Admin 1 logs back in via real UI and recovers the draft
+      // 5. Admin 2 logs out, and Admin 1 logs back in via real UI to recover the draft
       await page.evaluate(() => {
         localStorage.removeItem('token');
         localStorage.removeItem('auth_user_cache');
       });
-      await testContext.clearCookies();
+      await mobileContext.clearCookies();
 
-      // Clear last_totp_timestamp to simulate next 30-second window in rapid test execution
+      // Clear last_totp_timestamp for Admin 1's re-login
       db.prepare('UPDATE users SET last_totp_timestamp = 0 WHERE id = 1').run();
 
       await page.goto(`${baseUrl}/admin/login?redirect=${encodeURIComponent('/admin/course-maker?mode=builder')}`);
@@ -543,36 +557,34 @@ async function main() {
       const restoredTitleInput = page.locator('input[placeholder*="Masterclass"]').or(page.locator('input[placeholder*="Directing"]')).or(page.locator('input[name="name"]')).first();
       await restoredTitleInput.waitFor({ state: 'visible', timeout: 8000 });
       const restoredTitle = await restoredTitleInput.inputValue();
-      assert.strictEqual(restoredTitle, 'Cinematography Masterclass 2026', 'Admin 1 unsaved draft title MUST be restored!');
+      assert.strictEqual(restoredTitle, 'Mobile Cinematography Workshop 2026', 'Admin 1 unsaved draft title MUST be restored on mobile!');
 
       const restoredDescInput = page.locator('textarea.cm-textarea').or(page.locator('textarea[placeholder*="summary of skills"]')).first();
       const restoredDesc = await restoredDescInput.inputValue();
-      assert.strictEqual(restoredDesc, 'Original draft content before session revocation', 'Admin 1 unsaved draft description MUST be restored!');
+      assert.strictEqual(restoredDesc, 'Smartphone cinema masterclass on mobile viewport.', 'Admin 1 unsaved draft description MUST be restored on mobile!');
 
-      // 6. Make final edit before publishing
-      await restoredDescInput.fill('Cinematography Masterclass 2026 - Polished & Approved by Lead Admin');
+      // Make final review edit and publish
+      await restoredDescInput.fill('Mobile Cinematography Workshop 2026 - Polished Mobile Workshop');
 
-      // Proceed to Review mode
       const reviewNavBtn = page.getByRole('button', { name: /Review & Publish|Review Rules Before Publishing/i }).first();
-      await reviewNavBtn.click();
+      await reviewNavBtn.click({ force: true });
       await page.waitForTimeout(300);
 
-      // Publish the course definition
       const publishBtn = page.getByRole('button', { name: /Publish Course Definition/i });
       await publishBtn.waitFor({ state: 'visible', timeout: 5000 });
       await Promise.all([
         page.waitForResponse(res => res.url().includes('/publish') && res.status() === 200, { timeout: 10000 }),
-        publishBtn.click()
+        publishBtn.click({ force: true })
       ]);
 
-      // Assert SQLite: exactly one course definition published with final review edit!
-      const published = db.prepare('SELECT * FROM course_definitions WHERE name = ?').get('Cinematography Masterclass 2026');
+      // Assert SQLite: exactly one course definition published with final review edit
+      const published = db.prepare('SELECT * FROM course_definitions WHERE name = ?').get('Mobile Cinematography Workshop 2026');
       assert.ok(published, 'Course definition must be inserted into SQLite');
       assert.strictEqual(published.status, 'published', 'Course definition status must be published');
-      assert.strictEqual(published.description, 'Cinematography Masterclass 2026 - Polished & Approved by Lead Admin', 'Final review edit must be persisted');
+      assert.strictEqual(published.description, 'Mobile Cinematography Workshop 2026 - Polished Mobile Workshop', 'Final review edit must be persisted');
       assert.strictEqual(published.created_by, 1, 'Created by must match Admin 1');
 
-      await testContext.close();
+      await mobileContext.close();
     });
 
   } finally {

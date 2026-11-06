@@ -221,11 +221,38 @@ async function main() {
       assert.strictEqual(defs[0].status, 'published', 'Course definition status must be published');
     });
 
-    // ── TEST 2: Security: Stolen Previous Refresh Token Replay is Rejected & Revokes Session (RFC 6819) ──
-    await runTest('Security: Stolen previous token replay is rejected with 401 TOKEN_ALREADY_ROTATED and revokes session', async () => {
+    // ── TEST 2A: Concurrency: Legitimate Concurrent Refresh Within 15s Grace Window Succeeds ──
+    await runTest('Concurrency: Legitimate concurrent refresh within 15s grace window succeeds without session revocation', async () => {
+      const { refreshJwt, sessionId } = createAdminSession(1);
+
+      // Tab 1 rotates Token A -> Token B
+      const rotRes = await fetch(`${baseUrl}/api/auth/refresh`, {
+        method: 'POST',
+        headers: { 'Cookie': `bfi_refresh_token=${refreshJwt}` }
+      });
+      assert.strictEqual(rotRes.status, 200, 'Initial rotation must succeed');
+      const rotData = await rotRes.json();
+      assert.ok(rotData.token, 'Must return valid access token');
+
+      // Tab 2 arrives concurrently (e.g. within 15 seconds) presenting Token A
+      const concurrentRes = await fetch(`${baseUrl}/api/auth/refresh`, {
+        method: 'POST',
+        headers: { 'Cookie': `bfi_refresh_token=${refreshJwt}` }
+      });
+      assert.strictEqual(concurrentRes.status, 200, 'Concurrent request within grace window must succeed with 200');
+      const concurrentData = await concurrentRes.json();
+      assert.ok(concurrentData.token, 'Concurrent tab must receive valid access token');
+
+      // Session in DB must still be alive and active!
+      const sessInDb = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId);
+      assert.ok(sessInDb, 'Active session must NOT be revoked during legitimate concurrency');
+    });
+
+    // ── TEST 2B: Security: Replay Outside 15s Grace Window Triggers RFC 6819 Automatic Reuse Detection ──
+    await runTest('Security: Replay outside 15s grace window triggers RFC 6819 reuse detection and revokes session', async () => {
       const { refreshJwt, sessionId, user } = createAdminSession(1);
 
-      // Step A: Legitimate rotation (Token A -> Token B)
+      // Legitimate rotation (Token A -> Token B)
       const rotRes = await fetch(`${baseUrl}/api/auth/refresh`, {
         method: 'POST',
         headers: { 'Cookie': `bfi_refresh_token=${refreshJwt}` }
@@ -234,35 +261,42 @@ async function main() {
       const setCookie = rotRes.headers.get('set-cookie');
       const newRefreshJwt = setCookie.match(/bfi_refresh_token=([^;]+)/)[1];
 
-      // Step B: Attacker attempts to replay the previous token (Token A)
+      // Simulate passage of time beyond the 15-second grace window (e.g. 20 seconds ago)
+      db.prepare(`
+        UPDATE sessions
+        SET last_rotated_at = datetime('now', '-20 seconds')
+        WHERE id = ?
+      `).run(sessionId);
+
+      // Attacker replays consumed token A outside the grace window
       const replayRes = await fetch(`${baseUrl}/api/auth/refresh`, {
         method: 'POST',
         headers: { 'Cookie': `bfi_refresh_token=${refreshJwt}` }
       });
 
-      // Assert: Previous token replay is STRICTLY REJECTED! Zero access tokens issued!
-      assert.strictEqual(replayRes.status, 401, 'Replay of previous token must be rejected with 401');
+      // Assert: Replay is rejected with 401 TOKEN_ALREADY_ROTATED
+      assert.strictEqual(replayRes.status, 401, 'Replay of previous token outside grace must be rejected with 401');
       const replayData = await replayRes.json();
       assert.strictEqual(replayData.code, 'TOKEN_ALREADY_ROTATED', 'Must identify token reuse');
 
-      // Step C: Assert automatic reuse revocation in SQLite
+      // Assert: Compromised session deleted from database immediately
       const sessInDb = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId);
-      assert.strictEqual(sessInDb, undefined, 'Compromised session MUST be deleted from database upon replay detection');
+      assert.strictEqual(sessInDb, undefined, 'Compromised session MUST be deleted from SQLite upon replay detection');
 
       const userAfter = db.prepare('SELECT token_version FROM users WHERE id = ?').get(user.id);
       assert.ok(userAfter.token_version > (user.token_version || 1), 'User token_version must be bumped to invalidate all derived tokens');
 
-      // Step D: Even the new token (Token B) is now invalid because the compromised session was revoked
+      // Even token B is now dead
       const followUpRes = await fetch(`${baseUrl}/api/auth/refresh`, {
         method: 'POST',
         headers: { 'Cookie': `bfi_refresh_token=${newRefreshJwt}` }
       });
-      assert.strictEqual(followUpRes.status, 401, 'New token must also be rejected because session was revoked for safety');
+      assert.strictEqual(followUpRes.status, 401, 'Token B must be rejected because session was revoked');
     });
 
-    // ── TEST 2B: Lost Refresh Response Handling ──
-    await runTest('Security: Lost refresh response forces secure re-authentication without data exposure', async () => {
-      const { refreshJwt } = createAdminSession(1);
+    // ── TEST 2C: Lost Refresh Response Handling ──
+    await runTest('Security: Lost refresh response retried outside grace window forces secure re-authentication', async () => {
+      const { refreshJwt, sessionId } = createAdminSession(1);
 
       // Server rotates token A -> token B
       const rotRes = await fetch(`${baseUrl}/api/auth/refresh`, {
@@ -271,12 +305,14 @@ async function main() {
       });
       assert.strictEqual(rotRes.status, 200);
 
-      // Simulate client dropped the connection before storing token B, so client retries with token A
+      // Client lost connection and retried after 20 seconds
+      db.prepare("UPDATE sessions SET last_rotated_at = datetime('now', '-20 seconds') WHERE id = ?").run(sessionId);
+
       const retryRes = await fetch(`${baseUrl}/api/auth/refresh`, {
         method: 'POST',
         headers: { 'Cookie': `bfi_refresh_token=${refreshJwt}` }
       });
-      assert.strictEqual(retryRes.status, 401, 'Client retrying with old token must be rejected with 401');
+      assert.strictEqual(retryRes.status, 401, 'Client retrying with old token after grace window must be rejected');
       const err = await retryRes.json();
       assert.strictEqual(err.code, 'TOKEN_ALREADY_ROTATED');
     });
