@@ -28,11 +28,14 @@ export default function AdminLogin() {
 
   const getSafeRedirect = () => {
     if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem('bfi_session_expired');
-    const redirect = searchParams.get('redirect');
+    let redirect = searchParams.get('redirect');
     if (redirect && redirect.startsWith('/') && !redirect.startsWith('//')) {
+      if (redirect.startsWith('/bfi-classroom/')) {
+        redirect = redirect.slice('/bfi-classroom'.length);
+      }
       return redirect;
     }
-    return '/';
+    return '/admin';
   };
 
   // Strip the 'admin@' prefix from display value (it is always locked/prepended)
@@ -249,6 +252,11 @@ export default function AdminLogin() {
               <ShieldAlert className="text-danger" size={24} /> Restricted Area
             </h2>
             <p className="subtitle">Sign in to manage student accounts and certifications.</p>
+            {searchParams.get('session_expired') === 'true' && (
+              <div className="info-alert" style={{ background: 'rgba(59, 130, 246, 0.1)', color: '#60a5fa', border: '1px solid rgba(59, 130, 246, 0.3)', padding: '0.6rem 0.8rem', borderRadius: '8px', fontSize: '0.85rem', marginBottom: '1rem', textAlign: 'center' }}>
+                Your session has expired. Your unsaved course draft has been safely preserved. Please sign in to resume.
+              </div>
+            )}
             
             {error && <div className="error-alert" style={{ background: 'rgba(239, 68, 68, 0.1)', color: '#ef4444', border: '1px solid rgba(239, 68, 68, 0.3)' }}>{error}</div>}
 

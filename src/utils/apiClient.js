@@ -67,6 +67,9 @@ async function executeRefreshHttpCall() {
   if (response.status === 401 || response.status === 403) {
     // Session is dead on the server
     localStorage.removeItem('token');
+    if (typeof sessionStorage !== 'undefined') {
+      sessionStorage.setItem('bfi_session_expired', 'true');
+    }
     if (typeof window !== 'undefined') {
       window.dispatchEvent(
         new CustomEvent('bfi:session-expired', {
@@ -256,19 +259,39 @@ export async function apiClient(input, init = {}) {
 
   // Inspect 401 body without consuming the original response body
   let shouldRefresh = false;
+  let isRevoked = false;
   try {
     const clone = response.clone();
     const data = await clone.json();
-    if (
+    if (data.code === 'SESSION_REVOKED') {
+      isRevoked = true;
+    } else if (
       data.code === 'TOKEN_EXPIRED' ||
       data.error === 'Token expired' ||
       data.error === 'jwt expired' ||
-      Boolean(token && data.code !== 'SESSION_REVOKED')
+      Boolean(token)
     ) {
       shouldRefresh = true;
     }
   } catch {
     shouldRefresh = Boolean(token);
+  }
+
+  if (isRevoked) {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.removeItem('token');
+    }
+    if (typeof sessionStorage !== 'undefined') {
+      sessionStorage.setItem('bfi_session_expired', 'true');
+    }
+    if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+      window.dispatchEvent(
+        new CustomEvent('bfi:session-expired', {
+          detail: { reason: 'SESSION_REVOKED', status: 401 },
+        })
+      );
+    }
+    return response;
   }
 
   if (!shouldRefresh) {

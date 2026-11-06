@@ -221,29 +221,64 @@ async function main() {
       assert.strictEqual(defs[0].status, 'published', 'Course definition status must be published');
     });
 
-    // ── TEST 2: Real Routes: Concurrent Refresh Requests & Grace Window ──
-    await runTest('Real routes: Two concurrent refresh requests with same token succeed via 15s grace window', async () => {
+    // ── TEST 2: Security: Stolen Previous Refresh Token Replay is Rejected & Revokes Session (RFC 6819) ──
+    await runTest('Security: Stolen previous token replay is rejected with 401 TOKEN_ALREADY_ROTATED and revokes session', async () => {
+      const { refreshJwt, sessionId, user } = createAdminSession(1);
+
+      // Step A: Legitimate rotation (Token A -> Token B)
+      const rotRes = await fetch(`${baseUrl}/api/auth/refresh`, {
+        method: 'POST',
+        headers: { 'Cookie': `bfi_refresh_token=${refreshJwt}` }
+      });
+      assert.strictEqual(rotRes.status, 200, 'Initial legitimate rotation must succeed');
+      const setCookie = rotRes.headers.get('set-cookie');
+      const newRefreshJwt = setCookie.match(/bfi_refresh_token=([^;]+)/)[1];
+
+      // Step B: Attacker attempts to replay the previous token (Token A)
+      const replayRes = await fetch(`${baseUrl}/api/auth/refresh`, {
+        method: 'POST',
+        headers: { 'Cookie': `bfi_refresh_token=${refreshJwt}` }
+      });
+
+      // Assert: Previous token replay is STRICTLY REJECTED! Zero access tokens issued!
+      assert.strictEqual(replayRes.status, 401, 'Replay of previous token must be rejected with 401');
+      const replayData = await replayRes.json();
+      assert.strictEqual(replayData.code, 'TOKEN_ALREADY_ROTATED', 'Must identify token reuse');
+
+      // Step C: Assert automatic reuse revocation in SQLite
+      const sessInDb = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId);
+      assert.strictEqual(sessInDb, undefined, 'Compromised session MUST be deleted from database upon replay detection');
+
+      const userAfter = db.prepare('SELECT token_version FROM users WHERE id = ?').get(user.id);
+      assert.ok(userAfter.token_version > (user.token_version || 1), 'User token_version must be bumped to invalidate all derived tokens');
+
+      // Step D: Even the new token (Token B) is now invalid because the compromised session was revoked
+      const followUpRes = await fetch(`${baseUrl}/api/auth/refresh`, {
+        method: 'POST',
+        headers: { 'Cookie': `bfi_refresh_token=${newRefreshJwt}` }
+      });
+      assert.strictEqual(followUpRes.status, 401, 'New token must also be rejected because session was revoked for safety');
+    });
+
+    // ── TEST 2B: Lost Refresh Response Handling ──
+    await runTest('Security: Lost refresh response forces secure re-authentication without data exposure', async () => {
       const { refreshJwt } = createAdminSession(1);
 
-      // Fire 2 simultaneous requests with the EXACT SAME initial refresh cookie
-      const [res1, res2] = await Promise.all([
-        fetch(`${baseUrl}/api/auth/refresh`, {
-          method: 'POST',
-          headers: { 'Cookie': `bfi_refresh_token=${refreshJwt}` }
-        }),
-        fetch(`${baseUrl}/api/auth/refresh`, {
-          method: 'POST',
-          headers: { 'Cookie': `bfi_refresh_token=${refreshJwt}` }
-        })
-      ]);
+      // Server rotates token A -> token B
+      const rotRes = await fetch(`${baseUrl}/api/auth/refresh`, {
+        method: 'POST',
+        headers: { 'Cookie': `bfi_refresh_token=${refreshJwt}` }
+      });
+      assert.strictEqual(rotRes.status, 200);
 
-      assert.strictEqual(res1.status, 200, 'Tab 1 refresh request must succeed');
-      assert.strictEqual(res2.status, 200, 'Tab 2 refresh request must succeed via grace period');
-
-      const data1 = await res1.json();
-      const data2 = await res2.json();
-      assert.ok(data1.token, 'Tab 1 must receive a valid token');
-      assert.ok(data2.token, 'Tab 2 must receive a valid token');
+      // Simulate client dropped the connection before storing token B, so client retries with token A
+      const retryRes = await fetch(`${baseUrl}/api/auth/refresh`, {
+        method: 'POST',
+        headers: { 'Cookie': `bfi_refresh_token=${refreshJwt}` }
+      });
+      assert.strictEqual(retryRes.status, 401, 'Client retrying with old token must be rejected with 401');
+      const err = await retryRes.json();
+      assert.strictEqual(err.code, 'TOKEN_ALREADY_ROTATED');
     });
 
     // ── TEST 3: Security: Stale/Rotated Refresh Token Replay After Logout is Rejected ──

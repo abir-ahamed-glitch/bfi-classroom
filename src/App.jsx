@@ -68,9 +68,11 @@ const ProtectedRoute = ({ children, requiredRole, requireSuperAdmin = false, req
   if (!currentUser) {
     const isSessionExpired = typeof sessionStorage !== 'undefined' && sessionStorage.getItem('bfi_session_expired');
     const redirectUrl = location.pathname + location.search;
+    const isAdminRoute = location.pathname.startsWith('/admin') || (requiredRole && requiredRole.includes('admin') && !requiredRole.includes('student'));
+    const loginBase = isAdminRoute ? '/admin/login' : '/login';
     const loginTarget = isSessionExpired
-      ? `/login?session_expired=true&redirect=${encodeURIComponent(redirectUrl)}`
-      : `/login?redirect=${encodeURIComponent(redirectUrl)}`;
+      ? `${loginBase}?session_expired=true&redirect=${encodeURIComponent(redirectUrl)}`
+      : `${loginBase}?redirect=${encodeURIComponent(redirectUrl)}`;
     return <Navigate to={loginTarget} replace />;
   }
 
@@ -100,8 +102,20 @@ const ProtectedRoute = ({ children, requiredRole, requireSuperAdmin = false, req
 // Redirect authenticated users away from login pages
 const LoginRoute = ({ children }) => {
   const { currentUser, loading } = useAuth();
+  const location = useLocation();
   if (loading) return null;
-  if (currentUser) return <Navigate to="/" replace />;
+  if (currentUser) {
+    const searchParams = new URLSearchParams(location.search);
+    let redirect = searchParams.get('redirect');
+    if (redirect && redirect.startsWith('/') && !redirect.startsWith('//')) {
+      if (redirect.startsWith('/bfi-classroom/')) {
+        redirect = redirect.slice('/bfi-classroom'.length);
+      }
+      return <Navigate to={redirect} replace />;
+    }
+    const defaultTarget = currentUser.role === 'admin' ? '/admin' : '/';
+    return <Navigate to={defaultTarget} replace />;
+  }
   return children;
 };
 

@@ -867,17 +867,10 @@ router.post('/refresh', (req, res) => {
     const decoded = jwt.verify(refreshToken, getJwtRefreshSecret());
     const tokenHash = hashToken(refreshToken);
     const session = db.prepare(`
-      SELECT id, token_hash, prev_token_hash, last_rotated_at
+      SELECT id, user_id, token_hash, prev_token_hash, last_rotated_at
       FROM sessions
       WHERE user_id = ?
-        AND (
-          token_hash = ?
-          OR (
-            prev_token_hash = ?
-            AND last_rotated_at IS NOT NULL
-            AND datetime(last_rotated_at, '+15 seconds') > datetime('now')
-          )
-        )
+        AND (token_hash = ? OR prev_token_hash = ?)
         AND datetime(expires_at) > datetime('now')
       LIMIT 1
     `).get(decoded.id, tokenHash, tokenHash);
@@ -907,30 +900,39 @@ router.post('/refresh', (req, res) => {
       return res.status(401).json({ error: 'Session revoked' });
     }
 
-    // If the request matched prev_token_hash, another concurrent request already rotated the token within the grace window.
-    // In that case, issue a fresh access token for the active session without rotating again, preventing race conditions across tabs.
-    const isGraceMatch = session.prev_token_hash === tokenHash && session.token_hash !== tokenHash;
-
-    if (!isGraceMatch) {
-      // Refresh token rotation
-      const newRefreshToken = jwt.sign(
-        { id: user.id, username: user.username, role: user.role, is_super_admin: user.is_super_admin, token_version: user.token_version || 1, jti: crypto.randomUUID() },
-        getJwtRefreshSecret(),
-        { expiresIn: '7d' }
-      );
-      const newExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
-      db.prepare(`
-        UPDATE sessions 
-        SET prev_token_hash = token_hash,
-            token_hash = ?,
-            expires_at = ?,
-            last_activity = datetime('now'),
-            last_rotated_at = datetime('now')
-        WHERE id = ?
-      `).run(hashToken(newRefreshToken), newExpiresAt, session.id);
-
-      setRefreshCookie(req, res, newRefreshToken);
+    // REUSE DETECTION (RFC 6819 Section 5.2.2.3):
+    // If the presented token matches prev_token_hash rather than the active token_hash,
+    // this token was already rotated and consumed. In accordance with OAuth 2.0 Security BCP,
+    // previous-token replay is strictly eliminated: we immediately revoke the compromised session
+    // and bump user.token_version so neither token can be used by an attacker.
+    if (session.prev_token_hash === tokenHash && session.token_hash !== tokenHash) {
+      db.prepare('DELETE FROM sessions WHERE id = ?').run(session.id);
+      db.prepare('UPDATE users SET token_version = token_version + 1 WHERE id = ?').run(user.id);
+      res.clearCookie(REFRESH_COOKIE_NAME, { path: '/' });
+      return res.status(401).json({ 
+        error: 'Refresh token has already been consumed. Session revoked for security.',
+        code: 'TOKEN_ALREADY_ROTATED'
+      });
     }
+
+    // Refresh token rotation (Strict single-use)
+    const newRefreshToken = jwt.sign(
+      { id: user.id, username: user.username, role: user.role, is_super_admin: user.is_super_admin, token_version: user.token_version || 1, jti: crypto.randomUUID() },
+      getJwtRefreshSecret(),
+      { expiresIn: '7d' }
+    );
+    const newExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    db.prepare(`
+      UPDATE sessions 
+      SET prev_token_hash = token_hash,
+          token_hash = ?,
+          expires_at = ?,
+          last_activity = datetime('now'),
+          last_rotated_at = datetime('now')
+      WHERE id = ?
+    `).run(hashToken(newRefreshToken), newExpiresAt, session.id);
+
+    setRefreshCookie(req, res, newRefreshToken);
 
     return res.json({
       token: signAccessToken(user, session.id),

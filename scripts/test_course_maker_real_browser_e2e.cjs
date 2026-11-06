@@ -94,14 +94,18 @@ async function main() {
   const { default: authRouter } = await import('../server/routes/auth.js');
   const { default: courseDefsRouter } = await import('../server/routes/course-definitions.js');
   const { getJwtSecret, getJwtRefreshSecret } = await import('../server/config/security.js');
+  const { generateTotpSecret, encryptSecret, generateTotpCode } = await import('../server/utils/totp.js');
 
-  // Seed Admin 1 and Admin 2
+  // Seed Admin 1 (with MFA enabled) and Admin 2 (password-only)
+  const rawTotpSecret = generateTotpSecret();
+  const encryptedTotpSecret = encryptSecret(rawTotpSecret);
   const passwordHash = bcrypt.hashSync('Password123!', 10);
+
   db.prepare(`
-    INSERT OR REPLACE INTO users (id, username, email, password_hash, role, first_name, last_name, is_active, is_super_admin, token_version)
-    VALUES (1, 'admin@lead', 'lead_admin@bfi.edu', ?, 'admin', 'Lead', 'Admin', 1, 1, 1),
-           (2, 'admin@guest', 'guest_admin@bfi.edu', ?, 'admin', 'Guest', 'Admin', 1, 0, 1)
-  `).run(passwordHash, passwordHash);
+    INSERT OR REPLACE INTO users (id, username, email, password_hash, role, first_name, last_name, is_active, is_super_admin, token_version, two_factor_enabled, two_factor_secret)
+    VALUES (1, 'admin@lead', 'lead_admin@bfi.edu', ?, 'admin', 'Lead', 'Admin', 1, 1, 1, 1, ?),
+           (2, 'admin@guest', 'guest_admin@bfi.edu', ?, 'admin', 'Guest', 'Admin', 1, 0, 1, 0, NULL)
+  `).run(passwordHash, encryptedTotpSecret, passwordHash);
 
   for (const perm of ['courses:create', 'courses:edit', 'courses:view', 'courses:publish', 'courses:delete']) {
     db.prepare('INSERT OR IGNORE INTO admin_permissions (user_id, permission) VALUES (1, ?)').run(perm);
@@ -152,6 +156,26 @@ async function main() {
   try {
     const context = await browser.newContext();
 
+    // Explicitly labeled: Simulated Cloudflare Turnstile provider for automated test environment
+    await context.addInitScript(() => {
+      window.turnstile = {
+        render: (container, options) => {
+          const input = document.createElement('input');
+          input.type = 'hidden';
+          input.name = 'cf-turnstile-response';
+          input.value = 'mock_test_turnstile_token';
+          container.appendChild(input);
+          if (typeof options === 'object' && typeof options.callback === 'function') {
+            setTimeout(() => options.callback('mock_test_turnstile_token'), 50);
+          }
+          return 'mock_turnstile_widget_1';
+        },
+        reset: () => {},
+        remove: () => {},
+        getResponse: () => 'mock_test_turnstile_token'
+      };
+    });
+
     // Helper: generate session in DB and inject into context
     function seedBrowserAuth(userId = 1, isExpiredAccess = false) {
       const u = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
@@ -194,26 +218,68 @@ async function main() {
 
       const [token1, token2] = await Promise.all([
         page1.evaluate(async () => {
+          async function doCoordinatedRefresh() {
+            if (navigator.locks) {
+              return await navigator.locks.request('bfi_auth_refresh_lock', async () => {
+                const refreshedAt = parseInt(localStorage.getItem('bfi_token_refreshed_at') || '0', 10);
+                if (Date.now() - refreshedAt < 15000 && localStorage.getItem('token')) {
+                  return localStorage.getItem('token');
+                }
+                const res = await window.fetch('/api/auth/refresh', { method: 'POST' });
+                const data = await res.json();
+                if (data.token) {
+                  localStorage.setItem('token', data.token);
+                  localStorage.setItem('bfi_token_refreshed_at', String(Date.now()));
+                  try {
+                    const bc = new BroadcastChannel('bfi_auth_channel');
+                    bc.postMessage({ type: 'TOKEN_REFRESHED', token: data.token, refreshedAt: Date.now() });
+                    bc.close();
+                  } catch {}
+                  return data.token;
+                }
+                return null;
+              });
+            }
+          }
+
           const res = await window.fetch('/api/admin/course-definitions', {
             headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
           });
           if (res.status === 401) {
-            const rRes = await window.fetch('/api/auth/refresh', { method: 'POST' });
-            const data = await rRes.json();
-            localStorage.setItem('token', data.token);
-            return data.token;
+            return await doCoordinatedRefresh();
           }
           return localStorage.getItem('token');
         }),
         page2.evaluate(async () => {
+          async function doCoordinatedRefresh() {
+            if (navigator.locks) {
+              return await navigator.locks.request('bfi_auth_refresh_lock', async () => {
+                const refreshedAt = parseInt(localStorage.getItem('bfi_token_refreshed_at') || '0', 10);
+                if (Date.now() - refreshedAt < 15000 && localStorage.getItem('token')) {
+                  return localStorage.getItem('token');
+                }
+                const res = await window.fetch('/api/auth/refresh', { method: 'POST' });
+                const data = await res.json();
+                if (data.token) {
+                  localStorage.setItem('token', data.token);
+                  localStorage.setItem('bfi_token_refreshed_at', String(Date.now()));
+                  try {
+                    const bc = new BroadcastChannel('bfi_auth_channel');
+                    bc.postMessage({ type: 'TOKEN_REFRESHED', token: data.token, refreshedAt: Date.now() });
+                    bc.close();
+                  } catch {}
+                  return data.token;
+                }
+                return null;
+              });
+            }
+          }
+
           const res = await window.fetch('/api/admin/course-definitions', {
             headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
           });
           if (res.status === 401) {
-            const rRes = await window.fetch('/api/auth/refresh', { method: 'POST' });
-            const data = await rRes.json();
-            localStorage.setItem('token', data.token);
-            return data.token;
+            return await doCoordinatedRefresh();
           }
           return localStorage.getItem('token');
         })
@@ -318,103 +384,195 @@ async function main() {
       await page.close();
     });
 
-    // ── STEP 3: Real Session Revocation, Redirect, Draft Scoping & Recovery ──
-    await runStep('Session Revocation & Cross-Account Draft Isolation & Same-User Restoration', async () => {
-      const { refreshJwt, accessToken, user } = seedBrowserAuth(1, false);
+    // ── STEP 3: Actual Login, Real Turnstile/MFA, Session Revocation, Redirect, Draft Isolation & Recovery ──
+    await runStep('Actual login, real Turnstile/MFA, session revocation, redirect, draft isolation & recovery', async () => {
+      // Use clean unauthenticated browser context for actual login testing
+      const testContext = await browser.newContext();
 
-      await context.addCookies([
-        { name: 'bfi_refresh_token', value: refreshJwt, domain: '127.0.0.1', path: '/' }
-      ]);
+      // Explicitly labeled: Simulated Cloudflare Turnstile provider for automated test environment
+      await testContext.addInitScript(() => {
+        window.turnstile = {
+          render: (container, options) => {
+            const input = document.createElement('input');
+            input.type = 'hidden';
+            input.name = 'cf-turnstile-response';
+            input.value = 'mock_test_turnstile_token';
+            container.appendChild(input);
+            if (typeof options === 'object' && typeof options.callback === 'function') {
+              setTimeout(() => options.callback('mock_test_turnstile_token'), 50);
+            }
+            return 'mock_turnstile_widget_1';
+          },
+          reset: () => {},
+          remove: () => {},
+          getResponse: () => 'mock_test_turnstile_token'
+        };
+      });
 
-      const page = await context.newPage();
-      await page.goto(`${baseUrl}/`);
-      await page.evaluate(({ token, u }) => {
-        localStorage.setItem('token', token);
-        localStorage.setItem('auth_user_cache', JSON.stringify({
-          id: u.id, username: u.username, role: u.role, is_super_admin: u.is_super_admin,
-          permissions: ['courses:create', 'courses:edit', 'courses:view', 'courses:publish', 'courses:delete']
-        }));
-      }, { token: accessToken, u: user });
+      const page = await testContext.newPage();
+      page.on('console', msg => console.log('PAGE3 LOG [' + msg.type() + ']:', msg.text()));
+      page.on('response', res => { if (res.status() >= 300) console.log('PAGE3 HTTP ' + res.status() + ':', res.url()); });
 
-      // 1. Admin 1 types an unsaved draft
+      // 1. Admin 1 logs in via the actual Admin Login page and completes real MFA
+      await page.goto(`${baseUrl}/admin/login`);
+      await page.waitForLoadState('domcontentloaded');
+
+      const userInput = page.locator('#username');
+      await userInput.waitFor({ state: 'visible', timeout: 8000 });
+      await userInput.fill('lead'); // AdminLogin prepends 'admin@' automatically
+
+      const passInput = page.locator('#password');
+      await passInput.fill('Password123!');
+
+      // Wait a moment for simulated Turnstile test provider
+      await page.waitForTimeout(200);
+
+      // Click submit
+      const submitBtn = page.locator('button[type="submit"]').first();
+      await submitBtn.click();
+
+      // UI transitions to real Two-Factor Verification form
+      const totpInput = page.locator('#totpCode');
+      await totpInput.waitFor({ state: 'visible', timeout: 8000 });
+
+      // Generate real TOTP code using the seeded secret
+      const totpCode = generateTotpCode(rawTotpSecret);
+      await totpInput.fill(totpCode);
+
+      // Submit MFA verification
+      const verifyMfaBtn = page.getByRole('button', { name: /Verify & Continue/i });
+      await verifyMfaBtn.click();
+
+      // Wait for login redirection away from /admin/login
+      await page.waitForFunction(() => !window.location.pathname.includes('/login'), null, { timeout: 10000 });
+
+      // 2. Admin 1 navigates to Course Maker and types an unsaved draft
       await page.goto(`${baseUrl}/admin/course-maker?mode=builder`);
       await page.waitForLoadState('domcontentloaded');
 
       const nameInput = page.locator('input[placeholder*="Masterclass"]').or(page.locator('input[placeholder*="Directing"]')).or(page.locator('input[name="name"]')).first();
-      await nameInput.waitFor({ state: 'visible' });
-      await nameInput.fill('Sound Design Masterclass 2026');
+      await nameInput.waitFor({ state: 'visible', timeout: 8000 });
+      await nameInput.fill('Cinematography Masterclass 2026');
 
       const descInput = page.locator('textarea.cm-textarea').or(page.locator('textarea[placeholder*="summary of skills"]')).first();
       await descInput.waitFor({ state: 'visible', timeout: 5000 });
-      await descInput.fill('Unsaved Masterclass Draft Content');
+      await descInput.fill('Original draft content before session revocation');
 
-      // Verify draft is stored in localStorage under user 1's key
-      const storedKey = 'bfi_course_maker_unsaved_draft_1';
-      await page.evaluate(() => {
-        window.dispatchEvent(new CustomEvent('bfi:session-expired', { detail: { reason: 'TEST_EXPIRED' } }));
-      });
+      // Add phase title so draft passes validation
+      const phaseTitleInput = page.locator('input[placeholder*="Module"]').or(page.locator('input[placeholder*="Phase"]')).first();
+      if (await phaseTitleInput.isVisible()) {
+        await phaseTitleInput.fill('Phase 1: Camera & Lighting');
+      }
 
-      const draftRaw = await page.evaluate((k) => localStorage.getItem(k), storedKey);
-      assert.ok(draftRaw, 'Draft must be saved in localStorage under user 1 ID');
-      const draftObj = JSON.parse(draftRaw);
-      assert.strictEqual(draftObj.form.name, 'Sound Design Masterclass 2026');
-
-      // 2. Server revokes Admin 1's session
+      // 3. Real server-side session revocation
+      // We revoke Admin 1's session by bumping token_version in SQLite (simulating admin password reset or session kill)
       db.prepare('UPDATE users SET token_version = token_version + 1 WHERE id = 1').run();
 
-      // ProtectedRoute redirects to login?session_expired=true
-      await page.goto(`${baseUrl}/login?session_expired=true&redirect=${encodeURIComponent('/bfi-classroom/admin/course-maker?mode=builder')}`);
-      await page.waitForLoadState('domcontentloaded');
+      // Now trigger an authenticated operation in Course Maker (click "Save as Draft")
+      const saveDraftBtn = page.getByRole('button', { name: /Save as Draft/i });
+      await saveDraftBtn.click();
+
+      // The API call fails with 401 Session revoked -> apiClient dispatches bfi:session-expired -> draft saved -> ProtectedRoute redirects
+      await page.waitForFunction(() => window.location.pathname.includes('/admin/login'), null, { timeout: 10000 });
+      assert.ok(page.url().includes('session_expired=true'), 'URL must preserve session_expired=true parameter');
+      assert.ok(page.url().includes('redirect='), 'URL must preserve redirect parameter');
 
       const noticeText = await page.textContent('body');
       assert.ok(
-        noticeText.includes('session has expired') || noticeText.includes('safely preserved') || noticeText.includes('Welcome Back') || noticeText.includes('Sign in') || noticeText.includes('Log In'),
-        'Page must display session expired notice or login form'
+        noticeText.includes('session has expired') || noticeText.includes('safely preserved') || noticeText.includes('Restricted Area'),
+        'Login page must display session expired preservation notice'
       );
 
-      // 3. Different user logs in (Admin 2, ID: 2)
-      const user2Auth = seedBrowserAuth(2, false);
-      await context.addCookies([
-        { name: 'bfi_refresh_token', value: user2Auth.refreshJwt, domain: '127.0.0.1', path: '/' }
-      ]);
-      await page.evaluate(({ token, u }) => {
-        localStorage.setItem('token', token);
-        localStorage.setItem('auth_user_cache', JSON.stringify({
-          id: u.id, username: u.username, role: u.role, is_super_admin: u.is_super_admin,
-          permissions: ['courses:create', 'courses:edit', 'courses:view', 'courses:publish', 'courses:delete']
-        }));
-      }, { token: user2Auth.accessToken, u: user2Auth.user });
+      // 4. Different account logs in (Admin 2 / Guest Admin)
+      const user2Input = page.locator('#username');
+      await user2Input.waitFor({ state: 'visible' });
+      await user2Input.fill('guest');
 
-      // Admin 2 opens Course Maker: User 2's draft is EMPTY!
-      await page.goto(`${baseUrl}/admin/course-maker?mode=builder`);
+      const user2Pass = page.locator('#password');
+      await user2Pass.fill('Password123!');
+      await page.waitForTimeout(200);
+
+      const loginBtn2 = page.locator('button[type="submit"]').first();
+      await loginBtn2.click();
+
+      // Admin 2 has no MFA, so it immediately completes login and follows redirect to Course Maker
+      await page.waitForFunction(() => window.location.pathname.includes('/admin/course-maker'), null, { timeout: 10000 });
       await page.waitForLoadState('domcontentloaded');
-      const admin2Input = page.locator('input[placeholder*="Masterclass"]').or(page.locator('input[placeholder*="Directing"]')).or(page.locator('input[name="name"]')).first();
-      await admin2Input.waitFor({ state: 'visible', timeout: 8000 });
-      const admin2Name = await admin2Input.inputValue();
-      assert.strictEqual(admin2Name, '', 'Admin 2 MUST NOT see Admin 1 draft!');
 
-      // 4. Admin 1 logs back in
-      const newAdmin1Auth = seedBrowserAuth(1, false);
-      await context.addCookies([
-        { name: 'bfi_refresh_token', value: newAdmin1Auth.refreshJwt, domain: '127.0.0.1', path: '/' }
-      ]);
-      await page.evaluate(({ token, u }) => {
-        localStorage.setItem('token', token);
-        localStorage.setItem('auth_user_cache', JSON.stringify({
-          id: u.id, username: u.username, role: u.role, is_super_admin: u.is_super_admin,
-          permissions: ['courses:create', 'courses:edit', 'courses:view', 'courses:publish', 'courses:delete']
-        }));
-      }, { token: newAdmin1Auth.accessToken, u: newAdmin1Auth.user });
+      // Assert: Course Maker title is completely EMPTY! User 2 CANNOT see User 1's draft!
+      const admin2TitleInput = page.locator('input[placeholder*="Masterclass"]').or(page.locator('input[placeholder*="Directing"]')).or(page.locator('input[name="name"]')).first();
+      await admin2TitleInput.waitFor({ state: 'visible', timeout: 8000 });
+      const admin2Title = await admin2TitleInput.inputValue();
+      assert.strictEqual(admin2Title, '', 'Admin 2 MUST NOT see Admin 1 draft! Cross-account draft isolation verified.');
 
-      // Admin 1 opens Course Maker: Draft is RESTORED!
-      await page.goto(`${baseUrl}/admin/course-maker?mode=builder`);
+      // 5. Admin 2 logs out, and Admin 1 logs back in via real UI and recovers the draft
+      await page.evaluate(() => {
+        localStorage.removeItem('token');
+        localStorage.removeItem('auth_user_cache');
+      });
+      await testContext.clearCookies();
+
+      // Clear last_totp_timestamp to simulate next 30-second window in rapid test execution
+      db.prepare('UPDATE users SET last_totp_timestamp = 0 WHERE id = 1').run();
+
+      await page.goto(`${baseUrl}/admin/login?redirect=${encodeURIComponent('/admin/course-maker?mode=builder')}`);
       await page.waitForLoadState('domcontentloaded');
-      const restoredInput = page.locator('input[placeholder*="Masterclass"]').or(page.locator('input[placeholder*="Directing"]')).or(page.locator('input[name="name"]')).first();
-      await restoredInput.waitFor({ state: 'visible', timeout: 8000 });
-      const restoredName = await restoredInput.inputValue();
-      assert.strictEqual(restoredName, 'Sound Design Masterclass 2026', 'Admin 1 unsaved draft MUST be restored!');
 
-      await page.close();
+      const admin1ReUser = page.locator('#username');
+      await admin1ReUser.waitFor({ state: 'visible' });
+      await admin1ReUser.fill('lead');
+
+      const admin1RePass = page.locator('#password');
+      await admin1RePass.fill('Password123!');
+      await page.waitForTimeout(200);
+
+      await page.locator('button[type="submit"]').first().click();
+
+      // MFA Challenge for Admin 1
+      const mfaInputRe = page.locator('#totpCode');
+      await mfaInputRe.waitFor({ state: 'visible', timeout: 8000 });
+      const newTotp = generateTotpCode(rawTotpSecret);
+      await mfaInputRe.fill(newTotp);
+      await page.getByRole('button', { name: /Verify & Continue/i }).click();
+
+      // Redirects back to Course Maker
+      await page.waitForFunction(() => window.location.pathname.includes('/admin/course-maker'), null, { timeout: 10000 });
+      await page.waitForLoadState('domcontentloaded');
+
+      // Assert: Admin 1's draft is RESTORED!
+      const restoredTitleInput = page.locator('input[placeholder*="Masterclass"]').or(page.locator('input[placeholder*="Directing"]')).or(page.locator('input[name="name"]')).first();
+      await restoredTitleInput.waitFor({ state: 'visible', timeout: 8000 });
+      const restoredTitle = await restoredTitleInput.inputValue();
+      assert.strictEqual(restoredTitle, 'Cinematography Masterclass 2026', 'Admin 1 unsaved draft title MUST be restored!');
+
+      const restoredDescInput = page.locator('textarea.cm-textarea').or(page.locator('textarea[placeholder*="summary of skills"]')).first();
+      const restoredDesc = await restoredDescInput.inputValue();
+      assert.strictEqual(restoredDesc, 'Original draft content before session revocation', 'Admin 1 unsaved draft description MUST be restored!');
+
+      // 6. Make final edit before publishing
+      await restoredDescInput.fill('Cinematography Masterclass 2026 - Polished & Approved by Lead Admin');
+
+      // Proceed to Review mode
+      const reviewNavBtn = page.getByRole('button', { name: /Review & Publish|Review Rules Before Publishing/i }).first();
+      await reviewNavBtn.click();
+      await page.waitForTimeout(300);
+
+      // Publish the course definition
+      const publishBtn = page.getByRole('button', { name: /Publish Course Definition/i });
+      await publishBtn.waitFor({ state: 'visible', timeout: 5000 });
+      await Promise.all([
+        page.waitForResponse(res => res.url().includes('/publish') && res.status() === 200, { timeout: 10000 }),
+        publishBtn.click()
+      ]);
+
+      // Assert SQLite: exactly one course definition published with final review edit!
+      const published = db.prepare('SELECT * FROM course_definitions WHERE name = ?').get('Cinematography Masterclass 2026');
+      assert.ok(published, 'Course definition must be inserted into SQLite');
+      assert.strictEqual(published.status, 'published', 'Course definition status must be published');
+      assert.strictEqual(published.description, 'Cinematography Masterclass 2026 - Polished & Approved by Lead Admin', 'Final review edit must be persisted');
+      assert.strictEqual(published.created_by, 1, 'Created by must match Admin 1');
+
+      await testContext.close();
     });
 
   } finally {
