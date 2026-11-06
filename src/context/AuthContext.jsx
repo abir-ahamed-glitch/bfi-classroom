@@ -186,8 +186,13 @@ export function AuthProvider({ children }) {
     // ProtectedRoute reads that flag synchronously after currentUser becomes null, to decide
     // whether to append ?session_expired=true to the login redirect URL.
     // The flag is cleared only after a successful re-login (in login() and verifyMfa()).
-    localStorage.removeItem('bfi_session_dead');
-    localStorage.removeItem('bfi_refresh_in_progress');
+    // NOTE: bfi_session_dead is intentionally NOT removed here!
+    // Waiting tabs in other windows inspect bfi_session_dead to immediately abort
+    // pending refresh loops without issuing redundant requests.
+    // bfi_session_dead is cleared ONLY upon successful re-login (in login() and verifyMfa()).
+    //
+    // NOTE: bfi_refresh_in_progress is also NOT removed here!
+    // It is exclusively managed by the try/finally block in runWithLock() of the tab executing the refresh.
     setCurrentUser(null);
   };
 
