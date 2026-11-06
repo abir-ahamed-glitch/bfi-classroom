@@ -108,6 +108,13 @@ async function executeRefreshHttpCall() {
   const now = Date.now();
   localStorage.setItem('token', data.token);
   localStorage.setItem('bfi_token_refreshed_at', String(now));
+  try {
+    if (typeof BroadcastChannel !== 'undefined') {
+      const bc = new BroadcastChannel('bfi_auth_channel');
+      bc.postMessage({ type: 'TOKEN_REFRESHED', token: data.token, refreshedAt: now });
+      bc.close();
+    }
+  } catch { /* ignore */ }
 
   if (data.user) {
     if (data.user.profilePicture && !data.user.profile_picture) {
@@ -137,11 +144,11 @@ async function executeRefreshHttpCall() {
  *
  * @returns {Promise<string>} The new access token
  */
-export async function refreshAccessToken() {
+export async function refreshAccessToken(failedToken = null) {
   // 1. Check if token was refreshed by another request/tab within the last 15 seconds
   const currentToken = typeof localStorage !== 'undefined' ? localStorage.getItem('token') : null;
   const lastRefreshAt = typeof localStorage !== 'undefined' ? parseInt(localStorage.getItem('bfi_token_refreshed_at') || '0', 10) : 0;
-  if (currentToken && Date.now() - lastRefreshAt < 15000) {
+  if (currentToken && (!failedToken || currentToken !== failedToken) && Date.now() - lastRefreshAt < 15000) {
     return currentToken;
   }
 
@@ -157,7 +164,7 @@ export async function refreshAccessToken() {
         // Re-check timestamp once inside lock
         const tokenNow = localStorage.getItem('token');
         const refreshedAt = parseInt(localStorage.getItem('bfi_token_refreshed_at') || '0', 10);
-        if (tokenNow && Date.now() - refreshedAt < 15000) {
+        if (tokenNow && (!failedToken || tokenNow !== failedToken) && Date.now() - refreshedAt < 15000) {
           return tokenNow;
         }
         return executeRefreshHttpCall();
@@ -184,6 +191,7 @@ function isAuthEndpoint(url) {
     url.includes('/api/auth/refresh') ||
     url.includes('/api/auth/login') ||
     url.includes('/api/auth/logout') ||
+    url.includes('/api/auth/mfa/verify') ||
     url.includes('/api/auth/mfa-verify')
   );
 }
@@ -270,7 +278,7 @@ export async function apiClient(input, init = {}) {
   // Attempt coordinated token refresh
   let newToken = null;
   try {
-    newToken = await refreshAccessToken();
+    newToken = await refreshAccessToken(token);
   } catch {
     // If refresh failed (whether expired or network error), return original 401 response
     return response;
@@ -301,3 +309,18 @@ export function clearSession() {
 }
 
 export default apiClient;
+
+// Cross-tab real-time sync via BroadcastChannel
+if (typeof window !== 'undefined' && typeof BroadcastChannel !== 'undefined') {
+  try {
+    const authChannel = new BroadcastChannel('bfi_auth_channel');
+    authChannel.onmessage = (event) => {
+      if (event.data?.type === 'TOKEN_REFRESHED' && event.data.token) {
+        localStorage.setItem('token', event.data.token);
+        localStorage.setItem('bfi_token_refreshed_at', String(event.data.refreshedAt || Date.now()));
+      }
+    };
+  } catch {
+    /* ignore channel error */
+  }
+}

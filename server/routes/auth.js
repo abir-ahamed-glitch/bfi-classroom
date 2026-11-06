@@ -875,7 +875,7 @@ router.post('/refresh', (req, res) => {
           OR (
             prev_token_hash = ?
             AND last_rotated_at IS NOT NULL
-            AND datetime(last_rotated_at, '+30 seconds') > datetime('now')
+            AND datetime(last_rotated_at, '+15 seconds') > datetime('now')
           )
         )
         AND datetime(expires_at) > datetime('now')
@@ -944,25 +944,42 @@ router.post('/refresh', (req, res) => {
 
 router.post('/logout', (req, res) => {
   const refreshToken = req.cookies?.[REFRESH_COOKIE_NAME];
+  let sessionUserId = null;
+  let targetSessionId = null;
+
   if (refreshToken) {
-    db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(hashToken(refreshToken));
+    const hashed = hashToken(refreshToken);
+    const sess = db.prepare('SELECT id, user_id FROM sessions WHERE token_hash = ? OR prev_token_hash = ?').get(hashed, hashed);
+    if (sess) {
+      sessionUserId = sess.user_id;
+      targetSessionId = sess.id;
+      db.prepare('DELETE FROM sessions WHERE id = ?').run(sess.id);
+    } else {
+      db.prepare('DELETE FROM sessions WHERE token_hash = ? OR prev_token_hash = ?').run(hashed, hashed);
+    }
   }
+
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
   if (token) {
     try {
       const decoded = jwt.verify(token, getJwtSecret());
-      if (decoded.sessionId) {
+      if (decoded.sessionId && !targetSessionId) {
         db.prepare('DELETE FROM sessions WHERE id = ?').run(decoded.sessionId);
       }
       if (decoded.id) {
-        db.prepare('UPDATE users SET token_version = token_version + 1 WHERE id = ?').run(decoded.id);
-        securityEvents.emit('revoke_session', { userId: decoded.id, sessionId: decoded.sessionId });
+        sessionUserId = decoded.id;
       }
     } catch {
       // Ignore token verification errors during logout
     }
   }
+
+  if (sessionUserId) {
+    db.prepare('UPDATE users SET token_version = COALESCE(token_version, 1) + 1 WHERE id = ?').run(sessionUserId);
+    securityEvents.emit('revoke_session', { userId: sessionUserId, sessionId: targetSessionId });
+  }
+
   res.clearCookie(REFRESH_COOKIE_NAME, { path: '/' });
   res.json({ message: 'Logged out' });
 });

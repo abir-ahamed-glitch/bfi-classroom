@@ -582,7 +582,12 @@ router.post('/', authenticateToken, requireRole('admin'), requirePermission('cou
 
     const trimmedDraftId = typeof client_draft_id === 'string' && client_draft_id.trim() ? client_draft_id.trim() : null;
     if (trimmedDraftId) {
-      const existingByIdempotency = db.prepare('SELECT * FROM course_definitions WHERE client_draft_id = ? LIMIT 1').get(trimmedDraftId);
+      // Creator-scoped atomic idempotency check: only match drafts created by the authenticated user
+      const existingByIdempotency = db.prepare(`
+        SELECT * FROM course_definitions 
+        WHERE created_by = ? AND client_draft_id = ? 
+        LIMIT 1
+      `).get(req.user.id, trimmedDraftId);
       if (existingByIdempotency) {
         return res.status(200).json({
           success: true,
@@ -596,17 +601,9 @@ router.post('/', authenticateToken, requireRole('admin'), requirePermission('cou
 
     const slug = slugify(name);
 
-    // Check if a draft already exists with this slug
+    // Check if an unrelated draft already exists with this slug
     const existingDraft = db.prepare("SELECT * FROM course_definitions WHERE slug = ? AND status = 'draft'").get(slug);
     if (existingDraft) {
-      if (existingDraft.created_by === req.user.id) {
-        return res.status(200).json({
-          success: true,
-          id: existingDraft.id,
-          definition: existingDraft,
-          is_idempotent: true
-        });
-      }
       return res.status(409).json({ error: `A draft for "${name}" already exists. Edit the existing draft instead.` });
     }
 
@@ -628,20 +625,36 @@ router.post('/', authenticateToken, requireRole('admin'), requirePermission('cou
     `);
 
     const createCourseTx = db.transaction(() => {
-      const result = stmt.run(
-        slug,
-        version,
-        name,
-        course_type,
-        description,
-        duration_value,
-        duration_unit,
-        phase_count,
-        JSON.stringify(fullDefinition),
-        req.user.id,
-        req.user.id,
-        trimmedDraftId
-      );
+      let result;
+      try {
+        result = stmt.run(
+          slug,
+          version,
+          name,
+          course_type,
+          description,
+          duration_value,
+          duration_unit,
+          phase_count,
+          JSON.stringify(fullDefinition),
+          req.user.id,
+          req.user.id,
+          trimmedDraftId
+        );
+      } catch (insertErr) {
+        // Atomic race resolution for unique (created_by, client_draft_id)
+        if (trimmedDraftId && (insertErr.message.includes('UNIQUE') || insertErr.code === 'SQLITE_CONSTRAINT_UNIQUE')) {
+          const raceWinner = db.prepare(`
+            SELECT * FROM course_definitions 
+            WHERE created_by = ? AND client_draft_id = ? 
+            LIMIT 1
+          `).get(req.user.id, trimmedDraftId);
+          if (raceWinner) {
+            return { id: raceWinner.id, slug: raceWinner.slug, version: raceWinner.version, phase_count: raceWinner.phase_count, is_idempotent: true, definition: raceWinner };
+          }
+        }
+        throw insertErr;
+      }
 
       const newId = result.lastInsertRowid;
       recordAuditEventFromReq(req, {
@@ -654,10 +667,19 @@ router.post('/', authenticateToken, requireRole('admin'), requirePermission('cou
         throwOnError: true
       });
 
-      return { id: newId, slug, version, phase_count };
+      return { id: newId, slug, version, phase_count, is_idempotent: false };
     });
 
     const created = createCourseTx();
+
+    if (created.is_idempotent) {
+      return res.status(200).json({
+        success: true,
+        id: created.id,
+        definition: created.definition || created,
+        is_idempotent: true
+      });
+    }
 
     res.status(201).json({
       success: true,

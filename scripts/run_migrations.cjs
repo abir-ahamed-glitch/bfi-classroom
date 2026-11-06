@@ -26,7 +26,8 @@ const REQUIRED_MIGRATION_MODULES = [
   '20261028_admin_archiving_and_reset.cjs',
   '20261029_universal_mfa_and_super_admin.cjs',
   '20261030_schema_repairs_and_key_pair.cjs',
-  '20261104_batch_instructors_and_certificate_downloads.cjs'
+  '20261104_batch_instructors_and_certificate_downloads.cjs',
+  '20261106_session_grace_and_course_draft_idempotency.cjs'
 ];
 
 function findMigrationsDir() {
@@ -61,6 +62,7 @@ const { runAdminArchivingAndResetMigration } = require(path.join(migrationsDir, 
 const { runUniversalMfaAndSuperAdminMigration } = require(path.join(migrationsDir, '20261029_universal_mfa_and_super_admin.cjs'));
 const { runSchemaRepairsAndKeyPairMigration } = require(path.join(migrationsDir, '20261030_schema_repairs_and_key_pair.cjs'));
 const { runBatchInstructorsAndCertificateDownloadsMigration } = require(path.join(migrationsDir, '20261104_batch_instructors_and_certificate_downloads.cjs'));
+const { runSessionGraceAndCourseDraftIdempotencyMigration } = require(path.join(migrationsDir, '20261106_session_grace_and_course_draft_idempotency.cjs'));
 
 const MIGRATIONS = [
   { name: '20261023_super_admin', runner: runSuperAdminMigration },
@@ -72,6 +74,7 @@ const MIGRATIONS = [
   { name: '20261029_universal_mfa_and_super_admin', runner: runUniversalMfaAndSuperAdminMigration },
   { name: '20261030_schema_repairs_and_key_pair', runner: runSchemaRepairsAndKeyPairMigration },
   { name: '20261104_batch_instructors_and_certificate_downloads', runner: runBatchInstructorsAndCertificateDownloadsMigration },
+  { name: '20261106_session_grace_and_course_draft_idempotency', runner: runSessionGraceAndCourseDraftIdempotencyMigration },
 ];
 
 function resolveDatabasePath() {
@@ -141,7 +144,7 @@ function assertSchemaIntegrity(db) {
 
   // 3. Verify sessions table columns
   const sessionCols = db.prepare(`PRAGMA table_info(sessions)`).all().map(c => c.name);
-  for (const col of ['last_activity', 'sudo_verified_at']) {
+  for (const col of ['last_activity', 'sudo_verified_at', 'prev_token_hash', 'last_rotated_at']) {
     if (!sessionCols.includes(col)) {
       throw new Error(`Assertion failed: column sessions.${col} does not exist.`);
     }
@@ -256,6 +259,16 @@ function assertSchemaIntegrity(db) {
     if (!cdCols.includes(col)) {
       throw new Error(`Assertion failed: column certificate_downloads.${col} does not exist.`);
     }
+  }
+
+  // 8I. Verify course_definitions client_draft_id and unique index
+  const cdDefCols = db.prepare('PRAGMA table_info(course_definitions)').all().map(c => c.name);
+  if (!cdDefCols.includes('client_draft_id')) {
+    throw new Error('Assertion failed: column course_definitions.client_draft_id does not exist.');
+  }
+  const courseDefIndexes = db.prepare('PRAGMA index_list(course_definitions)').all().map(i => i.name);
+  if (!courseDefIndexes.includes('idx_course_defs_user_client_draft')) {
+    throw new Error('Assertion failed: index idx_course_defs_user_client_draft does not exist.');
   }
 
   // 9. Foreign key check

@@ -1601,7 +1601,9 @@ export function ensureSessionGraceAndIdempotencySchema(database) {
     if (!courseDefCols.includes('client_draft_id')) {
       database.prepare('ALTER TABLE course_definitions ADD COLUMN client_draft_id TEXT').run();
     }
-    database.prepare('CREATE INDEX IF NOT EXISTS idx_course_defs_client_draft_id ON course_definitions(client_draft_id)').run();
+    database.prepare('CREATE INDEX IF NOT EXISTS idx_sessions_prev_token_hash ON sessions(prev_token_hash)').run();
+    database.prepare('DROP INDEX IF EXISTS idx_course_defs_client_draft_id').run();
+    database.prepare('CREATE UNIQUE INDEX IF NOT EXISTS idx_course_defs_user_client_draft ON course_definitions(created_by, client_draft_id) WHERE client_draft_id IS NOT NULL').run();
   } catch (err) {
     console.error('Error ensuring session grace and idempotency schema:', err.message);
   }
