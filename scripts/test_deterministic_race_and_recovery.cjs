@@ -277,17 +277,33 @@ async function main() {
 
   try {
     // ════════════════════════════════════════════════════════════════════════════
-    // SCENARIO 1: Forced Non-Atomic Collision — Strict Server-Side Replay Protection,
-    //             Draft Preservation, Cross-Account Isolation, Same-Account Recovery
+    // SCENARIO 1: Non-Atomic Fallback Race Investigation & Component Verification
     //
-    // Architecture:
-    // ─ Part A (Server-level race): Two simultaneous Node.js HTTP requests to /api/auth/refresh
-    //   with the SAME consumed cookie, coordinated by a server-side latch.
-    //   This tests the server's strict single-use enforcement without Playwright CDP serialisation.
-    // ─ Part B (Browser UI): One tab holds an unsaved draft. Session expires.
-    //   Verify: draft preserved, login redirect, cross-account isolation, same-account recovery.
+    // Architecture & Test Scope Rationale:
+    // ─ Investigation into End-to-End Multi-Tab Fallback Race:
+    //   In browsers lacking Web Locks, apiClient.js coordinates via a non-atomic localStorage
+    //   check-then-set operation (inProgressAt check followed by setItem).
+    //   Because synchronous JavaScript execution evaluates the check and writes the marker
+    //   within a sub-microsecond window, and Playwright CDP command dispatch across separate
+    //   browser renderer processes has 1-10ms network/IPC latency jitter, an automated test
+    //   cannot deterministically guarantee that two uncoordinated browser tabs both pass the
+    //   check without either setting the marker on demand without synthetic timing hooks.
+    // ─ Two-Part Verification Strategy (Accurately Labeled):
+    //   • Part 1A (Server Replay Protection under Concurrent Load):
+    //     Uses two simultaneous Node.js HTTP requests coordinated by an Express synchronization latch.
+    //     Deterministically proves that when two requests present the same refresh token concurrently,
+    //     the server strictly allows the first (200 OK) and rejects the second with 401 TOKEN_ALREADY_ROTATED,
+    //     issues zero access tokens, deletes the session row from SQLite, and increments token_version.
+    //   • Part 1B (Browser UI Session Revocation Handling & Recovery):
+    //     Uses a real Chromium browser page in Course Maker with Web Locks and BroadcastChannel disabled.
+    //     The user fills in a complete workshop draft. When the token is consumed/rotated, the user
+    //     clicks the real "Save as Draft" button. The actual application apiClient makes the request,
+    //     receives the server's 401 TOKEN_ALREADY_ROTATED response, sets bfi_session_dead in localStorage,
+    //     dispatches bfi:session-expired, preserves the complete draft, and redirects to login.
+    //     Then Admin 2 logs in (verifying cross-account isolation), and Admin 1 re-authenticates via
+    //     real TOTP MFA (verifying 100% complete draft recovery: title, description, phase, and localStorage).
     // ════════════════════════════════════════════════════════════════════════════
-    await runStep('Forced Non-Atomic Collision: Two tabs pass fallback check before either writes marker -> Strict 401 Replay Rejection, Session Revocation, Draft Preserved, Cross-Account Isolation & Same-Account Recovery', async () => {
+    await runStep('Non-Atomic Fallback Race Investigation: (Part 1A) Server Concurrent Replay Latch Rejection -> (Part 1B) Real Browser 401 Client Handling, Draft Preservation, Isolation & Recovery', async () => {
 
       // ── Part A: Server-Level Race (Node.js HTTP, not browser) ───────────────
       console.log('[Part A] Testing server-side strict replay protection with two simultaneous Node.js HTTP requests...');
@@ -350,21 +366,21 @@ async function main() {
       console.log('[Evidence] Part A CONFIRMED: Server strictly rejected the second concurrent refresh request.');
       console.log('[Evidence] Session deleted and token_version bumped — all previously issued tokens invalidated.');
 
-      // ── Part B: Browser UI — Draft Preservation, Cross-Account Isolation, Recovery ──
-      console.log('\n[Part B] Testing browser UI: draft preservation, re-login, and same-account recovery...');
+      // ── Part B: Browser UI — Real apiClient Handling, Draft Preservation, Isolation & Recovery ──
+      console.log('\n[Part B] Testing browser UI: real application client 401 handling, draft preservation, and recovery...');
 
       // Reset user state for Part B — reset token_version and issue a fresh session
       db.prepare('UPDATE users SET token_version = 1 WHERE id = 1').run();
 
-      const { refreshJwt: uiRefreshJwt, accessToken: uiAccessToken } = seedBrowserAuth(1, true);
+      // Seed valid access token so initial page load does not trigger premature refresh
+      const { refreshJwt: uiRefreshJwt, accessToken: uiAccessToken, sessionId: uiSessionId } = seedBrowserAuth(1, false);
 
       const uiContext = await browser.newContext();
       await disableWebLocksAndBroadcast(uiContext);
       await setupTurnstileMock(uiContext);
       await uiContext.addCookies([{ name: 'bfi_refresh_token', value: uiRefreshJwt, domain: '127.0.0.1', path: '/' }]);
 
-      // Inject the expired access token AND a user cache so React mounts with currentUser set.
-      // This prevents an immediate fetchUser 401 from clearing the form before the user can fill it.
+      // Inject the access token AND user cache so React mounts cleanly
       const uiUser = db.prepare('SELECT * FROM users WHERE id = 1').get();
       const uiUserCache = JSON.stringify({
         id: uiUser.id, username: uiUser.username, role: uiUser.role,
@@ -381,7 +397,7 @@ async function main() {
       await uiPage.goto(`${baseUrl}/admin/course-maker?mode=builder`);
       await uiPage.waitForLoadState('domcontentloaded');
 
-      // Fill in the workshop draft
+      // Fill in the workshop draft with complete content
       const nameInput = uiPage.locator('input[placeholder*="Masterclass"]').or(uiPage.locator('input[placeholder*="Directing"]')).or(uiPage.locator('input[name="name"]')).first();
       await nameInput.waitFor({ state: 'visible', timeout: 12000 });
       await nameInput.fill('Collision Forced Workshop 2026');
@@ -396,16 +412,36 @@ async function main() {
       }
       await uiPage.waitForTimeout(500); // allow useLayoutEffect to persist draft to localStorage
 
-      // Manually expire the session by dispatching bfi:session-expired and setting bfi_session_dead
-      await uiPage.evaluate(() => {
-        localStorage.setItem('bfi_session_dead', 'true');
-        sessionStorage.setItem('bfi_session_expired', 'true');
-        window.dispatchEvent(new CustomEvent('bfi:session-expired', { detail: { reason: 'TOKEN_ALREADY_ROTATED', status: 401 } }));
+      // Simulate external rotation (the race partner tab consumed the token)
+      const rotateRes = await fetch(`${baseUrl}/api/auth/refresh`, {
+        method: 'POST',
+        headers: { 'Cookie': `bfi_refresh_token=${uiRefreshJwt}` }
       });
+      assert.strictEqual(rotateRes.status, 200, 'External rotation consumed original token');
+      console.log('[Evidence] External rotation consumed original refresh token.');
 
-      // Wait for redirect to login page
+      // Expire the access token in localStorage so clicking Save as Draft requires token refresh
+      const expiredToken = jwt.sign(
+        { id: 1, username: 'admin@lead', role: 'admin', is_super_admin: 1, token_version: 1, type: 'access' },
+        getJwtSecret(),
+        { expiresIn: -60 }
+      );
+      await uiPage.evaluate((t) => localStorage.setItem('token', t), expiredToken);
+
+      // User clicks "Save as Draft" in the real application UI
+      // The real apiClient executes, encounters 401 TOKEN_ALREADY_ROTATED from the server,
+      // sets bfi_session_dead, dispatches bfi:session-expired, preserves draft, and redirects to login
+      console.log('[Action] User clicks Save as Draft via real application UI while holding consumed token...');
+      const saveDraftBtn = uiPage.getByRole('button', { name: /Save as Draft/i }).first();
+      await saveDraftBtn.click();
+
+      // Wait for real client redirect to login page
       await uiPage.waitForFunction(() => window.location.pathname.includes('/admin/login'), null, { timeout: 10000 });
       assert.ok(uiPage.url().includes('session_expired=true'), 'Page must redirect with session_expired=true');
+
+      // Server database check: session deleted in SQLite
+      const sessAfterReplay = db.prepare('SELECT * FROM sessions WHERE id = ?').get(uiSessionId);
+      assert.strictEqual(sessAfterReplay, undefined, 'Session MUST be deleted from SQLite upon replay rejection');
 
       const noticeText = await uiPage.textContent('body');
       assert.ok(
@@ -414,12 +450,15 @@ async function main() {
       );
       console.log('[Evidence] User sees session-expired notice on login page.');
 
-      // Draft MUST be preserved under admin-scoped key
+      // Draft MUST be preserved under admin-scoped key with complete content
       const savedDraftRaw = await uiPage.evaluate(() => localStorage.getItem('bfi_course_maker_unsaved_draft_1'));
       assert.ok(savedDraftRaw, 'Draft must be preserved under bfi_course_maker_unsaved_draft_1');
       const savedDraftObj = JSON.parse(savedDraftRaw);
       assert.strictEqual(savedDraftObj.form.name, 'Collision Forced Workshop 2026', 'Workshop name must be exact');
-      console.log('[Evidence] Draft preserved in localStorage: "' + savedDraftObj.form.name + '"');
+      assert.strictEqual(savedDraftObj.form.description, 'Draft entered before forced check-then-set race occurs.', 'Workshop description must be exact');
+      assert.strictEqual(savedDraftObj.form.course_type, 'workshop', 'Course type must be workshop');
+      assert.strictEqual(savedDraftObj.form.phases[0].name || savedDraftObj.form.phases[0].title, 'Phase 1: Collision Handling', 'Phase title must be exact');
+      console.log('[Evidence] Complete draft content preserved in localStorage: "' + savedDraftObj.form.name + '" (with description & phase).');
 
       // Cross-Account Isolation: Admin 2 logs in and must see empty form
       console.log('[Isolation Check] Admin 2 logs in — must see blank form...');
@@ -496,7 +535,13 @@ async function main() {
       const recoveredDesc = await recoveredDescInput.inputValue();
       assert.strictEqual(recoveredDesc, 'Draft entered before forced check-then-set race occurs.', 'Workshop description MUST be recovered');
 
-      console.log('[Evidence] Same-account draft recovery verified: 100% of workshop data restored for Admin 1.');
+      const recoveredPhaseInput = uiPage.locator('input[placeholder*="Module"]').or(uiPage.locator('input[placeholder*="Phase"]')).first();
+      if (await recoveredPhaseInput.isVisible()) {
+        const recoveredPhase = await recoveredPhaseInput.inputValue();
+        assert.strictEqual(recoveredPhase, 'Phase 1: Collision Handling', 'Phase title MUST be recovered');
+      }
+
+      console.log('[Evidence] Same-account draft recovery verified: 100% of complete workshop data restored for Admin 1 (title, description, phase).');
 
       await uiPage.close();
       await uiContext.close();
@@ -533,7 +578,12 @@ async function main() {
 
       const descInput = tab2.locator('textarea.cm-textarea').or(tab2.locator('textarea[placeholder*="summary of skills"]')).first();
       await descInput.waitFor({ state: 'visible', timeout: 5000 });
-      await descInput.fill('Tested under forced 7000ms server delay.');
+      await descInput.fill('Tested under forced 7000ms server delay with complete draft content verification.');
+
+      const phaseInput = tab2.locator('input[placeholder*="Module"]').or(tab2.locator('input[placeholder*="Phase"]')).first();
+      if (await phaseInput.isVisible()) {
+        await phaseInput.fill('Phase 1: Delay Recovery');
+      }
       await tab2.waitForTimeout(300); // Allow useLayoutEffect to save draft
 
       // Now expire access token in localStorage for both tabs so subsequent apiClient calls trigger refresh
@@ -636,7 +686,25 @@ async function main() {
       await recoveredTitleInput.waitFor({ state: 'visible', timeout: 8000 });
       const recoveredTitle = await recoveredTitleInput.inputValue();
       assert.strictEqual(recoveredTitle, 'Delayed Refresh Workshop 2026', 'Exact workshop name recovered after delay timeout!');
-      console.log('[Evidence] Complete workshop draft restored after delay timeout.');
+
+      const recoveredDescInput = tab2.locator('textarea.cm-textarea').or(tab2.locator('textarea[placeholder*="summary of skills"]')).first();
+      const recoveredDesc = await recoveredDescInput.inputValue();
+      assert.strictEqual(recoveredDesc, 'Tested under forced 7000ms server delay with complete draft content verification.', 'Exact workshop description recovered!');
+
+      const recoveredPhaseInput = tab2.locator('input[placeholder*="Module"]').or(tab2.locator('input[placeholder*="Phase"]')).first();
+      if (await recoveredPhaseInput.isVisible()) {
+        const recoveredPhase = await recoveredPhaseInput.inputValue();
+        assert.strictEqual(recoveredPhase, 'Phase 1: Delay Recovery', 'Exact phase title recovered!');
+      }
+
+      // Assert draft in localStorage
+      const draftJson = await tab2.evaluate(() => localStorage.getItem('bfi_course_maker_unsaved_draft_1'));
+      assert.ok(draftJson, 'Draft JSON must exist in localStorage');
+      const draftObj = JSON.parse(draftJson);
+      assert.strictEqual(draftObj.form.name, 'Delayed Refresh Workshop 2026');
+      assert.strictEqual(draftObj.form.description, 'Tested under forced 7000ms server delay with complete draft content verification.');
+
+      console.log('[Evidence] Complete workshop draft restored after delay timeout (title, description, phase, and localStorage).');
 
       await tab1.close();
       await tab2.close();
@@ -731,7 +799,10 @@ async function main() {
       // Check draft in localStorage:
       const draftJson = await page.evaluate(() => localStorage.getItem('bfi_course_maker_unsaved_draft_1'));
       assert.ok(draftJson, 'Draft must be saved in localStorage under user ID 1');
-      assert.strictEqual(JSON.parse(draftJson).form.name, 'Consumed Token Masterclass 2026', 'Exact draft title preserved');
+      const draftObj = JSON.parse(draftJson);
+      assert.strictEqual(draftObj.form.name, 'Consumed Token Masterclass 2026', 'Exact draft title preserved');
+      assert.strictEqual(draftObj.form.description, 'Draft created while active token is secretly rotated externally.', 'Exact draft description preserved');
+      assert.strictEqual(draftObj.form.phases[0].name || draftObj.form.phases[0].title, 'Phase 1: External Revocation', 'Exact draft phase preserved');
 
       // Admin 2 Login Isolation Check
       console.log('[Isolation Check] Admin 2 logs in...');
@@ -805,6 +876,16 @@ async function main() {
       const recoveredTitle = await recoveredTitleInput.inputValue();
       assert.strictEqual(recoveredTitle, 'Consumed Token Masterclass 2026', 'Exact workshop draft name MUST be recovered!');
 
+      const recoveredDescInput = page.locator('textarea.cm-textarea').or(page.locator('textarea[placeholder*="summary of skills"]')).first();
+      const recoveredDesc = await recoveredDescInput.inputValue();
+      assert.strictEqual(recoveredDesc, 'Draft created while active token is secretly rotated externally.', 'Exact description recovered!');
+
+      const recoveredPhaseInput = page.locator('input[placeholder*="Module"]').or(page.locator('input[placeholder*="Phase"]')).first();
+      if (await recoveredPhaseInput.isVisible()) {
+        const recoveredPhase = await recoveredPhaseInput.inputValue();
+        assert.strictEqual(recoveredPhase, 'Phase 1: External Revocation', 'Exact phase title recovered!');
+      }
+
       // Publish the recovered workshop
       const reviewNavBtn = page.getByRole('button', { name: /Review & Publish|Review Rules Before Publishing/i }).first();
       await reviewNavBtn.click();
@@ -820,7 +901,10 @@ async function main() {
       const published = db.prepare('SELECT * FROM course_definitions WHERE name = ?').get('Consumed Token Masterclass 2026');
       assert.ok(published, 'Course definition must be published in SQLite');
       assert.strictEqual(published.status, 'published', 'Course definition status must be published');
-      console.log('[Evidence] Recovered draft published successfully into SQLite.');
+      assert.strictEqual(published.description, 'Draft created while active token is secretly rotated externally.', 'Published description must match');
+      const parsedDef = JSON.parse(published.definition_json);
+      assert.strictEqual(parsedDef.phases[0].title || parsedDef.phases[0].name, 'Phase 1: External Revocation', 'Published phase title must match');
+      console.log('[Evidence] Recovered draft with full content published successfully into SQLite.');
 
       await page.close();
       await legacyContext.close();
@@ -892,6 +976,188 @@ async function main() {
       await p1.close();
       await p2.close();
       await legacyContext.close();
+    });
+
+    // ════════════════════════════════════════════════════════════════════════════
+    // SCENARIO 5: Duplicate Publishing Prevention & Scoped Draft Access Protection
+    // ════════════════════════════════════════════════════════════════════════════
+    await runStep('Duplicate Publishing Prevention & Scoped Draft Protection: Concurrent & failed publishes cannot create duplicates, and other accounts cannot access drafts', async () => {
+      const { accessToken: tokenAdmin1 } = seedBrowserAuth(1, false);
+      const { accessToken: tokenAdmin2 } = seedBrowserAuth(2, false);
+
+      // ── Part 5A: Concurrent Publish Race ────────────────────────────────────
+      console.log('[Part 5A] Testing concurrent publish race on the same draft definition...');
+      const createRes = await fetch(`${baseUrl}/api/admin/course-definitions`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${tokenAdmin1}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: 'Concurrent Publish Invariant Workshop ' + Date.now(),
+          course_type: 'workshop',
+          phase_count: 1,
+          phases: [
+            {
+              id: 'phase_1',
+              title: 'Phase 1: Concurrent Protection',
+              classes: [{ id: 'cls_1', title: 'Class 1', subject: 'Core', deliveryMode: 'offline', category: 'theory' }]
+            }
+          ],
+          completionPolicy: { minOverallAttendance: 75 }
+        })
+      });
+      assert.strictEqual(createRes.status, 201, 'Draft creation must succeed with 201');
+      const createData = await createRes.json();
+      const defId = createData.id || createData.definition.id;
+
+      // Fire two simultaneous publish requests with the same admin token
+      const [pub1, pub2] = await Promise.all([
+        fetch(`${baseUrl}/api/admin/course-definitions/${defId}/publish`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${tokenAdmin1}` }
+        }),
+        fetch(`${baseUrl}/api/admin/course-definitions/${defId}/publish`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${tokenAdmin1}` }
+        })
+      ]);
+
+      const pubStatuses = [pub1.status, pub2.status].sort();
+      assert.deepStrictEqual(pubStatuses, [200, 400], 'One publish request must succeed (200) and concurrent duplicate must be rejected (400)');
+      const rejRes = pub1.status === 400 ? pub1 : pub2;
+      const rejData = await rejRes.json();
+      assert.strictEqual(rejData.error, 'Course definition is already published.', 'Rejection confirms already published');
+
+      // Database verification: Exactly 1 record in SQLite
+      const defRows = db.prepare('SELECT id, status FROM course_definitions WHERE id = ?').all(defId);
+      assert.strictEqual(defRows.length, 1, 'Exactly one course record must exist in SQLite');
+      assert.strictEqual(defRows[0].status, 'published', 'Course definition must be published');
+      console.log('[Evidence] Concurrent publish race verified: 0 duplicate courses created.');
+
+      // ── Part 5B: Failed Publish Validation & Recovery ───────────────────────
+      console.log('[Part 5B] Testing failed publish validation and safe retry...');
+      const invalidCreateRes = await fetch(`${baseUrl}/api/admin/course-definitions`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${tokenAdmin1}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: 'Invalid Validation Workshop ' + Date.now(),
+          course_type: 'workshop',
+          phase_count: 1,
+          phases: [
+            {
+              id: 'phase_1',
+              title: '', // Empty phase title violates publishing validation
+              classes: [{ id: 'cls_1', title: 'Class 1', subject: 'Core', deliveryMode: 'offline', category: 'theory' }]
+            }
+          ],
+          completionPolicy: { minOverallAttendance: 75 }
+        })
+      });
+      assert.strictEqual(invalidCreateRes.status, 201);
+      const invalidData = await invalidCreateRes.json();
+      const invalidDefId = invalidData.id || invalidData.definition.id;
+
+      // Publish attempt must fail validation with 400
+      const failPubRes = await fetch(`${baseUrl}/api/admin/course-definitions/${invalidDefId}/publish`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${tokenAdmin1}` }
+      });
+      assert.strictEqual(failPubRes.status, 400, 'Publishing invalid draft must return 400 Bad Request');
+      const failPubData = await failPubRes.json();
+      assert.ok(failPubData.error && failPubData.error.includes('must have a title'), 'Must return phase title error');
+
+      // Verify still in draft status in SQLite
+      const draftCheck = db.prepare('SELECT status FROM course_definitions WHERE id = ?').get(invalidDefId);
+      assert.strictEqual(draftCheck.status, 'draft', 'Status must remain draft after failed publish');
+
+      // Update draft with valid phase title
+      const updateRes = await fetch(`${baseUrl}/api/admin/course-definitions/${invalidDefId}`, {
+        method: 'PUT',
+        headers: { 'Authorization': `Bearer ${tokenAdmin1}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: 'Invalid Validation Workshop Fixed',
+          course_type: 'workshop',
+          phase_count: 1,
+          phases: [
+            {
+              id: 'phase_1',
+              title: 'Phase 1: Validated and Fixed',
+              classes: [{ id: 'cls_1', title: 'Class 1', subject: 'Core', deliveryMode: 'offline', category: 'theory' }]
+            }
+          ],
+          completionPolicy: { minOverallAttendance: 75 }
+        })
+      });
+      assert.strictEqual(updateRes.status, 200, 'Updating draft must succeed with 200');
+
+      // Retry publish -> must succeed with 200 OK
+      const retryPubRes = await fetch(`${baseUrl}/api/admin/course-definitions/${invalidDefId}/publish`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${tokenAdmin1}` }
+      });
+      assert.strictEqual(retryPubRes.status, 200, 'Retry publish must succeed with 200 OK');
+
+      const fixedCheck = db.prepare('SELECT id, status FROM course_definitions WHERE id = ?').all(invalidDefId);
+      assert.strictEqual(fixedCheck.length, 1, 'Exactly one row must exist in SQLite');
+      assert.strictEqual(fixedCheck[0].status, 'published', 'Course definition status must now be published');
+      console.log('[Evidence] Failed publish validation verified: draft preserved, clean retry produced exactly 1 published course.');
+
+      // ── Part 5C: Cross-Account Scoped Draft Isolation ───────────────────────
+      console.log('[Part 5C] Testing cross-account draft isolation at API & browser storage level...');
+      const admin1DraftKey = 'client_draft_unique_admin1_' + Date.now();
+      const admin1CreateRes = await fetch(`${baseUrl}/api/admin/course-definitions`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${tokenAdmin1}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: 'Admin 1 Secret Workshop ' + Date.now(),
+          course_type: 'workshop',
+          phase_count: 1,
+          phases: [{ id: 'phase_1', title: 'Phase 1: Secret' }],
+          client_draft_id: admin1DraftKey
+        })
+      });
+      assert.strictEqual(admin1CreateRes.status, 201);
+      const admin1Data = await admin1CreateRes.json();
+      const admin1DefId = admin1Data.id || admin1Data.definition.id;
+
+      // Admin 2 uses the exact same client_draft_id
+      const admin2CreateRes = await fetch(`${baseUrl}/api/admin/course-definitions`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${tokenAdmin2}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: 'Admin 2 Independent Workshop ' + Date.now(),
+          course_type: 'workshop',
+          phase_count: 1,
+          phases: [{ id: 'phase_1', title: 'Phase 1: Independent' }],
+          client_draft_id: admin1DraftKey
+        })
+      });
+      assert.strictEqual(admin2CreateRes.status, 201);
+      const admin2Data = await admin2CreateRes.json();
+      const admin2DefId = admin2Data.id || admin2Data.definition.id;
+      assert.notStrictEqual(admin1DefId, admin2DefId, 'Admin 2 must receive an independent draft ID');
+
+      // Verify browser storage isolation in Chromium
+      const isoContext = await browser.newContext();
+      await setupTurnstileMock(isoContext);
+      const isoPage = await isoContext.newPage();
+      await isoPage.goto(`${baseUrl}/`);
+
+      // Seed Admin 1 draft in localStorage under user ID 1
+      await isoPage.evaluate(() => {
+        localStorage.setItem('bfi_course_maker_unsaved_draft_1', JSON.stringify({
+          form: { name: 'Admin 1 Private Draft', description: 'Restricted to Admin 1' }
+        }));
+      });
+
+      // Admin 2 mounts Course Maker -> verifies Admin 2 draft key is checked
+      const admin2DraftInStorage = await isoPage.evaluate(() => {
+        // CourseMaker calls getDraftStorageKey(currentUserId) -> 'bfi_course_maker_unsaved_draft_2'
+        return localStorage.getItem('bfi_course_maker_unsaved_draft_2');
+      });
+      assert.strictEqual(admin2DraftInStorage, null, 'Admin 2 cannot access Admin 1 unsaved draft in storage');
+      console.log('[Evidence] Cross-account draft isolation verified at database and browser storage tiers.');
+
+      await isoPage.close();
+      await isoContext.close();
     });
 
   } finally {

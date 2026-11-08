@@ -613,6 +613,129 @@ async function main() {
       assert.strictEqual(sessionExpiredEmitted, false, 'session-expired must NOT be emitted on 5xx');
     });
 
+    // ── TEST 14: Concurrent Publish Attempts on Same Draft Cannot Produce Duplicate Courses ──
+    await runTest('Concurrent publish attempts: Simultaneous POST /:id/publish resolves without duplicate definitions', async () => {
+      const { accessToken: token } = createAdminSession(1);
+
+      // Create a draft with valid structure
+      const createRes = await fetch(`${baseUrl}/api/admin/course-definitions`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: 'Concurrent Publish Lifecycle Test ' + Date.now(),
+          course_type: 'workshop',
+          phase_count: 1,
+          phases: [
+            {
+              id: 'phase_1',
+              title: 'Phase 1: Concurrent Check',
+              classes: [{ id: 'cls_1', title: 'Class 1', subject: 'Core', deliveryMode: 'offline', category: 'theory' }]
+            }
+          ],
+          completionPolicy: { minOverallAttendance: 75 }
+        })
+      });
+      assert.strictEqual(createRes.status, 201, 'Draft creation must succeed with 201');
+      const createData = await createRes.json();
+      const defId = createData.id || createData.definition.id;
+
+      // Fire two simultaneous publish requests
+      const [pub1, pub2] = await Promise.all([
+        fetch(`${baseUrl}/api/admin/course-definitions/${defId}/publish`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}` }
+        }),
+        fetch(`${baseUrl}/api/admin/course-definitions/${defId}/publish`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}` }
+        })
+      ]);
+
+      const pubStatuses = [pub1.status, pub2.status].sort();
+      assert.deepStrictEqual(pubStatuses, [200, 400], 'One publish request must succeed (200) and the concurrent duplicate must be rejected (400)');
+      
+      const rejectedRes = pub1.status === 400 ? pub1 : pub2;
+      const rejData = await rejectedRes.json();
+      assert.strictEqual(rejData.error, 'Course definition is already published.', 'Rejection reason must confirm already published');
+
+      // Verify SQLite state: Exactly 1 record exists with status = 'published'
+      const rows = db.prepare('SELECT id, name, status, version FROM course_definitions WHERE id = ?').all(defId);
+      assert.strictEqual(rows.length, 1, 'Exactly one course definition must exist in SQLite');
+      assert.strictEqual(rows[0].status, 'published', 'Course status must be published');
+    });
+
+    // ── TEST 15: Failed Publish Attempt Retains Draft and Subsequent Valid Retry Publishes Exactly 1 Course ──
+    await runTest('Failed publish attempt: Validation failure retains draft state and subsequent retry publishes exactly 1 course', async () => {
+      const { accessToken: token } = createAdminSession(1);
+
+      // Create a draft with missing phase title (violates publishing rule)
+      const createRes = await fetch(`${baseUrl}/api/admin/course-definitions`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: 'Validation Failure Publish Test ' + Date.now(),
+          course_type: 'workshop',
+          phase_count: 1,
+          phases: [
+            {
+              id: 'phase_1',
+              title: '', // Invalid for publishing: title cannot be empty
+              classes: [{ id: 'cls_1', title: 'Class 1', subject: 'Core', deliveryMode: 'offline', category: 'theory' }]
+            }
+          ],
+          completionPolicy: { minOverallAttendance: 75 }
+        })
+      });
+      assert.strictEqual(createRes.status, 201, 'Draft creation must succeed with 201');
+      const createData = await createRes.json();
+      const defId = createData.id || createData.definition.id;
+
+      // Attempt to publish -> must fail validation with 400
+      const failedPubRes = await fetch(`${baseUrl}/api/admin/course-definitions/${defId}/publish`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      assert.strictEqual(failedPubRes.status, 400, 'Publishing invalid draft must return 400 Bad Request');
+      const failData = await failedPubRes.json();
+      assert.ok(failData.error && failData.error.includes('must have a title'), 'Must return phase title validation error');
+
+      // Verify SQLite state: still draft, count = 1
+      const preCheck = db.prepare('SELECT id, status FROM course_definitions WHERE id = ?').get(defId);
+      assert.strictEqual(preCheck.status, 'draft', 'Status must remain draft after validation failure');
+
+      // Update draft with valid completion policy
+      const fixRes = await fetch(`${baseUrl}/api/admin/course-definitions/${defId}`, {
+        method: 'PUT',
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: preCheck.name || 'Validation Failure Publish Test Fixed',
+          course_type: 'workshop',
+          phase_count: 1,
+          phases: [
+            {
+              id: 'phase_1',
+              title: 'Phase 1: Valid Class',
+              classes: [{ id: 'cls_1', title: 'Class 1', subject: 'Core', deliveryMode: 'offline', category: 'theory' }]
+            }
+          ],
+          completionPolicy: { minOverallAttendance: 75 } // Valid
+        })
+      });
+      assert.strictEqual(fixRes.status, 200, 'Draft update must succeed with 200');
+
+      // Retry publish -> must succeed with 200
+      const retryPubRes = await fetch(`${baseUrl}/api/admin/course-definitions/${defId}/publish`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      assert.strictEqual(retryPubRes.status, 200, 'Retry publish must succeed with 200 OK');
+
+      // Verify SQLite: exactly 1 row, published
+      const postCheck = db.prepare('SELECT id, status FROM course_definitions WHERE id = ?').all(defId);
+      assert.strictEqual(postCheck.length, 1, 'Exactly one course row must exist in SQLite');
+      assert.strictEqual(postCheck[0].status, 'published', 'Course definition status must now be published');
+    });
+
   } finally {
     server.close();
     cleanupDbFiles();
