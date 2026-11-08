@@ -94,7 +94,7 @@ function signAccessToken(user, sessionId = null) {
   const isSuper = user.role === 'admin' && (user.is_super_admin === 1 || user.is_super_admin === true || user.isSuperAdmin === true);
   // Privileged administrators use 15m short-lived tokens; non-privileged users use standard expiry
   const isPrivileged = user.role === 'admin';
-  const expiresIn = isPrivileged ? '15m' : (process.env.JWT_EXPIRY || '365d');
+  const expiresIn = isPrivileged ? (process.env.ADMIN_JWT_EXPIRY || '15m') : (process.env.JWT_EXPIRY || '365d');
 
   const payload = {
     id: user.id,

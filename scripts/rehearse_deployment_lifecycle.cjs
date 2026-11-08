@@ -109,6 +109,24 @@ function setupDisposableEnvironment() {
       sudo_verified_at TEXT
     );
 
+    CREATE TABLE course_definitions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      slug TEXT UNIQUE NOT NULL,
+      version INTEGER DEFAULT 1,
+      name TEXT NOT NULL,
+      course_type TEXT DEFAULT 'course',
+      description TEXT,
+      duration_value INTEGER DEFAULT 1,
+      duration_unit TEXT DEFAULT 'months',
+      phase_count INTEGER DEFAULT 1,
+      status TEXT DEFAULT 'draft',
+      definition_json TEXT,
+      created_by INTEGER,
+      updated_by INTEGER,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
     -- Seed baseline records
     INSERT INTO users (id, username, email, password_hash, role, first_name, last_name, is_super_admin)
     VALUES (1, 'admin@abir', 'k.eye.films@gmail.com', 'hash1', 'admin', 'Abir', 'Ahmad', 0);
@@ -251,6 +269,17 @@ function createServiceAdapter(options = {}) {
       }
       if (args[0] === 'rev-parse') {
         return { status: 0, stdout: '0c71163495e58a51f1709272ec55d99a31251ec3\n', stderr: '', error: null };
+      }
+      if (args[0] === 'ls-tree') {
+        const targetSpec = args[2] || '';
+        const colonIdx = targetSpec.indexOf(':');
+        const relDir = colonIdx !== -1 ? targetSpec.slice(colonIdx + 1) : targetSpec;
+        const fullDir = path.resolve(__dirname, '..', relDir);
+        if (fs.existsSync(fullDir)) {
+          const files = fs.readdirSync(fullDir).filter(f => f.endsWith('.cjs'));
+          return { status: 0, stdout: files.join('\n') + '\n', stderr: '', error: null };
+        }
+        return { status: 0, stdout: '', stderr: '', error: null };
       }
       if (args[0] === 'show') {
         const targetSpec = args[1] || '';

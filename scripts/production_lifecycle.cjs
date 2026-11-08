@@ -710,7 +710,8 @@ async function executeDeployment(options = {}) {
     '20261028_admin_archiving_and_reset.cjs',
     '20261029_universal_mfa_and_super_admin.cjs',
     '20261030_schema_repairs_and_key_pair.cjs',
-    '20261104_batch_instructors_and_certificate_downloads.cjs'
+    '20261104_batch_instructors_and_certificate_downloads.cjs',
+    '20261106_session_grace_and_course_draft_idempotency.cjs'
   ];
 
   let targetMigrationFiles = [...canonicalMigrationModules];
