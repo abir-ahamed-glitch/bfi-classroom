@@ -292,8 +292,9 @@ async function main() {
     //   • Part 1A (Server Replay Protection under Concurrent Load):
     //     Uses two simultaneous Node.js HTTP requests coordinated by an Express synchronization latch.
     //     Deterministically proves that when two requests present the same refresh token concurrently,
-    //     the server strictly allows the first (200 OK) and rejects the second with 401 TOKEN_ALREADY_ROTATED,
-    //     issues zero access tokens, deletes the session row from SQLite, and increments token_version.
+    //     the first valid refresh request receives a fresh access token (HTTP 200 OK);
+    //     the rejected replay request receives zero access tokens (HTTP 401 TOKEN_ALREADY_ROTATED),
+    //     triggering immediate RFC 6819 session deletion and token_version bump.
     //   • Part 1B (Browser UI Session Revocation Handling & Recovery):
     //     Uses a real Chromium browser page in Course Maker with Web Locks and BroadcastChannel disabled.
     //     The user fills in a complete workshop draft. When the token is consumed/rotated, the user
@@ -356,6 +357,12 @@ async function main() {
       const raceHas401 = raceStatuses.some((s) => s === 401);
       assert.ok(raceHas200, 'One concurrent request must successfully rotate the token (HTTP 200)');
       assert.ok(raceHas401, 'The second concurrent request must be strictly rejected (HTTP 401 TOKEN_ALREADY_ROTATED)');
+
+      const validRace = race1.status === 200 ? race1 : race2;
+      const replayRace = race1.status === 401 ? race1 : race2;
+      assert.ok(validRace.body?.token, 'The first valid refresh request must receive a fresh access token (HTTP 200)');
+      assert.strictEqual(replayRace.body?.token, undefined, 'The rejected replay request must receive zero access tokens (HTTP 401 TOKEN_ALREADY_ROTATED)');
+      console.log('[Evidence] Token issuance verified: the first valid refresh request received an access token; the rejected replay request received none.');
 
       // Server database: session MUST be deleted upon reuse detection
       const raceSessionInDb = db.prepare('SELECT * FROM sessions WHERE id = ?').get(raceSessionId);
