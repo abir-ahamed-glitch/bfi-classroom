@@ -165,16 +165,12 @@ router.post('/students', authenticateToken, requireRole('admin'), requirePermiss
   }
 });
 
-// Route for Bulk Importing Students
-router.post('/students/bulk', authenticateToken, requireRole('admin'), requirePermission('students:create'), sanitizeInput, (req, res) => {
-  try {
-    const { students, batchNumber, courses } = req.body;
-    
-    if (!students || !Array.isArray(students) || students.length === 0) {
-      return res.status(400).json({ error: 'No students provided for bulk import.' });
-    }
-
+function importStudentsWithAudit(req, students, batchNumber, courses) {
+  return db.transaction(() => {
     const results = [];
+    let created = 0;
+    let linked = 0;
+    let skipped = 0;
     
     // We will do this carefully: skip invalid ones, or just try to process all
     for (let i = 0; i < students.length; i++) {
@@ -270,11 +266,13 @@ router.post('/students/bulk', authenticateToken, requireRole('admin'), requirePe
           db.prepare('UPDATE student_profiles SET batch_number = ? WHERE user_id = ?').run(studentBatch, existingUserId);
           
           results.push({ ...studentData, status: 'success', error: `Already registered (Linked to Batch ${studentBatch})`, username: 'Existing User', password: 'N/A', studentId: 'Existing' });
+          linked++;
           continue;
         } else {
           // If no batch info provided, fallback to standard skip/error
           if (req.query.skipExisting === 'true') {
             results.push({ ...studentData, status: 'success', error: 'Already registered (Skipped)', username: 'Existing User', password: 'N/A', studentId: 'N/A' });
+            skipped++;
             continue;
           }
           results.push({ ...studentData, status: 'error', error: `Duplicate (${duplicateReason})` });
@@ -368,6 +366,7 @@ router.post('/students/bulk', authenticateToken, requireRole('admin'), requirePe
         });
 
         const { studentId } = transaction();
+        created++;
         
         results.push({
           ...studentData,
@@ -408,6 +407,33 @@ router.post('/students/bulk', authenticateToken, requireRole('admin'), requirePe
       }
     }
 
+    const failed = results.length - created - linked - skipped;
+    recordAuditEventFromReq(req, {
+      action: 'student.bulk_import',
+      module: 'students',
+      resource: 'students:bulk-import',
+      outcome: failed === results.length ? 'failed' : 'success',
+      details: {
+        processed: results.length,
+        created,
+        linked,
+        skipped,
+        failed,
+        registeredOnly: req.query.isRegisteredOnly === 'true'
+      }
+    });
+    return results;
+  })();
+}
+
+// Route for Bulk Importing Students
+router.post('/students/bulk', authenticateToken, requireRole('admin'), requirePermission('students:create'), sanitizeInput, (req, res) => {
+  try {
+    const { students, batchNumber, courses } = req.body;
+    if (!Array.isArray(students) || students.length === 0) {
+      return res.status(400).json({ error: 'No students provided for bulk import.' });
+    }
+    const results = importStudentsWithAudit(req, students, batchNumber, courses);
     res.status(200).json({
       message: `Processed ${students.length} students.`,
       results
@@ -725,8 +751,19 @@ router.delete('/students/leads/:id', authenticateToken, requireRole('admin'), re
     }
 
     // Soft Delete instead of physical delete
-    db.prepare("UPDATE users SET deleted_at = datetime('now'), deleted_by_admin_id = ? WHERE id = ?").run(req.user.id, userId);
-    logTrashAction('leads', userId, `${user.first_name || ''} ${user.last_name || ''}`.trim(), 'deleted', req.user.id);
+    db.transaction(() => {
+      const result = db.prepare("UPDATE users SET deleted_at = datetime('now'), deleted_by_admin_id = ? WHERE id = ? AND deleted_at IS NULL").run(req.user.id, userId);
+      if (!result.changes) return;
+      const fullName = `${user.first_name || ''} ${user.last_name || ''}`.trim();
+      logTrashAction('leads', userId, fullName, 'deleted', req.user.id);
+      recordAuditEventFromReq(req, {
+        action: 'student.lead_delete',
+        module: 'students',
+        resource: `student:${userId}`,
+        targetUserId: user.id,
+        details: { fullName }
+      });
+    })();
     
     // Note: We don't need to update cascaded tables because if the user is restored, 
     // we want all their profile and enrollment data to come back with them.

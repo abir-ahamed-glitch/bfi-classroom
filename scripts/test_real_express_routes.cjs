@@ -101,7 +101,7 @@ async function run() {
   `).run();
 
   // Seed permissions
-  const permissions = ['batches:edit', 'batches:view', 'courses:edit', 'students:edit', 'students:view', 'students:academic_records'];
+  const permissions = ['batches:edit', 'batches:view', 'courses:edit', 'students:edit', 'students:view', 'students:create', 'students:delete', 'students:academic_records'];
   for (const perm of permissions) {
     db.prepare('INSERT OR IGNORE INTO admin_permissions (user_id, permission) VALUES (1, ?)').run(perm);
     db.prepare('INSERT OR IGNORE INTO admin_permissions (user_id, permission) VALUES (2, ?)').run(perm);
@@ -178,6 +178,7 @@ async function run() {
   const { default: courseDefRouter, validateAndSanitizeInstructorId } = await import('../server/routes/course-definitions.js');
   const { default: batchesRouter } = await import('../server/routes/batches.js');
   const { default: adminRouter } = await import('../server/routes/admin.js');
+  const { default: adminManagementRouter } = await import('../server/routes/admin-management.js');
   const { default: certificationRouter } = await import('../server/routes/certification.js');
   const { default: studentRouter } = await import('../server/routes/student.js');
   const { default: teacherRouter, isTeacherAssignedToBatch } = await import('../server/routes/teacher.js');
@@ -191,6 +192,7 @@ async function run() {
   app.use('/api/course-definitions', courseDefRouter);
   app.use('/api/admin/batches', batchesRouter);
   app.use('/api/admin', adminRouter);
+  app.use('/api/admin', adminManagementRouter);
   app.use('/api/certification', certificationRouter);
   app.use('/api/student', studentRouter);
   app.use('/api/teacher', teacherRouter);
@@ -210,6 +212,53 @@ async function run() {
   console.log(`✅ Real Express test server running on ${baseUrl}`);
 
   try {
+    const importRows = [
+      { name: 'Audit Test One', email: 'audit-one@example.test', snNo: '201', year: 2026, address: 'Private test address' },
+      { name: 'Audit Test Two', email: 'audit-two@example.test', snNo: '202', year: 2026 }
+    ];
+    const auditApi = `${baseUrl}/api/admin/administrators/audit-logs`;
+    const importUrl = `${baseUrl}/api/admin/students/bulk?saveHistory=false`;
+    const importHeaders = { Authorization: `Bearer ${batchAdminToken}`, 'Content-Type': 'application/json' };
+    const imported = await fetchWithTimeout(importUrl, {
+      method: 'POST', headers: importHeaders,
+      body: JSON.stringify({ students: [...importRows, importRows[0]] })
+    });
+    assert.strictEqual(imported.status, 200);
+    assert.deepStrictEqual((await imported.json()).results.map(row => row.status), ['success', 'success', 'error']);
+    const auditImport = await fetchWithTimeout(`${auditApi}?action=student.bulk_import`, { headers: { Authorization: `Bearer ${superAdminToken}` } });
+    assert.strictEqual(auditImport.status, 200);
+    const importLog = (await auditImport.json()).logs[0];
+    assert.ok(importLog, 'Audit History must contain the bulk import even when history saving is disabled');
+    assert.strictEqual(importLog.actor_id, 2);
+    assert.ok(importLog.dhaka_time.includes('BST'));
+    assert.deepStrictEqual(
+      [importLog.details.processed, importLog.details.created, importLog.details.linked, importLog.details.skipped, importLog.details.failed],
+      [3, 2, 0, 0, 1]
+    );
+    assert.ok(!/password|private test address|audit-one@example\.test/i.test(JSON.stringify(importLog.details)));
+    assert.strictEqual((await fetchWithTimeout(auditApi, { headers: importHeaders })).status, 403);
+    db.exec("CREATE TRIGGER reject_import_audit BEFORE INSERT ON admin_audit_logs WHEN NEW.action = 'student.bulk_import' BEGIN SELECT RAISE(ABORT, 'audit unavailable'); END");
+    try {
+      const failedImport = await fetchWithTimeout(importUrl, {
+        method: 'POST', headers: importHeaders,
+        body: JSON.stringify({ students: [{ name: 'Audit Rollback', email: 'audit-rollback@example.test', snNo: '203', year: 2026 }] })
+      });
+      assert.strictEqual(failedImport.status, 500);
+      assert.ok(!db.prepare("SELECT id FROM users WHERE email = 'audit-rollback@example.test'").get());
+    } finally {
+      db.exec('DROP TRIGGER reject_import_audit');
+    }
+    const leadId = db.prepare("SELECT id FROM users WHERE email = 'audit-one@example.test'").get().id;
+    db.exec("CREATE TRIGGER reject_lead_audit BEFORE INSERT ON admin_audit_logs WHEN NEW.action = 'student.lead_delete' BEGIN SELECT RAISE(ABORT, 'audit unavailable'); END");
+    try {
+      assert.strictEqual((await fetchWithTimeout(`${baseUrl}/api/admin/students/leads/${leadId}`, { method: 'DELETE', headers: importHeaders })).status, 500);
+      assert.strictEqual(db.prepare('SELECT deleted_at FROM users WHERE id = ?').get(leadId).deleted_at, null);
+    } finally {
+      db.exec('DROP TRIGGER reject_lead_audit');
+    }
+    assert.strictEqual((await fetchWithTimeout(`${baseUrl}/api/admin/students/leads/${leadId}`, { method: 'DELETE', headers: importHeaders })).status, 200);
+    assert.ok(db.prepare("SELECT id FROM admin_audit_logs WHERE action = 'student.lead_delete' AND actor_id = 2 AND target_user_id = ?").get(leadId));
+
     // Bulk edits must share Course Maker's attendance and progression records.
     const sheetDef = db.prepare(`
       INSERT INTO course_definitions (slug, version, name, course_type, status, phase_count, definition_json, created_by, updated_by)
@@ -257,6 +306,9 @@ async function run() {
       })
     });
     assert.strictEqual(scheduled.status, 200);
+    const routineLog = db.prepare("SELECT actor_id, details FROM admin_audit_logs WHERE action = 'course.routine_update' AND resource = ?").get(`course_definition:${sheetDef}`);
+    assert.strictEqual(routineLog?.actor_id, 2);
+    assert.strictEqual(JSON.parse(routineLog.details).batchId, sheetBatch);
     const rescheduledSheet = await (await requestSheet('attendance-test')).json();
     assert.strictEqual(rescheduledSheet.columns[0].date, '2026-11-11');
     assert.strictEqual(sheet.rows.find(r => r.enrollmentId === locked).editable, false);
@@ -1126,6 +1178,22 @@ async function run() {
     const adminInsertedRow = db.prepare('SELECT * FROM certificate_downloads WHERE enrollment_id = ?').get(enrId);
     assert.strictEqual(adminInsertedRow.user_id, 50, 'Authoritative recipient MUST be student Jamil (50)');
     assert.strictEqual(adminInsertedRow.downloaded_by, 2, 'downloaded_by MUST record acting administrator Batch Admin (2)');
+    const certificateLog = db.prepare("SELECT actor_id, target_user_id, details FROM admin_audit_logs WHERE action = 'certificate.download' AND actor_id = 2").get();
+    assert.strictEqual(certificateLog?.target_user_id, 50);
+    assert.strictEqual(JSON.parse(certificateLog.details).enrollmentId, enrId);
+    const certificateCount = getDownloadsCount();
+    db.exec("CREATE TRIGGER reject_certificate_audit BEFORE INSERT ON admin_audit_logs WHEN NEW.action = 'certificate.download' BEGIN SELECT RAISE(ABORT, 'audit unavailable'); END");
+    try {
+      const failedCertificate = await fetchWithTimeout(`${baseUrl}/api/certification/log-download`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${batchAdminToken}` },
+        body: JSON.stringify({ enrollmentId: enrId })
+      });
+      assert.strictEqual(failedCertificate.status, 500);
+      assert.strictEqual(getDownloadsCount(), certificateCount, 'Certificate telemetry is rolled back when auditing fails');
+    } finally {
+      db.exec('DROP TRIGGER reject_certificate_audit');
+    }
     console.log('✅ 9.8b Authorized admin download verified: recipient user_id (50) is cleanly separated from acting downloaded_by admin (2)');
 
     // -------------------------------------------------------------

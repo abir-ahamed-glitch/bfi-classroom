@@ -1022,6 +1022,12 @@ router.put('/:id/routine', authenticateToken, (req, res) => {
           req.user.id,
           reason ? String(reason).trim() : 'Reverted batch schedule to course default template'
         );
+        recordAuditEventFromReq(req, {
+          action: 'course.routine_revert',
+          module: 'courses',
+          resource: `course_definition:${id}`,
+          details: { courseName: definition.name, batchId: resolvedBatchId, phaseId: canonicalPhaseId }
+        });
       });
 
       revertTx();
@@ -1146,6 +1152,12 @@ router.put('/:id/routine', authenticateToken, (req, res) => {
         req.user.id,
         reason ? String(reason).trim() : 'Routine updated'
       );
+      recordAuditEventFromReq(req, {
+        action: 'course.routine_update',
+        module: 'courses',
+        resource: `course_definition:${id}`,
+        details: { courseName: definition.name, batchId: resolvedBatchId || null, phaseId: canonicalPhaseId, sessionCount: sanitizedRoutine.length }
+      });
 
       // If definition is still a draft, update draft definition_json as well
       if (definition.status === 'draft') {

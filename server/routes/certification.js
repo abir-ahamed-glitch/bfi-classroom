@@ -3,6 +3,7 @@ import express from 'express';
 import db from '../db/database.js';
 import { authenticateToken, requireRole, requireAnyPermission, hasAnyPermission, isSuperAdmin } from '../middleware/auth.js';
 import courseProgressService from '../services/courseProgressService.js';
+import { recordAuditEventFromReq } from '../services/auditLedgerService.js';
 import { resolvePhaseFee } from '../utils/feeResolver.js';
 import multer from 'multer';
 import path from 'path';
@@ -408,10 +409,26 @@ router.post('/log-download', authenticateToken, async (req, res) => {
     }
 
     // 5. Insert Record with Distinct Recipient vs Downloaded_By Telemetry
-    db.prepare(`
-      INSERT INTO certificate_downloads (user_id, course_name, enrollment_id, batch_id, course_definition_id, downloaded_by)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).run(recipientUserId, authoritativeCourseName, enr.id, authoritativeBatchId, authoritativeCourseDefId, downloadedBy);
+    db.transaction(() => {
+      const download = db.prepare(`
+        INSERT INTO certificate_downloads (user_id, course_name, enrollment_id, batch_id, course_definition_id, downloaded_by)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(recipientUserId, authoritativeCourseName, enr.id, authoritativeBatchId, authoritativeCourseDefId, downloadedBy);
+      const recipient = db.prepare('SELECT first_name, last_name FROM users WHERE id = ?').get(recipientUserId);
+      recordAuditEventFromReq(req, {
+        action: 'certificate.download',
+        module: 'academic',
+        resource: `certificate_download:${download.lastInsertRowid}`,
+        targetUserId: recipientUserId,
+        details: {
+          enrollmentId: enr.id,
+          batchId: authoritativeBatchId,
+          courseDefinitionId: authoritativeCourseDefId,
+          courseName: authoritativeCourseName,
+          fullName: [recipient?.first_name, recipient?.last_name].filter(Boolean).join(' ')
+        }
+      });
+    })();
 
     // 6. Emit Socket Event Only Upon Verified Insertion
     const io = req.app.get('io');
