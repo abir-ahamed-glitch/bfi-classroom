@@ -188,6 +188,29 @@ async function injectAdminAuth(page) {
 
 test.describe('Course Maker Batch Routine End-to-End Browser Verification', () => {
 
+  test('Attendance sheet saves and reopens marks from a Course Maker batch', async ({ page }) => {
+    await injectAdminAuth(page);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(`admin/batchmanager/${testBatchId}`);
+    await page.getByRole('button', { name: 'Attendance Sheet' }).click();
+    const sheet = page.getByRole('dialog', { name: 'Attendance Sheet' });
+    await expect(sheet.getByRole('rowheader', { name: /Rahim Chowdhury/ })).toBeVisible();
+    await sheet.getByRole('button', { name: 'Mark all present for Part 01: Character Archetypes' }).click();
+    await expect(sheet.getByText('1 unsaved mark')).toBeVisible();
+    await sheet.getByRole('button', { name: 'Save attendance' }).click();
+    await expect(sheet.getByRole('status')).toHaveText('Attendance saved.');
+    await sheet.getByRole('button', { name: 'Close attendance sheet' }).click();
+    await expect(sheet).toBeHidden();
+    await page.reload();
+    await page.getByRole('button', { name: 'Attendance Sheet' }).click();
+    const present = sheet.getByRole('button', { name: /Rahim Chowdhury.*present. Mark absent/i });
+    await expect(present).toBeVisible();
+    // Restore an absent mark for the existing per-student progress scenario.
+    await present.click();
+    await sheet.getByRole('button', { name: 'Save attendance' }).click();
+    await expect(sheet.getByRole('status')).toHaveText('Attendance saved.');
+  });
+
   test('Complete Routine Workflow: Defaults, Dual Add Slot, Validation, Persistence & Revert', async ({ page }) => {
     await injectAdminAuth(page);
 

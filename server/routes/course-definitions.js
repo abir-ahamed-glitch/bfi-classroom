@@ -1095,6 +1095,9 @@ router.put('/:id/routine', authenticateToken, (req, res) => {
         timezone: slot.timezone || 'Asia/Dhaka',
         subjectName: slot.subjectName ? String(slot.subjectName).trim() : '',
         classTitle: slot.classTitle ? String(slot.classTitle).trim() : '',
+        ...(slot.classId != null && (phase.classes || []).some(cls => String(cls.id) === String(slot.classId))
+          ? { classId: String(slot.classId) }
+          : {}),
         teacherName: slot.teacherName ? String(slot.teacherName).trim() : '',
         teacherUserId: validatedTeacherUserId,
         deliveryMode: slot.deliveryMode ? String(slot.deliveryMode).trim() : 'live',

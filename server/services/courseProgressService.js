@@ -963,6 +963,10 @@ export async function recordExamMarks(enrollmentId, phaseId, marks, customDb = n
  * inside a single synchronous SQLite transaction, guaranteeing all-or-nothing rollback.
  */
 export async function updateDefinedProgressAtomic(enrollmentId, payload, customDb = null, options = {}) {
+  return updateDefinedProgressSync(enrollmentId, payload, customDb, options);
+}
+
+export function updateDefinedProgressSync(enrollmentId, payload, customDb = null, options = {}) {
   const db = getDatabase(customDb);
   const { attendance, assignments, exam_marks, updatedBy = null } = payload;
 

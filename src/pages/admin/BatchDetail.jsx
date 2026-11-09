@@ -19,6 +19,8 @@ import AddStudentsModal from '../../components/admin/AddStudentsModal';
 import EditStudentModal from '../../components/admin/EditStudentModal';
 import UploadResultsModal from '../../components/admin/UploadResultsModal';
 import DefinedCourseProgressModal from '../../components/admin/DefinedCourseProgressModal';
+import BatchAttendanceSheet from '../../components/admin/BatchAttendanceSheet';
+import { useAuth } from '../../context/AuthContext';
 import { resolveFeeAccounting, isCourseFeeUnpaid, resolveEnrollmentFinancialsClient } from '../../utils/feeUtils';
 
 const hasPendingDueOrPartialPayment = (course) => isCourseFeeUnpaid(course);
@@ -97,6 +99,18 @@ const CustomTooltip = ({ active, payload, label }) => {
 export default function BatchDetail() {
   const { slug } = useParams();
   const navigate = useNavigate();
+  const { currentUser } = useAuth();
+  const [attendancePhase, setAttendancePhase] = useState(null);
+  const canMarkAttendance = currentUser?.role === 'admin' && Boolean(
+    currentUser.is_super_admin || currentUser.isSuperAdmin ||
+    currentUser.permissions?.includes('*') || currentUser.permissions?.includes('students:academic_records')
+  );
+
+  const attendanceButton = phase => canMarkAttendance && (
+    <button type="button" className="modern-btn modern-btn--secondary" onClick={() => setAttendancePhase(phase)}>
+      <CheckSquare size={16} aria-hidden="true" /> Attendance Sheet
+    </button>
+  );
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -958,6 +972,7 @@ export default function BatchDetail() {
       const updated = [...prev];
       updated[slotIdx] = {
         ...updated[slotIdx],
+        classId: cls.id,
         classTitle: cls.title || fallbackSlot.classTitle,
         subjectName: cls.subjectName || fallbackSlot.subjectName,
         teacherName: validatedTname,
@@ -1643,8 +1658,9 @@ export default function BatchDetail() {
           {progressData.defined_phases && progressData.defined_phases.length > 0 ? (
             progressData.defined_phases.map((dp, idx) => (
               <div key={dp.phaseId || idx} style={{ marginTop: idx > 0 ? '1rem' : 0 }}>
-                <div className="batch-phase-label" style={{ color: idx === 1 ? '#a855f7' : idx === 2 ? '#ec4899' : '#60a5fa' }}>
-                  {dp.title || `Phase ${dp.phaseIndex || idx + 1}`}
+                <div className="batch-phase-label batch-attendance-heading" style={{ color: idx === 1 ? '#a855f7' : idx === 2 ? '#ec4899' : '#60a5fa' }}>
+                  <span>{dp.title || `Phase ${dp.phaseIndex || idx + 1}`}</span>
+                  {attendanceButton(dp.phaseIndex || idx + 1)}
                 </div>
                 <div className="batch-metrics-grid">
                   <StatCard icon={<Users size={20} />} value={dp.admitted} label="Admitted" colorVariant="Blue" onClick={() => toggleStatFilter(`dp_admitted_${dp.phaseId}`)} isActive={selectedStatFilter === `dp_admitted_${dp.phaseId}`} />
@@ -1675,7 +1691,7 @@ export default function BatchDetail() {
               
               {progressData.phase2?.admitted > 0 ? (
                 <div style={{ marginTop: '1rem' }} className="batch-phase2-section visible">
-                  <div className="batch-phase-label purple">Phase 2</div>
+                  <div className="batch-phase-label purple batch-attendance-heading"><span>Phase 2</span>{attendanceButton(2)}</div>
                   <div className="batch-metrics-grid">
                     <StatCard icon={<UserCheck size={20} />} value={progressData.phase2?.admitted} label="Phase 2 Admitted" colorVariant="Blue" onClick={() => toggleStatFilter('phase2_admitted')} isActive={selectedStatFilter === 'phase2_admitted'} />
                     <StatCard icon={<Camera size={20} />} value={progressData.phase2?.shooting_attended} label="Shooting Attended" colorVariant="Amber" onClick={() => toggleStatFilter('phase2_shooting_attended')} isActive={selectedStatFilter === 'phase2_shooting_attended'} />
@@ -1685,7 +1701,7 @@ export default function BatchDetail() {
                 </div>
               ) : (
                 <div style={{ marginTop: '1rem' }} className="batch-phase2-section">
-                  <div className="batch-phase-label purple">Phase 2</div>
+                  <div className="batch-phase-label purple batch-attendance-heading"><span>Phase 2</span>{attendanceButton(2)}</div>
                   <div className="batch-info-card-dashed" style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)' }}>
                     Phase 2 data will appear once students advance from Phase 1.
                   </div>
@@ -2377,6 +2393,18 @@ export default function BatchDetail() {
       )}
 
       {/* Edit Modal Overlay */}
+      {attendancePhase !== null && (
+        <BatchAttendanceSheet
+          key={`${batchData.id}:${attendancePhase}`}
+          batchId={batchData.id}
+          phaseNumber={attendancePhase}
+          onClose={() => setAttendancePhase(null)}
+          onSaved={() => {
+            fetchStudents(batchData.id);
+            fetchProgress(batchData.id);
+          }}
+        />
+      )}
       {/* Defined Course Progress Modal */}
       {definedProgressModal.isOpen && (
         <DefinedCourseProgressModal

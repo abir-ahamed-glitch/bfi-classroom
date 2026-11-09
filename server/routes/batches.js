@@ -6,8 +6,50 @@ import { runBatchStatusAutomation } from '../utils/batchStatusAutomation.js';
 import { getBatchFee, createFeeResolverContext, resolveEnrollmentFinancials } from '../utils/feeResolver.js';
 import { logTrashAction } from '../utils/trashLogger.js';
 import { courseProgressService, getEnrollmentProgressSync, resolvePhaseRoutine, getCanonicalPhaseInfo } from '../services/courseProgressService.js';
+import { AttendanceSheetError, getBatchAttendanceSheet, saveBatchAttendanceSheet } from '../services/batchAttendanceService.js';
 
 const router = express.Router();
+
+const attendanceSheetAccess = [
+  authenticateToken, requireRole('admin'), requirePermission('batches:view'), requirePermission('students:academic_records')
+];
+
+router.get('/:id/attendance-sheet/:phase', ...attendanceSheetAccess, (req, res) => {
+  try {
+    res.json(getBatchAttendanceSheet(db, req.params.id, Number(req.params.phase)));
+  } catch (error) {
+    if (error instanceof AttendanceSheetError) return res.status(error.status).json({ error: error.message });
+    console.error('[Batches] Error loading attendance sheet:', error);
+    res.status(500).json({ error: 'Could not load the attendance sheet.' });
+  }
+});
+
+router.put('/:id/attendance-sheet/:phase', ...attendanceSheetAccess, (req, res) => {
+  try {
+    const phaseNumber = Number(req.params.phase);
+    const studentIds = saveBatchAttendanceSheet(db, req.params.id, phaseNumber, req.body?.changes, req.user.id,
+      (row, before, after) => recordAuditEventFromReq(req, {
+        action: 'academic.batch_attendance_update',
+        module: 'academic',
+        resource: `enrollment:${row.enrollmentId}`,
+        targetUserId: row.studentId,
+        outcome: 'success',
+        details: { batch: req.params.id, phaseNumber },
+        beforeState: before,
+        afterState: after,
+        dbInstance: db,
+        throwOnError: true
+      })
+    );
+    const io = req.app.get('io');
+    for (const studentId of studentIds) io?.emit('progression_updated', { studentId });
+    res.json({ updatedStudents: studentIds.length });
+  } catch (error) {
+    if (error instanceof AttendanceSheetError) return res.status(error.status).json({ error: error.message });
+    console.error('[Batches] Error saving attendance sheet:', error);
+    res.status(500).json({ error: 'Could not save attendance changes.' });
+  }
+});
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1209,16 +1251,15 @@ router.get('/:id/progress', authenticateToken, requireRole('admin'), requirePerm
             sprByPhaseAndEnrollment.set(`${pr.phase_id}_${pr.enrollment_id}`, pr);
           }
 
-          definedPhasesMetrics = phases.map((p, pIdx) => {
-            const pId = p.id || `p_${pIdx + 1}`;
+          definedPhasesMetrics = getCanonicalPhaseInfo(phases).mappedPhases.map(({ phase: p, canonicalId: pId, phaseNumber }, pIdx) => {
             const req = p.requirements || {};
             const minAtt = req.minAttendancePercent || 75;
             const passExamMark = p.exam?.passMarks || 40;
 
             const metric = {
               phaseId: pId,
-              phaseIndex: pIdx + 1,
-              title: p.title || `Phase ${pIdx + 1}`,
+              phaseIndex: phaseNumber,
+              title: p.title || `Phase ${phaseNumber}`,
               admitted: pIdx === 0 ? students.length : 0,
               attendance_qualified: 0,
               attendance_not_qualified: 0,

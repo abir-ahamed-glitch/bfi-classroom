@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { randomUUID } from 'node:crypto';
 import { assertIsolatedTestDatabase, getTestDbPath, initIsolatedTestDatabase } from './test-db-isolation.js';
 
 const DB_PATH = getTestDbPath();
@@ -10,16 +11,22 @@ test.describe('Course Progress Service & Dual-Model Evaluation', () => {
   let legacyEnrollmentId;
   let testCourseDefId;
   let definedEnrollmentId;
-  let testUserId = 8; // Existing student
+  let testUserId;
 
   test.beforeAll(async () => {
     db = await initIsolatedTestDatabase(DB_PATH);
     const mod = await import('../server/services/courseProgressService.js');
     progressService = mod.default || mod;
 
-    // Pick an existing legacy enrollment (e.g. user 8, Online Filmmaking Course, id 1)
-    const legacy = db.prepare("SELECT * FROM student_course_enrollments WHERE course_definition_id IS NULL LIMIT 1").get();
-    legacyEnrollmentId = legacy.id;
+    const username = `progress-test-${randomUUID()}`;
+    testUserId = db.prepare(`
+      INSERT INTO users (username, email, password_hash, role, first_name, last_name)
+      VALUES (?, ?, 'fixture-only', 'student', 'Progress', 'Test')
+    `).run(username, `${username}@example.test`).lastInsertRowid;
+    legacyEnrollmentId = db.prepare(`
+      INSERT INTO student_course_enrollments (user_id, course_name, course_type)
+      VALUES (?, 'Online Filmmaking Course', 'filmmaking')
+    `).run(testUserId).lastInsertRowid;
 
     // Create a 2-phase published course definition for testing
     const defStmt = db.prepare(`
@@ -91,6 +98,12 @@ test.describe('Course Progress Service & Dual-Model Evaluation', () => {
       }
       if (testCourseDefId) {
         db.prepare('DELETE FROM course_definitions WHERE id = ?').run(testCourseDefId);
+      }
+      if (legacyEnrollmentId) {
+        db.prepare('DELETE FROM student_course_enrollments WHERE id = ?').run(legacyEnrollmentId);
+      }
+      if (testUserId) {
+        db.prepare('DELETE FROM users WHERE id = ?').run(testUserId);
       }
       db.close();
     }

@@ -210,6 +210,77 @@ async function run() {
   console.log(`✅ Real Express test server running on ${baseUrl}`);
 
   try {
+    // Bulk edits must share Course Maker's attendance and progression records.
+    const sheetDef = db.prepare(`
+      INSERT INTO course_definitions (slug, version, name, course_type, status, phase_count, definition_json, created_by, updated_by)
+      VALUES ('attendance-test', 1, 'Attendance Test', 'workshop', 'published', 2, ?, 1, 1)
+    `).run(JSON.stringify({ phases: [
+      { id: 'intro', phaseIndex: 1, title: 'Intro', classes: [] },
+      { id: 'practice', phaseIndex: 2, title: 'Practice', requirements: { completionRequired: false, categoryRequirements: { shooting: 1, editing: 1 } },
+        classes: [{ id: 'shoot', title: 'Camera Day', category: 'shooting' }, { id: 'edit', title: 'Edit Day', category: 'editing' }],
+        routine: [{ date: '2026-11-10', classTitle: 'Camera Day' }] }
+    ] })).lastInsertRowid;
+    const addBatch = db.prepare('INSERT INTO batches (slug, batch_name, batch_number, course_name, course_definition_id, created_by) VALUES (?, ?, ?, ?, ?, 1)');
+    const sheetBatch = addBatch.run('attendance-test', 'Attendance Test', '11', 'Attendance Test', sheetDef).lastInsertRowid;
+    const otherBatch = addBatch.run('attendance-test-other', 'Other Attendance Test', '12', 'Attendance Test', sheetDef).lastInsertRowid;
+    const legacyBatch = addBatch.run('attendance-test-legacy', 'Legacy Attendance Test', '13', 'Online Filmmaking Course', null).lastInsertRowid;
+    const addUser = db.prepare("INSERT INTO users (username, email, password_hash, role, first_name, last_name) VALUES (?, ?, 'test-hash', 'student', ?, 'Student')");
+    const enroll = db.prepare("INSERT INTO student_course_enrollments (user_id, batch_id, course_name, course_definition_id, course_type, step3_completed) VALUES (?, ?, ?, ?, ?, ?)");
+    const addStudent = (name, batchId, courseName = 'Attendance Test', defId = sheetDef, admitted = 0) => {
+      const id = addUser.run(name, `${name}@example.test`, name).lastInsertRowid;
+      db.prepare('INSERT INTO batch_students (batch_id, student_id) VALUES (?, ?)').run(batchId, id);
+      return enroll.run(id, batchId, courseName, defId, defId ? 'workshop' : 'filmmaking', admitted).lastInsertRowid;
+    };
+    const first = addStudent('attendance-one', sheetBatch);
+    const second = addStudent('attendance-two', sheetBatch);
+    const outsider = addStudent('attendance-outsider', otherBatch);
+    const locked = addStudent('attendance-locked', sheetBatch);
+    const legacy = addStudent('attendance-legacy', legacyBatch, 'Online Filmmaking Course', null, 1);
+    for (const id of [first, second, outsider]) {
+      db.prepare("INSERT INTO student_phase_results (enrollment_id, phase_id, admitted) VALUES (?, 'practice', 1)").run(id);
+    }
+    const requestSheet = (batchId, changes) => fetchWithTimeout(`${baseUrl}/api/admin/batches/${batchId}/attendance-sheet/2`, {
+      method: changes ? 'PUT' : 'GET',
+      headers: { Authorization: `Bearer ${batchAdminToken}`, 'Content-Type': 'application/json' },
+      ...(changes ? { body: JSON.stringify({ changes }) } : {})
+    });
+    const sheetResponse = await requestSheet(sheetBatch);
+    assert.strictEqual(sheetResponse.status, 200, 'Batch attendance sheet is available');
+    const sheet = await sheetResponse.json();
+    assert.deepStrictEqual(sheet.columns.map(c => [c.id, c.date]), [['shoot', '2026-11-10'], ['edit', null]]);
+    const scheduled = await fetchWithTimeout(`${baseUrl}/api/admin/course-definitions/${sheetDef}/routine`, {
+      method: 'PUT',
+      headers: { Authorization: `Bearer ${batchAdminToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        batch_id: sheetBatch, phase_id: 'practice', reason: 'Shooting rescheduled',
+        routine: [{ classId: 'shoot', classTitle: 'Camera Day (rescheduled)', date: '2026-11-11', weekday: 'Wednesday', startTime: '19:00', endTime: '21:00' }]
+      })
+    });
+    assert.strictEqual(scheduled.status, 200);
+    const rescheduledSheet = await (await requestSheet('attendance-test')).json();
+    assert.strictEqual(rescheduledSheet.columns[0].date, '2026-11-11');
+    assert.strictEqual(sheet.rows.find(r => r.enrollmentId === locked).editable, false);
+    assert.ok(!sheet.rows.some(r => r.enrollmentId === outsider));
+    const present = enrollmentId => ({ enrollmentId, classId: 'shoot', attended: true });
+    for (const invalid of [present(outsider), present(locked), { ...present(second), classId: 'unknown' }]) {
+      assert.strictEqual((await requestSheet(sheetBatch, [present(first), invalid])).status, 400);
+      assert.strictEqual(db.prepare('SELECT COUNT(*) AS n FROM student_class_attendance WHERE enrollment_id = ?').get(first).n, 0, 'Invalid cell leaves the whole save unchanged');
+    }
+    assert.strictEqual((await requestSheet(sheetBatch, [present(first), present(second), { enrollmentId: first, classId: 'edit', attended: false }])).status, 200);
+    const saved = await (await requestSheet(sheetBatch)).json();
+    assert.deepStrictEqual(saved.rows.find(r => r.enrollmentId === first).marks, { shoot: true, edit: false });
+    assert.deepStrictEqual(saved.rows.find(r => r.enrollmentId === second).marks, { shoot: true });
+    assert.strictEqual(getEnrollmentProgressSync(first, db).phases[1].attendance.attendedClasses, 1);
+    assert.strictEqual(db.prepare("SELECT attendance_classes FROM student_phase_results WHERE enrollment_id = ? AND phase_id = 'practice'").get(first).attendance_classes, 1);
+    assert.strictEqual(getEnrollmentProgressSync(first, db).phases[1].isPassed, false);
+    assert.strictEqual((await requestSheet(sheetBatch, [{ enrollmentId: first, classId: 'edit', attended: true }])).status, 200);
+    assert.strictEqual(getEnrollmentProgressSync(first, db).phases[1].isPassed, true, 'Course Maker shooting and editing requirements use the sheet marks');
+    const legacySheet = await (await requestSheet(legacyBatch)).json();
+    assert.deepStrictEqual(legacySheet.columns.map(c => c.id), ['shooting', 'editing']);
+    assert.strictEqual((await requestSheet(legacyBatch, legacySheet.columns.map(c => ({ enrollmentId: legacy, classId: c.id, attended: true })))).status, 200);
+    assert.strictEqual(db.prepare('SELECT step4_completed FROM student_course_enrollments WHERE id = ?').get(legacy).step4_completed, 1);
+    console.log('✅ Batch attendance sheet shares course progress, rejects invalid bulk saves, and completes legacy Phase 2');
+
     // -------------------------------------------------------------
     // HTTP TEST 1: Reason Length Validation on Real Route
     // -------------------------------------------------------------
@@ -1860,7 +1931,7 @@ async function run() {
     console.log('✅ 10.8 Atomic Revert dynamically restored inherited course baseline across both Student and Teacher schedule endpoints');
 
     console.log('\n============================================================');
-    console.log('🎉 ALL 10 REAL EXPRESS ROUTE & SCHEDULE TESTS PASSED!');
+    console.log('🎉 ALL REAL EXPRESS ROUTE, SCHEDULE & ATTENDANCE TESTS PASSED!');
     console.log('============================================================');
   } finally {
     if (server) {
