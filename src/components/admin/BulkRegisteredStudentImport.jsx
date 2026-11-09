@@ -397,32 +397,33 @@ export default function BulkRegisteredStudentImport({ onImportComplete }) {
 
     try {
       const allResults = [];
-      for (let i = 0; i < previewData.length; i++) {
-        const student = previewData[i];
+      const chunkSize = 10;
+      for (let i = 0; i < previewData.length; i += chunkSize) {
+        const students = previewData.slice(i, i + chunkSize);
         try {
-          const res = await fetch('/api/admin/students/bulk?skipExisting=true&isRegisteredOnly=true', {
+          const res = await fetch('/api/admin/students/bulk?skipExisting=true&isRegisteredOnly=true&saveHistory=false', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
               'Authorization': `Bearer ${localStorage.getItem('token')}`
             },
             body: JSON.stringify({
-              students: [student],
+              students: students.map((student, index) => ({ ...student, snNo: student.snNo || String(i + index + 1) })),
               batchNumber: '',
               courses: []
             })
           });
 
           const data = await res.json();
-          if (res.ok && data.results && data.results.length > 0) {
-            allResults.push(data.results[0]);
+          if (res.ok && Array.isArray(data.results) && data.results.length === students.length) {
+            allResults.push(...data.results);
           } else {
-            allResults.push({ ...student, status: 'error', error: data.error || 'Failed to import student' });
+            allResults.push(...students.map(student => ({ ...student, status: 'error', error: data.error || 'Failed to import student' })));
           }
         } catch {
-          allResults.push({ ...student, status: 'error', error: 'Network error' });
+          allResults.push(...students.map(student => ({ ...student, status: 'error', error: 'Network error' })));
         }
-        setProcessedCount(i + 1);
+        setProcessedCount(i + students.length);
       }
 
       // Save history after all students are processed

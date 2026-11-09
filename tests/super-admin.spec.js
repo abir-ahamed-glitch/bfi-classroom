@@ -1587,6 +1587,27 @@ test.describe('Super Admin Architecture & Role Governance Suite', () => {
     // Verify column contents: action, actor, timestamp
     const firstRowText = await firstAuditRow.textContent();
     expect(firstRowText).toContain('admin@abir');
+
+    const ref = Date.now();
+    const imported = await request.post(`${API_BASE}/api/admin/students/bulk?saveHistory=false`, {
+      headers: { Authorization: `Bearer ${superAdminToken}` },
+      data: {
+        students: [
+          { name: 'Audit Browser One', email: `audit-browser-one-${ref}@example.test`, snNo: String(ref) },
+          { name: 'Audit Browser Two', email: `audit-browser-two-${ref}@example.test`, snNo: String(ref + 1) }
+        ]
+      }
+    });
+    expect(imported.status()).toBe(200);
+    expect((await imported.json()).results.map(row => row.status)).toEqual(['success', 'success']);
+    await page.getByTestId('audit-action-filter').selectOption('student.bulk_import');
+    await expect(firstAuditRow).toContainText('Bulk student import');
+    await expect(firstAuditRow).toContainText('admin@abir');
+    await expect(firstAuditRow).toContainText('BST');
+    const summary = firstAuditRow.getByRole('button', { name: '2 rows: 2 new, 0 linked, 0 skipped, 0 failed' });
+    await expect(summary).toBeVisible();
+    await summary.click();
+    await expect(page.getByRole('heading', { name: /Audit Log Event/ })).toBeVisible();
   });
 
   test('29. Real-Time Dynamic Grant & Revocation Workflow Verifying Allowed/Denied Operations', async ({ request }) => {

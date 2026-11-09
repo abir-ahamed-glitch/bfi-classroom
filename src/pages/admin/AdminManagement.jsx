@@ -11,6 +11,33 @@ import { useAuth } from '../../context/AuthContext';
 import { useModal } from '../../components/BFIModal';
 import './AdminManagement.css';
 
+const auditActionLabels = {
+  'student.delete': 'Student moved to Trash',
+  'student.lead_delete': 'Registered student moved to Trash',
+  'student.bulk_import': 'Bulk student import',
+  'certificate.download': 'Certificate download recorded',
+  'course.routine_update': 'Course routine updated',
+  'course.routine_revert': 'Batch routine reset to course default',
+  'academic.batch_attendance_update': 'Batch attendance updated'
+};
+
+function auditTargetLabel(log) {
+  return [log.target_first_name, log.target_last_name].filter(Boolean).join(' ') ||
+    log.details?.fullName || log.target_username || (log.target_user_id ? `#${log.target_user_id}` : '—');
+}
+
+function auditSummary(log) {
+  const details = log.details;
+  if (log.action === 'student.bulk_import' && Number.isInteger(details?.processed)) {
+    return `${details.processed} rows: ${details.created} new, ${details.linked} linked, ${details.skipped} skipped, ${details.failed} failed`;
+  }
+  if (log.action === 'certificate.download') return details?.courseName || log.resource || '—';
+  if (log.action === 'course.routine_update' || log.action === 'course.routine_revert') {
+    return [details?.courseName, details?.batchId && `Batch #${details.batchId}`].filter(Boolean).join(' · ') || '—';
+  }
+  return typeof details === 'object' && details !== null ? JSON.stringify(details) : (details || '—');
+}
+
 export default function AdminManagement() {
   const { currentUser } = useAuth();
   const { showConfirm } = useModal();
@@ -2051,6 +2078,9 @@ export default function AdminManagement() {
                 <option value="course.publish">course.publish</option>
                 <option value="batch.create">batch.create</option>
                 <option value="student.create">student.create</option>
+                {Object.entries(auditActionLabels).map(([action, label]) => (
+                  <option key={action} value={action}>{label}</option>
+                ))}
                 <option value="fee.update">fee.update</option>
                 <option value="export.students_excel">export.students_excel</option>
                 <option value="permission_denied">permission_denied</option>
@@ -2126,7 +2156,7 @@ export default function AdminManagement() {
                   <th>Timestamp</th>
                   <th>Actor</th>
                   <th>Action</th>
-                  <th>Target ID</th>
+                  <th>Target</th>
                   <th>Details</th>
                   <th>IP Address</th>
                 </tr>
@@ -2151,13 +2181,13 @@ export default function AdminManagement() {
                       </td>
                       <td>
                         <span style={{ fontWeight: 600 }}>
-                          {log.actor_username || (log.actor_id ? `Admin #${log.actor_id}` : 'System')}
+                          {log.details?._actor?.username || log.actor_username || (log.actor_id ? `Account #${log.actor_id}` : 'System')}
                         </span>
                       </td>
                       <td>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
                           <span className={`audit-action-pill ${badgeClass}`}>
-                            {log.action}
+                            {auditActionLabels[log.action] || log.action}
                           </span>
                           <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
                             <span className={`module-badge module-${log.module || 'admin_management'}`}>
@@ -2170,22 +2200,20 @@ export default function AdminManagement() {
                         </div>
                       </td>
                       <td>
-                        <span style={{ fontFamily: 'monospace' }}>
-                          {log.target_user_id ? `#${log.target_user_id}` : 'Platform'}
-                        </span>
+                        <span title={log.target_user_id ? `Account #${log.target_user_id}` : undefined}>{auditTargetLabel(log)}</span>
                       </td>
                       <td>
-                        <span 
+                        <button
+                          type="button"
                           className="audit-details-code" 
-                          title="Click row to inspect"
+                          title="View audit event details"
+                          onClick={(event) => { event.stopPropagation(); setSelectedAuditLog(log); }}
                         >
-                          {typeof log.details === 'object' && log.details !== null 
-                            ? JSON.stringify(log.details) 
-                            : (log.details || '—')}
-                        </span>
+                          {auditSummary(log)}
+                        </button>
                       </td>
                       <td style={{ color: 'var(--text-secondary)', fontSize: '0.8rem', fontFamily: 'monospace' }}>
-                        {log.ip_address || '127.0.0.1'}
+                        {log.ip_address || '—'}
                       </td>
                     </tr>
                   );
@@ -2689,19 +2717,19 @@ export default function AdminManagement() {
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '1rem', marginBottom: '1.25rem' }}>
                 <div>
                   <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Action</div>
-                  <div style={{ fontWeight: 700 }}>{selectedAuditLog.action}</div>
+                  <div style={{ fontWeight: 700 }}>{auditActionLabels[selectedAuditLog.action] || selectedAuditLog.action}</div>
                 </div>
                 <div>
                   <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Timestamp</div>
-                  <div>{new Date(selectedAuditLog.created_at).toLocaleString()}</div>
+                  <div>{selectedAuditLog.dhaka_time || new Date(selectedAuditLog.created_at).toLocaleString()}</div>
                 </div>
                 <div>
                   <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Actor</div>
-                  <div>{selectedAuditLog.actor_username || `ID #${selectedAuditLog.actor_id}`}</div>
+                  <div>{selectedAuditLog.details?._actor?.username || selectedAuditLog.actor_username || (selectedAuditLog.actor_id ? `Account #${selectedAuditLog.actor_id}` : 'System')}</div>
                 </div>
                 <div>
                   <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Target User</div>
-                  <div>{selectedAuditLog.target_username ? `${selectedAuditLog.target_username} (#${selectedAuditLog.target_user_id})` : (selectedAuditLog.target_user_id ? `#${selectedAuditLog.target_user_id}` : 'Platform')}</div>
+                  <div>{auditTargetLabel(selectedAuditLog)}</div>
                 </div>
               </div>
 

@@ -685,6 +685,9 @@
 }
 
 .audit-details-code {
+  border: 0;
+  cursor: pointer;
+  text-align: left;
   font-family: monospace;
   font-size: 0.75rem;
   color: var(--text-secondary);

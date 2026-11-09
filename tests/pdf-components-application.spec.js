@@ -4,7 +4,8 @@ import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import jwt from 'jsonwebtoken';
 import Database from 'better-sqlite3';
-import { setupTestRouteProxy } from './test-db-isolation.js';
+import * as XLSX from 'xlsx';
+import { getTestApiUrl, setupTestRouteProxy, verifyServerIsolation } from './test-db-isolation.js';
 
 dotenv.config();
 
@@ -142,6 +143,51 @@ test.describe('Real Application PDF Components & Worker Verification Suite', () 
     }
     await page.waitForFunction(() => window.__harnessReady === true, null, { timeout: 15000 });
   });
+
+  for (const fixture of [
+    { component: 'BulkStudentImport', trigger: 'Smart Batch Import', completed: 'Roster Successfully Imported!', registeredOnly: false },
+    { component: 'BulkRegisteredStudentImport', trigger: 'Bulk Upload Registered Students', completed: 'Students Successfully Registered!', registeredOnly: true }
+  ]) {
+    test(`${fixture.component}: eleven imported rows match real audit counts across requests`, async ({ page, request }) => {
+      await verifyServerIsolation();
+      const { token, user } = createAdminAuthSession();
+      const auditUrl = `${getTestApiUrl()}/api/admin/administrators/audit-logs?action=student.bulk_import&actorId=${user.id}`;
+      const headers = { Authorization: `Bearer ${token}` };
+      const before = await request.get(auditUrl, { headers });
+      expect(before.ok()).toBeTruthy();
+      const lastAuditId = (await before.json()).logs[0]?.id ?? 0;
+
+      const ref = Date.now();
+      const rows = Array.from({ length: 11 }, (_, index) => ({
+        'SN': String(ref + index),
+        'Name': `Sample Student ${index + 1}`,
+        'Email': `audit-ui-${ref}-${index}@example.test`,
+        'Year': 2026
+      }));
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(rows), 'Students');
+      const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+      await page.evaluate(({ token, component }) => {
+        localStorage.setItem('token', token);
+        window.__mountComponent(component, {});
+      }, { token, component: fixture.component });
+      await page.getByRole('button', { name: fixture.trigger }).click();
+      await page.locator('input[type="file"][accept*=".xlsx"]').setInputFiles({
+        name: 'audit-import-fixture.xlsx',
+        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        buffer
+      });
+      await page.getByRole('button', { name: 'Import 11 Students' }).click();
+      await expect(page.getByRole('heading', { name: fixture.completed })).toBeVisible({ timeout: 20000 });
+      await expect(page.getByText('11 successful')).toBeVisible();
+
+      const after = await request.get(auditUrl, { headers });
+      expect(after.ok()).toBeTruthy();
+      const logs = (await after.json()).logs.filter(log => log.id > lastAuditId);
+      expect(logs.map(log => [log.details.processed, log.details.created, log.details.registeredOnly]))
+        .toEqual([[1, 1, fixture.registeredOnly], [10, 10, fixture.registeredOnly]]);
+    });
+  }
 
   test('1. BulkStudentImport: real component mounts, parses valid PDF fixture, asserts exact preview data and enabled import action', async ({ page }) => {
     // Mount the ACTUAL BulkStudentImport component
