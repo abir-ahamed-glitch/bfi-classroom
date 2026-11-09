@@ -4,6 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import { Award, Film, BookOpen, Download, CheckCircle, CalendarCheck, FileText, AlertCircle, Clapperboard, Scissors, BarChart2, Lock, XCircle } from 'lucide-react';
 import { io } from 'socket.io-client';
 import { resolveFeeAccounting, isCourseFeeUnpaid } from '../utils/feeUtils';
+import StudentJourney from '../components/StudentJourney';
 
 const getStatusBadgeStyle = (status) => {
   switch (status) {
@@ -90,6 +91,9 @@ export default function StudentPortal() {
         fetchProfile();
       }
     });
+    socket.on('certificate_downloaded', payload => {
+      if (String(payload.userId) === String(currentUserRef.current)) fetchProfile();
+    });
 
     return () => {
       socket.disconnect();
@@ -120,6 +124,7 @@ export default function StudentPortal() {
 
   return (
     <div className="page-container container" style={{ paddingBottom: '4rem', maxWidth: '1000px', margin: '0 auto' }}>
+      <StudentJourney revision={profile} />
       {/* Live Course Progression Tracker */}
       <section className="academic-card" style={{ padding: '2rem', marginBottom: '2rem' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>

@@ -1178,6 +1178,18 @@ async function run() {
     const adminInsertedRow = db.prepare('SELECT * FROM certificate_downloads WHERE enrollment_id = ?').get(enrId);
     assert.strictEqual(adminInsertedRow.user_id, 50, 'Authoritative recipient MUST be student Jamil (50)');
     assert.strictEqual(adminInsertedRow.downloaded_by, 2, 'downloaded_by MUST record acting administrator Batch Admin (2)');
+    const journeyResponse = await fetchWithTimeout(`${baseUrl}/api/student/journey?userId=1`, { headers: { Authorization: `Bearer ${jamilToken}` } });
+    assert.strictEqual(journeyResponse.status, 200);
+    const journey = await journeyResponse.json();
+    assert.ok(journey.courses.length);
+    assert.ok(journey.courses.every(course => db.prepare('SELECT user_id FROM student_course_enrollments WHERE id = ?').get(course.enrollmentId).user_id === 50), 'Journey identity must come from authentication');
+    const diplomaJourney = journey.courses.find(course => course.enrollmentId === enrId);
+    assert.ok(diplomaJourney.events.some(event => event.type === 'certificate_downloaded'));
+    assert.ok(diplomaJourney.events.some(event => event.type === 'exam_passed'));
+    assert.ok(diplomaJourney.events.filter(event => event.type === 'exam_passed').every(event => event.occurredAt === null), 'Never substitute summary recalculation date for exam pass date');
+    assert.ok(!JSON.stringify(journey).includes('fee_details'));
+    assert.ok(!JSON.stringify(journey).includes('password'));
+    assert.strictEqual((await fetchWithTimeout(`${baseUrl}/api/student/journey`, { headers: { Authorization: `Bearer ${batchAdminToken}` } })).status, 403);
     const certificateLog = db.prepare("SELECT actor_id, target_user_id, details FROM admin_audit_logs WHERE action = 'certificate.download' AND actor_id = 2").get();
     assert.strictEqual(certificateLog?.target_user_id, 50);
     assert.strictEqual(JSON.parse(certificateLog.details).enrollmentId, enrId);

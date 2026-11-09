@@ -1,0 +1,16 @@
+.student-journey { padding: clamp(1rem, 3vw, 2rem); margin-bottom: 2rem; }
+.student-journey h3 { display: flex; align-items: center; gap: 0.5rem; margin-top: 0; }
+.student-journey > p, .student-journey-date, .student-journey time { color: var(--text-secondary); }
+.student-journey article { padding: 1rem 0; border-top: 1px solid var(--glass-border); }
+.student-journey h4 { overflow-wrap: anywhere; }
+.student-journey-events { list-style: none; padding: 0; margin: 1rem 0; }
+.student-journey-events li { display: flex; gap: 0.8rem; position: relative; padding: 0 0 1.5rem; }
+.student-journey-events li:not(:last-child)::after { content: ''; position: absolute; top: 1.3rem; bottom: 0.25rem; left: 0.55rem; border-left: 2px solid var(--text-muted); opacity: 0.4; }
+.student-journey-events svg { flex-shrink: 0; color: var(--accent-primary); margin-top: 0.15rem; }
+.student-journey-events strong { display: block; overflow-wrap: anywhere; }
+.student-journey time, .student-journey-date { display: block; font-size: 0.85rem; margin-top: 0.3rem; }
+.student-journey-next { padding: 0.75rem 1rem; background: var(--bg-tertiary); border-radius: 0.6rem; }
+.student-journey-next h5 { margin: 0 0 0.6rem; font-size: 0.9rem; }
+.student-journey-next ul { list-style: none; padding: 0; margin: 0; }
+.student-journey-next li { display: flex; align-items: center; gap: 0.5rem; padding: 0.3rem 0; color: var(--text-secondary); }
+.student-journey-next svg { flex-shrink: 0; }

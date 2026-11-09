@@ -9,8 +9,19 @@ import db from '../db/database.js';
 import { authenticateToken, sanitizeInput, validatePassword, sensitiveEndpointLimiter, hasPermission, hasAnyPermission, isSuperAdmin } from '../middleware/auth.js';
 import courseProgressService, { resolvePhaseRoutine } from '../services/courseProgressService.js';
 import { isTeacherAssignedToBatch } from './teacher.js';
+import { getStudentJourney } from '../services/studentJourneyService.js';
 
 const router = express.Router();
+
+router.get('/journey', authenticateToken, (req, res) => {
+  if (req.user.role !== 'student') return res.status(403).json({ error: 'Student access required.' });
+  try {
+    res.json(getStudentJourney(db, req.user.id));
+  } catch (error) {
+    console.error('Student journey fetch failed:', error.message);
+    res.status(500).json({ error: 'Could not load your learning journey.' });
+  }
+});
 
 // Helper function to fetch user profile data (DRY - avoids duplicate queries)
 function fetchUserProfileData(userId, includePrivateData = false, isViewerAdmin = false) {
