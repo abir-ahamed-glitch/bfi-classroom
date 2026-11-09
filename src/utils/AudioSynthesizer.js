@@ -3,14 +3,15 @@
 
 class AudioSynthesizer {
   constructor() {
-    this.context = new (window.AudioContext || window.webkitAudioContext)();
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    this.context = AudioContextClass ? new AudioContextClass() : null;
     this.activeOscillators = [];
     this.isPlayingRingtone = false;
     this.ringtoneInterval = null;
   }
 
   resume() {
-    if (this.context.state === 'suspended') {
+    if (this.context?.state === 'suspended') {
       this.context.resume();
     }
   }
@@ -28,6 +29,7 @@ class AudioSynthesizer {
   }
 
   playTone(frequency, type = 'sine', duration = 0.1, volume = 0.5, delay = 0) {
+    if (!this.context) return;
     const osc = this.context.createOscillator();
     const gain = this.context.createGain();
 
@@ -46,6 +48,7 @@ class AudioSynthesizer {
   }
 
   playMelody(notes, loop = false) {
+    if (!this.context) return;
     this.resume();
     this.stopAll();
 
