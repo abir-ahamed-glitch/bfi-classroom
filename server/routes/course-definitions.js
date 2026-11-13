@@ -142,6 +142,36 @@ function validateCourseDefinitionPayload(data, isPublishing = false) {
     errors.push(`Expected exactly ${phaseCount} phase(s), but received ${phases.length}.`);
   }
 
+  const orderedFilm = phases.some(phase => phase.requirements?.filmWorkflow === true);
+  if (isPublishing && orderedFilm) {
+    const [theory, production] = [...phases].sort((a, b) => Number(a.phaseIndex) - Number(b.phaseIndex));
+    const validTheory = theory?.requirements?.examAttendanceGate === true
+      && theory.requirements.attendanceRequired === true
+      && Number(theory.requirements.minAttendancePercent) === 80
+      && theory.requirements.completionRequired === true
+      && theory.classes?.length > 0
+      && theory.classes.every(cls => cls.deliveryMode === 'live' && cls.platform === 'Zoom' && cls.mandatory === false)
+      && theory.exam?.enabled === true && Number(theory.exam.maxMarks) === 80
+      && Number(theory.exam.phasePassThreshold) > 0
+      && theory.exam.includeAssignmentsInTotal !== false
+      && theory.assignments?.length > 0
+      && theory.assignments.every(assignment => assignment.submissionRequired === true)
+      && theory.assignments.reduce((sum, assignment) => sum + Number(assignment.maxMarks), 0) === 20;
+    const online = (production?.classes || []).filter(cls => cls.deliveryMode === 'live' && !['shooting', 'editing'].includes(cls.category));
+    const validProduction = production?.requirements?.filmWorkflow === true
+      && production.requirements.completionRequired === true
+      && Number(production.requirements.minAttendancePercent) >= 1
+      && Number(production.requirements.minAttendancePercent) <= 100
+      && [5, 6].includes(online.length)
+      && production.classes.filter(cls => cls.category === 'shooting' && cls.deliveryMode === 'offline').length === 1
+      && production.classes.filter(cls => cls.category === 'editing' && cls.deliveryMode === 'offline').length === 1
+      && production.classes.length === online.length + 2
+      && !production.exam?.enabled && !production.assignments?.length;
+    if (phases.length !== 2 || !validTheory || !validProduction || theory.requirements.filmWorkflow === true || production.requirements.examAttendanceGate === true) {
+      errors.push('Filmmaking workflow requires Phase 1 Zoom classes, 80% attendance, an 80-mark exam and 20 marks of required assignments. Phase 2 requires five or six online classes, one in-person shoot, one in-person edit, and film acceptance.');
+    }
+  }
+
   // Duplicate ID & index tracking
   const seenPhaseIds = new Set();
   const seenPhaseIndexes = new Set();

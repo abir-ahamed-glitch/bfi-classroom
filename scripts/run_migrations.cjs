@@ -18,6 +18,7 @@ const path = require('path');
 const fs = require('fs');
 
 const REQUIRED_MIGRATION_MODULES = [
+  '20261109_film_submissions.cjs',
   '20261023_super_admin.cjs',
   '20261023_admin_permissions.cjs',
   '20261024_privileged_safeguards.cjs',
@@ -63,6 +64,7 @@ const { runUniversalMfaAndSuperAdminMigration } = require(path.join(migrationsDi
 const { runSchemaRepairsAndKeyPairMigration } = require(path.join(migrationsDir, '20261030_schema_repairs_and_key_pair.cjs'));
 const { runBatchInstructorsAndCertificateDownloadsMigration } = require(path.join(migrationsDir, '20261104_batch_instructors_and_certificate_downloads.cjs'));
 const { runSessionGraceAndCourseDraftIdempotencyMigration } = require(path.join(migrationsDir, '20261106_session_grace_and_course_draft_idempotency.cjs'));
+const { ensureFilmSubmissionSchema } = require(path.join(migrationsDir, '20261109_film_submissions.cjs'));
 
 const MIGRATIONS = [
   { name: '20261023_super_admin', runner: runSuperAdminMigration },
@@ -75,6 +77,7 @@ const MIGRATIONS = [
   { name: '20261030_schema_repairs_and_key_pair', runner: runSchemaRepairsAndKeyPairMigration },
   { name: '20261104_batch_instructors_and_certificate_downloads', runner: runBatchInstructorsAndCertificateDownloadsMigration },
   { name: '20261106_session_grace_and_course_draft_idempotency', runner: runSessionGraceAndCourseDraftIdempotencyMigration },
+  { name: '20261109_film_submissions', runner: ensureFilmSubmissionSchema },
 ];
 
 function resolveDatabasePath() {
@@ -93,6 +96,14 @@ function resolveDatabasePath() {
 
 function assertSchemaIntegrity(db) {
   console.log('[Integrity Check] Validating schema integrity and post-migration assertions...');
+  const excuseColumns = db.prepare('PRAGMA table_info(course_attendance_excuses)').all().map(column => column.name);
+  for (const column of ['enrollment_id', 'class_id', 'reason', 'approved_by', 'approved_at']) {
+    if (!excuseColumns.includes(column)) throw new Error(`Missing course_attendance_excuses.${column}`);
+  }
+  const filmColumns = db.prepare('PRAGMA table_info(film_submissions)').all().map(column => column.name);
+  for (const column of ['enrollment_id', 'phase_id', 'revision', 'status', 'submitted_at', 'reviewed_at', 'reviewed_by']) {
+    if (!filmColumns.includes(column)) throw new Error(`Missing film_submissions.${column}`);
+  }
 
   // 1. Verify app_migrations table exists and has all entries
   const appMigrationsExists = db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='app_migrations'`).get();

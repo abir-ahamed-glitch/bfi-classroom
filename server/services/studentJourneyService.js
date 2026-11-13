@@ -34,7 +34,7 @@ export function getStudentJourney(db, userId) {
           } else {
             upcoming.push({ id: `${phase.id}:start`, title: `${label} · Awaiting admission` });
           }
-          if (phase.exam.enabled && phase.exam.taken && phase.exam.isPassed) {
+          if (phase.exam.enabled && phase.exam.taken && (phase.exam.attendanceGate ? phase.isPassed : phase.exam.isPassed)) {
             add(`${phase.id}:exam`, 'exam_passed', `${label} · Exam passed`);
           } else if (phase.exam.enabled) {
             upcoming.push({ id: `${phase.id}:exam`, title: `${label} · Pass exam` });
@@ -61,6 +61,11 @@ export function getStudentJourney(db, userId) {
         }
       }
 
+      const films = db.prepare('SELECT * FROM film_submissions WHERE enrollment_id = ? ORDER BY id').all(enrollment.id);
+      for (const film of films) {
+        add(`film:${film.id}`, 'film_submitted', `${film.title} · Film submitted (version ${film.revision})`, film.submitted_at);
+        if (film.status === 'accepted') add(`film:${film.id}:accepted`, 'film_accepted', `${film.title} · Film accepted`, film.reviewed_at);
+      }
       const downloads = db.prepare(`
         SELECT MIN(downloaded_at) AS first_download FROM certificate_downloads
         WHERE user_id = ? AND enrollment_id = ?

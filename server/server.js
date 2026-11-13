@@ -34,6 +34,7 @@ const __dirname = path.dirname(__filename);
 import authRoutes from './routes/auth.js';
 import adminRoutes, { startAnnouncementScheduler } from './routes/admin.js';
 import studentRoutes from './routes/student.js';
+import filmSubmissionRoutes from './routes/film-submissions.js';
 import portfolioRoutes from './routes/portfolio.js';
 import communityRoutes, { startCommunityScheduler } from './routes/community.js';
 import courseRoutes from './routes/course.js';
@@ -568,6 +569,7 @@ for (const prefix of apiMountPrefixes) {
   app.use(`${prefix}/admin`, feesRoutes);
   app.use(`${prefix}/admin`, feeTrackerRoutes);
   app.use(`${prefix}/student`, studentRoutes);
+  app.use(`${prefix}/film-submissions`, filmSubmissionRoutes);
   app.use(`${prefix}/portfolio`, portfolioRoutes);
   app.use(`${prefix}/community`, communityRoutes);
   app.use(`${prefix}/courses`, courseRoutes);

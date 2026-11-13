@@ -1576,6 +1576,7 @@ export function initializeDatabase() {
     runBatchInstructorsAndCertificateDownloadsMigration(db);
 
     ensureSessionGraceAndIdempotencySchema(db);
+    require('./migrations/20261109_film_submissions.cjs').ensureFilmSubmissionSchema(db);
     console.log('✅ Course Maker tables and columns verified');
   } catch (err) {
     console.error('Error initializing Course Maker schema:', err);

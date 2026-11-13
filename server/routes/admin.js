@@ -2034,7 +2034,7 @@ router.put('/students/:id/courses/:courseId/defined-progress', authenticateToken
     }
     const studentId = parseInt(req.params.id, 10);
     const courseId = parseInt(req.params.courseId, 10);
-    const { attendance, assignments, exam_marks } = req.body;
+    const { attendance, assignments, exam_marks, attendance_excuses = [] } = req.body;
 
     const enrollment = db.prepare('SELECT * FROM student_course_enrollments WHERE id = ? AND user_id = ?').get(courseId, studentId);
     if (!enrollment) {
@@ -2094,6 +2094,24 @@ router.put('/students/:id/courses/:courseId/defined-progress', authenticateToken
           lockedPhaseMap.set(p.id, p);
         }
       }
+    }
+
+    if (!Array.isArray(attendance_excuses) || attendance_excuses.length > classMap.size) {
+      return res.status(400).json({ error: 'Invalid attendance exceptions.' });
+    }
+    if (attendance_excuses.length && req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Only an academic records admin can approve attendance exceptions.' });
+    }
+    const excuseIds = new Set();
+    for (const item of attendance_excuses) {
+      const target = classMap.get(item?.class_id);
+      if (!target || excuseIds.has(item.class_id) || lockedPhaseMap.has(target.phase.id)
+        || target.phase.requirements?.filmWorkflow !== true || target.classObj.deliveryMode !== 'live'
+        || ['shooting', 'editing'].includes(target.classObj.category)
+        || (item.reason !== null && (typeof item.reason !== 'string' || !item.reason.trim() || item.reason.length > 500))) {
+        return res.status(400).json({ error: 'An attendance exception requires an admitted Phase 2 online class and a reason (up to 500 characters).' });
+      }
+      excuseIds.add(item.class_id);
     }
 
     // 3. Deep validation of attendance items
@@ -2206,6 +2224,7 @@ router.put('/students/:id/courses/:courseId/defined-progress', authenticateToken
 
     const beforeSnapshot = {
       attendance: existingAtt,
+      ...(attendance_excuses.length ? { attendance_excuses: db.prepare('SELECT * FROM course_attendance_excuses WHERE enrollment_id = ?').all(courseId).filter(row => excuseIds.has(row.class_id)) } : {}),
       assignments: existingAsg,
       exam_marks: existingExam
     };
@@ -2217,6 +2236,7 @@ router.put('/students/:id/courses/:courseId/defined-progress', authenticateToken
         attendance: Array.isArray(attendance) ? attendance : [],
         assignments: Array.isArray(assignments) ? assignments : [],
         exam_marks: exam_marks || [],
+        attendance_excuses: attendance_excuses.map(item => ({ class_id: item.class_id, reason: item.reason?.trim() ?? null })),
         updatedBy: req.user.id
       },
       null,
@@ -2238,7 +2258,8 @@ router.put('/students/:id/courses/:courseId/defined-progress', authenticateToken
             afterState: {
               attendance: Array.isArray(attendance) ? attendance.map(a => ({ class_id: a.class_id, attended: a.attended ? 1 : 0 })) : [],
               assignments: Array.isArray(assignments) ? assignments.map(a => ({ assignment_id: a.assignment_id, marks: a.marks_obtained !== undefined ? a.marks_obtained : a.marks, status: a.submission_status || 'graded' })) : [],
-              exam_marks: Array.isArray(exam_marks) ? exam_marks : (exam_marks ? [exam_marks] : [])
+              exam_marks: Array.isArray(exam_marks) ? exam_marks : (exam_marks ? [exam_marks] : []),
+              attendance_excuses
             },
             dbInstance: txDb,
             throwOnError: true
@@ -2254,6 +2275,7 @@ router.put('/students/:id/courses/:courseId/defined-progress', authenticateToken
 
     res.json({ success: true, progress: updatedProgress });
   } catch (error) {
+    if (error.status === 400) return res.status(400).json({ error: error.message });
     console.error('Error updating defined course progress:', error);
     res.status(500).json({ error: 'Internal server error while updating defined course progress.' });
   }

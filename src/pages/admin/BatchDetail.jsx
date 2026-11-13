@@ -1456,6 +1456,7 @@ export default function BatchDetail() {
 
   return (
     <div className="page-container container batch-detail-container">
+      {canMarkAttendance && batchData && <Link className="btn btn-secondary" to={`/film-submissions?batch_id=${batchData.id}`}>Review student films</Link>}
       {/* Toast */}
       {toastMsg && (
         <div style={{

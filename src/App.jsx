@@ -44,6 +44,7 @@ import AdminManagement from './pages/admin/AdminManagement';
 import BroadcastManager from './pages/admin/BroadcastManager';
 import Certificates from './pages/Certificates';
 import StudentPortal from './pages/StudentPortal';
+import FilmSubmissions from './pages/FilmSubmissions';
 import Sidebar from './components/Sidebar';
 import ErrorBoundary from './components/ErrorBoundary';
 import SkeletonLoader from './components/SkeletonLoader';
@@ -292,6 +293,7 @@ function App() {
               </Layout>
             </ProtectedRoute>
           } />
+          <Route path="/film-submissions" element={<ProtectedRoute requiredRole={['student', 'admin']}><Layout><FilmSubmissions /></Layout></ProtectedRoute>} />
 
           <Route path="/classroom" element={
             <ProtectedRoute>

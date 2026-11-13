@@ -45,7 +45,7 @@ router.put('/:id/attendance-sheet/:phase', ...attendanceSheetAccess, (req, res) 
     for (const studentId of studentIds) io?.emit('progression_updated', { studentId });
     res.json({ updatedStudents: studentIds.length });
   } catch (error) {
-    if (error instanceof AttendanceSheetError) return res.status(error.status).json({ error: error.message });
+    if (error instanceof AttendanceSheetError || error.status === 400) return res.status(error.status).json({ error: error.message });
     console.error('[Batches] Error saving attendance sheet:', error);
     res.status(500).json({ error: 'Could not save attendance changes.' });
   }
