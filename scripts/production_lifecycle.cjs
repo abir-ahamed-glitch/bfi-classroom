@@ -702,6 +702,7 @@ async function executeDeployment(options = {}) {
   if (!fs.existsSync(recoveryMigrationsDir)) fs.mkdirSync(recoveryMigrationsDir, { recursive: true });
 
   const canonicalMigrationModules = [
+    '20261109_film_submissions.cjs',
     '20261023_super_admin.cjs',
     '20261023_admin_permissions.cjs',
     '20261024_privileged_safeguards.cjs',

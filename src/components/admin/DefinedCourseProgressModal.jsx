@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
+import { useAuth } from '../../context/AuthContext';
 import { deliveryModeLabel } from '../../utils/deliveryModes';
 import { 
   X, CheckCircle2, Clock, AlertTriangle, Lock, Award, 
@@ -15,6 +16,7 @@ export default function DefinedCourseProgressModal({
   initialPhaseIndex = 0,
   onUpdated
 }) {
+  const { currentUser } = useAuth();
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
@@ -274,6 +276,33 @@ export default function DefinedCourseProgressModal({
       }
     } catch (err) {
       console.error('Error saving progress:', err);
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const saveAttendanceException = async (cls) => {
+    const reason = cls.excused
+      ? (window.confirm('Remove this attendance exception?') ? null : undefined)
+      : window.prompt('Why is this online absence excused?');
+    if (reason === undefined || (!cls.excused && !reason?.trim())) return;
+    setSaving(true);
+    setError(null);
+    setSuccessMsg(null);
+    try {
+      const batchParam = enrollment?.batch_id ? `?batch_id=${enrollment.batch_id}` : '';
+      const response = await fetch(`/api/admin/students/${studentId}/courses/${enrollmentId}/defined-progress${batchParam}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}` },
+        body: JSON.stringify({ attendance_excuses: [{ class_id: cls.id, reason: reason?.trim() ?? null }] })
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Could not save the attendance exception.');
+      setProgress(result.progress);
+      setSuccessMsg(cls.excused ? 'Attendance exception removed.' : 'Absence excused.');
+      onUpdated?.();
+    } catch (err) {
       setError(err.message);
     } finally {
       setSaving(false);
@@ -734,7 +763,7 @@ export default function DefinedCourseProgressModal({
                         <li>Assignments: All required assignments must be submitted and achieve passing marks</li>
                       )}
                       {currentPhase.exam?.enabled && (
-                        <li>Exam: Score at least {currentPhase.exam.passMarks || 40} marks on {currentPhase.exam.title || 'Phase Exam'}</li>
+                        <li>Exam: Score at least {currentPhase.exam.passMarks ?? 40} marks on {currentPhase.exam.title || 'Phase Exam'}</li>
                       )}
                     </ul>
                   </div>
@@ -856,6 +885,13 @@ export default function DefinedCourseProgressModal({
                           )}
                         </div>
 
+                        {currentUser?.role === 'admin' && currentPhase.filmWorkflow && cls.deliveryMode === 'live'
+                          && !['shooting', 'editing'].includes(cls.category) && (!isAttended || cls.excused) && (
+                            <button type="button" className="btn btn-secondary" disabled={isLocked || saving}
+                              onClick={() => saveAttendanceException(cls)}>
+                              {cls.excused ? 'Remove excuse' : 'Excuse absence'}
+                            </button>
+                        )}
                         <button
                           type="button"
                           onClick={() => handleToggleAttendance(cls.id)}
@@ -885,7 +921,7 @@ export default function DefinedCourseProgressModal({
                           ) : (
                             <>
                               <Square size={20} />
-                              <span>Absent</span>
+                              <span>{cls.excused ? 'Excused absence' : 'Absent'}</span>
                             </>
                           )}
                         </button>
@@ -1023,7 +1059,7 @@ export default function DefinedCourseProgressModal({
                     <div>
                       <h3 style={{ margin: 0, fontSize: '1rem', fontWeight: 600 }}>{currentPhase.exam.title || 'Phase Exam'}</h3>
                       <span style={{ fontSize: '0.8rem', color: 'var(--text-muted, #94a3b8)' }}>
-                        Pass mark: {currentPhase.exam.passMarks || 40} / {currentPhase.exam.maxMarks || 100}
+                        Pass mark: {currentPhase.exam.passMarks ?? 40} / {currentPhase.exam.maxMarks || 100}
                         {currentPhase.exam.phasePassThreshold && ` (Overall threshold: ${currentPhase.exam.phasePassThreshold})`}
                       </span>
                     </div>
@@ -1033,10 +1069,10 @@ export default function DefinedCourseProgressModal({
                         padding: '2px 8px',
                         borderRadius: '4px',
                         fontWeight: 600,
-                        background: Number(examEdits[currentPhase.id]) >= (currentPhase.exam.passMarks || 40) ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)',
-                        color: Number(examEdits[currentPhase.id]) >= (currentPhase.exam.passMarks || 40) ? '#34d399' : '#f87171'
+                        background: Number(examEdits[currentPhase.id]) >= (currentPhase.exam.passMarks ?? 40) ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)',
+                        color: Number(examEdits[currentPhase.id]) >= (currentPhase.exam.passMarks ?? 40) ? '#34d399' : '#f87171'
                       }}>
-                        {Number(examEdits[currentPhase.id]) >= (currentPhase.exam.passMarks || 40) ? 'Exam Passed' : 'Exam Failed'}
+                        {Number(examEdits[currentPhase.id]) >= (currentPhase.exam.passMarks ?? 40) ? 'Exam Passed' : 'Exam Failed'}
                       </span>
                     ) : (
                       <span style={{
@@ -1052,6 +1088,9 @@ export default function DefinedCourseProgressModal({
                     )}
                   </div>
 
+                  {currentPhase.exam.eligible === false && (
+                    <p>Record at least {currentPhase.attendance.requiredPercentage}% attendance before entering exam marks.</p>
+                  )}
                   <div style={{ maxWidth: '240px' }}>
                     <label style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-muted, #94a3b8)', marginBottom: '4px' }}>Marks Obtained</label>
                     <input
@@ -1060,7 +1099,7 @@ export default function DefinedCourseProgressModal({
                       max={currentPhase.exam.maxMarks || 100}
                       placeholder="Enter marks"
                       value={examEdits[currentPhase.id] !== undefined ? examEdits[currentPhase.id] : ''}
-                      disabled={isLocked}
+                      disabled={isLocked || currentPhase.exam.eligible === false}
                       onChange={e => handleExamChange(currentPhase.id, e.target.value)}
                       style={{
                         width: '100%',

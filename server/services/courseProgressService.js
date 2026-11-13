@@ -446,8 +446,9 @@ export function getEnrollmentProgressSync(enrollmentId, customDb = null, options
 
   const policy = definition.completionPolicy || {};
   const phaseGates = policy.phaseGates || policy.phaseProgression || {};
-  const sequentialProgression = phaseGates.sequentialProgression !== false;
-  const requirePreviousPhasePassed = phaseGates.requirePreviousPhasePassed !== false;
+  const hasFilmWorkflow = (definition.phases || []).some(phase => phase.requirements?.filmWorkflow === true);
+  const sequentialProgression = hasFilmWorkflow || phaseGates.sequentialProgression !== false;
+  const requirePreviousPhasePassed = hasFilmWorkflow || phaseGates.requirePreviousPhasePassed !== false;
   const requirePreviousPhaseFeesPaid = !!phaseGates.requirePreviousPhaseFeesPaid;
 
   let totalClassesAllPhases = 0;
@@ -455,6 +456,14 @@ export function getEnrollmentProgressSync(enrollmentId, customDb = null, options
   let allRequiredPhasesPassed = true;
   let allMandatoryClassesMet = true;
   let allMandatoryAssignmentsMet = true;
+
+  const filmRecords = hasFilmWorkflow ? db.prepare(`
+    SELECT phase_id, status FROM film_submissions WHERE enrollment_id = ? ORDER BY revision
+  `).all(enrollmentId) : [];
+  const latestFilm = new Map(filmRecords.map(record => [record.phase_id, record.status]));
+  const excuses = hasFilmWorkflow
+    ? new Set(db.prepare('SELECT class_id FROM course_attendance_excuses WHERE enrollment_id = ?').all(enrollmentId).map(row => row.class_id))
+    : new Set();
 
   const evaluatedPhases = [];
   const { mappedPhases: syncMappedPhases } = getCanonicalPhaseInfo(definition.phases || []);
@@ -480,6 +489,8 @@ export function getEnrollmentProgressSync(enrollmentId, customDb = null, options
         durationMinutes: cls.durationMinutes,
         mandatory: cls.mandatory !== false,
         attended,
+        excused: phase.requirements?.filmWorkflow === true && cls.deliveryMode === 'live'
+          && !['shooting', 'editing'].includes(cls.category) && excuses.has(cls.id),
         attendedAt: att ? att.attended_at : null
       };
     });
@@ -543,7 +554,7 @@ export function getEnrollmentProgressSync(enrollmentId, customDb = null, options
       title: phase.exam?.title || 'Phase Exam',
       type: phase.exam?.type || 'written',
       maxMarks: phase.exam?.maxMarks || 100,
-      passMarks: phase.exam?.passMarks || 40,
+      passMarks: phase.exam?.passMarks ?? 40,
       phasePassThreshold: phase.exam?.phasePassThreshold,
       includeAssignmentsInTotal: phase.exam?.includeAssignmentsInTotal,
       marksObtained: examMarks,
@@ -593,23 +604,50 @@ export function getEnrollmentProgressSync(enrollmentId, customDb = null, options
       isPhaseAdmitted = false;
     }
 
+    const exactAttendance = totalClasses > 0 ? attendedClasses * 100 / totalClasses : 0;
+    const examAttendanceRequired = phase.requirements?.examAttendanceGate === true;
+    const examEligible = !examAttendanceRequired || exactAttendance >= Number(phase.requirements.minAttendancePercent);
+    const orderedFilm = phase.requirements?.filmWorkflow === true;
+    let filmWorkflow = null;
+    if (orderedFilm) {
+      const online = classes.filter(cls => cls.deliveryMode === 'live' && !['shooting', 'editing'].includes(cls.category));
+      const counted = online.filter(cls => cls.attended || cls.excused).length;
+      const minimum = Number(phase.requirements.minAttendancePercent);
+      const onlineComplete = online.length > 0 && counted * 100 >= minimum * online.length;
+      const shootingComplete = classes.some(cls => cls.category === 'shooting' && cls.attended);
+      const editingComplete = classes.some(cls => cls.category === 'editing' && cls.attended);
+      const status = latestFilm.get(phaseId) || null;
+      filmWorkflow = {
+        onlineComplete, shootingComplete, editingComplete, status,
+        canSubmit: isPhaseAdmitted && !isLocked && onlineComplete && shootingComplete && editingComplete
+      };
+    }
+
     let isPassed = false;
-    if (isMigratedPhase) {
+    if (orderedFilm) {
+      isPassed = filmWorkflow.canSubmit && filmWorkflow.status === 'accepted';
+    } else if (isMigratedPhase) {
       isPassed = true;
     } else if (isLocked || (idx > 0 && !isPhaseAdmitted)) {
       isPassed = false;
     } else {
       isPassed = evaluatePhasePass({
         phase,
-        attendance: { attendedClasses, totalClasses, percentage: attendancePercentage },
+        attendance: { attendedClasses, totalClasses, percentage: examAttendanceRequired ? exactAttendance : attendancePercentage },
         classes,
         assignments,
         examMarks
       });
     }
 
+    if (examAttendanceRequired) {
+      isPassed = isPassed && examEligible && assignments
+        .filter(assignment => assignment.submissionRequired)
+        .every(assignment => ['submitted', 'graded'].includes(assignment.submissionStatus));
+    }
+
     let status = 'in_progress';
-    if (isMigratedPhase || isPassed) {
+    if (isPassed) {
       status = 'passed';
     } else if (examMarks !== null && !exam.isPassed) {
       status = 'failed';
@@ -623,12 +661,12 @@ export function getEnrollmentProgressSync(enrollmentId, customDb = null, options
       ? phaseResult.attendance_percentage
       : attendancePercentage;
 
-    const isPhaseRequired = phase.requirements?.completionRequired !== false;
+    const isPhaseRequired = orderedFilm || examAttendanceRequired || phase.requirements?.completionRequired !== false;
     if (isPhaseRequired && !isPassed) {
       allRequiredPhasesPassed = false;
     }
 
-    if (!isMigratedPhase && classes.some(c => c.mandatory && !c.attended)) {
+    if (!isMigratedPhase && !orderedFilm && classes.some(c => c.mandatory && !c.attended)) {
       allMandatoryClassesMet = false;
     }
 
@@ -667,6 +705,7 @@ export function getEnrollmentProgressSync(enrollmentId, customDb = null, options
       duration: phase.duration,
       requirements: phase.requirements,
       categoryStats,
+      filmWorkflow,
       isLocked,
       lockReason,
       isAdmitted: isPhaseAdmitted,
@@ -697,6 +736,8 @@ export function getEnrollmentProgressSync(enrollmentId, customDb = null, options
       assignments,
       exam: {
         ...exam,
+        eligible: examEligible,
+        attendanceGate: examAttendanceRequired,
         taken: examMarks !== null && examMarks !== undefined,
         score: examMarks,
         satisfied: exam.isPassed
@@ -748,6 +789,8 @@ export function getEnrollmentProgressSync(enrollmentId, customDb = null, options
       }
     }
   }
+
+  if (hasFilmWorkflow && !evaluatedPhases.every(phase => phase.isPassed)) certificateEligible = false;
 
   const reEnrollment = policy.reEnrollment || {};
   const reEnrollmentDiscountPercentage = reEnrollment.discountEnabled
@@ -854,13 +897,45 @@ function syncPhaseResults(enrollmentId, phases, db, options = {}) {
   }
 }
 
-/**
- * Record atomic class attendance for a student
- */
+function validateOrderedAcademicUpdates(enrollmentId, attendance, exams, db, options, beforeAttendance) {
+  if (!attendance?.length && !(Array.isArray(exams) ? exams.length : exams)) return;
+  const progress = getEnrollmentProgressSync(enrollmentId, db, options);
+  for (const phase of progress?.phases || []) {
+    const workflow = phase.filmWorkflow;
+    const fail = message => { throw Object.assign(new Error(message), { status: 400 }); };
+    if (workflow) {
+      const categories = new Map(phase.classes.map(cls => [cls.id, cls.category]));
+      for (const mark of attendance || []) {
+        if (!mark.attended) continue;
+        const category = categories.get(mark.class_id);
+        if (!['shooting', 'editing'].includes(category)) continue;
+        const before = beforeAttendance?.phases.find(item => item.id === phase.id)?.filmWorkflow || workflow;
+        if (!phase.isAdmitted || phase.isLocked || !before.onlineComplete || !workflow.onlineComplete) {
+          fail('Complete the required online attendance before marking shooting or editing.');
+        }
+        if (category === 'editing' && (!before.shootingComplete || !workflow.shootingComplete)) {
+          fail('Record shooting attendance before marking editing.');
+        }
+      }
+    }
+    if (phase.exam.attendanceGate) {
+      for (const item of Array.isArray(exams) ? exams : exams ? [exams] : []) {
+        const id = String(item.phase_id ?? ('p_' + (item.phaseNumber ?? 1)));
+        const marks = item.marks !== undefined ? item.marks : item.examMarks;
+        if (id === phase.id && marks !== null && marks !== undefined && marks !== '' && !phase.exam.eligible) {
+          fail('The required attendance must be reached before recording exam marks.');
+        }
+      }
+    }
+  }
+}
+
+/** Record atomic class attendance for a student. */
 export async function recordClassAttendance(enrollmentId, classId, attended, updatedBy = null, customDb = null, options = {}) {
   const db = getDatabase(customDb);
 
   const tx = db.transaction(() => {
+    const before = attended ? getEnrollmentProgressSync(enrollmentId, db, options) : null;
     db.prepare(`
       INSERT INTO student_class_attendance (
         enrollment_id, class_id, attended, attended_at, updated_by
@@ -870,6 +945,7 @@ export async function recordClassAttendance(enrollmentId, classId, attended, upd
         attended_at = excluded.attended_at,
         updated_by = excluded.updated_by
     `).run(enrollmentId, classId, attended ? 1 : 0, updatedBy);
+    validateOrderedAcademicUpdates(enrollmentId, [{ class_id: classId, attended }], null, db, options, before);
 
     if (options && options.failureInjection) {
       throw new Error('Injected failure inside atomic transaction for testing rollback');
@@ -933,6 +1009,7 @@ export async function recordExamMarks(enrollmentId, phaseId, marks, customDb = n
   const marksVal = (marks !== null && marks !== undefined && marks !== '') ? Number(marks) : null;
 
   const tx = db.transaction(() => {
+    validateOrderedAcademicUpdates(enrollmentId, null, [{ phase_id: phaseId, marks }], db, options);
     db.prepare(`
       INSERT INTO student_phase_results (
         enrollment_id, phase_id, exam_marks, calculated_at
@@ -968,9 +1045,10 @@ export async function updateDefinedProgressAtomic(enrollmentId, payload, customD
 
 export function updateDefinedProgressSync(enrollmentId, payload, customDb = null, options = {}) {
   const db = getDatabase(customDb);
-  const { attendance, assignments, exam_marks, updatedBy = null } = payload;
+  const { attendance, assignments, exam_marks, attendance_excuses, updatedBy = null } = payload;
 
   const tx = db.transaction(() => {
+    const beforeAttendance = attendance?.some(item => item.attended) ? getEnrollmentProgressSync(enrollmentId, db, options) : null;
     // 1. Attendance updates
     if (Array.isArray(attendance) && attendance.length > 0) {
       const attStmt = db.prepare(`
@@ -986,6 +1064,19 @@ export function updateDefinedProgressSync(enrollmentId, payload, customDb = null
         if (item.class_id) {
           attStmt.run(enrollmentId, item.class_id, item.attended ? 1 : 0, updatedBy);
         }
+      }
+    }
+
+    for (const excuse of attendance_excuses || []) {
+      if (excuse.reason === null) {
+        db.prepare('DELETE FROM course_attendance_excuses WHERE enrollment_id = ? AND class_id = ?').run(enrollmentId, excuse.class_id);
+      } else {
+        db.prepare(`
+          INSERT INTO course_attendance_excuses (enrollment_id, class_id, reason, approved_by)
+          VALUES (?, ?, ?, ?)
+          ON CONFLICT(enrollment_id, class_id) DO UPDATE SET reason = excluded.reason,
+            approved_by = excluded.approved_by, approved_at = datetime('now')
+        `).run(enrollmentId, excuse.class_id, excuse.reason, updatedBy);
       }
     }
 
@@ -1019,6 +1110,8 @@ export function updateDefinedProgressSync(enrollmentId, payload, customDb = null
         }
       }
     }
+
+    validateOrderedAcademicUpdates(enrollmentId, attendance, exam_marks, db, options, beforeAttendance);
 
     // 3. Exam marks updates
     if (exam_marks) {
@@ -1071,6 +1164,14 @@ export function updateDefinedProgressSync(enrollmentId, payload, customDb = null
 /**
  * Evaluate certificate eligibility for an enrollment
  */
+export function refreshCoursePhaseResults(enrollmentId, db) {
+  const progress = getEnrollmentProgressSync(enrollmentId, db);
+  if (progress?.phases?.some(phase => phase.filmWorkflow)) {
+    syncPhaseResults(enrollmentId, progress.phases, db);
+  }
+  return progress;
+}
+
 export async function evaluateCertificateEligibility(enrollmentId, customDb = null, options = {}) {
   const progress = await getEnrollmentProgress(enrollmentId, customDb, options);
   if (!progress) {

@@ -47,10 +47,10 @@ export default function StudentPortal() {
   }, [currentUser]);
 
   // Get Online Filmmaking Course enrollment for academic data
-  const filmmakingEnrollment = profile?.enrollments?.find(c => c.course_name === 'Online Filmmaking Course');
+  const filmmakingEnrollment = profile?.enrollments?.find(c => !c.course_definition_id && c.course_name === 'Online Filmmaking Course');
 
   // Get other course enrollment (courses that do not require attendance)
-  const otherEnrollment = profile?.enrollments?.find(c => c.course_name !== 'Online Filmmaking Course');
+  const otherEnrollment = profile?.enrollments?.find(c => !c.course_definition_id && c.course_name !== 'Online Filmmaking Course');
   
   // Calculate attendance percentage (Filmmaking only)
   const attendanceTotal = filmmakingEnrollment?.attendance_total || 22;
@@ -125,6 +125,7 @@ export default function StudentPortal() {
   return (
     <div className="page-container container" style={{ paddingBottom: '4rem', maxWidth: '1000px', margin: '0 auto' }}>
       <StudentJourney revision={profile} />
+      <NavLink to="/film-submissions" className="btn btn-primary" style={{ marginBottom: '1.5rem' }}>Film Submission Portal</NavLink>
       {/* Live Course Progression Tracker */}
       <section className="academic-card" style={{ padding: '2rem', marginBottom: '2rem' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
@@ -142,7 +143,11 @@ export default function StudentPortal() {
                   {course.course_name}
                 </h4>
                 <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
-                  {course.step4_completed === 1 ? (
+                  {course.defined_progress?.phases?.some(phase => phase.filmWorkflow) ? (
+                    course.defined_progress.certificateEligible && !course.defined_progress.hasPendingFee
+                      ? <NavLink to="/certificates" className="btn btn-primary"><Download size={14} /> Download Certificate</NavLink>
+                      : <button disabled className="btn"><Lock size={14} /> Certificate Locked</button>
+                  ) : course.step4_completed === 1 ? (
                     hasPendingDueOrPartialPayment(course) ? (
                       <button disabled className="btn" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.82rem', padding: '0.5rem 1rem', opacity: 0.8, cursor: 'not-allowed', background: 'rgba(239, 68, 68, 0.1)', color: '#f87171', border: '1px solid rgba(239, 68, 68, 0.25)' }} title="Certificate locked due to pending, partial, or due fees.">
                         <Lock size={14} /> Certificate Locked
@@ -170,7 +175,28 @@ export default function StudentPortal() {
               </div>
 
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem' }}>
-                {course.course_type === 'filmmaking' ? (
+                {course.defined_progress?.phases?.some(phase => phase.filmWorkflow) ? (
+                  <ol>
+                    <li>Phase 1 enrolled</li>
+                    {course.defined_progress.phases.map(phase => (
+                      <li key={phase.id}>
+                        <strong>{phase.title}</strong> {phase.isPassed ? 'Completed' : phase.isLocked ? 'Locked' : !phase.isAdmitted ? 'Awaiting admission' : 'In progress'}
+                        {phase.exam.attendanceGate && (
+                          <p>{phase.attendance.attendedClasses}/{phase.attendance.totalClasses} classes attended. {phase.exam.eligible ? 'Eligible for exam' : '80% attendance required for the exam'}.</p>
+                        )}
+                        {phase.filmWorkflow && (
+                          <ol>
+                            <li>Online classes {phase.filmWorkflow.onlineComplete ? '(complete)' : '(pending)'}</li>
+                            <li>Shooting {phase.filmWorkflow.shootingComplete ? '(complete)' : '(pending)'}</li>
+                            <li>Editing {phase.filmWorkflow.editingComplete ? '(complete)' : '(pending)'}</li>
+                            <li><NavLink to="/film-submissions">Film submission</NavLink> {phase.filmWorkflow.status === 'accepted' ? '(accepted)' : ''}</li>
+                          </ol>
+                        )}
+                      </li>
+                    ))}
+                    <li>{course.defined_progress.phases.every(phase => phase.isPassed) ? 'Course completed' : 'Course in progress'}</li>
+                  </ol>
+                ) : course.course_type === 'filmmaking' ? (
                   <>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', opacity: course.step1_completed ? 1 : 0.5 }}>
                       <div style={{ width: '24px', height: '24px', borderRadius: '50%', background: course.step1_completed ? '#34d399' : 'transparent', border: course.step1_completed ? 'none' : '2px solid var(--text-muted)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>

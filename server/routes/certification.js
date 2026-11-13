@@ -201,7 +201,8 @@ router.get('/my-certificates', authenticateToken, async (req, res) => {
         const certCheck = await courseProgressService.evaluateCertificateEligibility(enr.id);
         const progress = await courseProgressService.getEnrollmentProgress(enr.id);
         const allPhasesPassed = progress && Array.isArray(progress.phases) && progress.phases.length > 0 && progress.phases.every(p => p.isPassed || p.requirements?.completionRequired === false);
-        if (certCheck.eligible || allPhasesPassed) {
+        const orderedFilm = progress?.phases?.some(phase => phase.filmWorkflow);
+        if (certCheck.eligible || (!orderedFilm && allPhasesPassed)) {
           completions.push({
             ...enr,
             reEnrollmentDiscountPercentage: certCheck.reEnrollmentDiscountPercentage

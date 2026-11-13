@@ -1,0 +1,12 @@
+.film-portal { max-width: 1000px; margin: auto; padding-bottom: 6rem; }
+.film-course { margin-top: 1.5rem; padding: clamp(1rem, 3vw, 2rem); }
+.film-phase { border-top: 1px solid var(--text-muted); margin-top: 1rem; padding-top: 1rem; }
+.film-submission { background: var(--bg-tertiary); border-radius: 12px; padding: 1rem; margin: 1rem 0; overflow-wrap: anywhere; }
+.film-submission p { white-space: pre-wrap; }
+.film-form { display: flex; flex-direction: column; gap: .6rem; margin: 1rem 0; }
+.film-form input, .film-form textarea, .film-form select { width: 100%; min-height: 44px; padding: .75rem; border: 1px solid var(--text-muted); border-radius: 8px; color: var(--text-primary); background: var(--bg-tertiary); box-sizing: border-box; }
+.film-form textarea { min-height: 90px; }
+.film-form button { align-self: flex-start; min-height: 44px; }
+.film-status { display: inline-block; padding: .3rem .6rem; border: 1px solid currentColor; border-radius: 20px; }
+.film-status.accepted { color: var(--text-primary); background: var(--bg-secondary); }
+.film-portal a { overflow-wrap: anywhere; color: var(--text-primary); text-decoration: underline; }

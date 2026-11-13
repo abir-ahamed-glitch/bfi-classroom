@@ -131,6 +131,33 @@ function buildDefaultForm() {
   };
 }
 
+function buildFilmmakingForm(name) {
+  const form = buildDefaultForm();
+  const theory = buildDefaultPhase(0);
+  const production = buildDefaultPhase(1);
+  const makeClass = (title, category, deliveryMode, platform = '') => ({
+    ...theory.classes[0], id: generateId('cls'), title, category, deliveryMode, platform, mandatory: false
+  });
+  theory.title = 'Theory';
+  theory.classes = Array.from({ length: 24 }, (_, index) => makeClass(`Theory class ${index + 1}`, 'theory', 'live', 'Zoom'));
+  theory.routine = [createDefaultRoutineSlot({ deliveryMode: 'live' })];
+  theory.requirements = { attendanceRequired: true, minAttendancePercent: 80, completionRequired: true, examAttendanceGate: true };
+  theory.exam = { ...theory.exam, enabled: true, passMarks: 0 };
+  theory.assignments = [{ ...theory.assignments[0], title: 'Filmmaking assignment', passMarks: 0 }];
+  production.title = 'Practical Filmmaking';
+  production.classes = [
+    ...Array.from({ length: 6 }, (_, index) => makeClass(`Weekly online class ${index + 1}`, 'theory', 'live', 'Zoom')),
+    makeClass('Shooting', 'shooting', 'offline'),
+    makeClass('Editing at BFI office', 'editing', 'offline')
+  ];
+  production.routine = [createDefaultRoutineSlot({ deliveryMode: 'live' })];
+  production.requirements = { attendanceRequired: true, minAttendancePercent: 100, completionRequired: true, filmWorkflow: true };
+  production.assignments = [];
+  for (const phase of [theory, production]) phase.classCount = phase.classes.length;
+  form.completionPolicy.certificateEligibility.minOverallAttendance = 0;
+  return { ...form, name, course_type: 'filmmaking', phaseCount: 2, phases: [theory, production] };
+}
+
 export default function CourseMaker() {
   const [searchParams, setSearchParams] = useSearchParams();
   const { currentUser } = useAuth();
@@ -520,6 +547,16 @@ export default function CourseMaker() {
       setActivePhaseTab(count - 1);
       syncUrl(viewMode, editingDefId, count - 1, true);
     }
+  };
+
+  const applyFilmmakingTemplate = () => {
+    if (!window.confirm('Replace the phase and assessment settings in this draft with the two-phase filmmaking template?')) return;
+    setForm({
+      ...buildFilmmakingForm(form.name || 'Online Filmmaking Course'),
+      description: form.description,
+      duration: form.duration
+    });
+    switchPhaseTab(0);
   };
 
   const startNewCourse = () => {
@@ -1499,6 +1536,12 @@ export default function CourseMaker() {
               <BookOpen size={20} color="var(--accent-primary)" /> 1. Course Basics
             </h2>
 
+            <button type="button" className="cm-btn cm-btn-secondary" onClick={applyFilmmakingTemplate}>
+              Use two-phase filmmaking template
+            </button>
+            {form.phases.some(phase => phase.requirements?.filmWorkflow) && (
+              <p>Phase 1 requires 80% attendance before the exam. Phase 2 requires online attendance, shooting, editing, then an accepted film.</p>
+            )}
             <div className="cm-basics-grid">
               <div>
                 <label className="cm-label">
@@ -2355,7 +2398,7 @@ export default function CourseMaker() {
                           <input
                             type="number"
                             min="0"
-                            value={curPhase.exam.passMarks || 35}
+                            value={curPhase.exam.passMarks ?? 35}
                             onChange={(e) => updateCurrentPhase({
                               exam: { ...curPhase.exam, passMarks: parseFloat(e.target.value) || 0 }
                             })}
