@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import apiClient from '../utils/apiClient';
+import FilmTimestampFeedback from './FilmTimestampFeedback';
 import './FilmSubmissions.css';
 
 const statuses = { under_review: 'Under Review', accepted: 'Accepted', changes_requested: 'Changes Requested' };
@@ -76,10 +77,27 @@ export default function FilmSubmissions() {
   }, [batch]);
   useEffect(() => { load(); }, [load]);
   const student = currentUser?.role === 'student';
+  const instructor = currentUser?.role === 'instructor';
+
+  function addFeedback(enrollmentId, submissionId, item) {
+    setData(current => ({
+      ...current,
+      courses: current.courses.map(course => course.enrollmentId !== enrollmentId ? course : {
+        ...course,
+        submissions: course.submissions.map(submission => submission.id !== submissionId ? submission : {
+          ...submission,
+          timestamped_feedback: [...(submission.timestamped_feedback ?? []), item]
+            .sort((a, b) => a.video_seconds - b.video_seconds || a.id - b.id)
+        })
+      })
+    }));
+  }
   return <div className="page-container container film-portal">
-    <h1>Film Submission Portal</h1>
+    <h1>{instructor ? 'Film Review' : 'Film Submission Portal'}</h1>
     <p>{student ? 'Share your film with BFI and follow its review here.' : 'Review student films and provide feedback.'}</p>
-    <Link to={student ? '/student-portal' : '/admin/batchmanager'}>← {student ? 'My Student Panel' : 'Batch Manager'}</Link>
+    <Link to={student ? '/student-portal' : instructor ? '/classroom' : '/admin/batchmanager'}>
+      ← {student ? 'My Student Panel' : instructor ? 'Classroom' : 'Batch Manager'}
+    </Link>
     {error && <div role="alert"><p>{error}</p><button className="btn btn-secondary" onClick={load}>Try again</button></div>}
     {!data && !error && <p role="status">Loading films…</p>}
     {data && !data.courses.length && <p>{student ? 'No film submission phases are available for your courses yet.' : 'No student films have been submitted in this view yet.'}</p>}
@@ -98,9 +116,11 @@ export default function FilmSubmissions() {
             {submission.notes && <p>{submission.notes}</p>}
             {submission.feedback && <p><strong>Reviewer feedback:</strong> {submission.feedback}</p>}
             {submission.reviewed_at && <p>Reviewed {dateLabel(submission.reviewed_at)} BST</p>}
+            <FilmTimestampFeedback submission={submission} canWrite={data.canLeaveFeedback}
+              dateLabel={dateLabel} onAdded={item => addFeedback(course.enrollmentId, submission.id, item)} />
             {data.canReview && submission.status === 'under_review' && <ReviewForm submission={submission} onSaved={load} />}
           </div>)}
-          {student && (!latest || latest.status === 'changes_requested') && (phase.eligible ? <SubmissionForm course={course} phase={phase} onSaved={load} /> : <p>{phase.blockedReason || 'Submission opens when you are admitted to this phase.'}</p>)}
+          {student && !phase.historical && (!latest || latest.status === 'changes_requested') && (phase.eligible ? <SubmissionForm course={course} phase={phase} onSaved={load} /> : <p>{phase.blockedReason || 'Submission opens when you are admitted to this phase.'}</p>)}
           {student && phase.completed && <p>Practical filmmaking completed. <Link to="/certificates">Check certificate eligibility</Link>.</p>}
           {!student && !latest && <p>No film submitted yet.</p>}
         </article>;

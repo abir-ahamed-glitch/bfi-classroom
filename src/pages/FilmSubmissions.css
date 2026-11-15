@@ -10,3 +10,22 @@
 .film-status { display: inline-block; padding: .3rem .6rem; border: 1px solid currentColor; border-radius: 20px; }
 .film-status.accepted { color: var(--text-primary); background: var(--bg-secondary); }
 .film-portal a { overflow-wrap: anywhere; color: var(--text-primary); text-decoration: underline; }
+
+.film-timestamp-feedback { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--text-muted); }
+.film-timestamp-feedback h5 { font-size: 1rem; margin: 0 0 .75rem; }
+.film-feedback-notes { list-style: none; display: grid; gap: .75rem; margin: 0; padding: 0; }
+.film-feedback-notes li { padding: .75rem; border-radius: 8px; background: var(--bg-secondary); }
+.film-feedback-notes p { margin: .375rem 0 0; }
+.film-feedback-note-meta { display: flex; flex-wrap: wrap; align-items: center; gap: .25rem .75rem; color: var(--text-secondary); font-size: .875rem; }
+.film-feedback-note-meta a { display: inline-flex; align-items: center; gap: .375rem; min-height: 44px; font-variant-numeric: tabular-nums; }
+.film-timestamp-feedback :focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
+.film-timestamp-feedback input[name="timecode"] { max-width: 10rem; }
+
+@media (max-width: 1024px) {
+  .film-portal.page-container.container:not(.inbox-page) {
+    min-height: 0;
+    max-height: calc(100dvh - 4rem - 60px - env(safe-area-inset-bottom, 0px));
+    overflow-y: auto;
+    padding-bottom: 1rem !important;
+  }
+}

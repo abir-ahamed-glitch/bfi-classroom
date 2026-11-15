@@ -293,7 +293,7 @@ function App() {
               </Layout>
             </ProtectedRoute>
           } />
-          <Route path="/film-submissions" element={<ProtectedRoute requiredRole={['student', 'admin']}><Layout><FilmSubmissions /></Layout></ProtectedRoute>} />
+          <Route path="/film-submissions" element={<ProtectedRoute requiredRole={['student', 'admin', 'instructor']}><Layout><FilmSubmissions /></Layout></ProtectedRoute>} />
 
           <Route path="/classroom" element={
             <ProtectedRoute>

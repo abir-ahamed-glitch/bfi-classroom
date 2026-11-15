@@ -1577,6 +1577,7 @@ export function initializeDatabase() {
 
     ensureSessionGraceAndIdempotencySchema(db);
     require('./migrations/20261109_film_submissions.cjs').ensureFilmSubmissionSchema(db);
+    require('./migrations/20261115_film_feedback.cjs').ensureFilmFeedback(db);
     require('./migrations/20261115_notification_preferences.cjs').ensureNotificationPreferences(db);
     require('./migrations/20261115_course_material_bookmarks.cjs').ensureCourseMaterialBookmarks(db);
     console.log('✅ Course Maker tables and columns verified');
