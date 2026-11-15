@@ -26,6 +26,10 @@ async function run() {
   const adminToken = jwt.sign({id:1,role:'admin',type:'access',sessionId:Number(session),token_version:1},process.env.JWT_SECRET,{expiresIn:'1h'});
   const token = jwt.sign({id:userId,role:'student',type:'access',token_version:1},process.env.JWT_SECRET,{expiresIn:'1h'});
   const app = express(); app.use(express.json());
+  app.use('/api/notifications',(await import('../server/routes/notifications.js')).default);
+  app.use('/api/community',(await import('../server/routes/community.js')).default);
+  app.use('/api/courses',(await import('../server/routes/course.js')).default);
+  app.use('/api/inbox',(await import('../server/routes/inbox.js')).default);
   app.use('/api/student',(await import('../server/routes/student.js')).default);
   app.use('/api/auth',(await import('../server/routes/auth.js')).default);
   app.use('/api/film-submissions',(await import('../server/routes/film-submissions.js')).default);
@@ -264,6 +268,68 @@ async function run() {
   assert.equal(await week.getByText('Rescheduled from ' + original, {exact: true}).count(), 0);
   assert.equal(await week.getByText('19:00 - 21:00', {exact: true}).count(), 2);
   console.log('PASS: live timetable update, cancelled and moved occurrences, overlap rejection, and unchanged weekly recurrence');
+  const preferenceApi = '/api/notifications/preferences';
+  const defaultPrefs = {notices: true, materials: true, messages: true, community: true};
+  assert.deepEqual((await request(preferenceApi)).data.preferences, defaultPrefs);
+  assert.equal((await request(preferenceApi, 'GET', undefined, adminToken)).status, 403);
+  assert.equal((await request(preferenceApi, 'PATCH', {materials: 'false'})).status, 400);
+  assert.equal((await request(preferenceApi, 'PATCH', {notices: false, user_id: outsider})).status, 400);
+  db.prepare("UPDATE student_profiles SET batch_number='T1' WHERE user_id=?").run(userId);
+  db.prepare("INSERT INTO student_profiles (user_id,student_id,full_name,batch_number) VALUES (?,'NF-OTHER','Other Student','T1')").run(outsider);
+  db.prepare("INSERT INTO batch_students (batch_id,student_id) VALUES (?,?)").run(batchId, outsider);
+  const outsideBatch = Number(db.prepare("INSERT INTO batches (batch_name,batch_number,course_name,status) VALUES ('Private target','N9','Unrelated Course','ongoing')").run().lastInsertRowid);
+
+  // Existing notices disappear from the alert list and unread count when muted.
+  const addNotification = db.prepare("INSERT INTO notifications (user_id,type,title) VALUES (?,?,?)");
+  addNotification.run(userId, 'notice', 'Old notice');
+  const unreadCount = async () => (await request('/api/notifications/unread-count')).data.unreadCount;
+  const baselineUnread = await unreadCount();
+  await studentPage.goto(baseUrl + '/bfi-classroom/settings');
+  const settings = studentPage.getByRole('region', {name: 'Notification preferences'});
+  for (const label of ['New notices','New course materials','Messages','Community activity']) {
+    const toggle = settings.getByRole('switch', {name: label, exact: true});
+    await toggle.click();
+    await settings.getByRole('status').filter({hasText: 'Preference saved.'}).waitFor();
+  }
+  assert.equal(await unreadCount(), baselineUnread - 1);
+  await studentPage.reload();
+  const notices = settings.getByRole('switch', {name: 'New notices', exact: true});
+  await notices.waitFor();
+  assert.equal(await settings.getByRole('switch', {checked: false}).count(), 4);
+  assert.deepEqual((await request(preferenceApi, 'GET', undefined, outsiderToken)).data.preferences, defaultPrefs);
+  const notice = await request('/api/admin/announcements', 'POST', {title:'Preference test notice', content:'Visible from the board'}, adminToken);
+  assert.equal(notice.status, 201, JSON.stringify(notice.data));
+  const post = await request('/api/community/posts', 'POST', {content:'Preference test post', audience:'public'}, adminToken);
+  assert.equal(post.status, 201, JSON.stringify(post.data));
+  const material = batch_id => request('/api/courses/upload', 'POST', {title:'Preference test material', batch_id, external_url:'https://example.test/lesson.pdf'}, adminToken);
+  assert.equal((await material(batchId)).status, 201);
+  assert.equal((await material(outsideBatch)).status, 201);
+  for (const type of ['notice', 'community', 'course_material']) {
+    const count = db.prepare("SELECT COUNT(*) AS n FROM notifications WHERE user_id=? AND type=? AND COALESCE(message,'') LIKE 'Preference test%'");
+    if (type !== 'community') assert.equal(count.get(userId,type).n, 0);
+    const received = db.prepare("SELECT COUNT(*) AS n FROM notifications WHERE user_id=? AND type=?");
+    assert.equal(received.get(outsider,type).n, 1, 'Unmuted student received ' + type);
+    if (type !== 'notice') assert.equal(received.get(userId,type).n, 0, 'Muted student did not receive ' + type);
+  }
+  assert.equal(addNotification.run(userId, 'urgent_broadcast', 'Urgent broadcast').changes, 1);
+  assert.equal(addNotification.run(userId, 'fee_reminder', 'Payment reminder').changes, 1);
+  const materials = (await request('/api/courses')).data.materials;
+  assert.equal(materials.filter(item => item.title === 'Preference test material').length, 1);
+  const message = await request('/api/inbox/messages', 'POST', {receiver_id: userId, content:'Muted alert, delivered message'}, outsiderToken);
+  assert.equal(message.status, 201, JSON.stringify(message.data));
+  const chats = (await request('/api/inbox/conversations')).data.chats;
+  assert.ok(chats.some(chat => Number(chat.other_user_id) === outsider && Number(chat.unread_count) >= 1));
+  const inboxBadge = studentPage.locator('a[href$="/inbox"] .nav-badge, a[href$="/inbox"] .bottom-nav-badge').first();
+  assert.equal(await inboxBadge.count(), 0);
+  await settings.getByRole('switch', {name:'Messages', exact:true}).click();
+  await inboxBadge.waitFor({state:'attached'});
+  await notices.click();
+  await settings.getByRole('status').filter({hasText: 'Preference saved.'}).waitFor();
+  const restored = await request('/api/admin/announcements', 'POST', {title:'Alerts restored', content:'Newly enabled preference'}, adminToken);
+  assert.equal(restored.status,201);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM notifications WHERE user_id=? AND type='notice' AND message='Alerts restored'").get(userId).n, 1);
+  console.log('PASS: four Settings switches, persistent independent preferences, muted notice/material/community delivery and unread count, urgent/payment alerts and working Inbox');
+
   const migration=require('../server/db/migrations/20261109_film_submissions.cjs');
   const count=db.prepare('SELECT count(*) AS n FROM film_submissions').get().n;
   const migrationRun=require('child_process').spawnSync(process.execPath,[path.resolve(__dirname,'run_migrations.cjs'),process.env.DATABASE_PATH],{encoding:'utf8'});

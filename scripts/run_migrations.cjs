@@ -19,6 +19,7 @@ const fs = require('fs');
 
 const REQUIRED_MIGRATION_MODULES = [
   '20261109_film_submissions.cjs',
+  '20261115_notification_preferences.cjs',
   '20261023_super_admin.cjs',
   '20261023_admin_permissions.cjs',
   '20261024_privileged_safeguards.cjs',
@@ -66,6 +67,8 @@ const { runBatchInstructorsAndCertificateDownloadsMigration } = require(path.joi
 const { runSessionGraceAndCourseDraftIdempotencyMigration } = require(path.join(migrationsDir, '20261106_session_grace_and_course_draft_idempotency.cjs'));
 const { ensureFilmSubmissionSchema } = require(path.join(migrationsDir, '20261109_film_submissions.cjs'));
 
+const { ensureNotificationPreferences } = require(path.join(migrationsDir, '20261115_notification_preferences.cjs'));
+
 const MIGRATIONS = [
   { name: '20261023_super_admin', runner: runSuperAdminMigration },
   { name: '20261023_admin_permissions', runner: runAdminPermissionsMigration },
@@ -78,6 +81,7 @@ const MIGRATIONS = [
   { name: '20261104_batch_instructors_and_certificate_downloads', runner: runBatchInstructorsAndCertificateDownloadsMigration },
   { name: '20261106_session_grace_and_course_draft_idempotency', runner: runSessionGraceAndCourseDraftIdempotencyMigration },
   { name: '20261109_film_submissions', runner: ensureFilmSubmissionSchema },
+  { name: '20261115_notification_preferences', runner: ensureNotificationPreferences },
 ];
 
 function resolveDatabasePath() {
@@ -100,6 +104,8 @@ function assertSchemaIntegrity(db) {
   for (const column of ['enrollment_id', 'class_id', 'reason', 'approved_by', 'approved_at']) {
     if (!excuseColumns.includes(column)) throw new Error(`Missing course_attendance_excuses.${column}`);
   }
+  const preferenceTrigger = db.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name = 'skip_muted_student_notifications'").get();
+  if (!preferenceTrigger) throw new Error('Missing notification preference trigger');
   const filmColumns = db.prepare('PRAGMA table_info(film_submissions)').all().map(column => column.name);
   for (const column of ['enrollment_id', 'phase_id', 'revision', 'status', 'submitted_at', 'reviewed_at', 'reviewed_by']) {
     if (!filmColumns.includes(column)) throw new Error(`Missing film_submissions.${column}`);

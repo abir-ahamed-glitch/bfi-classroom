@@ -254,7 +254,7 @@ export async function deliverBroadcast(broadcastId, students, io) {
         ).run(student.id, notifType, broadcast.title, truncatedMsg, currentNotifLink, notifImageUrl, broadcast.id);
         const notifId = notifResult.lastInsertRowid;
 
-        if (io) {
+        if (io && notifResult.changes) {
           io.to(`user:${student.id}`).emit('notification_received', {
             id: notifId,
             type: notifType,
@@ -266,7 +266,7 @@ export async function deliverBroadcast(broadcastId, students, io) {
           });
           io.emit('new_notification');
         }
-        notifOk = true;
+        notifOk = notifResult.changes > 0;
       }
 
       deliveredCount++;

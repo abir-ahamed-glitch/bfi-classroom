@@ -2715,7 +2715,7 @@ router.post('/announcements', authenticateToken, requireRole('admin'), requirePe
           for (const user of users) {
             if (user.id !== req.user.id) {
               const res = insertNotification.run(user.id, 'notice', 'New Notice', title, '/notices', image_url || null);
-              targetUserNotifications.push({ userId: user.id, notifId: res.lastInsertRowid });
+              if (res.changes) targetUserNotifications.push({ userId: user.id, notifId: res.lastInsertRowid });
             }
           }
         });
@@ -3397,7 +3397,7 @@ export function startAnnouncementScheduler(io) {
               for (const user of users) {
                 if (user.id !== ann.admin_id) {
                   const res = insertNotification.run(user.id, 'notice', 'New Notice', ann.title, '/notices', ann.image_url || null);
-                  targetUserNotifications.push({ userId: user.id, notifId: res.lastInsertRowid });
+                  if (res.changes) targetUserNotifications.push({ userId: user.id, notifId: res.lastInsertRowid });
                 }
               }
             });
