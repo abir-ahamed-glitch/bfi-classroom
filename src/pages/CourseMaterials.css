@@ -1,0 +1,118 @@
+.resource-library {
+  padding-bottom: 4rem;
+  animation: none;
+}
+
+.resource-library__header,
+.resource-library__filters,
+.resource-library__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.resource-library__header {
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1.5rem;
+}
+
+.resource-library__header h1 {
+  margin: 0;
+  font-size: clamp(1.75rem, 5vw, 2.5rem);
+}
+
+.resource-library__filters {
+  margin-bottom: 1.25rem;
+}
+
+.resource-library__filters label {
+  display: grid;
+  gap: 0.375rem;
+  flex: 1 1 12rem;
+  color: var(--text-secondary);
+}
+
+.resource-library__filters .input-glass {
+  min-height: 44px;
+  width: 100%;
+}
+
+.resource-library select option {
+  color: var(--text-primary);
+  background: var(--bg-secondary);
+}
+
+.resource-library__list {
+  list-style: none;
+  display: grid;
+  gap: 0.75rem;
+  padding: 0;
+  margin: 0;
+}
+
+.resource-library__row,
+.resource-library__empty {
+  border-radius: 12px;
+  padding: 1rem;
+}
+
+.resource-library__row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 1rem;
+}
+
+.resource-library__type-icon {
+  color: var(--text-secondary);
+}
+
+.resource-library__info {
+  overflow-wrap: anywhere;
+}
+
+.resource-library__info h2 {
+  margin: 0 0 0.25rem;
+  font-size: 1.05rem;
+}
+
+.resource-library__info p {
+  margin: 0;
+  color: var(--text-secondary);
+}
+
+.resource-library .btn {
+  min-height: 44px;
+}
+
+.resource-library__bookmark[aria-pressed='true'] {
+  color: var(--accent-primary);
+}
+
+.resource-library :focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 3px;
+}
+
+@media (max-width: 1024px) {
+  .resource-library.page-container.container:not(.inbox-page) {
+    min-height: 0;
+    max-height: calc(100dvh - 4rem - 60px - env(safe-area-inset-bottom, 0px));
+    overflow-y: auto;
+    padding-bottom: 1rem !important;
+  }
+}
+
+@media (max-width: 560px) {
+  .resource-library__row {
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 0.75rem;
+  }
+
+  .resource-library__actions {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

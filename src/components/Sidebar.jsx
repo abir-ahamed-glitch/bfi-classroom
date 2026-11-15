@@ -394,6 +394,11 @@ export default function Sidebar({ isNotifOpen, setIsNotifOpen }) {
               <BookOpen size={20} /> Course Materials
             </NavLink>
           )}
+          {currentUser?.role === 'student' && (
+            <NavLink to="/my-library" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
+              <Library size={20} aria-hidden="true" /> My Library
+            </NavLink>
+          )}
           <p className="nav-subtitle">Learning Hub</p>
           <NavLink to="/community" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
             <Users size={20} /> Community

@@ -9,6 +9,7 @@ import {
   Megaphone,
   Inbox,
   BookOpen,
+  Bookmark,
   UsersRound,
   Award,
   User,
@@ -206,6 +207,16 @@ export default function GlobalSearch({ onNavigate }) {
         icon: <BookOpen size={16} />,
         desc: 'Downloadable syllabus, lecture notes, and study PDFs',
         keywords: 'course materials syllabus notes pdf download study resources reading files slides',
+      }] : []),
+
+      ...(role === 'student' ? [{
+        id: 'my-library',
+        title: 'My Library',
+        category: 'My Studio',
+        path: '/my-library',
+        icon: <Bookmark size={16} />,
+        desc: 'Saved course PDFs, videos, and links',
+        keywords: 'bookmark reading list saved resources library materials',
       }] : []),
 
       // ── Learning Hub ───────────────────────

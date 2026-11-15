@@ -350,6 +350,14 @@ function App() {
             </ProtectedRoute>
           } />
 
+          <Route path="/my-library" element={
+            <ProtectedRoute requiredRole={['student']}>
+              <Layout>
+                <CourseMaterials savedOnly key="my-library" />
+              </Layout>
+            </ProtectedRoute>
+          } />
+
           <Route path="/community" element={
             <ProtectedRoute>
               <Layout>

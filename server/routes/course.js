@@ -59,6 +59,175 @@ const upload = multer({
   },
 });
 
+function listEnrolledMaterials(userId, requestedBatchId = null) {
+  // For students: collect all enrolled batch IDs and profile batch number
+  const enrolledBatches = db.prepare(`
+    SELECT DISTINCT batch_id FROM (
+      SELECT batch_id FROM student_course_enrollments WHERE user_id = ? AND batch_id IS NOT NULL
+      UNION
+      SELECT batch_id FROM batch_students WHERE student_id = ? AND batch_id IS NOT NULL
+    )
+  `).all(userId, userId).map(r => r.batch_id);
+
+  const studentProfile = db.prepare('SELECT batch_number FROM student_profiles WHERE user_id = ?').get(userId);
+  const legacyBatch = studentProfile?.batch_number || null;
+
+  let materials;
+  if (requestedBatchId) {
+    // Authorize every requested batch_id against student's actual enrollment or batch membership
+    if (!enrolledBatches.includes(requestedBatchId)) {
+      return null;
+    }
+
+    // Check if requested batch is a defined course batch or legacy unlinked batch
+    const targetBatch = db.prepare('SELECT id, course_definition_id, course_name, batch_number FROM batches WHERE id = ?').get(requestedBatchId);
+
+    if (targetBatch && targetBatch.course_definition_id) {
+      // Defined course: strictly materials assigned to this specific batch_id!
+      materials = db.prepare(`
+        SELECT m.*, u.first_name || ' ' || u.last_name AS instructor_name
+        FROM course_materials m
+        JOIN users u ON m.uploaded_by = u.id
+        WHERE m.deleted_at IS NULL AND m.batch_id = ?
+        ORDER BY m.created_at DESC
+      `).all(requestedBatchId);
+    } else {
+      // Legacy unlinked batch: materials specifically linked to this batch_id, OR legacy unlinked materials
+      // for this exact course and batch number
+      const bName = targetBatch ? targetBatch.course_name : null;
+      const bNum = targetBatch ? targetBatch.batch_number : (legacyBatch || 'All');
+      materials = db.prepare(`
+        SELECT m.*, u.first_name || ' ' || u.last_name AS instructor_name
+        FROM course_materials m
+        JOIN users u ON m.uploaded_by = u.id
+        WHERE m.deleted_at IS NULL AND (
+          m.batch_id = ?
+          OR (
+            m.batch_id IS NULL
+            AND (? IS NULL OR m.course_name = ?)
+            AND (m.batch_number = ? OR m.batch_number = 'All')
+          )
+        )
+        ORDER BY m.created_at DESC
+      `).all(requestedBatchId, bName, bName, bNum);
+    }
+  } else if (enrolledBatches.length > 0) {
+    const placeholders = enrolledBatches.map(() => '?').join(',');
+
+    // Retrieve genuinely unlinked legacy courses enrolled by the student
+    const legacyCourses = db.prepare(`
+      SELECT DISTINCT course_name FROM student_course_enrollments
+      WHERE user_id = ? AND batch_id IS NULL AND course_definition_id IS NULL
+    `).all(userId).map(r => r.course_name);
+
+    if (legacyCourses.length > 0 && legacyBatch) {
+      const coursePlaceholders = legacyCourses.map(() => '?').join(',');
+      materials = db.prepare(`
+        SELECT m.*, u.first_name || ' ' || u.last_name AS instructor_name
+        FROM course_materials m
+        JOIN users u ON m.uploaded_by = u.id
+        WHERE m.deleted_at IS NULL AND (
+          m.batch_id IN (${placeholders})
+          OR (
+            m.batch_id IS NULL
+            AND m.course_name IN (${coursePlaceholders})
+            AND (m.batch_number = ? OR m.batch_number = 'All')
+          )
+        )
+        ORDER BY m.created_at DESC
+      `).all(...enrolledBatches, ...legacyCourses, legacyBatch);
+    } else {
+      materials = db.prepare(`
+        SELECT m.*, u.first_name || ' ' || u.last_name AS instructor_name
+        FROM course_materials m
+        JOIN users u ON m.uploaded_by = u.id
+        WHERE m.deleted_at IS NULL AND m.batch_id IN (${placeholders})
+        ORDER BY m.created_at DESC
+      `).all(...enrolledBatches);
+    }
+  } else {
+    // Student has no batch_id enrollments; only unlinked legacy enrollments
+    const legacyCourses = db.prepare(`
+      SELECT DISTINCT course_name FROM student_course_enrollments
+      WHERE user_id = ? AND batch_id IS NULL AND course_definition_id IS NULL
+    `).all(userId).map(r => r.course_name);
+
+    if (legacyCourses.length > 0) {
+      const coursePlaceholders = legacyCourses.map(() => '?').join(',');
+      materials = db.prepare(`
+        SELECT m.*, u.first_name || ' ' || u.last_name AS instructor_name
+        FROM course_materials m
+        JOIN users u ON m.uploaded_by = u.id
+        WHERE m.deleted_at IS NULL
+          AND m.batch_id IS NULL
+          AND m.course_name IN (${coursePlaceholders})
+          AND (m.batch_number = ? OR m.batch_number = 'All')
+        ORDER BY m.created_at DESC
+      `).all(...legacyCourses, legacyBatch || '85th');
+    } else {
+      materials = [];
+    }
+  }
+  return materials;
+}
+
+function listBookmarkDates(userId) {
+  const bookmarks = db.prepare(
+    'SELECT material_id, created_at FROM course_material_bookmarks WHERE user_id = ? ORDER BY created_at DESC, material_id DESC'
+  ).all(userId);
+  return new Map(bookmarks.map(({ material_id, created_at }) => [material_id, created_at]));
+}
+
+router.get('/bookmarks', authenticateToken, requireRole('student'), (req, res) => {
+  res.set('Cache-Control', 'private, no-store');
+  try {
+    const allowedMaterials = new Map(listEnrolledMaterials(req.user.id).map(material => [material.id, material]));
+    const materials = [];
+    for (const [id, date] of listBookmarkDates(req.user.id)) {
+      const material = allowedMaterials.get(id);
+      if (material) materials.push({ ...material, bookmarked_at: date });
+    }
+    res.json({ materials });
+  } catch (error) {
+    console.error('Course bookmarks fetch error:', error);
+    res.status(500).json({ error: 'Could not load saved materials.' });
+  }
+});
+
+const saveBookmark = db.transaction((userId, materialId) => {
+  if (!listEnrolledMaterials(userId).some(material => material.id === materialId)) return null;
+
+  db.prepare(
+    'INSERT INTO course_material_bookmarks (user_id, material_id) VALUES (?, ?) ON CONFLICT (user_id, material_id) DO NOTHING'
+  ).run(userId, materialId);
+  return db.prepare(
+    'SELECT created_at FROM course_material_bookmarks WHERE user_id = ? AND material_id = ?'
+  ).get(userId, materialId).created_at;
+});
+
+router.put('/bookmarks/:materialId', authenticateToken, requireRole('student'), (req, res) => {
+  const materialId = Number(req.params.materialId);
+  const { bookmarked } = req.body ?? {};
+  if (!/^\d+$/.test(req.params.materialId) || !Number.isSafeInteger(materialId) || materialId < 1 || typeof bookmarked !== 'boolean') {
+    return res.status(400).json({ error: 'A valid material ID and bookmark state are required.' });
+  }
+
+  try {
+    if (bookmarked) {
+      const savedAt = saveBookmark.immediate(req.user.id, materialId);
+      if (savedAt === null) return res.status(404).json({ error: 'This material is no longer available.' });
+      return res.json({ bookmarked_at: savedAt });
+    }
+
+    db.prepare('DELETE FROM course_material_bookmarks WHERE user_id = ? AND material_id = ?')
+      .run(req.user.id, materialId);
+    res.json({ bookmarked_at: null });
+  } catch (error) {
+    console.error('Course bookmark update error:', error);
+    res.status(500).json({ error: 'Could not update this bookmark.' });
+  }
+});
+
 // ─── GET: All materials for logged-in student's batch ────────────────────────
 router.get('/', authenticateToken, (req, res) => {
   try {
@@ -88,113 +257,16 @@ router.get('/', authenticateToken, (req, res) => {
       return res.json({ materials });
     }
 
-    // For students: collect all enrolled batch IDs and profile batch number
-    const enrolledBatches = db.prepare(`
-      SELECT DISTINCT batch_id FROM (
-        SELECT batch_id FROM student_course_enrollments WHERE user_id = ? AND batch_id IS NOT NULL
-        UNION
-        SELECT batch_id FROM batch_students WHERE student_id = ? AND batch_id IS NOT NULL
-      )
-    `).all(req.user.id, req.user.id).map(r => r.batch_id);
-
-    const studentProfile = db.prepare('SELECT batch_number FROM student_profiles WHERE user_id = ?').get(req.user.id);
-    const legacyBatch = studentProfile?.batch_number || null;
-
-    let materials;
-    if (requestedBatchId) {
-      // Authorize every requested batch_id against student's actual enrollment or batch membership
-      if (!enrolledBatches.includes(requestedBatchId)) {
-        return res.status(403).json({ error: 'Access denied: You are not enrolled in this batch.' });
-      }
-
-      // Check if requested batch is a defined course batch or legacy unlinked batch
-      const targetBatch = db.prepare('SELECT id, course_definition_id, course_name, batch_number FROM batches WHERE id = ?').get(requestedBatchId);
-
-      if (targetBatch && targetBatch.course_definition_id) {
-        // Defined course: strictly materials assigned to this specific batch_id!
-        materials = db.prepare(`
-          SELECT m.*, u.first_name || ' ' || u.last_name AS instructor_name
-          FROM course_materials m
-          JOIN users u ON m.uploaded_by = u.id
-          WHERE m.deleted_at IS NULL AND m.batch_id = ?
-          ORDER BY m.created_at DESC
-        `).all(requestedBatchId);
-      } else {
-        // Legacy unlinked batch: materials specifically linked to this batch_id, OR legacy unlinked materials
-        // for this exact course and batch number
-        const bName = targetBatch ? targetBatch.course_name : null;
-        const bNum = targetBatch ? targetBatch.batch_number : (legacyBatch || 'All');
-        materials = db.prepare(`
-          SELECT m.*, u.first_name || ' ' || u.last_name AS instructor_name
-          FROM course_materials m
-          JOIN users u ON m.uploaded_by = u.id
-          WHERE m.deleted_at IS NULL AND (
-            m.batch_id = ?
-            OR (
-              m.batch_id IS NULL
-              AND (? IS NULL OR m.course_name = ?)
-              AND (m.batch_number = ? OR m.batch_number = 'All')
-            )
-          )
-          ORDER BY m.created_at DESC
-        `).all(requestedBatchId, bName, bName, bNum);
-      }
-    } else if (enrolledBatches.length > 0) {
-      const placeholders = enrolledBatches.map(() => '?').join(',');
-
-      // Retrieve genuinely unlinked legacy courses enrolled by the student
-      const legacyCourses = db.prepare(`
-        SELECT DISTINCT course_name FROM student_course_enrollments 
-        WHERE user_id = ? AND batch_id IS NULL AND course_definition_id IS NULL
-      `).all(req.user.id).map(r => r.course_name);
-
-      if (legacyCourses.length > 0 && legacyBatch) {
-        const coursePlaceholders = legacyCourses.map(() => '?').join(',');
-        materials = db.prepare(`
-          SELECT m.*, u.first_name || ' ' || u.last_name AS instructor_name
-          FROM course_materials m
-          JOIN users u ON m.uploaded_by = u.id
-          WHERE m.deleted_at IS NULL AND (
-            m.batch_id IN (${placeholders})
-            OR (
-              m.batch_id IS NULL
-              AND m.course_name IN (${coursePlaceholders})
-              AND (m.batch_number = ? OR m.batch_number = 'All')
-            )
-          )
-          ORDER BY m.created_at DESC
-        `).all(...enrolledBatches, ...legacyCourses, legacyBatch);
-      } else {
-        materials = db.prepare(`
-          SELECT m.*, u.first_name || ' ' || u.last_name AS instructor_name
-          FROM course_materials m
-          JOIN users u ON m.uploaded_by = u.id
-          WHERE m.deleted_at IS NULL AND m.batch_id IN (${placeholders})
-          ORDER BY m.created_at DESC
-        `).all(...enrolledBatches);
-      }
-    } else {
-      // Student has no batch_id enrollments; only unlinked legacy enrollments
-      const legacyCourses = db.prepare(`
-        SELECT DISTINCT course_name FROM student_course_enrollments 
-        WHERE user_id = ? AND batch_id IS NULL AND course_definition_id IS NULL
-      `).all(req.user.id).map(r => r.course_name);
-
-      if (legacyCourses.length > 0) {
-        const coursePlaceholders = legacyCourses.map(() => '?').join(',');
-        materials = db.prepare(`
-          SELECT m.*, u.first_name || ' ' || u.last_name AS instructor_name
-          FROM course_materials m
-          JOIN users u ON m.uploaded_by = u.id
-          WHERE m.deleted_at IS NULL 
-            AND m.batch_id IS NULL
-            AND m.course_name IN (${coursePlaceholders})
-            AND (m.batch_number = ? OR m.batch_number = 'All')
-          ORDER BY m.created_at DESC
-        `).all(...legacyCourses, legacyBatch || '85th');
-      } else {
-        materials = [];
-      }
+    const materials = listEnrolledMaterials(req.user.id, requestedBatchId);
+    if (!materials) {
+      return res.status(403).json({ error: 'Access denied: You are not enrolled in this batch.' });
+    }
+    if (req.user.role === 'student') {
+      res.set('Cache-Control', 'private, no-store');
+      const bookmarks = listBookmarkDates(req.user.id);
+      return res.json({ materials: materials.map(material => ({
+        ...material, bookmarked_at: bookmarks.get(material.id) ?? null
+      })) });
     }
 
     res.json({ materials });

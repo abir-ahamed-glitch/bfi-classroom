@@ -704,6 +704,7 @@ async function executeDeployment(options = {}) {
   const canonicalMigrationModules = [
     '20261109_film_submissions.cjs',
     '20261115_notification_preferences.cjs',
+    '20261115_course_material_bookmarks.cjs',
     '20261023_super_admin.cjs',
     '20261023_admin_permissions.cjs',
     '20261024_privileged_safeguards.cjs',
