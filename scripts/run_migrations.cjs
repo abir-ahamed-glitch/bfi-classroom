@@ -19,6 +19,7 @@ const fs = require('fs');
 
 const REQUIRED_MIGRATION_MODULES = [
   '20261109_film_submissions.cjs',
+  '20261115_film_feedback.cjs',
   '20261115_notification_preferences.cjs',
   '20261115_course_material_bookmarks.cjs',
   '20261023_super_admin.cjs',
@@ -72,6 +73,8 @@ const { ensureNotificationPreferences } = require(path.join(migrationsDir, '2026
 
 const { ensureCourseMaterialBookmarks } = require(path.join(migrationsDir, '20261115_course_material_bookmarks.cjs'));
 
+const { ensureFilmFeedback } = require(path.join(migrationsDir, '20261115_film_feedback.cjs'));
+
 const MIGRATIONS = [
   { name: '20261023_super_admin', runner: runSuperAdminMigration },
   { name: '20261023_admin_permissions', runner: runAdminPermissionsMigration },
@@ -84,6 +87,7 @@ const MIGRATIONS = [
   { name: '20261104_batch_instructors_and_certificate_downloads', runner: runBatchInstructorsAndCertificateDownloadsMigration },
   { name: '20261106_session_grace_and_course_draft_idempotency', runner: runSessionGraceAndCourseDraftIdempotencyMigration },
   { name: '20261109_film_submissions', runner: ensureFilmSubmissionSchema },
+  { name: '20261115_film_feedback', runner: ensureFilmFeedback },
   { name: '20261115_notification_preferences', runner: ensureNotificationPreferences },
   { name: '20261115_course_material_bookmarks', runner: ensureCourseMaterialBookmarks },
 ];
@@ -116,6 +120,11 @@ function assertSchemaIntegrity(db) {
   const filmColumns = db.prepare('PRAGMA table_info(film_submissions)').all().map(column => column.name);
   for (const column of ['enrollment_id', 'phase_id', 'revision', 'status', 'submitted_at', 'reviewed_at', 'reviewed_by']) {
     if (!filmColumns.includes(column)) throw new Error(`Missing film_submissions.${column}`);
+  }
+
+  const feedbackColumns = db.prepare('PRAGMA table_info(film_feedback_notes)').all().map(column => column.name);
+  for (const column of ['submission_id', 'author_id', 'video_seconds', 'note', 'created_at']) {
+    if (!feedbackColumns.includes(column)) throw new Error(`Missing film_feedback_notes.${column}`);
   }
 
   // 1. Verify app_migrations table exists and has all entries

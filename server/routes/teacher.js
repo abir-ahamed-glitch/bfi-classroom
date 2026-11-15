@@ -35,7 +35,7 @@ export function sanitizeRoutineSlots(routine = []) {
  * 
  * NEVER infers permissions from matching names or editable profile text!
  */
-export function isTeacherAssignedToBatch(database, teacherUserId, batch) {
+export function isTeacherAssignedToBatch(database, teacherUserId, batch, { allowLegacyCourseAssignment = true } = {}) {
   if (!teacherUserId || !batch) return false;
   const uid = Number(teacherUserId);
   const bid = Number(batch.id);
@@ -87,7 +87,7 @@ export function isTeacherAssignedToBatch(database, teacherUserId, batch) {
         console.error('Error in isTeacherAssignedToBatch parsing definition JSON:', e);
       }
     }
-  } else {
+  } else if (allowLegacyCourseAssignment) {
     // 4. Legacy course: check custom_subjects.teacher_id
     try {
       const hasLegacySubject = database.prepare(`

@@ -372,6 +372,11 @@ export default function Sidebar({ isNotifOpen, setIsNotifOpen }) {
           <NavLink to="/classroom" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
             <BookOpen size={20} /> Classroom
           </NavLink>
+          {currentUser?.role === 'instructor' && (
+            <NavLink to="/film-submissions" onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
+              <Film size={20} aria-hidden="true" /> Film Review
+            </NavLink>
+          )}
           <NavLink to="/registry" state={{ reset: true }} onClick={closeSidebar} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}>
             <UsersRound size={20} /> {currentUser?.role === 'student' ? 'My Batchmates' : 'Academic Records & Registry'}
           </NavLink>

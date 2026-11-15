@@ -2,6 +2,7 @@
 const path = require('path');
 const fs = require('fs');
 const assert = require('assert/strict');
+const { spawnSync } = require('node:child_process');
 const os = require('os');
 const express = require('express');
 const jwt = require('jsonwebtoken');
@@ -68,10 +69,50 @@ async function run() {
   assert.equal((await request('/api/film-submissions','POST',payload)).status,403);
   db.prepare('UPDATE student_course_enrollments SET step3_completed=1 WHERE id=?').run(enrollmentId);
   const initial=await request('/api/film-submissions','POST',payload); assert.equal(initial.status,201);
+  db.exec("DROP TABLE film_feedback_notes; DELETE FROM app_migrations WHERE name = '20261115_film_feedback'");
+  const feedbackMigration = spawnSync(process.execPath, [path.resolve(__dirname, 'run_migrations.cjs'), process.env.DATABASE_PATH], { encoding: 'utf8' });
+  assert.equal(feedbackMigration.status, 0, feedbackMigration.stderr || feedbackMigration.stdout);
+  assert.equal(db.prepare('SELECT title FROM film_submissions WHERE id = ?').get(initial.data.id).title, payload.title);
   assert.equal((await request('/api/film-submissions','POST',payload)).status,409);
   assert.equal((await request(`/api/film-submissions/${initial.data.id}/review`,'PATCH',{status:'accepted'})).status,403);
   assert.equal((await request(`/api/film-submissions/${initial.data.id}/review`,'PATCH',{status:'changes_requested'},adminToken)).status,400);
   const reviewUrl=`/api/film-submissions/${initial.data.id}/review`;
+  const createTeacher = db.prepare(`
+    INSERT INTO users (username, email, password_hash, role, first_name, last_name, is_active, token_version)
+    VALUES (?, ?, 'fixture', 'instructor', 'Film', 'Mentor', 1, 1)
+  `);
+  const assigned = Number(createTeacher.run('film_mentor', 'film-mentor@example.test').lastInsertRowid);
+  const otherTeacher = Number(createTeacher.run('other_mentor', 'other-mentor@example.test').lastInsertRowid);
+  const teacherToken = id => jwt.sign({ id, role: 'instructor', type: 'access', token_version: 1 }, process.env.JWT_SECRET, { expiresIn: '1h' });
+  const instructorToken = teacherToken(assigned);
+  const otherTeacherToken = teacherToken(otherTeacher);
+  const createBatch = db.prepare("INSERT INTO batches (batch_name, batch_number, course_name) VALUES (?, ?, 'Online Filmmaking Course')");
+  const feedbackBatchId = Number(createBatch.run('Film Feedback Batch', 'F18').lastInsertRowid);
+  const otherBatchId = Number(createBatch.run('Other Film Feedback Batch', 'F19').lastInsertRowid);
+  db.prepare('UPDATE student_course_enrollments SET batch_id = ? WHERE id = ?').run(feedbackBatchId, enrollmentId);
+  db.prepare('INSERT INTO batch_instructors (batch_id, user_id) VALUES (?, ?), (?, ?)').run(feedbackBatchId, assigned, otherBatchId, otherTeacher);
+  const notePath = `/api/film-submissions/${initial.data.id}/feedback`;
+  const goodNote = { videoSeconds: 134, note: 'Trim the pause before the cut.' };
+  assert.equal((await request(notePath, 'POST', goodNote, token)).status, 403);
+  assert.equal((await request(notePath, 'POST', goodNote, otherTeacherToken)).status, 404);
+  assert.equal((await request('/api/film-submissions?batch_id=' + feedbackBatchId, 'GET', undefined, otherTeacherToken)).status, 404);
+  assert.deepEqual((await request('/api/film-submissions', 'GET', undefined, otherTeacherToken)).data.courses, []);
+  assert.equal((await request(reviewUrl, 'PATCH', { status: 'accepted' }, instructorToken)).status, 403);
+  for (const invalid of [{videoSeconds: -1}, {videoSeconds: 1.5}, {videoSeconds: '134'}, {videoSeconds: 360000}, {note: '   '}, {note: 'x'.repeat(2001)}]) {
+    assert.equal((await request(notePath, 'POST', {...goodNote, ...invalid}, instructorToken)).status, 400);
+  }
+  assert.equal((await request(notePath, 'POST', goodNote, instructorToken)).status, 201);
+  const firstFrame = await request(notePath, 'POST', { videoSeconds: 0, note: 'The wide shot establishes the location.' }, instructorToken);
+  assert.equal(firstFrame.status, 201);
+  assert.equal(firstFrame.data.author_name, 'Film Mentor');
+  const ownerNotes = (await request('/api/film-submissions')).data.courses.find(course => course.enrollmentId === enrollmentId).submissions[0];
+  assert.equal(ownerNotes.status, 'under_review');
+  assert.deepEqual(ownerNotes.timestamped_feedback.map(note => note.video_seconds), [0, 134]);
+  assert.deepEqual((await request('/api/film-submissions', 'GET', undefined, outsiderToken)).data.courses, []);
+  db.prepare('DELETE FROM batch_instructors WHERE batch_id = ? AND user_id = ?').run(feedbackBatchId, assigned);
+  assert.equal((await request(notePath, 'POST', goodNote, instructorToken)).status, 404);
+  db.prepare('INSERT INTO batch_instructors (batch_id, user_id) VALUES (?, ?)').run(feedbackBatchId, assigned);
+  console.log('PASS: timestamp notes preserve status, validate input, scope by exact instructor batch and student account, and follow access revocation');
   db.exec("CREATE TRIGGER reject_film_audit BEFORE INSERT ON admin_audit_logs WHEN NEW.action='academic.film_review' BEGIN SELECT RAISE(ABORT,'audit unavailable'); END");
   assert.equal((await request(reviewUrl,'PATCH',{status:'accepted'},adminToken)).status,500);
   assert.equal(db.prepare('SELECT status FROM film_submissions WHERE id=?').get(initial.data.id).status,'under_review');
@@ -87,6 +128,29 @@ async function run() {
   await studentPage.getByRole('heading',{name:/My revised film.*Version 2/}).waitFor();
   assert.equal(await studentPage.getByText('Under Review',{exact:true}).count(),1);
   assert.equal(await studentPage.getByText('Please improve sound.',{exact:false}).count(),1);
+  const instructorPage = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  await instructorPage.addInitScript(accessToken => localStorage.setItem('token', accessToken), instructorToken);
+  await instructorPage.goto(baseUrl + '/bfi-classroom/film-submissions');
+  await instructorPage.getByRole('heading', { name: 'Film Review', exact: true }).waitFor();
+  assert.equal(await instructorPage.getByRole('link', { name: 'Film Review', exact: true }).count(), 1);
+  const instructorRevision = instructorPage.locator('.film-submission', { hasText: 'My revised film' });
+  await instructorRevision.getByLabel('Video time').fill('2:99');
+  await instructorRevision.getByLabel('Feedback note').fill('Hold on this reaction shot.');
+  await instructorRevision.getByRole('button', { name: 'Post feedback' }).click();
+  await instructorRevision.getByRole('alert').getByText(/Enter a video time/).waitFor();
+  await instructorRevision.getByLabel('Video time').fill('0:37');
+  await instructorRevision.getByRole('button', { name: 'Post feedback' }).click();
+  await instructorRevision.getByText('Feedback posted.').waitFor();
+  assert.equal(await instructorPage.getByRole('button', { name: 'Save review' }).count(), 0);
+  await instructorPage.close();
+  await studentPage.reload();
+  const studentRevision = studentPage.locator('.film-submission', { hasText: 'My revised film' });
+  await studentRevision.getByText('Hold on this reaction shot.').waitFor();
+  assert.equal(await studentRevision.getByRole('link', { name: /Watch at 0:37/ }).getAttribute('href'), 'https://www.youtube.com/watch?v=abcdefghijk&t=37s');
+  assert.equal(await studentRevision.getByText('Trim the pause before the cut.').count(), 0);
+  await studentPage.locator('.film-submission', { hasText: 'Version 1' }).getByText('Trim the pause before the cut.').waitFor();
+  assert.equal(await studentPage.getByRole('button', { name: 'Post feedback' }).count(), 0);
+  console.log('PASS: instructor portal posts timestamp feedback and student sees it on the correct version after reload');
   const adminPage=await browser.newPage();
   await adminPage.addInitScript(token=>{localStorage.setItem('token',token);localStorage.setItem('auth_user_cache',JSON.stringify({id:1,role:'admin'}));},adminToken);
   await adminPage.goto(baseUrl+'/bfi-classroom/film-submissions');
@@ -109,12 +173,28 @@ async function run() {
   const after=await request('/api/film-submissions');
   assert.equal(after.data.courses.find(c=>c.enrollmentId===Number(defined)).phases.find(p=>p.id==='production').eligible,true);
   const definedSubmit=await request('/api/film-submissions','POST',{...payload,enrollmentId:Number(defined),phaseId:'production'}); assert.equal(definedSubmit.status,201);
+  const definedBatch = db.prepare(
+    "INSERT INTO batches (batch_name, batch_number, course_name, course_definition_id) VALUES ('Film Workshop', 'D1', 'Course Maker Film', ?)"
+  ).run(defId).lastInsertRowid;
+  db.prepare('UPDATE student_course_enrollments SET batch_id = ? WHERE id = ?').run(definedBatch, defined);
+  def.phases[1].routine = [{ id: 'mentor-routine-slot', teacherUserId: assigned }];
+  db.prepare('UPDATE course_definitions SET definition_json = ? WHERE id = ?').run(JSON.stringify(def), defId);
+  const definedNotePath = '/api/film-submissions/' + definedSubmit.data.id + '/feedback';
+  assert.equal((await request(definedNotePath, 'POST', { videoSeconds: 6, note: 'Course Maker mentor feedback.' }, instructorToken)).status, 201);
+  assert.equal((await request(definedNotePath, 'POST', goodNote, otherTeacherToken)).status, 404);
+  console.log('PASS: canonical feedback migration preserves existing films; Course Maker routine assignment grants feedback on its batch');
   await studentPage.reload();
   const foundation=studentPage.locator('.film-phase').filter({has:studentPage.getByRole('heading',{name:/Phase 1.*Foundation/})});
   await foundation.getByLabel('Film title').fill('Foundation exercise');
   await foundation.getByLabel('YouTube or Vimeo video link').fill('https://vimeo.com/123456789');
   await foundation.getByRole('button',{name:'Submit film for review'}).click();
   await foundation.getByRole('heading',{name:/Foundation exercise.*Version 1/}).waitFor();
+  const foundationFilm = db.prepare("SELECT id FROM film_submissions WHERE enrollment_id = ? AND phase_id = 'foundation'").get(defined);
+  assert.equal((await request('/api/film-submissions/' + foundationFilm.id + '/feedback', 'POST', { videoSeconds: 3723, note: 'Vimeo timestamp example.' }, adminToken)).status, 201);
+  await studentPage.reload();
+  const vimeoTimestamp = foundation.getByRole('link', { name: /Watch at 1:02:03/ });
+  await vimeoTimestamp.waitFor();
+  assert.equal(await vimeoTimestamp.getAttribute('href'), 'https://vimeo.com/123456789#t=62m3s');
   assert.equal(await foundation.getByText('Under Review',{exact:true}).count(),1);
   await studentPage.locator('.film-portal').evaluate(async element => { await Promise.all(element.getAnimations().map(animation => animation.finished)); });
   const layout = await studentPage.locator('.film-portal').evaluate(element => ({ width: element.clientWidth, scroll: element.scrollWidth, overflowing: [...element.querySelectorAll('*')].filter(child=>child.getBoundingClientRect().right>element.getBoundingClientRect().right+1).map(child=>({tag:child.tagName,text:child.textContent.slice(0,60),width:child.getBoundingClientRect().width})) }));
