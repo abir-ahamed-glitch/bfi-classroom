@@ -42,7 +42,7 @@ import './Sidebar.css';
 import GlobalSearch from './GlobalSearch';
 
 export default function Sidebar({ isNotifOpen, setIsNotifOpen }) {
-  const { currentUser, logout } = useAuth();
+  const { currentUser, logout, notificationPreferences, refreshNotificationPreferences } = useAuth();
   const { mode, toggleMode } = useTheme();
   const location = useLocation();
   const navigate = useNavigate();
@@ -76,7 +76,8 @@ export default function Sidebar({ isNotifOpen, setIsNotifOpen }) {
   useEffect(() => {
     // Mobile sidebar toggle no longer manipulates history to prevent breaking standard navigation stack
   }, [isOpen]);
-  const hasUnreadInbox = unreadInboxCount > 0;
+  const messageAlerts = currentUser?.role !== 'student' || notificationPreferences?.messages === true;
+  const hasUnreadInbox = messageAlerts && unreadInboxCount > 0;
   const unreadBadgeLabel = unreadInboxCount > 99 ? '99+' : `${unreadInboxCount}`;
 
   const fetchUnreadInboxCount = async () => {
@@ -210,7 +211,7 @@ export default function Sidebar({ isNotifOpen, setIsNotifOpen }) {
       }
 
       setUnreadInboxCount((prev) => prev + 1);
-      if (!location.pathname.startsWith('/inbox')) {
+      if (messageAlerts && !location.pathname.startsWith('/inbox')) {
         try {
           const mutedChats = JSON.parse(localStorage.getItem('inbox_muted_chats') || '[]');
           const isMuted = mutedChats.map(Number).includes(Number(message.sender_id));
@@ -240,7 +241,14 @@ export default function Sidebar({ isNotifOpen, setIsNotifOpen }) {
       window.dispatchEvent(new CustomEvent('refreshNotifications'));
     });
 
+    socket.on('notification_preferences_changed', () => {
+      refreshNotificationPreferences().catch(() => {});
+      fetchUnreadNotificationCount();
+      window.dispatchEvent(new CustomEvent('refreshNotifications'));
+    });
+
     socket.on('notification_received', (notification) => {
+      fetchUnreadNotificationCount();
       window.dispatchEvent(new CustomEvent('showNotificationToast', { detail: notification }));
       window.dispatchEvent(new CustomEvent('refreshNotifications'));
     });
@@ -258,7 +266,7 @@ export default function Sidebar({ isNotifOpen, setIsNotifOpen }) {
     return () => {
       socket.disconnect();
     };
-  }, [currentUser?.id, currentUser?.role, socketUrl, location.pathname]);
+  }, [currentUser?.id, currentUser?.role, socketUrl, location.pathname, messageAlerts, refreshNotificationPreferences]);
 
 
 

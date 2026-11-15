@@ -102,7 +102,7 @@ function sendCommunityPostNotification(postId, posterId, content, media_url, pro
       const insertMany = db.transaction((users) => {
         for (const user of users) {
           const res = insertNotification.run(user.id, 'community', notifTitle, messageText, notifLink, imageUrl);
-          targetUserNotifications.push({ userId: user.id, notifId: res.lastInsertRowid });
+          if (res.changes) targetUserNotifications.push({ userId: user.id, notifId: res.lastInsertRowid });
         }
       });
       insertMany(targetUsers);
@@ -195,7 +195,7 @@ function sendCommentNotifications(postId, commentId, commenterId, content, paren
           imageUrl
         );
         notifiedUserIds.add(parentComment.user_id);
-        notifiedUsers.push({
+        if (res.changes) notifiedUsers.push({
           userId: parentComment.user_id,
           notifId: res.lastInsertRowid,
           title: notifTitle,
@@ -216,7 +216,7 @@ function sendCommentNotifications(postId, commentId, commenterId, content, paren
         imageUrl
       );
       notifiedUserIds.add(post.user_id);
-      notifiedUsers.push({
+      if (res.changes) notifiedUsers.push({
         userId: post.user_id,
         notifId: res.lastInsertRowid,
         title: 'New comment on your post',
@@ -250,7 +250,7 @@ function sendCommentNotifications(postId, commentId, commenterId, content, paren
           imageUrl
         );
         notifiedUserIds.add(c.user_id);
-        notifiedUsers.push({
+        if (res.changes) notifiedUsers.push({
           userId: c.user_id,
           notifId: res.lastInsertRowid,
           title: 'Activity on post',
@@ -285,7 +285,7 @@ function sendCommentNotifications(postId, commentId, commenterId, content, paren
             imageUrl
           );
           notifiedUserIds.add(u.id);
-          notifiedUsers.push({
+          if (res.changes) notifiedUsers.push({
             userId: u.id,
             notifId: res.lastInsertRowid,
             title: 'You were mentioned',
@@ -314,7 +314,7 @@ function sendCommentNotifications(postId, commentId, commenterId, content, paren
           imageUrl
         );
         notifiedUserIds.add(u.id);
-        notifiedUsers.push({
+        if (res.changes) notifiedUsers.push({
           userId: u.id,
           notifId: res.lastInsertRowid,
           title: 'You were mentioned',
@@ -399,7 +399,7 @@ function sendCommentReactionNotification(postId, commentId, likerId, rxType, io)
       imageUrl
     );
 
-    if (io) {
+    if (io && res.changes) {
       io.to(`user:${comment.user_id}`).emit('notification_received', {
         id: res.lastInsertRowid,
         type: 'community',
@@ -465,7 +465,7 @@ function sendPostReactionNotification(postId, likerId, rxType, io) {
       imageUrl
     );
 
-    if (io) {
+    if (io && res.changes) {
       io.to(`user:${post.user_id}`).emit('notification_received', {
         id: res.lastInsertRowid,
         type: 'community',

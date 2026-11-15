@@ -281,22 +281,66 @@ router.post('/upload', authenticateToken, requireRole('admin'), requireAnyPermis
       else file_type = ext || 'file';
     }
 
-    const result = db.prepare(`
-      INSERT INTO course_materials (title, description, file_url, file_type, batch_id, batch_number, course_name, uploaded_by, is_downloadable)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      title,
-      description || null,
-      file_url,
-      file_type,
-      effectiveBatchId,
-      effectiveBatchNumber,
-      effectiveCourseName,
-      req.user.id,
-      is_downloadable === 'false' || is_downloadable === false ? 0 : 1
-    );
+    const { material, notificationIds } = db.transaction(() => {
+      const result = db.prepare(`
+        INSERT INTO course_materials (title, description, file_url, file_type, batch_id, batch_number, course_name, uploaded_by, is_downloadable)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        title,
+        description || null,
+        file_url,
+        file_type,
+        effectiveBatchId,
+        effectiveBatchNumber,
+        effectiveCourseName,
+        req.user.id,
+        is_downloadable === 'false' || is_downloadable === false ? 0 : 1
+      );
+      const material = db.prepare('SELECT * FROM course_materials WHERE id = ?').get(result.lastInsertRowid);
 
-    const material = db.prepare('SELECT * FROM course_materials WHERE id = ?').get(result.lastInsertRowid);
+      // Match the student materials view: specific batch membership, or an unlinked legacy enrollment.
+      const recipients = db.prepare(`
+        SELECT u.id FROM users u
+        LEFT JOIN student_profiles p ON p.user_id = u.id
+        WHERE u.role = 'student' AND u.is_active = 1 AND u.deleted_at IS NULL AND u.archived_at IS NULL
+        AND (
+          (? IS NOT NULL AND (
+            EXISTS (SELECT 1 FROM student_course_enrollments e WHERE e.user_id = u.id AND e.batch_id = ?)
+            OR EXISTS (SELECT 1 FROM batch_students bs WHERE bs.student_id = u.id AND bs.batch_id = ?)
+          ))
+          OR (? IS NULL AND EXISTS (
+            SELECT 1 FROM student_course_enrollments e
+            WHERE e.user_id = u.id AND e.batch_id IS NULL AND e.course_definition_id IS NULL AND e.course_name = ?
+          ) AND (
+            (NULLIF(p.batch_number, '') IS NOT NULL AND (? = p.batch_number OR ? = 'All'))
+            OR (NULLIF(p.batch_number, '') IS NULL
+              AND NOT EXISTS (SELECT 1 FROM student_course_enrollments WHERE user_id = u.id AND batch_id IS NOT NULL)
+              AND NOT EXISTS (SELECT 1 FROM batch_students WHERE student_id = u.id AND batch_id IS NOT NULL)
+              AND (? = '85th' OR ? = 'All'))
+          ))
+        )
+      `).all(effectiveBatchId, effectiveBatchId, effectiveBatchId, effectiveBatchId, effectiveCourseName,
+        effectiveBatchNumber, effectiveBatchNumber, effectiveBatchNumber, effectiveBatchNumber);
+      const insert = db.prepare(`
+        INSERT INTO notifications (user_id, type, title, message, link)
+        VALUES (?, 'course_material', 'New course material', ?, ?)
+      `);
+      const link = '/courses';
+      const notificationIds = [];
+      for (const { id } of recipients) {
+        const notification = insert.run(id, material.title, link);
+        if (notification.changes) notificationIds.push({ userId: id, id: notification.lastInsertRowid });
+      }
+      return { material, notificationIds };
+    })();
+
+    const io = req.app.get('io');
+    for (const { userId, id } of notificationIds) {
+      io?.to(`user:${userId}`).emit('notification_received', {
+        id, type: 'course_material', title: 'New course material', message: material.title,
+        link: '/courses', created_at: new Date().toISOString()
+      });
+    }
     res.status(201).json({ message: 'Material uploaded successfully', material });
   } catch (error) {
     console.error('Upload error:', error);

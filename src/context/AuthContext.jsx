@@ -1,11 +1,11 @@
 ﻿/* eslint-disable react-refresh/only-export-components */
-import { createContext, useContext, useState, useEffect } from 'react';
+import { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import {
   decryptPrivateKeyWithPassword,
   encryptPrivateKeyWithPassword,
   getOrGenerateKeyPair,
 } from '../utils/e2eCrypto';
-import { refreshAccessToken } from '../utils/apiClient';
+import apiClient, { refreshAccessToken } from '../utils/apiClient';
 
 const AuthContext = createContext();
 const AUTH_USER_CACHE_KEY = 'auth_user_cache';
@@ -17,6 +17,40 @@ export function useAuth() {
 export function AuthProvider({ children }) {
   const [currentUser, setCurrentUser] = useState(null);
   const [loading, setLoading] = useState(true);
+
+  const [notificationState, setNotificationState] = useState(null);
+  const preferenceRequest = useRef(0);
+  const studentId = currentUser?.role === 'student' ? currentUser.id : null;
+  const notificationPreferences = notificationState?.studentId === studentId ? notificationState?.preferences : null;
+
+  const refreshNotificationPreferences = useCallback(async () => {
+    if (!studentId) return;
+    const request = ++preferenceRequest.current;
+    const response = await apiClient('/api/notifications/preferences');
+    if (!response.ok) throw new Error('Could not load notification preferences.');
+    const { preferences } = await response.json();
+    if (request === preferenceRequest.current) setNotificationState({ studentId, preferences });
+  }, [studentId]);
+
+  useEffect(() => {
+    const refresh = () => refreshNotificationPreferences().catch(() => {});
+    refresh();
+    window.addEventListener('focus', refresh);
+    return () => window.removeEventListener('focus', refresh);
+  }, [refreshNotificationPreferences]);
+
+  const saveNotificationPreference = useCallback(async (category, enabled) => {
+    const response = await apiClient('/api/notifications/preferences', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ [category]: enabled })
+    });
+    if (!response.ok) throw new Error('Could not save the preference. Please try again.');
+    const { preferences } = await response.json();
+    preferenceRequest.current++;
+    setNotificationState({ studentId, preferences });
+    return preferences;
+  }, [studentId]);
 
   // Load user from local storage or validate token on mount
 
@@ -116,7 +150,7 @@ export function AuthProvider({ children }) {
                 // âœ… New secure format â€” decrypt with user's password
                 privateKeyJwk = await decryptPrivateKeyWithPassword(data.private_key, password);
               } else {
-                // âš ï¸  Legacy raw format (migration) â€” parse directly, will be
+                // Legacy format. Re-encrypt and upload after reading the existing key.
                 //     re-encrypted with password and re-uploaded in Step 4.
                 try { privateKeyJwk = JSON.parse(data.private_key); } catch { /* skip */ }
               }
@@ -431,6 +465,9 @@ export function AuthProvider({ children }) {
     logout,
     updateUser,
     refreshSession,
+    notificationPreferences,
+    refreshNotificationPreferences,
+    saveNotificationPreference,
   };
 
   return (

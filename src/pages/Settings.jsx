@@ -5,6 +5,7 @@ import {
   Shield, Key, User, Save, AlertCircle, Palette, Check, Sun, Moon, Pencil, X, Search,
   ShieldCheck, ShieldAlert, KeyRound, QrCode, Download, Copy, AlertTriangle, CheckCircle2, RefreshCw, Lock
 } from 'lucide-react';
+import NotificationPreferences from '../components/NotificationPreferences';
 import AuthenticatorQRCode from '../components/AuthenticatorQRCode';
 
 // Searchable metadata for each settings section
@@ -14,6 +15,7 @@ const SECTIONS_META = [
   { id: 'account-info',    keywords: 'account info username role status badge verified' },
   { id: 'profile-details', keywords: 'profile details name first last recovery email edit' },
   { id: 'change-password', keywords: 'change password security current new confirm update' },
+  { id: 'notification-preferences', keywords: 'notifications preferences notices announcements course materials messages inbox community alerts toggle mute' },
   { id: 'two-factor-auth', keywords: 'two-factor 2fa mfa authenticator otp security code qr backup recovery' },
 ];
 
@@ -283,9 +285,9 @@ export default function Settings() {
     const q = searchQuery.trim().toLowerCase();
     if (!q) return null; // null = show all
     return SECTIONS_META
-      .filter(({ keywords }) => keywords.includes(q))
+      .filter(({ id, keywords }) => (id !== 'notification-preferences' || currentUser?.role === 'student') && keywords.includes(q))
       .map(({ id }) => id);
-  }, [searchQuery]);
+  }, [searchQuery, currentUser?.role]);
 
   const show = (id) => !visibleSections || visibleSections.includes(id);
 
@@ -597,6 +599,8 @@ export default function Settings() {
             })}
           </div>
         </section>}
+
+        {currentUser?.role === 'student' && show('notification-preferences') && <NotificationPreferences key={currentUser.id} />}
 
         {/* ── Account Info + Name Edit + Password ─────────────────────────── */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '2rem' }}>

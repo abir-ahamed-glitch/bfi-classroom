@@ -463,7 +463,11 @@ const getRoleDisplayText = (role, batch, user) => {
 export default function Inbox() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { currentUser } = useAuth();
+  const { currentUser, notificationPreferences } = useAuth();
+  const messageAlertsRef = useRef(false);
+  useEffect(() => {
+    messageAlertsRef.current = currentUser?.role !== 'student' || notificationPreferences?.messages === true;
+  }, [currentUser?.role, notificationPreferences?.messages]);
   const { initiateCall, onlineUsers } = useCall();
   const [loading, setLoading] = useState(true);
   const [hasBroadcastPermission, setHasBroadcastPermission] = useState(false);
@@ -1682,7 +1686,7 @@ export default function Inbox() {
       const processedMessage = processedMsgs[0];
       const isReactionNotice = processedMessage.message_type === 'reaction';
 
-      if (senderId !== currentUserId && !mutedChatsRef.current.has(partnerId)) {
+      if (senderId !== currentUserId && messageAlertsRef.current && !mutedChatsRef.current.has(partnerId)) {
         soundManager.playMessageReceived();
       }
 
