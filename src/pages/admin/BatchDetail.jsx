@@ -19,6 +19,7 @@ import AddStudentsModal from '../../components/admin/AddStudentsModal';
 import EditStudentModal from '../../components/admin/EditStudentModal';
 import UploadResultsModal from '../../components/admin/UploadResultsModal';
 import DefinedCourseProgressModal from '../../components/admin/DefinedCourseProgressModal';
+import SessionChanges from '../../components/admin/SessionChanges';
 import BatchAttendanceSheet from '../../components/admin/BatchAttendanceSheet';
 import { useAuth } from '../../context/AuthContext';
 import { resolveFeeAccounting, isCourseFeeUnpaid, resolveEnrollmentFinancialsClient } from '../../utils/feeUtils';
@@ -2950,6 +2951,8 @@ export default function BatchDetail() {
                                 </select>
                               )}
                             </div>
+
+                            <SessionChanges slot={slot} onChange={changes => handleUpdateRoutineSlot(sIdx, 'sessionChanges', changes)} />
 
                             {/* Row 1: Date, Day, Time, Delete */}
                             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>

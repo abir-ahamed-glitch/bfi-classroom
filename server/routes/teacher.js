@@ -20,7 +20,8 @@ export function sanitizeRoutineSlots(routine = []) {
     teacherUserId: slot.teacherUserId ? Number(slot.teacherUserId) : null,
     deliveryMode: slot.deliveryMode ? String(slot.deliveryMode).trim() : 'live',
     category: slot.category ? String(slot.category).trim() : 'theory',
-    platform: slot.platform ? String(slot.platform).trim() : ''
+    platform: slot.platform ? String(slot.platform).trim() : '',
+    ...(Array.isArray(slot.sessionChanges) && slot.sessionChanges.length ? { sessionChanges: slot.sessionChanges } : {})
   }));
 }
 

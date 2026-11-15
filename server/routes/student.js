@@ -598,7 +598,8 @@ function sanitizeRoutineSlots(routine = []) {
     teacherUserId: slot.teacherUserId ? Number(slot.teacherUserId) : null,
     deliveryMode: slot.deliveryMode ? String(slot.deliveryMode).trim() : 'live',
     category: slot.category ? String(slot.category).trim() : 'theory',
-    platform: slot.platform ? String(slot.platform).trim() : ''
+    platform: slot.platform ? String(slot.platform).trim() : '',
+    ...(Array.isArray(slot.sessionChanges) && slot.sessionChanges.length ? { sessionChanges: slot.sessionChanges } : {})
   }));
 }
 
@@ -689,7 +690,7 @@ router.get('/schedule', authenticateToken, (req, res) => {
   try {
     if (req.user.role === 'student') {
       const enrolledBatches = db.prepare(`
-        SELECT DISTINCT b.id, b.batch_name, b.batch_number, b.course_name, b.course_definition_id
+        SELECT DISTINCT b.id, b.batch_name, b.batch_number, b.course_name, b.course_definition_id, b.start_date, b.end_date
         FROM batches b
         LEFT JOIN batch_students bs ON bs.batch_id = b.id
         LEFT JOIN student_course_enrollments sce ON sce.batch_id = b.id
@@ -725,6 +726,8 @@ router.get('/schedule', authenticateToken, (req, res) => {
         }
         return {
           batchId: batch.id,
+          startDate: batch.start_date?.slice(0, 10),
+          endDate: batch.end_date?.slice(0, 10),
           batchName: batch.batch_name,
           batchNumber: batch.batch_number,
           courseName: batch.course_name,
