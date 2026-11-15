@@ -1,224 +1,186 @@
-import { useState, useEffect } from 'react';
-import { BookOpen, FileText, Download, PlayCircle, Folder } from 'lucide-react';
-import { useModal } from '../components/BFIModal';
+import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
+import { Bookmark, BookOpen, ExternalLink, FileText, Link2, PlayCircle } from 'lucide-react';
+import { useAuth } from '../context/AuthContext';
+import apiClient from '../utils/apiClient';
+import './CourseMaterials.css';
 
-export default function CourseMaterials() {
+const types = ['All', 'PDFs', 'Documents', 'Videos', 'Links', 'Other'];
+const typeLabels = { PDFs: 'PDF', Documents: 'Document', Videos: 'Video', Links: 'Link', Other: 'File' };
+const typeIcons = { PDFs: FileText, Documents: FileText, Videos: PlayCircle, Links: Link2 };
+
+function materialType(material) {
+  switch (material.file_type?.toLowerCase() || 'pdf') {
+    case 'pdf': return 'PDFs';
+    case 'doc':
+    case 'docx': return 'Documents';
+    case 'video': return 'Videos';
+    case 'link':
+    case 'url': return 'Links';
+    default: return /^https?:\/\//i.test(material.file_url ?? '') ? 'Links' : 'Other';
+  }
+}
+
+function materialUrl(fileUrl) {
+  if (!fileUrl) return null;
+  // The catalog supports external HTTP(S) links and existing local file paths.
+  if (/^https?:\/\//i.test(fileUrl)) {
+    return URL.canParse(fileUrl) ? fileUrl : null;
+  }
+  if (/^[a-z][\w+.-]*:|^[/\\]{2}|\\/i.test(fileUrl)) return null;
+
+  const base = new URL(import.meta.env.BASE_URL, window.location.origin);
+  if (fileUrl.startsWith(base.pathname)) return new URL(fileUrl, base).href;
+  if (fileUrl.startsWith('/media/')) {
+    return new URL(fileUrl, import.meta.env.VITE_API_BASE_URL || base).href;
+  }
+  return new URL(fileUrl.replace(/^\//, ''), base).href;
+}
+
+export default function CourseMaterials({ savedOnly = false }) {
+  const { currentUser } = useAuth();
+  const isStudent = currentUser?.role === 'student';
   const [materials, setMaterials] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState('All');
-  const backendOrigin = import.meta.env.VITE_API_BASE_URL || '';
-  const { showAlert } = useModal();
+  const [loadError, setLoadError] = useState(false);
+  const [retry, setRetry] = useState(0);
+  const [query, setQuery] = useState('');
+  const [type, setType] = useState('All');
+  const [pending, setPending] = useState(null);
+  const [feedback, setFeedback] = useState(null);
 
   useEffect(() => {
-    fetchMaterials();
-  }, []);
-
-  const fetchMaterials = async () => {
-    try {
-      setLoading(true);
-      const res = await fetch('/api/courses', {
-        headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
-      });
-      if (res.ok) {
-        const data = await res.json();
-        const mapped = data.materials.map((m) => ({
-          id: m.id,
-          title: m.title,
-          course: m.course_name,
-          type: m.file_type || 'pdf',
-          fileUrl: m.file_url,
-          date: new Date(m.created_at).toLocaleDateString(),
-          size: m.file_type === 'video' ? 'Video' : '1.2 MB',
-          downloadable: m.is_downloadable === 1,
-          duration: '15 min'
-        }));
-        setMaterials(mapped);
+    const controller = new AbortController();
+    const endpoint = savedOnly ? '/api/courses/bookmarks' : '/api/courses';
+    (async () => {
+      try {
+        const response = await apiClient(endpoint, { signal: controller.signal });
+        if (!response.ok) throw new Error('Could not load materials');
+        const data = await response.json();
+        if (!controller.signal.aborted) setMaterials(data.materials);
+      } catch {
+        if (!controller.signal.aborted) setLoadError(true);
+      } finally {
+        if (!controller.signal.aborted) setLoading(false);
       }
-    } catch (err) {
-      console.error('Failed to fetch materials', err);
+    })();
+    return () => controller.abort();
+  }, [savedOnly, retry]);
+
+  async function updateBookmark(material) {
+    setPending(material.id);
+    setFeedback(null);
+    const bookmarked = !material.bookmarked_at;
+    try {
+      const response = await apiClient(`/api/courses/bookmarks/${material.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ bookmarked })
+      });
+      if (!response.ok) {
+        setFeedback({ error: true, text: response.status === 404
+          ? 'This material is no longer available.'
+          : 'Could not update your library. Please try again.' });
+        return;
+      }
+      const { bookmarked_at } = await response.json();
+      setMaterials(previous => savedOnly && !bookmarked_at
+        ? previous.filter(item => item.id !== material.id)
+        : previous.map(item => item.id === material.id ? { ...item, bookmarked_at } : item));
+      setFeedback({ text: bookmarked_at ? 'Saved to My Library.' : 'Removed from My Library.' });
+    } catch {
+      setFeedback({ error: true, text: 'Could not update your library. Please try again.' });
     } finally {
-      setLoading(false);
+      setPending(null);
     }
-  };
-
-  const getIcon = (type) => {
-    const lowerType = type?.toLowerCase();
-    if (lowerType === 'pdf') return <FileText size={24} className="text-danger" />;
-    if (lowerType === 'doc' || lowerType === 'docx') return <FileText size={24} className="text-primary" />;
-    if (lowerType === 'video') return <PlayCircle size={24} className="text-warning" />;
-    return <BookOpen size={24} />;
-  };
-
-  const filteredMaterials = activeTab === 'All'
-    ? materials
-    : materials.filter((material) => material.type.toLowerCase() === activeTab.toLowerCase());
-
-  const openMaterial = async (material) => {
-    if (!material.fileUrl) {
-      await showAlert('This material is not available right now.', { title: 'Unavailable' });
-      return;
-    }
-
-    const targetUrl = material.fileUrl.startsWith('http')
-      ? material.fileUrl
-      : material.fileUrl.startsWith('/media/')
-        ? `${backendOrigin}${material.fileUrl}`
-        : new URL(material.fileUrl.replace(/^\//, ''), `${window.location.origin}${import.meta.env.BASE_URL}`).toString();
-
-    window.open(targetUrl, '_blank', 'noopener,noreferrer');
-  };
-
-  if (loading) {
-    return (
-      <div className="page-container container">
-        <h2 className="text-secondary text-center" style={{ marginTop: '20vh' }}>Loading Library...</h2>
-      </div>
-    );
   }
 
+  const search = query.trim().toLowerCase();
+  const visible = materials.filter(material =>
+    (type === 'All' || type === materialType(material)) &&
+    (!search || [material.title, material.course_name].some(value => value?.toLowerCase().includes(search)))
+  );
+
   return (
-    <div className="page-container container" style={{ paddingBottom: '4rem' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: '2rem', flexWrap: 'wrap', gap: '1rem' }}>
-        <div>
-          <h1 className="text-gradient font-display" style={{ fontSize: '2.5rem' }}>Course Materials</h1>
-          <p className="subtitle">Access lecture notes, guides, and masterclasses provided by instructors.</p>
+    <section className="page-container container resource-library" aria-labelledby="resource-library-title">
+      <header className="resource-library__header">
+        <h1 id="resource-library-title" className="text-gradient font-display">{savedOnly ? 'My Library' : 'Course Materials'}</h1>
+        {isStudent && (
+          <Link className="btn btn-glass" to={savedOnly ? '/courses' : '/my-library'}>
+            {savedOnly ? <BookOpen aria-hidden="true" size={18} /> : <Bookmark aria-hidden="true" size={18} />}
+            {savedOnly ? 'Browse course materials' : 'My Library'}
+          </Link>
+        )}
+      </header>
+
+      {loading ? <p role="status">Loading materials…</p> : loadError ? (
+        <div className="glass-panel resource-library__empty">
+          <p role="alert">Could not load materials.</p>
+          <button type="button" className="btn btn-glass" onClick={() => {
+            setLoadError(false);
+            setLoading(true);
+            setRetry(value => value + 1);
+          }}>Try again</button>
         </div>
-      </div>
-
-      <div className="glass-panel" style={{ display: 'inline-flex', padding: '0.4rem', borderRadius: '12px', marginBottom: '2rem', overflowX: 'auto', maxWidth: '100%' }}>
-        {['All', 'PDF', 'Doc', 'Video'].map((tab) => (
-          <button
-            key={tab}
-            onClick={() => setActiveTab(tab)}
-            className={`tab-btn ${activeTab === tab ? 'active' : ''}`}
-          >
-            {tab}
-          </button>
-        ))}
-      </div>
-
-      <div className="materials-grid">
-        {filteredMaterials.map((material) => (
-          <div key={material.id} className="material-card glass-panel dashboard-highlight-outline">
-            <div className="material-icon">
-              {getIcon(material.type)}
-            </div>
-            <div className="material-info">
-              <h3 className="material-title">{material.title}</h3>
-              <p className="material-course"><Folder size={14} style={{ display: 'inline', marginRight: '4px' }} /> {material.course}</p>
-              <div className="material-meta">
-                <span>{material.date}</span>
-                <span>|</span>
-                <span>{material.type === 'video' ? material.duration : material.size}</span>
-              </div>
-            </div>
-            <div className="material-action">
-              {material.downloadable ? (
-                <button className="btn btn-glass icon-btn" title="Download Material" onClick={() => openMaterial(material)}>
-                  <Download size={20} />
-                </button>
-              ) : (
-                <button className="btn btn-primary icon-btn" title="Watch Video" onClick={() => openMaterial(material)}>
-                  <PlayCircle size={20} />
-                </button>
-              )}
-            </div>
+      ) : materials.length === 0 ? (
+        <div className="glass-panel resource-library__empty">
+          <p>{savedOnly ? 'Your library is empty. Save a resource from Course Materials to find it here.' : 'No course materials are available.'}</p>
+        </div>
+      ) : (
+        <>
+          <div className="resource-library__filters">
+            <label>
+              Search materials
+              <input className="input-glass" type="search" value={query}
+                onChange={event => setQuery(event.target.value)} placeholder="Title or course" />
+            </label>
+            <label>
+              Resource type
+              <select className="input-glass" value={type} onChange={event => setType(event.target.value)}>
+                {types.map(value => <option key={value}>{value}</option>)}
+              </select>
+            </label>
           </div>
-        ))}
-      </div>
-
-      {filteredMaterials.length === 0 && (
-        <div style={{ textAlign: 'center', padding: '4rem', color: 'var(--text-muted)' }}>
-          <BookOpen size={48} style={{ opacity: 0.2, marginBottom: '1rem' }} />
-          <p>No materials found for this category.</p>
-        </div>
+          {visible.length === 0 ? <p role="status">No materials match your filters.</p> : (
+            <ul className="resource-library__list">
+              {visible.map(material => {
+                const kind = materialType(material);
+                const Icon = typeIcons[kind] || BookOpen;
+                const href = materialUrl(material.file_url);
+                const saved = Boolean(material.bookmarked_at);
+                const bookmarkLabel = saved ? 'Remove bookmark' : 'Save bookmark';
+                const openLabel = kind === 'Videos' ? 'Watch' : 'Open';
+                return (
+                  <li key={material.id} className="glass-panel resource-library__row">
+                    <Icon className="resource-library__type-icon" aria-hidden="true" size={24} />
+                    <div className="resource-library__info">
+                      <h2>{material.title}</h2>
+                      <p>{[material.course_name, typeLabels[kind]].filter(Boolean).join(' · ')}</p>
+                    </div>
+                    <div className="resource-library__actions">
+                      {href ? (
+                        <a className="btn btn-glass" href={href} target="_blank" rel="noopener noreferrer"
+                          aria-label={`${openLabel} ${material.title} (opens in a new tab)`}>
+                          {openLabel}<ExternalLink aria-hidden="true" size={16} />
+                        </a>
+                      ) : <span>Unavailable</span>}
+                      {isStudent && (
+                        <button type="button" className="btn btn-glass resource-library__bookmark"
+                          aria-label={`Bookmark ${material.title}`} aria-pressed={saved} title={bookmarkLabel}
+                          disabled={pending !== null} onClick={() => updateBookmark(material)}>
+                          <Bookmark aria-hidden="true" size={19} fill={saved ? 'currentColor' : 'none'} />
+                          {saved ? 'Saved' : 'Save'}
+                        </button>
+                      )}
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </>
       )}
-
-      <style>{`
-        .tab-btn {
-          background: transparent;
-          border: none;
-          color: var(--text-secondary);
-          padding: 0.6rem 1.5rem;
-          border-radius: 8px;
-          cursor: pointer;
-          font-weight: 500;
-          transition: all 0.2s;
-          white-space: nowrap;
-        }
-        .tab-btn:hover { color: var(--text-primary); }
-        .tab-btn.active {
-          background: rgba(var(--accent-primary-rgb, 225,29,72), 0.1);
-          color: var(--accent-primary);
-          box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-        }
-
-        .materials-grid {
-          display: grid;
-          grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-          gap: 1.5rem;
-        }
-        .material-card {
-          display: flex;
-          align-items: center;
-          padding: 1.5rem;
-          border-radius: 12px;
-          transition: border-color 0.2s, box-shadow 0.2s, background 0.2s;
-        }
-        .material-card:hover {
-          border-color: var(--accent-primary);
-          box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
-          background: rgba(255, 255, 255, 0.04);
-        }
-        .material-icon {
-          width: 50px;
-          height: 50px;
-          border-radius: 12px;
-          background: rgba(128,128,128,0.1);
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          margin-right: 1.5rem;
-          flex-shrink: 0;
-        }
-        .material-info {
-          flex: 1;
-          min-width: 0;
-        }
-        .material-title {
-          font-size: 1.1rem;
-          margin: 0 0 0.4rem 0;
-          white-space: nowrap;
-          overflow: hidden;
-          text-overflow: ellipsis;
-        }
-        .material-course {
-          font-size: 0.85rem;
-          color: var(--text-secondary);
-          margin: 0 0 0.5rem 0;
-        }
-        .material-meta {
-          display: flex;
-          gap: 0.5rem;
-          font-size: 0.8rem;
-          color: var(--text-muted);
-        }
-        .material-action {
-          margin-left: 1rem;
-        }
-        .icon-btn {
-          width: 44px;
-          height: 44px;
-          border-radius: 50%;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          padding: 0;
-        }
-        @media (max-width: 768px) {
-          .materials-grid { grid-template-columns: 1fr; }
-        }
-      `}</style>
-    </div>
+      <p role="status" className={feedback?.error ? 'text-danger' : undefined}>{feedback?.text}</p>
+    </section>
   );
 }

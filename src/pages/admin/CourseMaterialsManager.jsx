@@ -156,6 +156,7 @@ export default function CourseMaterialsManager() {
     { value: 'pdf', label: 'PDF' },
     { value: 'doc', label: 'DOC / DOCX' },
     { value: 'video', label: 'Video' },
+    { value: 'link', label: 'Link' },
     { value: 'file', label: 'Other' },
   ];
 
