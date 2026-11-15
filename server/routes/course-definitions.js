@@ -4,7 +4,26 @@ import { authenticateToken, requireRole, requirePermission, isSuperAdmin } from 
 import { recordAuditEventFromReq } from '../services/auditLedgerService.js';
 import { resolvePhaseRoutine, getCanonicalPhaseInfo } from '../services/courseProgressService.js';
 
+import { getTimedSessions, isSessionDate, occursOn } from '../../src/utils/timetable.js';
+
 const router = express.Router();
+
+function notifyScheduleChange(req, definitionId, batchId) {
+  const io = req.app.get('io');
+  if (!io) return;
+  try {
+    const students = db.prepare(`
+      SELECT bs.student_id AS id FROM batch_students bs JOIN batches b ON b.id = bs.batch_id
+      WHERE b.course_definition_id = ? AND (? = 0 OR b.id = ?) AND b.deleted_at IS NULL
+      UNION
+      SELECT e.user_id AS id FROM student_course_enrollments e JOIN batches b ON b.id = e.batch_id
+      WHERE b.course_definition_id = ? AND (? = 0 OR b.id = ?) AND b.deleted_at IS NULL
+    `).all(definitionId, batchId, batchId, definitionId, batchId, batchId);
+    if (students.length) io.to(students.map(student => `user:${student.id}`)).emit('schedule_updated');
+  } catch (error) {
+    console.error('Could not notify students about a saved schedule:', error.message);
+  }
+}
 
 const ALLOWED_WEEKDAYS = ['Saturday', 'Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
 const ALLOWED_DELIVERY_MODES = ['live', 'recorded', 'recorded_plus_live_discussion', 'online', 'offline', 'hybrid', 'self_paced'];
@@ -1061,6 +1080,7 @@ router.put('/:id/routine', authenticateToken, (req, res) => {
       });
 
       revertTx();
+      notifyScheduleChange(req, id, resolvedBatchId);
 
       return res.json({
         success: true,
@@ -1071,6 +1091,11 @@ router.put('/:id/routine', authenticateToken, (req, res) => {
         effectiveSource: inheritedRoutineRes.source
       });
     }
+
+    // Validate each changed occurrence before saving the routine and its audit record.
+    const changedDates = new Set();
+    const changesBySlot = new Map();
+    const bounds = { startDate: targetBatch?.start_date, endDate: targetBatch?.end_date };
 
     // Validate routine slots
     const scheduleSlots = new Map();
@@ -1108,6 +1133,31 @@ router.put('/:id/routine', authenticateToken, (req, res) => {
       previousSlots.push({ start, end, startTime: slot.startTime, endTime: slot.endTime, slotNum: rIdx + 1 });
       scheduleSlots.set(conflictKey, previousSlots);
 
+      const changes = slot.sessionChanges ?? [];
+      if (!Array.isArray(changes) || changes.length > 100 || (changes.length && !resolvedBatchId)) {
+        return res.status(400).json({ error: 'Session changes must belong to a batch and contain at most 100 dates per slot.' });
+      }
+      const originals = new Set();
+      for (const change of changes) {
+        if (!isSessionDate(change?.originalDate) || !occursOn(slot, change.originalDate, bounds)
+          || originals.has(change.originalDate) || !['cancelled', 'rescheduled'].includes(change.status)) {
+          return res.status(400).json({ error: 'Select a unique session date that matches the class schedule.' });
+        }
+        originals.add(change.originalDate);
+        changedDates.add(change.originalDate);
+        if (change.status === 'rescheduled') {
+          if (!isSessionDate(change.date) || !isValidTime(change.startTime) || !isValidTime(change.endTime)
+            || timeToMinutes(change.startTime) >= timeToMinutes(change.endTime)
+            || (change.date === change.originalDate && change.startTime === slot.startTime && change.endTime === slot.endTime)) {
+            return res.status(400).json({ error: 'Enter a different date or time and an end time after the start time.' });
+          }
+          changedDates.add(change.date);
+        }
+      }
+      changesBySlot.set(slot, changes.map(({ originalDate, status, date, startTime, endTime }) => ({
+        originalDate, status, ...(status === 'rescheduled' ? { date, startTime, endTime } : {})
+      })));
+
       if (slot.deliveryMode && !ALLOWED_DELIVERY_MODES.includes(slot.deliveryMode)) {
         return res.status(400).json({ error: `Invalid deliveryMode "${slot.deliveryMode}" in routine slot ${rIdx + 1}.` });
       }
@@ -1124,6 +1174,7 @@ router.put('/:id/routine', authenticateToken, (req, res) => {
 
       return {
         id: slot.id,
+        ...(changesBySlot.get(slot).length ? { sessionChanges: changesBySlot.get(slot) } : {}),
         date: slot.date ? String(slot.date).trim() : '',
         weekday: slot.weekday,
         startTime: slot.startTime,
@@ -1141,6 +1192,15 @@ router.put('/:id/routine', authenticateToken, (req, res) => {
         platform: slot.platform ? String(slot.platform).trim() : ''
       };
     });
+
+    const actualSessions = getTimedSessions(sanitizedRoutine, [...changedDates], bounds)
+      .filter(session => ['scheduled', 'moved'].includes(session.status));
+    for (const [index, session] of actualSessions.entries()) {
+      if (session.status !== 'moved') continue;
+      const overlaps = actualSessions.some((other, otherIndex) => otherIndex !== index && other.date === session.date
+        && other.startTime < session.endTime && other.endTime > session.startTime);
+      if (overlaps) return res.status(400).json({ error: `Rescheduled session overlaps another class on ${session.date}.` });
+    }
 
     // Determine effective old routine before saving
     const currentRoutineRes = resolvePhaseRoutine(db, id, resolvedBatchId, canonicalPhaseId, phase.routine);
@@ -1203,6 +1263,7 @@ router.put('/:id/routine', authenticateToken, (req, res) => {
     });
 
     tx();
+    notifyScheduleChange(req, id, resolvedBatchId);
 
     res.json({
       success: true,

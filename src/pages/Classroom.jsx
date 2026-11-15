@@ -1,7 +1,10 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { BookOpen, Calendar, Clock, User, AlertCircle, RefreshCw, Layers } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { getPlatformIcon } from '../components/admin/PlatformSelector';
+import { io } from 'socket.io-client';
+import apiClient from '../utils/apiClient';
+import { addDays, dhakaNow, getTimedSessions, weekdayOf } from '../utils/timetable';
 import './Classroom.css';
 
 export default function Classroom() {
@@ -12,9 +15,13 @@ export default function Classroom() {
   const [selectedBatchIndex, setSelectedBatchIndex] = useState(0);
   const [selectedPhaseIndex, setSelectedPhaseIndex] = useState(0);
 
-  const fetchSchedule = useCallback(async () => {
-    setLoading(true);
-    setError(null);
+  const [weekOffset, setWeekOffset] = useState(0);
+  const [now, setNow] = useState(dhakaNow);
+  const requestNumber = useRef(0);
+
+  const fetchSchedule = useCallback(async (quiet = false) => {
+    const request = ++requestNumber.current;
+    if (!quiet) setLoading(true);
     try {
       const token = localStorage.getItem('token');
       if (!token) {
@@ -24,11 +31,7 @@ export default function Classroom() {
       const isTeacher = currentUser?.role === 'instructor';
       const endpoint = isTeacher ? '/api/teacher/schedule' : '/api/student/schedule';
 
-      const res = await fetch(endpoint, {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      });
+      const res = await apiClient(endpoint);
 
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
@@ -37,25 +40,49 @@ export default function Classroom() {
 
       const data = await res.json();
       const rawBatches = Array.isArray(data.batches) ? data.batches : [];
+      if (request !== requestNumber.current) return;
       setBatches(rawBatches);
-      setSelectedBatchIndex(0);
-      setSelectedPhaseIndex(0);
+      setError(null);
     } catch (err) {
-      console.error('Error fetching classroom schedule:', err);
-      setError(err.message || 'Unable to load schedule.');
+      if (request === requestNumber.current && !quiet) setError(err.message || 'Unable to load schedule.');
     } finally {
-      setLoading(false);
+      if (request === requestNumber.current) setLoading(false);
     }
   }, [currentUser?.role]);
 
   useEffect(() => {
     fetchSchedule();
-  }, [fetchSchedule]);
+    const role = currentUser?.role;
+    if (role !== 'student' && role !== 'instructor') return;
+    const refresh = () => {
+      setNow(dhakaNow());
+      if (!document.hidden) fetchSchedule(true);
+    };
+    const socket = io(import.meta.env.VITE_SOCKET_URL || window.location.origin, {
+      auth: callback => callback({ token: localStorage.getItem('token') })
+    });
+    socket.on('schedule_updated', () => fetchSchedule(true));
+    const timer = setInterval(refresh, 30_000);
+    window.addEventListener('focus', refresh);
+    return () => {
+      requestNumber.current++;
+      socket.disconnect();
+      clearInterval(timer);
+      window.removeEventListener('focus', refresh);
+    };
+  }, [fetchSchedule, currentUser?.role]);
 
-  const activeBatch = batches[selectedBatchIndex] || null;
+  const activeBatch = batches[selectedBatchIndex] || batches[0] || null;
   const activePhases = Array.isArray(activeBatch?.phases) ? activeBatch.phases : [];
   const activePhase = activePhases[selectedPhaseIndex] || activePhases[0] || null;
   const activeSlots = Array.isArray(activePhase?.schedule) ? activePhase.schedule : [];
+
+  const weekStart = addDays(now.date, weekOffset * 7 - new Date(now.date + 'T00:00:00Z').getUTCDay());
+  const weekDates = Array.from({ length: 7 }, (_, index) => addDays(weekStart, index));
+  const weeklySessions = getTimedSessions(activeSlots, weekDates, activeBatch);
+  const upcoming = getTimedSessions(activeSlots, Array.from({ length: 28 }, (_, index) => addDays(now.date, index)), activeBatch)
+    .filter(session => ['scheduled', 'moved'].includes(session.status) && (session.date !== now.date || session.endTime > now.time))
+    .slice(0, 4);
 
   const formatDeliveryMode = (mode) => {
     switch (mode) {
@@ -101,7 +128,7 @@ export default function Classroom() {
           </span>
           <button 
             type="button" 
-            onClick={fetchSchedule} 
+            onClick={() => fetchSchedule()}
             className="btn btn-secondary" 
             style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '6px 12px', fontSize: '0.85rem' }}
             title="Refresh routine schedule"
@@ -127,7 +154,7 @@ export default function Classroom() {
           <AlertCircle size={40} style={{ margin: '0 auto 1rem auto', color: '#f87171' }} />
           <h3 className="font-display" style={{ fontSize: '1.25rem', color: '#f87171', marginBottom: '0.5rem' }}>Unable to Load Schedule</h3>
           <p style={{ color: 'var(--text-secondary)', fontSize: '0.95rem', marginBottom: '1.5rem' }}>{error}</p>
-          <button type="button" onClick={fetchSchedule} className="btn btn-primary" style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+          <button type="button" onClick={() => fetchSchedule()} className="btn btn-primary" style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
             <RefreshCw size={14} /> Try Again
           </button>
         </div>
@@ -218,16 +245,52 @@ export default function Classroom() {
             </div>
           )}
 
-          {/* Routine Slots Grid */}
           {activeSlots.length > 0 && (
+            <>
+            <section className="classroom-timetable glass-panel" aria-label="Weekly timetable">
+              <div className="classroom-week-heading">
+                <h3>Weekly timetable</h3>
+                <div className="classroom-week-controls">
+                  <button type="button" className="btn btn-secondary" onClick={() => setWeekOffset(value => value - 1)}>Previous week</button>
+                  <button type="button" className="btn btn-secondary" onClick={() => setWeekOffset(0)}>This week</button>
+                  <button type="button" className="btn btn-secondary" onClick={() => setWeekOffset(value => value + 1)}>Next week</button>
+                </div>
+              </div>
+              <p aria-live="polite">{weekDates[0]} to {weekDates[6]} (Bangladesh time)</p>
+              <div className="classroom-week">
+                {weekDates.map(date => {
+                  const sessions = weeklySessions.filter(slot => slot.date === date);
+                  return <div className="classroom-day" key={date}>
+                    <h4>{weekdayOf(date).slice(0, 3)} <time dateTime={date}>{date.slice(8)}</time></h4>
+                    {sessions.length ? <ul>{sessions.map(slot => <li key={slot.key}>
+                      <strong>{slot.classTitle || slot.subjectName || 'Class'}</strong>
+                      <div>{slot.startTime} - {slot.endTime}</div>
+                      {slot.status === 'cancelled' && <span>Cancelled</span>}
+                      {slot.status === 'rescheduled' && <span>Moved to {slot.movedTo}</span>}
+                      {slot.status === 'moved' && <span>Rescheduled from {slot.originalDate}</span>}
+                    </li>)}</ul> : <p>No classes</p>}
+                  </div>;
+                })}
+              </div>
+              <h3>Upcoming sessions</h3>
+              {upcoming.length ? <ul>{upcoming.map(slot => <li key={slot.key}>
+                {weekdayOf(slot.date)}, {slot.date} | {slot.startTime} - {slot.endTime} | {slot.classTitle || slot.subjectName || 'Class'}
+                {slot.status === 'moved' && ' (Rescheduled)'}
+              </li>)}</ul> : <p>No upcoming sessions in the next four weeks.</p>}
+            </section>
+            <details open>
+            <summary>Routine details</summary>
             <div className="classroom-slots-grid" data-testid="classroom-slots-grid">
-              {activeSlots.map((slot, sIdx) => {
+              {activeSlots.flatMap((slot, index) => slot.date
+                ? getTimedSessions([slot], [...new Set([slot.date, ...(slot.sessionChanges || []).map(change => change.date).filter(Boolean)])], activeBatch)
+                  .map(session => ({ ...session, key: index + ':' + session.key }))
+                : [{ ...slot, key: index }]).map((slot, sIdx) => {
                 const delivery = formatDeliveryMode(slot.deliveryMode);
                 const category = formatCategory(slot.category);
 
                 return (
                   <div 
-                    key={slot.id || sIdx} 
+                    key={slot.key}
                     className={`classroom-slot-card ${slot.isMyClass ? 'my-class-card' : ''}`}
                     data-testid={`classroom-slot-${sIdx}`}
                   >
@@ -239,6 +302,9 @@ export default function Classroom() {
                       </span>
                       <span className="classroom-date-label" data-testid="slot-date-label">
                         {slot.date ? `${slot.date} (${slot.weekday})` : (slot.weekday ? `Every ${slot.weekday}` : 'Scheduled Session')}
+                        {slot.status === 'cancelled' && ' (Cancelled)'}
+                        {slot.status === 'rescheduled' && ` (Moved to ${slot.movedTo})`}
+                        {slot.status === 'moved' && ' (Rescheduled)'}
                       </span>
                     </div>
 
@@ -291,6 +357,8 @@ export default function Classroom() {
                 );
               })}
             </div>
+            </details>
+            </>
           )}
         </>
       )}

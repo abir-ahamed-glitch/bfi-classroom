@@ -6,12 +6,13 @@ const os = require('os');
 const express = require('express');
 const jwt = require('jsonwebtoken');
 const playwright = require('playwright');
+const { Server } = require('socket.io');
 
 const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'bfi-film-submission-'));
 process.env.DATABASE_PATH = path.join(directory, 'journey.sqlite');
 process.env.JWT_SECRET = 'isolated-journey-browser-test-secret';
 process.env.NODE_ENV = 'test';
-let db, server, browser;
+let db, server, browser, sockets;
 
 async function run() {
   const database = await import('../server/db/database.js');
@@ -29,6 +30,7 @@ async function run() {
   app.use('/api/auth',(await import('../server/routes/auth.js')).default);
   app.use('/api/film-submissions',(await import('../server/routes/film-submissions.js')).default);
   app.use('/api/admin',(await import('../server/routes/admin.js')).default);
+  app.use('/api/admin/batches',(await import('../server/routes/batches.js')).default);
   app.use('/api/admin/course-definitions',(await import('../server/routes/course-definitions.js')).default);
   app.use('/api/certification',(await import('../server/routes/certification.js')).default);
   const dist=path.resolve(__dirname,'../dist');
@@ -36,6 +38,16 @@ async function run() {
   app.get('/bfi-classroom/{*path}',(_req,res)=>res.sendFile('index.html',{root:dist,dotfiles:'allow'}));
   server=await new Promise(resolve=>{const instance=app.listen(0,'127.0.0.1',()=>resolve(instance));});
   const baseUrl=`http://127.0.0.1:${server.address().port}`;
+  sockets = new Server(server);
+  sockets.use((socket, next) => {
+    try {
+      socket.data.userId = jwt.verify(socket.handshake.auth.token, process.env.JWT_SECRET).id;
+      next();
+    } catch (error) { next(error); }
+  });
+  sockets.on('connection', socket => socket.join('user:' + socket.data.userId));
+  app.set('io', sockets);
+
   async function request(url,method='GET',body,auth=token){
     const response=await fetch(baseUrl+url,{method,headers:{Authorization:`Bearer ${auth}`,'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});
     return {status:response.status,data:await response.json()};
@@ -190,6 +202,68 @@ async function run() {
   await adminPage.getByRole('button', {name: 'Use two-phase filmmaking template'}).click();
   await adminPage.getByText(/Phase 1 requires 80% attendance/).waitFor();
   assert.equal(await adminPage.locator('input').evaluateAll(inputs => inputs.filter(input => input.value === 'Theory class 24').length), 1);
+  const { addDays, dhakaNow, weekdayOf } = await import('../src/utils/timetable.js');
+  const today = dhakaNow().date;
+  const weekStart = addDays(today, -new Date(today + 'T00:00:00Z').getUTCDay());
+  const cancellation = addDays(weekStart, 0);
+  const original = addDays(weekStart, 1);
+  const replacement = addDays(weekStart, 3);
+  const batchId = Number(db.prepare(`
+    INSERT INTO batches (batch_name, batch_number, course_name, course_definition_id, status)
+    VALUES ('Timetable Batch', 'T1', 'Ordered Filmmaking', ?, 'ongoing')
+  `).run(draft.data.id).lastInsertRowid);
+  db.prepare('UPDATE student_course_enrollments SET batch_id = ? WHERE id = ?').run(batchId, orderedId);
+  const routineApi = '/api/admin/course-definitions/' + draft.data.id + '/routine';
+  const routine = [
+    {id: 'sunday', weekday: weekdayOf(cancellation), startTime: '19:00', endTime: '21:00', classTitle: 'Sunday camera class'},
+    {id: 'monday', weekday: weekdayOf(original), startTime: '19:00', endTime: '21:00', classTitle: 'Monday lighting class'}
+  ];
+  const saveRoutine = slots => request(routineApi, 'PUT', {phase_id: 'theory', batch_id: batchId, routine: slots, reason: 'Timetable browser test'}, adminToken);
+  assert.equal((await saveRoutine(routine)).status, 200);
+  const connection = new Promise(resolve => sockets.on('connection', socket => {
+    if (socket.data.userId === userId) resolve();
+  }));
+  await studentPage.goto(baseUrl + '/bfi-classroom/classroom');
+  const week = studentPage.getByRole('region', {name: 'Weekly timetable'});
+  await week.getByText('Monday lighting class', {exact: true}).waitFor();
+  await Promise.race([connection, new Promise((_, reject) => setTimeout(() => reject(new Error('Student socket not connected')), 5000).unref())]);
+  const changes = [
+    {...routine[0], sessionChanges: [{originalDate: cancellation, status: 'cancelled'}]},
+    {...routine[1], sessionChanges: [{originalDate: original, status: 'rescheduled', date: replacement, startTime: '20:00', endTime: '22:00'}]}
+  ];
+  const invalidDay = [{...routine[0], sessionChanges: [{originalDate: original, status: 'cancelled'}]}];
+  assert.equal((await saveRoutine(invalidDay)).status, 400);
+  const overlap = [...changes, {weekday: weekdayOf(replacement), startTime: '21:00', endTime: '23:00'}];
+  assert.equal((await saveRoutine(overlap)).status, 400);
+  await adminPage.goto(baseUrl + '/bfi-classroom/admin/batchmanager/' + batchId);
+  await adminPage.getByRole('button', {name: 'Adjust Routine', exact: true}).first().click();
+  const editors = adminPage.locator('details').filter({has: adminPage.locator('summary', {hasText: 'Cancel or reschedule a session'})});
+  for (const [index, originalDate] of [cancellation, original].entries()) {
+    const editor = editors.nth(index);
+    await editor.locator('summary').click();
+    await editor.getByRole('button', {name: 'Add session change'}).click();
+    await editor.getByLabel('Original class date').fill(originalDate);
+    if (index === 1) {
+      await editor.getByRole('combobox').selectOption('rescheduled');
+      await editor.getByLabel('New date', {exact: true}).fill(replacement);
+      await editor.getByLabel('New start time', {exact: true}).fill('20:00');
+      await editor.getByLabel('New end time', {exact: true}).fill('22:00');
+    }
+  }
+  await adminPage.getByPlaceholder(/Adjusted shooting schedule/).fill('Timetable browser test');
+  const saveResponse = adminPage.waitForResponse(response => response.url().endsWith(routineApi) && response.request().method() === 'PUT');
+  await adminPage.getByRole('button', {name: 'Save Batch Schedule', exact: true}).click();
+  const changeResult = await saveResponse;
+  assert.equal(changeResult.status(), 200, await changeResult.text());
+  await week.getByText('Cancelled', {exact: true}).waitFor({timeout: 5000});
+  await week.getByText('Rescheduled from ' + original, {exact: true}).waitFor({timeout: 5000});
+  await week.getByText('20:00 - 22:00', {exact: true}).waitFor();
+  await studentPage.getByRole('button', {name: 'Next week', exact: true}).click();
+  await week.getByText('Monday lighting class', {exact: true}).waitFor();
+  assert.equal(await week.getByText('Cancelled', {exact: true}).count(), 0);
+  assert.equal(await week.getByText('Rescheduled from ' + original, {exact: true}).count(), 0);
+  assert.equal(await week.getByText('19:00 - 21:00', {exact: true}).count(), 2);
+  console.log('PASS: live timetable update, cancelled and moved occurrences, overlap rejection, and unchanged weekly recurrence');
   const migration=require('../server/db/migrations/20261109_film_submissions.cjs');
   const count=db.prepare('SELECT count(*) AS n FROM film_submissions').get().n;
   const migrationRun=require('child_process').spawnSync(process.execPath,[path.resolve(__dirname,'run_migrations.cjs'),process.env.DATABASE_PATH],{encoding:'utf8'});
@@ -201,6 +275,7 @@ async function run() {
 
 run().catch(error=>{console.error(error);process.exitCode=1;}).finally(async()=>{
  if(browser)await browser.close();
+ if(sockets)sockets.disconnectSockets(true);
  if(server){server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
  if(db)db.close();
  fs.rmSync(directory,{recursive:true,force:true});
