@@ -1580,6 +1580,9 @@ export function initializeDatabase() {
     require('./migrations/20261115_film_feedback.cjs').ensureFilmFeedback(db);
     require('./migrations/20261115_notification_preferences.cjs').ensureNotificationPreferences(db);
     require('./migrations/20261115_course_material_bookmarks.cjs').ensureCourseMaterialBookmarks(db);
+    require('./migrations/20261115_assessment_submissions.cjs').ensureAssessmentSchema(db);
+    require('./migrations/20261116_assessment_files.cjs').ensureAssessmentSubmissions(db);
+    require('./migrations/20261116_zoom_events.cjs').ensureZoomEvents(db);
     console.log('✅ Course Maker tables and columns verified');
   } catch (err) {
     console.error('Error initializing Course Maker schema:', err);

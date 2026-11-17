@@ -322,6 +322,22 @@ async function run() {
     const saved = await (await requestSheet(sheetBatch)).json();
     assert.deepStrictEqual(saved.rows.find(r => r.enrollmentId === first).marks, { shoot: true, edit: false });
     assert.deepStrictEqual(saved.rows.find(r => r.enrollmentId === second).marks, { shoot: true });
+
+    const firstUser = db.prepare('SELECT user_id FROM student_course_enrollments WHERE id = ?').get(first).user_id;
+    const secondUser = db.prepare('SELECT user_id FROM student_course_enrollments WHERE id = ?').get(second).user_id;
+    const firstToken = createValidToken({ id: firstUser, username: 'attendance-one', role: 'student' });
+    const secondToken = createValidToken({ id: secondUser, username: 'attendance-two', role: 'student' });
+    const ownSchedule = await fetchWithTimeout(`${baseUrl}/api/student/schedule`, { headers: { Authorization: `Bearer ${firstToken}` } });
+    assert.strictEqual(ownSchedule.status, 200);
+    const firstPhase = (await ownSchedule.json()).batches.find(batch => batch.batchId === sheetBatch).phases.find(phase => phase.phaseId === 'practice');
+    assert.strictEqual(firstPhase.schedule[0].attendance, 'present');
+    const otherSchedule = await fetchWithTimeout(`${baseUrl}/api/student/schedule`, { headers: { Authorization: `Bearer ${secondToken}` } });
+    assert.strictEqual((await otherSchedule.json()).batches.find(batch => batch.batchId === sheetBatch).phases.find(phase => phase.phaseId === 'practice').schedule[0].attendance, 'present');
+    db.prepare('UPDATE student_class_attendance SET attended = 0 WHERE enrollment_id = ? AND class_id = ?').run(second, 'shoot');
+    const updatedSchedule = await fetchWithTimeout(`${baseUrl}/api/student/schedule`, { headers: { Authorization: `Bearer ${secondToken}` } });
+    assert.strictEqual((await updatedSchedule.json()).batches.find(batch => batch.batchId === sheetBatch).phases.find(phase => phase.phaseId === 'practice').schedule[0].attendance, 'absent');
+    db.prepare('UPDATE student_class_attendance SET attended = 1 WHERE enrollment_id = ? AND class_id = ?').run(second, 'shoot');
+
     assert.strictEqual(getEnrollmentProgressSync(first, db).phases[1].attendance.attendedClasses, 1);
     assert.strictEqual(db.prepare("SELECT attendance_classes FROM student_phase_results WHERE enrollment_id = ? AND phase_id = 'practice'").get(first).attendance_classes, 1);
     assert.strictEqual(getEnrollmentProgressSync(first, db).phases[1].isPassed, false);

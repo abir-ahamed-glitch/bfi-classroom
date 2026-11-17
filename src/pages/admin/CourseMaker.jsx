@@ -5,6 +5,7 @@ import { createPortal } from 'react-dom';
 import BatchFormModal from '../../components/admin/BatchFormModal';
 import './CourseMaker.css';
 import { apiClient } from '../../utils/apiClient';
+import { validZoomAttendanceMinimum } from '../../utils/zoomAttendancePolicy';
 import {
   Layers, Plus, Trash2, CheckCircle2, AlertCircle, Edit3, Eye, Clock,
   Calendar, Award, BookOpen, Shield, ArrowRight, ArrowLeft, Check, X,
@@ -925,6 +926,9 @@ export default function CourseMaker() {
 
     form.phases.forEach((p, idx) => {
       const pNum = idx + 1;
+      if (!validZoomAttendanceMinimum(p.requirements?.zoomMinSessionPercent)) {
+        errors.push(`Phase ${pNum}: Minimum Zoom session time must be a whole percentage from 1 to 100.`);
+      }
       if (!p.title || p.title.trim().length === 0) {
         errors.push(`Phase ${pNum} must have a title.`);
       }
@@ -1771,6 +1775,15 @@ export default function CourseMaker() {
                         />
                         <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>%</span>
                       </div>
+
+                      <label className="cm-label" style={{marginTop: '0.5rem'}}>
+                        Minimum time in each Zoom class (%)
+                        <input type="number" className="cm-input" min="1" max="100" step="1" placeholder="Optional"
+                          value={curPhase.requirements?.zoomMinSessionPercent ?? ''}
+                          onChange={event => updateCurrentPhase({requirements: {...curPhase.requirements,
+                            zoomMinSessionPercent: event.target.value === '' ? null : Number(event.target.value)}})} />
+                      </label>
+                      <small>Leave blank for manual review without a minimum. This is separate from the phase attendance percentage.</small>
 
                       <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', alignItems: 'center', marginTop: '0.5rem', paddingTop: '0.5rem', borderTop: '1px solid rgba(255,255,255,0.06)' }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
@@ -2760,6 +2773,7 @@ export default function CourseMaker() {
                     </h4>
                     <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
                       {p.duration?.value} {p.duration?.unit} • Min {p.requirements?.minAttendancePercent || 75}% Attendance
+                      {p.requirements?.zoomMinSessionPercent != null && ` • Min ${p.requirements.zoomMinSessionPercent}% each Zoom class`}
                     </span>
                   </div>
 

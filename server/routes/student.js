@@ -10,6 +10,7 @@ import { authenticateToken, sanitizeInput, validatePassword, sensitiveEndpointLi
 import courseProgressService, { resolvePhaseRoutine } from '../services/courseProgressService.js';
 import { isTeacherAssignedToBatch } from './teacher.js';
 import { getStudentJourney } from '../services/studentJourneyService.js';
+import { mapAttendanceToSlots } from '../services/studentScheduleAttendance.js';
 
 const router = express.Router();
 
@@ -599,6 +600,7 @@ function sanitizeRoutineSlots(routine = []) {
     deliveryMode: slot.deliveryMode ? String(slot.deliveryMode).trim() : 'live',
     category: slot.category ? String(slot.category).trim() : 'theory',
     platform: slot.platform ? String(slot.platform).trim() : '',
+    meetingUrl: typeof slot.meetingUrl === 'string' ? slot.meetingUrl : '',
     ...(Array.isArray(slot.sessionChanges) && slot.sessionChanges.length ? { sessionChanges: slot.sessionChanges } : {})
   }));
 }
@@ -700,6 +702,12 @@ router.get('/schedule', authenticateToken, (req, res) => {
         ORDER BY b.id DESC
       `).all(req.user.id, req.user.id);
 
+      const enrollmentsForBatch = db.prepare(
+        'SELECT id FROM student_course_enrollments WHERE user_id = ? AND batch_id = ? AND course_definition_id = ?'
+      );
+      const attendanceForEnrollment = db.prepare(
+        'SELECT class_id, attended FROM student_class_attendance WHERE enrollment_id = ?'
+      );
       const schedules = enrolledBatches.map(batch => {
         let phases = [];
         if (batch.course_definition_id) {
@@ -708,15 +716,30 @@ router.get('/schedule', authenticateToken, (req, res) => {
             try {
               const def = JSON.parse(defRow.definition_json);
               const rawPhases = Array.isArray(def.phases) ? def.phases : [];
+              const enrollments = enrollmentsForBatch.all(req.user.id, batch.id, batch.course_definition_id);
+              const marks = enrollments.length === 1 ? attendanceForEnrollment.all(enrollments[0].id) : [];
+              const allClasses = rawPhases.flatMap(phase => Array.isArray(phase.classes) ? phase.classes : []);
+              const classCounts = new Map();
+              for (const cls of allClasses) {
+                if (cls.id != null) classCounts.set(String(cls.id), (classCounts.get(String(cls.id)) || 0) + 1);
+              }
               phases = rawPhases.map((phase, pIdx) => {
                 const phaseId = phase.id || `phase_${phase.phaseIndex || pIdx + 1}`;
                 const resolved = resolvePhaseRoutine(db, batch.course_definition_id, batch.id, phaseId, phase.routine);
+                const routine = Array.isArray(resolved.routine) ? resolved.routine : [];
+                const attendance = mapAttendanceToSlots(
+                  routine,
+                  (Array.isArray(phase.classes) ? phase.classes : []).filter(cls => classCounts.get(String(cls.id)) === 1),
+                  marks
+                );
                 return {
                   phaseId,
                   title: phase.title || `Phase ${pIdx + 1}`,
                   phaseIndex: phase.phaseIndex || pIdx + 1,
                   source: resolved.source,
-                  schedule: sanitizeRoutineSlots(resolved.routine)
+                  schedule: sanitizeRoutineSlots(routine).map((slot, index) => ({
+                    ...slot, ...attendance[index]
+                  }))
                 };
               });
             } catch (e) {

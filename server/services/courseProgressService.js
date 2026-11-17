@@ -392,7 +392,7 @@ export function getEnrollmentProgressSync(enrollmentId, customDb = null, options
   const attMap = new Map(attendanceRows.map(r => [r.class_id, r]));
 
   const gradeRows = db.prepare('SELECT * FROM student_assignment_grades WHERE enrollment_id = ?').all(enrollmentId);
-  const gradeMap = new Map(gradeRows.map(r => [r.assignment_id, r]));
+  const gradeMap = new Map(gradeRows.map(r => [String(r.assignment_id), r]));
 
   const phaseResultRows = db.prepare('SELECT * FROM student_phase_results WHERE enrollment_id = ?').all(enrollmentId);
   const phaseResultMap = new Map(phaseResultRows.map(r => [r.phase_id, r]));
@@ -519,7 +519,7 @@ export function getEnrollmentProgressSync(enrollmentId, customDb = null, options
 
     // Evaluate assignments
     const assignments = (phase.assignments || []).map(asg => {
-      const g = gradeMap.get(asg.id);
+      const g = gradeMap.get(String(asg.id));
       const marksObtained = (g && g.marks_obtained !== null && g.marks_obtained !== undefined)
         ? Number(g.marks_obtained)
         : null;

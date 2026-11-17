@@ -52,7 +52,11 @@ async function initStagingDb(envPath, options = {}) {
     'batch_students',
     'announcements',
     'admin_audit_logs',
-    'action_bound_challenges'
+    'action_bound_challenges',
+    'zoom_event_receipts',
+    'zoom_class_bindings',
+    'zoom_participant_verifications',
+    'zoom_participant_revocations'
   ];
   for (const table of requiredTables) {
     if (!tables.includes(table)) {

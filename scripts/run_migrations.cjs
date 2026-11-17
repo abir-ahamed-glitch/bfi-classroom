@@ -22,6 +22,9 @@ const REQUIRED_MIGRATION_MODULES = [
   '20261115_film_feedback.cjs',
   '20261115_notification_preferences.cjs',
   '20261115_course_material_bookmarks.cjs',
+  '20261115_assessment_submissions.cjs',
+  '20261116_assessment_files.cjs',
+  '20261116_zoom_events.cjs',
   '20261023_super_admin.cjs',
   '20261023_admin_permissions.cjs',
   '20261024_privileged_safeguards.cjs',
@@ -74,6 +77,9 @@ const { ensureNotificationPreferences } = require(path.join(migrationsDir, '2026
 const { ensureCourseMaterialBookmarks } = require(path.join(migrationsDir, '20261115_course_material_bookmarks.cjs'));
 
 const { ensureFilmFeedback } = require(path.join(migrationsDir, '20261115_film_feedback.cjs'));
+const { ensureAssessmentSchema } = require(path.join(migrationsDir, '20261115_assessment_submissions.cjs'));
+const { ensureAssessmentSubmissions } = require(path.join(migrationsDir, '20261116_assessment_files.cjs'));
+const { ensureZoomEvents } = require(path.join(migrationsDir, '20261116_zoom_events.cjs'));
 
 const MIGRATIONS = [
   { name: '20261023_super_admin', runner: runSuperAdminMigration },
@@ -90,6 +96,9 @@ const MIGRATIONS = [
   { name: '20261115_film_feedback', runner: ensureFilmFeedback },
   { name: '20261115_notification_preferences', runner: ensureNotificationPreferences },
   { name: '20261115_course_material_bookmarks', runner: ensureCourseMaterialBookmarks },
+  { name: '20261115_assessment_submissions', runner: ensureAssessmentSchema },
+  { name: '20261116_assessment_files', runner: ensureAssessmentSubmissions },
+  { name: '20261116_zoom_events', runner: ensureZoomEvents },
 ];
 
 function resolveDatabasePath() {
@@ -125,6 +134,27 @@ function assertSchemaIntegrity(db) {
   const feedbackColumns = db.prepare('PRAGMA table_info(film_feedback_notes)').all().map(column => column.name);
   for (const column of ['submission_id', 'author_id', 'video_seconds', 'note', 'created_at']) {
     if (!feedbackColumns.includes(column)) throw new Error(`Missing film_feedback_notes.${column}`);
+  }
+  const assessmentColumns = db.prepare('PRAGMA table_info(assessment_windows)').all().map(column => column.name);
+  for (const column of ['batch_id', 'phase_id', 'assessment_type', 'assessment_id', 'routine_slot_id', 'session_date', 'session_start', 'session_end', 'opens_at', 'closes_at']) {
+    if (!assessmentColumns.includes(column)) throw new Error(`Missing assessment_windows.${column}`);
+  }
+  const submissionColumns = db.prepare('PRAGMA table_info(assessment_submissions)').all().map(column => column.name);
+  for (const column of ['window_id', 'enrollment_id', 'version', 'pdf_data', 'sha256', 'byte_size', 'request_key', 'status', 'marks']) {
+    if (!submissionColumns.includes(column)) throw new Error(`Missing assessment_submissions.${column}`);
+  }
+  const zoomSchema = {
+    zoom_event_receipts: ['event_fingerprint', 'event_type', 'meeting_id', 'meeting_instance', 'participant_id', 'occurred_at', 'status'],
+    zoom_class_bindings: ['meeting_instance', 'meeting_id', 'batch_id', 'phase_id', 'class_id', 'slot_id', 'class_date', 'bound_by', 'bound_at'],
+    zoom_participant_verifications: ['meeting_instance', 'participant_id', 'enrollment_id', 'class_id', 'verified_by', 'verified_at'],
+    zoom_participant_revocations: ['meeting_instance', 'participant_id', 'enrollment_id', 'class_id', 'verified_by', 'verified_at', 'revoked_by', 'reason', 'revoked_at']
+  };
+  const zoomColumns = db.prepare('SELECT name FROM pragma_table_info(?)');
+  for (const [table, required] of Object.entries(zoomSchema)) {
+    const columns = new Set(zoomColumns.all(table).map(column => column.name));
+    for (const column of required) {
+      if (!columns.has(column)) throw new Error(`Missing ${table}.${column}`);
+    }
   }
 
   // 1. Verify app_migrations table exists and has all entries

@@ -299,7 +299,12 @@ function loadAndValidateStagingEnv(envFilePath, options = {}) {
     }
   }
 
-  // 3. Apply staging environment authoritatively into process.env
+  // 3. Zoom settings come only from this staging file, including opt-in flags.
+  for (const key of Object.keys(process.env)) {
+    if (/^(?:VITE_)?ZOOM_/i.test(key)) delete process.env[key];
+  }
+
+  // Apply staging environment authoritatively into process.env
   for (const k in envConfig) {
     process.env[k] = envConfig[k];
   }

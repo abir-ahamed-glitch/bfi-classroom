@@ -32,9 +32,14 @@ const __dirname = path.dirname(__filename);
 
 // Import Routes
 import authRoutes from './routes/auth.js';
-import adminRoutes, { startAnnouncementScheduler } from './routes/admin.js';
+import adminRoutes, { createConfiguredZoomAttendanceJob, startAnnouncementScheduler } from './routes/admin.js';
 import studentRoutes from './routes/student.js';
 import filmSubmissionRoutes from './routes/film-submissions.js';
+import assessmentWindowsRoutes from './routes/assessment-windows.js';
+import assessmentSubmissionsRoutes from './routes/assessment-submissions.js';
+import zoomMeetingRoutes from './routes/zoom-meetings.js';
+import { createZoomWebhookRouter } from './routes/zoom-webhook.js';
+import { configuredZoomFrameOrigin } from './services/zoomFramePolicy.js';
 import portfolioRoutes from './routes/portfolio.js';
 import communityRoutes, { startCommunityScheduler } from './routes/community.js';
 import courseRoutes from './routes/course.js';
@@ -122,7 +127,7 @@ app.use(helmet({
       imgSrc: ["'self'", "data:", "blob:", "https://img.youtube.com", "https://i.ytimg.com", "https://*.ytimg.com", "https://*.youtube.com", "https://*.vimeocdn.com", "https://graph.facebook.com", "https://*.dailymotion.com", "https://s1.dmcdn.net", "https://*.fbcdn.net", "https://*.cdninstagram.com"],
       connectSrc: ["'self'", "blob:", "wss:", "https://*.trycloudflare.com", "https://www.youtube.com", "https://*.youtube.com", "https://*.googlevideo.com", "https://vimeo.com", "https://api.vimeo.com", "https://cloudflareinsights.com", "https://*.cloudflareinsights.com", "https://challenges.cloudflare.com"],
       mediaSrc: ["'self'", "data:", "blob:", "https://*.youtube.com", "https://*.vimeo.com", "https://*.googlevideo.com"],
-      frameSrc: ["'self'", "https://*.youtube.com", "https://*.vimeo.com", "https://*.facebook.com", "https://challenges.cloudflare.com"],
+      frameSrc: ["'self'", "https://*.youtube.com", "https://*.vimeo.com", "https://*.facebook.com", "https://challenges.cloudflare.com", ...[configuredZoomFrameOrigin(process.env)].filter(Boolean)],
       workerSrc: ["'self'", "blob:"],
     },
   },
@@ -452,6 +457,9 @@ app.use(['/api', '/bfi-classroom/api'], apiLimiter);
 
 app.use(cors(corsOptions));
 
+// Preserve the exact signed payload; mount before the generic JSON parser.
+app.use('/api/zoom-webhook', createZoomWebhookRouter(db));
+app.use('/bfi-classroom/api/zoom-webhook', createZoomWebhookRouter(db));
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use(cookieParser());
@@ -570,6 +578,9 @@ for (const prefix of apiMountPrefixes) {
   app.use(`${prefix}/admin`, feeTrackerRoutes);
   app.use(`${prefix}/student`, studentRoutes);
   app.use(`${prefix}/film-submissions`, filmSubmissionRoutes);
+  app.use(`${prefix}/assessment-windows`, assessmentWindowsRoutes);
+  app.use(`${prefix}/assessment-submissions`, assessmentSubmissionsRoutes);
+  app.use(`${prefix}/zoom-meetings`, zoomMeetingRoutes);
   app.use(`${prefix}/portfolio`, portfolioRoutes);
   app.use(`${prefix}/community`, communityRoutes);
   app.use(`${prefix}/courses`, courseRoutes);
@@ -973,6 +984,16 @@ if (process.env.HOST) {
 }
 httpServer.listen(...listenArgs, () => {
   console.log(`🚀 BFI Classroom API Gateway running on port ${PORT}${process.env.HOST ? ` (bound to ${process.env.HOST})` : ''}`);
+
+  const zoomAttendance = createConfiguredZoomAttendanceJob();
+  if (zoomAttendance) {
+    const timer = setInterval(() => {
+      try { zoomAttendance(); }
+      catch { console.error('[ZoomAttendance] Scheduled check failed.'); }
+    }, 60000);
+    timer.unref();
+    httpServer.once('close', () => clearInterval(timer));
+  }
 
   // ── Batch Status Automation Scheduler ─────────────────────────────────────
   // Run once on startup (catches any missed transitions while server was down)
