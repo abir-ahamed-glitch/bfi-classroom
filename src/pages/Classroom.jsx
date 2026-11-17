@@ -273,7 +273,7 @@ export default function Classroom() {
           )}
 
           {currentUser?.role === 'student' && activeBatch && activePhase && <StudentAssessmentWindows batchId={activeBatch.batchId} phaseId={activePhase.phaseId} />}
-          {currentUser?.role === 'instructor' && activeBatch && <p><Link to={`/assessment-review?batch_id=${encodeURIComponent(activeBatch.batchId)}`}>Review answer papers</Link></p>}
+          {currentUser?.role === 'instructor' && activeBatch && <p><Link to={`/assessment-review?batch_id=${encodeURIComponent(activeBatch.batchId)}`} className="assessment-action-link">Review answer papers</Link></p>}
           {activeSlots.length > 0 && (
             <>
             <section className="classroom-timetable glass-panel" aria-label="Weekly timetable">

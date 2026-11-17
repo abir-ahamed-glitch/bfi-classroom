@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import apiClient from '../utils/apiClient';
+import '../pages/AssessmentSubmission.css';
 
 const formatDhaka = value => new Intl.DateTimeFormat('en-GB', {
   timeZone: 'Asia/Dhaka', dateStyle: 'medium', timeStyle: 'short'
@@ -24,12 +25,12 @@ export function StudentAssessmentWindows({ batchId, phaseId }) {
     return () => { active = false; clearInterval(timer); };
   }, []);
   const selected = windows.filter(window => String(window.batchId) === String(batchId) && String(window.phaseId) === String(phaseId));
-  return <section className="glass-panel" aria-label="Assessments" style={{padding: '1rem', marginBottom: '1rem'}}>
+  return <section className="glass-panel assessment-windows-panel" aria-label="Assessments" style={{padding: '1rem', marginBottom: '1rem'}}>
     <h3>Assessments</h3>
     {error ? <p role="alert">Could not load assessment schedules.</p> : selected.length === 0 ? <p>No eligible assessment is scheduled for this phase.</p> :
       <ul>{selected.map(window => <li key={window.id}><strong>{window.title}</strong> · {window.type} · {window.availability}<br />
         {formatDhaka(window.opensAt)} – {formatDhaka(window.closesAt)} (Bangladesh time)
-        <p><Link to={`/assessment-submissions/${window.id}`}>{window.availability === 'open' ? 'Submit answer paper' : 'View submissions and results'}</Link></p>
+        <p><Link to={`/assessment-submissions/${window.id}`} className="assessment-action-link">{window.availability === 'open' ? 'Submit answer paper' : 'View submissions and results'}</Link></p>
       </li>)}</ul>}
   </section>;
 }

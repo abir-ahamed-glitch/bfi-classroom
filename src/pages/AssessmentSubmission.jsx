@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import apiClient from '../utils/apiClient';
+import './AssessmentSubmission.css';
 
 function readImage(file) {
   return new Promise((resolve, reject) => {
@@ -110,22 +111,22 @@ export default function AssessmentSubmission() {
       setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch (error) { setMessage(error.message); }
   };
-  return <main className="page-container container"><Link to="/classroom">← Classroom</Link><h1>Submit answer paper</h1>
+  return <main className="page-container container assessment-page"><Link to="/classroom" className="assessment-back-link">← Classroom</Link><h1>Submit answer paper</h1>
     {window && <><p>{window.title} · {window.type} · {window.availability}</p>
       {history.some(item => item.status === 'graded') && <p>This assessment has already been graded.</p>}
-      {window.availability === 'open' && !history.some(item => item.status === 'graded') && <form onSubmit={submit}>
-        <label>PDF answer paper <input type="file" accept="application/pdf,.pdf" onChange={event => {setPdfFile(event.target.files?.[0] || null); setImages([]); generatedPdf.current = null; requestKey.current = crypto.randomUUID();}} /></label>
+      {window.availability === 'open' && !history.some(item => item.status === 'graded') && <form onSubmit={submit} className="assessment-form">
+        <label className="assessment-field">PDF answer paper <input type="file" accept="application/pdf,.pdf" onChange={event => {setPdfFile(event.target.files?.[0] || null); setImages([]); generatedPdf.current = null; requestKey.current = crypto.randomUUID();}} /></label>
         {pdfFile && <p>Selected: {pdfFile.name}</p>}
         <p>Or add JPG pages, then arrange them in the correct order.</p>
-        <label>JPG pages <input type="file" accept="image/jpeg,.jpg,.jpeg" multiple onChange={addImages} /></label>
-        <ol>{images.map((item, index) => <li key={item.id}><p>Page {index + 1}: {item.name}</p>
+        <label className="assessment-field">JPG pages <input type="file" accept="image/jpeg,.jpg,.jpeg" multiple onChange={addImages} /></label>
+        <ol className="assessment-page-list">{images.map((item, index) => <li key={item.id} className="assessment-page-card"><p>Page {index + 1}: {item.name}</p>
           <img src={item.src} alt={`Page ${index + 1} preview`} style={{width: 140, maxHeight: 180, objectFit: 'contain', transform: `rotate(${item.rotation}deg)`}} />
-          <div><button type="button" disabled={index === 0} onClick={() => move(index, -1)}>Move up</button><button type="button" disabled={index === images.length - 1} onClick={() => move(index, 1)}>Move down</button>
+          <div className="assessment-page-actions"><button type="button" disabled={index === 0} onClick={() => move(index, -1)}>Move up</button><button type="button" disabled={index === images.length - 1} onClick={() => move(index, 1)}>Move down</button>
           <button type="button" onClick={() => {generatedPdf.current = null; requestKey.current = crypto.randomUUID(); setImages(current => current.map(page => page.id === item.id ? {...page, rotation: (page.rotation + 90) % 360} : page));}}>Rotate</button>
           <button type="button" onClick={() => {generatedPdf.current = null; requestKey.current = crypto.randomUUID(); setImages(current => current.filter(page => page.id !== item.id));}}>Remove</button></div></li>)}</ol>
-        <button type="submit" disabled={busy}>{busy ? 'Submitting…' : 'Submit PDF'}</button>
+        <button type="submit" className="assessment-submit-btn" disabled={busy}>{busy ? 'Submitting…' : 'Submit PDF'}</button>
       </form>}
-      <h2>Submission history</h2>{history.length ? <ul>{history.map(item => <li key={item.id}>Version {item.version} · {item.status} · {item.submitted_at} <button type="button" onClick={() => download(item.id)}>Download</button>{item.marks != null && ` · Marks: ${item.marks}`}{item.remarks && ` · ${item.remarks}`}</li>)}</ul> : <p>No submissions yet.</p>}
+      <h2>Submission history</h2>{history.length ? <ul className="assessment-history-list">{history.map(item => <li key={item.id}>Version {item.version} · {item.status} · {item.submitted_at} <button type="button" onClick={() => download(item.id)}>Download</button>{item.marks != null && ` · Marks: ${item.marks}`}{item.remarks && ` · ${item.remarks}`}</li>)}</ul> : <p>No submissions yet.</p>}
     </>}
     {message && <p role="status">{message}</p>}
   </main>;
