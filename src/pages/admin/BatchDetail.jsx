@@ -2,6 +2,9 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { DELIVERY_MODE_OPTIONS, normalizeDeliveryMode, deliveryModeLabel, deliveryModeFromSubject, createDefaultRoutineSlot, DEFAULT_ROUTINE_SLOT } from '../../utils/deliveryModes';
 import PlatformSelector from '../../components/admin/PlatformSelector';
+import { AdminAssessmentWindows } from '../../components/AssessmentWindows';
+import ZoomClassBindings from '../../components/ZoomClassBindings';
+import AssessmentReview from '../../components/AssessmentReview';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { 
   ArrowLeft, Calendar, Users, Clock, CheckCircle2, XCircle, 
@@ -1542,6 +1545,12 @@ export default function BatchDetail() {
       </div>
 
       {/* SECTION 1B: Defined Course Structure & Operational Routines */}
+      {batchData.course_definition?.definition?.phases && <AdminAssessmentWindows batchId={batchData.id} phases={batchData.course_definition.definition.phases} />}
+      {currentUser?.role === 'admin' && (currentUser.is_super_admin === true || currentUser.is_super_admin === 1 || currentUser.isSuperAdmin === true)
+        && batchData.course_definition?.definition?.phases && (
+        <ZoomClassBindings key={batchData.id} batchId={batchData.id} phases={batchData.course_definition.definition.phases} />
+      )}
+      {batchData.course_definition && <AssessmentReview batchId={batchData.id} />}
       {batchData.course_definition && (
         <div className="glass-panel" style={{ padding: '1.25rem', marginBottom: '1.5rem', borderRadius: '10px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.85rem', flexWrap: 'wrap', gap: '0.5rem' }}>
@@ -3099,6 +3108,12 @@ export default function BatchDetail() {
                             </div>
 
                             {/* Row 3: Teacher Account, Teacher Label, Mode & Category */}
+                            <label style={{ display: 'block', margin: '0.5rem 0', fontSize: '0.8rem' }}>
+                              Meeting link (HTTPS)
+                              <input type="url" aria-label="Meeting link" value={slot.meetingUrl || ''}
+                                onChange={e => handleUpdateRoutineSlot(sIdx, 'meetingUrl', e.target.value)}
+                                placeholder="https://zoom.us/..." style={{ display: 'block', width: '100%', minHeight: '38px' }} />
+                            </label>
                             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 140px), 1fr))', gap: '0.4rem', width: '100%' }}>
                               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
                                 <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Instructor Account</label>

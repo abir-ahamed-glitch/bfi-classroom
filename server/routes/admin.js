@@ -2,12 +2,180 @@ import express from 'express';
 import bcrypt from 'bcryptjs';
 import db from '../db/database.js';
 import { authenticateToken, requireRole, requireSuperAdmin, requirePermission, requireAnyPermission, isSuperAdmin, sanitizeInput, validateEmail } from '../middleware/auth.js';
-import { recordAuditEventFromReq } from '../services/auditLedgerService.js';
+import { recordAuditEventFromReq, recordAuditLog } from '../services/auditLedgerService.js';
 import { logTrashAction } from '../utils/trashLogger.js';
-import courseProgressService from '../services/courseProgressService.js';
+import courseProgressService, { getCanonicalPhaseInfo, getEnrollmentProgressSync, resolvePhaseRoutine, updateDefinedProgressSync } from '../services/courseProgressService.js';
 import { resolveDiscountAmount, resolvePhaseFee } from '../utils/feeResolver.js';
+import { createZoomBindingStore } from '../services/zoomBindingStore.js';
+import { createZoomParticipantStore, isZoomEnrollmentEligible } from '../services/zoomParticipantStore.js';
+import { createZoomAttendanceApproval } from '../services/zoomAttendanceApproval.js';
+import { configuredZoomAttendanceStart, createZoomAutomaticAttendanceRunner } from '../services/zoomAutomaticAttendance.js';
 
 const router = express.Router();
+
+function loadZoomBindingSchedule(batchId, phaseId) {
+  const batch = db.prepare(`SELECT id, course_definition_id, start_date, end_date FROM batches
+    WHERE id = ? AND deleted_at IS NULL AND (status IS NULL OR status <> 'archived')`).get(batchId);
+  if (!batch?.course_definition_id) return null;
+  const definition = db.prepare('SELECT definition_json FROM course_definitions WHERE id = ?').get(batch.course_definition_id);
+  if (!definition) return null;
+  const {matched, isAmbiguous} = getCanonicalPhaseInfo(JSON.parse(definition.definition_json).phases, phaseId);
+  if (!matched || isAmbiguous || matched.canonicalId !== phaseId) return null;
+  const {routine, isAmbiguous: ambiguousRoutine} = resolvePhaseRoutine(db, batch.course_definition_id, batch.id, phaseId, matched.phase.routine);
+  if (ambiguousRoutine) return null;
+  return {
+    batchId: batch.id,
+    phaseId,
+    classes: matched.phase.classes || [],
+    slots: routine,
+    zoomMinSessionPercent: matched.phase.requirements?.zoomMinSessionPercent,
+    bounds: {startDate: batch.start_date, endDate: batch.end_date}
+  };
+}
+
+router.get('/batches/:id/zoom-binding-options', authenticateToken, requireSuperAdmin, (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  const batchId = Number(req.params.id);
+  const {phaseId, date} = req.query;
+  if (!Number.isSafeInteger(batchId) || batchId < 1 || typeof phaseId !== 'string' || !phaseId.trim()) {
+    return res.status(400).json({error: 'Select a valid batch and phase.'});
+  }
+  const options = createZoomBindingStore(db, loadZoomBindingSchedule).options(batchId, phaseId, date);
+  if (!options) return res.status(422).json({error: 'Select a valid class date and phase.'});
+  return res.json({options});
+});
+
+router.route('/zoom-event-receipts/:id/class-binding').all(authenticateToken, requireSuperAdmin)
+  .get((req, res) => {
+    res.set('Cache-Control', 'no-store');
+    const id = Number(req.params.id);
+    if (!Number.isSafeInteger(id) || id < 1) return res.status(400).json({error: 'Invalid receipt ID.'});
+    const binding = createZoomBindingStore(db, loadZoomBindingSchedule).resolve(id);
+    if (!binding) return res.status(404).json({error: 'No current class binding for this receipt.'});
+    return res.json({binding});
+  })
+  .put((req, res) => {
+    res.set('Cache-Control', 'no-store');
+    const id = Number(req.params.id);
+    if (!Number.isSafeInteger(id) || id < 1) return res.status(400).json({error: 'Invalid receipt ID.'});
+    const result = createZoomBindingStore(db, loadZoomBindingSchedule).bind(id, req.body, req.user.id);
+    if (result.status === 'missing') return res.status(404).json({error: 'Receipt not found.'});
+    if (result.status === 'conflict') return res.status(409).json({error: 'This meeting or class already has a different binding.'});
+    if (result.status === 'invalid') return res.status(422).json({error: 'The receipt does not match the current class schedule.'});
+    return res.status(result.status === 'created' ? 201 : 200).json({binding: result.binding});
+  });
+
+function zoomParticipantStore() {
+  const bindings = createZoomBindingStore(db, loadZoomBindingSchedule);
+  return createZoomParticipantStore(db, bindings, (enrollmentId, binding) =>
+    isZoomEnrollmentEligible(db, enrollmentId, binding, id => getEnrollmentProgressSync(id, db)));
+}
+
+function writeZoomAttendance(identity, evidence, receiptId, req = null) {
+  const target = db.prepare('SELECT user_id FROM student_course_enrollments WHERE id = ?').get(identity.enrollmentId);
+  updateDefinedProgressSync(identity.enrollmentId, {
+    attendance: [{class_id: identity.classId, attended: true}], updatedBy: req?.user.id ?? null
+  }, db, {
+    onCommitAudit: dbInstance => {
+      const entry = {
+        action: req ? 'zoom_attendance_approved' : 'zoom_attendance_automatic',
+        module: 'attendance',
+        resource: `enrollment:${identity.enrollmentId}`,
+        targetUserId: target.user_id,
+        dbInstance,
+        details: {receiptId, classId: identity.classId, recordedSeconds: evidence.seconds,
+          scheduledSeconds: evidence.scheduledSeconds, minimumPercent: evidence.policy?.minimumPercent ?? null}
+      };
+      return req ? recordAuditEventFromReq(req, entry) : recordAuditLog(entry);
+    }
+  });
+}
+
+export function createConfiguredZoomAttendanceJob(env = process.env) {
+  const startDate = configuredZoomAttendanceStart(env);
+  if (!startDate) return null;
+  const approve = createZoomAttendanceApproval(db, zoomParticipantStore(), writeZoomAttendance);
+  return createZoomAutomaticAttendanceRunner(db, approve, startDate, error => {
+    console.error('[ZoomAttendance] Candidate deferred:', error.status === 400 ? 'academic rule' : 'processing error');
+  });
+}
+
+router.get('/zoom-event-receipts/:id/attendance-evidence', authenticateToken, requireSuperAdmin, (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  const id = Number(req.params.id);
+  if (!Number.isSafeInteger(id) || id < 1) return res.status(400).json({error: 'Invalid receipt ID.'});
+  const evidence = zoomParticipantStore().evidence(id);
+  if (!evidence) return res.status(404).json({error: 'No usable attendance evidence for this participant and class.'});
+  return res.json({evidence});
+});
+
+router.post('/zoom-event-receipts/:id/attendance-approval', authenticateToken, requireSuperAdmin, (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  const id = Number(req.params.id);
+  const {enrollmentId, seconds, scheduledSeconds, minimumPercent, approvePresent} = req.body ?? {};
+  if (approvePresent !== true || ![id, enrollmentId, seconds, scheduledSeconds].every(value => Number.isSafeInteger(value) && value > 0)) {
+    return res.status(400).json({error: 'Review the evidence and explicitly approve marking the student present.'});
+  }
+  const approve = createZoomAttendanceApproval(db, zoomParticipantStore(),
+    (identity, evidence, receiptId) => writeZoomAttendance(identity, evidence, receiptId, req));
+  try {
+    const status = approve(id, {enrollmentId, seconds, scheduledSeconds, minimumPercent});
+    if (status === 'unusable') return res.status(422).json({error: 'Complete, verified attendance evidence is required.'});
+    if (status === 'changed') return res.status(409).json({error: 'The verification or recorded time changed. Load the evidence again.'});
+    if (status === 'existing') return res.status(409).json({error: 'This class already has an attendance mark or an excused absence.'});
+    if (status === 'below-minimum') return res.status(422).json({error: 'The recorded time is below the Course Maker minimum for this Zoom class.'});
+    return res.status(201).json({status});
+  } catch (error) {
+    if (error.status === 400) return res.status(422).json({error: error.message});
+    throw error;
+  }
+});
+
+router.get('/zoom-event-receipts/:id/participant-review', authenticateToken, requireSuperAdmin, (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  const id = Number(req.params.id), offset = Number(req.query.offset ?? 0);
+  if (!Number.isSafeInteger(id) || id < 1 || !Number.isSafeInteger(offset) || offset < 0) {
+    return res.status(400).json({error: 'Invalid receipt ID or page.'});
+  }
+  const review = zoomParticipantStore().review(id, offset);
+  if (!review) return res.status(404).json({error: 'No current class binding for this meeting.'});
+  return res.json(review);
+});
+
+router.route('/zoom-event-receipts/:id/participant-verification').all(authenticateToken, requireSuperAdmin)
+  .get((req, res) => {
+    res.set('Cache-Control', 'no-store');
+    const id = Number(req.params.id);
+    if (!Number.isSafeInteger(id) || id < 1) return res.status(400).json({error: 'Invalid receipt ID.'});
+    const identity = zoomParticipantStore().resolve(id);
+    if (!identity) return res.status(404).json({error: 'No current verified identity for this receipt.'});
+    return res.json({identity});
+  })
+  .put((req, res) => {
+    res.set('Cache-Control', 'no-store');
+    const id = Number(req.params.id);
+    const {enrollmentId, identityConfirmed} = req.body ?? {};
+    if (!Number.isSafeInteger(id) || id < 1 || identityConfirmed !== true) {
+      return res.status(400).json({error: 'Select a receipt and explicitly confirm the participant identity.'});
+    }
+    const {status} = zoomParticipantStore().verify(id, enrollmentId, req.user.id);
+    if (status === 'missing') return res.status(404).json({error: 'Receipt not found.'});
+    if (status === 'unbound') return res.status(409).json({error: 'The meeting has no current class binding.'});
+    if (status === 'conflict') return res.status(409).json({error: 'This participant or enrollment already has a different verification.'});
+    if (status === 'ineligible') return res.status(422).json({error: 'The student is not eligible for this batch and class.'});
+    return res.status(status === 'created' ? 201 : 200).json({status});
+  })
+  .delete((req, res) => {
+    res.set('Cache-Control', 'no-store');
+    const id = Number(req.params.id);
+    if (!Number.isSafeInteger(id) || id < 1) return res.status(400).json({error: 'Invalid receipt ID.'});
+    const {enrollmentId, reason} = req.body ?? {};
+    const {status} = zoomParticipantStore().revoke(id, enrollmentId, reason, req.user.id);
+    if (status === 'invalid') return res.status(422).json({error: 'Select a verified enrollment and enter a reason (3–240 characters).'});
+    if (status === 'missing') return res.status(404).json({error: 'Receipt not found.'});
+    if (status === 'conflict') return res.status(409).json({error: 'The verification has changed. Reload the participant list.'});
+    return res.json({status});
+  });
 
 // Verification endpoint for Super Admin access
 router.get('/super-admin/verify', authenticateToken, requireSuperAdmin, (req, res) => {
@@ -1054,6 +1222,9 @@ router.put('/students/:id', authenticateToken, requireRole('admin'), requirePerm
       const resolved = resolveEnrollmentForCourse(id, course, enrContextId, bContextId);
       if (resolved.ambiguous) {
         return res.status(400).json({ error: resolved.error });
+      }
+      if (resolved.enrollment && db.prepare('SELECT 1 FROM assessment_submissions WHERE enrollment_id = ? LIMIT 1').get(resolved.enrollment.id)) {
+        return res.status(409).json({ error: 'This course has submitted answer papers and cannot be removed until an approved retention process is available.' });
       }
     }
 

@@ -26,6 +26,8 @@ import Community from './pages/Community';
 import BFIAA from './pages/BFIAA';
 import Inbox from './pages/Inbox';
 import Classroom from './pages/Classroom';
+import AssessmentSubmission from './pages/AssessmentSubmission';
+import AssessmentReviewPage from './pages/AssessmentReviewPage';
 import Settings from './pages/Settings';
 import Directory from './pages/Directory';
 import Registry from './pages/Registry';
@@ -294,6 +296,8 @@ function App() {
             </ProtectedRoute>
           } />
           <Route path="/film-submissions" element={<ProtectedRoute requiredRole={['student', 'admin', 'instructor']}><Layout><FilmSubmissions /></Layout></ProtectedRoute>} />
+          <Route path="/assessment-submissions/:windowId" element={<ProtectedRoute requiredRole={['student']}><Layout><AssessmentSubmission /></Layout></ProtectedRoute>} />
+          <Route path="/assessment-review" element={<ProtectedRoute requiredRole={['admin', 'instructor']}><Layout><AssessmentReviewPage /></Layout></ProtectedRoute>} />
 
           <Route path="/classroom" element={
             <ProtectedRoute>

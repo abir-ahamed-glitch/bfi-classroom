@@ -1,18 +1,16 @@
-import path from 'path';
-import { fileURLToPath } from 'url';
+import stagingGuard from '../scripts/staging_guard.cjs';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+try {
+  const config = stagingGuard.loadAndValidateStagingEnv();
+  process.env.DATABASE_PATH = config.databasePath;
+  process.env.PORT = String(config.port);
+  process.env.NODE_ENV = 'production';
+  process.env.APP_URL = config.appUrl;
+  process.env.CLIENT_URL = config.clientUrl;
 
-// Enforce isolated disposable staging database and staging server port
-process.env.DATABASE_PATH = process.env.DATABASE_PATH || path.resolve(__dirname, 'test_isolated_bfi.db');
-process.env.PORT = process.env.PORT || '3098';
-process.env.IS_STAGING_SERVER = 'true';
-process.env.NODE_ENV = 'production';
-process.env.DISABLE_OUTBOUND_NOTIFICATIONS = 'true';
-process.env.APP_URL = process.env.APP_URL || 'http://127.0.0.1:3098/bfi-classroom';
-process.env.CLIENT_URL = process.env.CLIENT_URL || 'http://127.0.0.1:3098/bfi-classroom';
-
-console.log(`[StagingServer] Starting isolated production-built backend: db=${process.env.DATABASE_PATH} port=${process.env.PORT} nodeEnv=${process.env.NODE_ENV}`);
-
-import('./server.js');
+  console.log(`[StagingServer] Starting guarded backend on ${config.host}:${config.port}`);
+  await import('./server.js');
+} catch (error) {
+  console.error('[StagingServer] Failed to start:', error.message);
+  process.exitCode = 1;
+}

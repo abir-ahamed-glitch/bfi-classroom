@@ -13,6 +13,7 @@ import jsPDF from 'jspdf';
 import { useNavigate, Link } from 'react-router-dom';
 import { resolveMediaUrl } from '../utils/mediaUtils';
 import PdfViewer from '../components/PdfViewer';
+import ClassTimeline from '../components/ClassTimeline';
 import { useModal } from '../components/BFIModal';
 
 const hasPendingDueOrPartialPayment = (course) => {
@@ -1046,6 +1047,8 @@ export default function Dashboard() {
           )}
         </div>
       </header>
+
+      {currentUser?.role === 'student' && <ClassTimeline />}
 
       {/* Notice Board Widget */}
       <section style={{ marginBottom: '3rem', position: 'relative' }}>

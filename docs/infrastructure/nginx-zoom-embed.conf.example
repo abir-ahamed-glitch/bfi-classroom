@@ -1,0 +1,26 @@
+# Replace zoom-embed.example.net with a hostname outside the Classroom cookie domain.
+# Provision that hostname and its certificate before enabling.
+server {
+    listen 80;
+    listen [::]:80;
+    server_name zoom-embed.example.net;
+    return 308 https://zoom-embed.example.net$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name zoom-embed.example.net;
+
+    ssl_certificate /etc/ssl/certs/zoom-classroom.crt;
+    ssl_certificate_key /etc/ssl/private/zoom-classroom.key;
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    location / {
+        proxy_pass http://127.0.0.1:3098;
+        proxy_pass_request_headers off;
+        proxy_pass_request_body off;
+        proxy_set_header Host zoom-embed.example.net;
+        proxy_set_header Content-Length "";
+    }
+}

@@ -195,6 +195,16 @@ function createDisposableGitRepo() {
       full_name TEXT
     );
 
+    CREATE TABLE notifications (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, type TEXT NOT NULL);
+    CREATE TABLE course_materials (id INTEGER PRIMARY KEY);
+    CREATE TABLE course_definitions (
+      id INTEGER PRIMARY KEY, slug TEXT UNIQUE NOT NULL, version INTEGER DEFAULT 1,
+      name TEXT NOT NULL, course_type TEXT DEFAULT 'course', description TEXT,
+      duration_value INTEGER DEFAULT 1, duration_unit TEXT DEFAULT 'months', phase_count INTEGER DEFAULT 1,
+      status TEXT DEFAULT 'draft', definition_json TEXT, created_by INTEGER, updated_by INTEGER,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+
     CREATE TABLE sessions (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER,

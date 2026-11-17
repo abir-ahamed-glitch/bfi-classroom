@@ -5,6 +5,7 @@ import { recordAuditEventFromReq } from '../services/auditLedgerService.js';
 import { resolvePhaseRoutine, getCanonicalPhaseInfo } from '../services/courseProgressService.js';
 
 import { getTimedSessions, isSessionDate, occursOn } from '../../src/utils/timetable.js';
+import { validZoomAttendanceMinimum } from '../../src/utils/zoomAttendancePolicy.js';
 
 const router = express.Router();
 
@@ -223,6 +224,10 @@ function validateCourseDefinitionPayload(data, isPublishing = false) {
       if (isNaN(minAtt) || minAtt < 1 || minAtt > 100) {
         errors.push(`Phase ${phaseNum}: Minimum attendance percentage must be between 1 and 100.`);
       }
+    }
+
+    if (!validZoomAttendanceMinimum(phase.requirements?.zoomMinSessionPercent)) {
+      errors.push(`Phase ${phaseNum}: Minimum Zoom session time must be a whole percentage from 1 to 100.`);
     }
 
     // Schedule / Routine validation
@@ -1104,6 +1109,15 @@ router.put('/:id/routine', authenticateToken, (req, res) => {
       if (!slot || typeof slot !== 'object' || Array.isArray(slot)) {
         return res.status(400).json({ error: `Routine slot ${rIdx + 1} must be an object with weekday, startTime, and endTime.` });
       }
+      if (slot.meetingUrl != null && slot.meetingUrl !== '') {
+        try {
+          if (typeof slot.meetingUrl !== 'string' || slot.meetingUrl.length > 2048) throw new Error('Invalid link');
+          const url = new URL(slot.meetingUrl);
+          if (url.protocol !== 'https:' || url.username || url.password) throw new Error('Invalid link');
+        } catch {
+          return res.status(400).json({ error: `Routine slot ${rIdx + 1} must have a valid HTTPS meeting link.` });
+        }
+      }
       if (!ALLOWED_WEEKDAYS.includes(slot.weekday)) {
         return res.status(400).json({ error: `Invalid weekday "${slot.weekday}" in routine.` });
       }
@@ -1189,7 +1203,8 @@ router.put('/:id/routine', authenticateToken, (req, res) => {
         teacherUserId: validatedTeacherUserId,
         deliveryMode: slot.deliveryMode ? String(slot.deliveryMode).trim() : 'live',
         category: slot.category ? String(slot.category).trim() : 'theory',
-        platform: slot.platform ? String(slot.platform).trim() : ''
+        platform: slot.platform ? String(slot.platform).trim() : '',
+        meetingUrl: slot.meetingUrl ? slot.meetingUrl.trim() : ''
       };
     });
 

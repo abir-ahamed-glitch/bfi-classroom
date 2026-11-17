@@ -22,6 +22,10 @@ try {
 
   // Set up baseline schema (users, sessions, course_definitions without new columns)
   db.exec(`
+    CREATE TABLE IF NOT EXISTS notifications (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, type TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS batches (id INTEGER PRIMARY KEY);
+    CREATE TABLE IF NOT EXISTS student_course_enrollments (id INTEGER PRIMARY KEY);
+    CREATE TABLE IF NOT EXISTS course_materials (id INTEGER PRIMARY KEY);
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       username TEXT UNIQUE NOT NULL,
@@ -218,6 +222,12 @@ try {
   // 2. Open DB and verify schema
   console.log('--- Step 2: Verifying applied columns and indexes ---');
   const verifyDb = new Database(tempDbPath);
+  const {assertSchemaIntegrity} = require('./run_migrations.cjs');
+  assert.throws(() => verifyDb.transaction(() => {
+    verifyDb.exec('DROP TABLE zoom_participant_revocations');
+    assertSchemaIntegrity(verifyDb);
+  })(), /Missing zoom_participant_revocations/);
+  assert.ok(verifyDb.prepare("SELECT 1 FROM sqlite_master WHERE name = 'zoom_participant_revocations'").get());
 
   const applied = verifyDb.prepare('SELECT name FROM app_migrations WHERE name = ?').get('20261106_session_grace_and_course_draft_idempotency');
   assert.ok(applied, 'Migration 20261106_session_grace_and_course_draft_idempotency must be recorded');

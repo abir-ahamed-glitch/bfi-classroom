@@ -1,14 +1,20 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { BookOpen, Calendar, Clock, User, AlertCircle, RefreshCw, Layers } from 'lucide-react';
+import { Link, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { getPlatformIcon } from '../components/admin/PlatformSelector';
 import { io } from 'socket.io-client';
 import apiClient from '../utils/apiClient';
-import { addDays, dhakaNow, getTimedSessions, weekdayOf } from '../utils/timetable';
+import { StudentAssessmentWindows } from '../components/AssessmentWindows';
+import ZoomClassroom from '../components/ZoomClassroom';
+import { selectedTimelineSession } from '../utils/classTimeline';
+import { addDays, dhakaNow, getTimedSessions, isSessionDate, weekdayOf } from '../utils/timetable';
 import './Classroom.css';
 
 export default function Classroom() {
   const { currentUser } = useAuth();
+  const [searchParams] = useSearchParams();
+  const selectedFromLink = useRef(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [batches, setBatches] = useState([]);
@@ -72,6 +78,25 @@ export default function Classroom() {
     };
   }, [fetchSchedule, currentUser?.role]);
 
+  useEffect(() => {
+    if (selectedFromLink.current || batches.length === 0) return;
+    const batchId = searchParams.get('batch_id');
+    if (!batchId) return;
+    const index = batches.findIndex(batch => String(batch.batchId) === batchId);
+    if (index < 0) return;
+    const phaseId = searchParams.get('phase_id');
+    const phaseIndex = batches[index].phases?.findIndex(phase => String(phase.phaseId) === phaseId) ?? -1;
+    setSelectedBatchIndex(index);
+    setSelectedPhaseIndex(Math.max(phaseIndex, 0));
+    const date = searchParams.get('date');
+    if (isSessionDate(date)) {
+      const current = dhakaNow().date;
+      const days = Math.round((Date.parse(date + 'T00:00:00Z') - Date.parse(current + 'T00:00:00Z')) / 86400000);
+      setWeekOffset(Math.floor((days + new Date(current + 'T00:00:00Z').getUTCDay()) / 7));
+    }
+    selectedFromLink.current = true;
+  }, [batches, searchParams]);
+
   const activeBatch = batches[selectedBatchIndex] || batches[0] || null;
   const activePhases = Array.isArray(activeBatch?.phases) ? activeBatch.phases : [];
   const activePhase = activePhases[selectedPhaseIndex] || activePhases[0] || null;
@@ -80,6 +105,8 @@ export default function Classroom() {
   const weekStart = addDays(now.date, weekOffset * 7 - new Date(now.date + 'T00:00:00Z').getUTCDay());
   const weekDates = Array.from({ length: 7 }, (_, index) => addDays(weekStart, index));
   const weeklySessions = getTimedSessions(activeSlots, weekDates, activeBatch);
+  const selectedSession = String(activeBatch?.batchId) === searchParams.get('batch_id') && String(activePhase?.phaseId) === searchParams.get('phase_id')
+    ? selectedTimelineSession(weeklySessions, searchParams.get('slot_id'), searchParams.get('date')) : null;
   const upcoming = getTimedSessions(activeSlots, Array.from({ length: 28 }, (_, index) => addDays(now.date, index)), activeBatch)
     .filter(session => ['scheduled', 'moved'].includes(session.status) && (session.date !== now.date || session.endTime > now.time))
     .slice(0, 4);
@@ -245,6 +272,8 @@ export default function Classroom() {
             </div>
           )}
 
+          {currentUser?.role === 'student' && activeBatch && activePhase && <StudentAssessmentWindows batchId={activeBatch.batchId} phaseId={activePhase.phaseId} />}
+          {currentUser?.role === 'instructor' && activeBatch && <p><Link to={`/assessment-review?batch_id=${encodeURIComponent(activeBatch.batchId)}`}>Review answer papers</Link></p>}
           {activeSlots.length > 0 && (
             <>
             <section className="classroom-timetable glass-panel" aria-label="Weekly timetable">
@@ -262,12 +291,17 @@ export default function Classroom() {
                   const sessions = weeklySessions.filter(slot => slot.date === date);
                   return <div className="classroom-day" key={date}>
                     <h4>{weekdayOf(date).slice(0, 3)} <time dateTime={date}>{date.slice(8)}</time></h4>
-                    {sessions.length ? <ul>{sessions.map(slot => <li key={slot.key}>
+                    {sessions.length ? <ul>{sessions.map(slot => <li key={slot.key} className={slot === selectedSession ? 'classroom-selected-session' : undefined}>
+                      {slot === selectedSession && <span>Selected class</span>}
                       <strong>{slot.classTitle || slot.subjectName || 'Class'}</strong>
                       <div>{slot.startTime} - {slot.endTime}</div>
                       {slot.status === 'cancelled' && <span>Cancelled</span>}
                       {slot.status === 'rescheduled' && <span>Moved to {slot.movedTo}</span>}
                       {slot.status === 'moved' && <span>Rescheduled from {slot.originalDate}</span>}
+                      {import.meta.env.VITE_ZOOM_EMBED_ENABLED === 'true' && currentUser?.role === 'student' && slot === selectedSession && slot.meetingUrl && !['cancelled', 'rescheduled'].includes(slot.status) &&
+                        <ZoomClassroom key={`${activeBatch.batchId}:${activePhase.phaseId}:${slot.id}:${slot.date}`} batchId={activeBatch.batchId} phaseId={activePhase.phaseId} session={slot} userName={currentUser?.full_name || currentUser?.username || 'Student'} />}
+                      {slot.meetingUrl && !['cancelled', 'rescheduled'].includes(slot.status) && /^https:\/\//i.test(slot.meetingUrl) &&
+                        <div><a href={slot.meetingUrl} target="_blank" rel="noopener noreferrer">Join meeting</a></div>}
                     </li>)}</ul> : <p>No classes</p>}
                   </div>;
                 })}
