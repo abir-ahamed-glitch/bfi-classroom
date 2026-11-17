@@ -13,5 +13,5 @@
     "lodash": "4.18.1"
   },
   "devDependencies": { "vite": "8.0.2" },
-  "scripts": { "build": "vite build", "start": "node start.js" }
+  "scripts": { "build": "vite build", "build:pages": "node build-pages.js", "start": "node start.js" }
 }
