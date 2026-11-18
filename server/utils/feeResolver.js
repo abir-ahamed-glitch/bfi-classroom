@@ -110,7 +110,7 @@ export function getBatchFee(courseName, batchNumber, customDb = null, batchId = 
         if (res) return { ...res, is_custom: true };
 
         const batchRow = ctx.batchById.get(batchId);
-        if (batchRow && batchRow.course_definition_id) {
+        if (batchRow) {
           const cKey = batchRow.course_name ? batchRow.course_name.toLowerCase().trim() : '';
           const bKey = batchRow.batch_number ? String(batchRow.batch_number).trim() : '';
           const pairKey = `${cKey}:::${bKey}`;
@@ -128,30 +128,32 @@ export function getBatchFee(courseName, batchNumber, customDb = null, batchId = 
             }
           }
 
-          const defRow = ctx.definitionById.get(batchRow.course_definition_id);
-          if (defRow && defRow.parsed) {
-            const phases = Array.isArray(defRow.parsed.phases) ? defRow.parsed.phases : [];
-            const p1Fee = phases[0] ? (Number(phases[0].feeAmount ?? phases[0].fee ?? phases[0].fee_amount) || 0) : 0;
-            const p2Fee = phases[1] ? (Number(phases[1].feeAmount ?? phases[1].fee ?? phases[1].fee_amount) || 0) : 0;
-            const totalFee = phases.reduce((acc, p) => acc + (Number(p.feeAmount ?? p.fee ?? p.fee_amount) || 0), 0);
+          if (batchRow.course_definition_id) {
+            const defRow = ctx.definitionById.get(batchRow.course_definition_id);
+            if (defRow && defRow.parsed) {
+              const phases = Array.isArray(defRow.parsed.phases) ? defRow.parsed.phases : [];
+              const p1Fee = phases[0] ? (Number(phases[0].feeAmount ?? phases[0].fee ?? phases[0].fee_amount) || 0) : 0;
+              const p2Fee = phases[1] ? (Number(phases[1].feeAmount ?? phases[1].fee ?? phases[1].fee_amount) || 0) : 0;
+              const totalFee = phases.reduce((acc, p) => acc + (Number(p.feeAmount ?? p.fee ?? p.fee_amount) || 0), 0);
 
-            return {
-              phase1_fee: p1Fee,
-              phase2_fee: p2Fee,
-              full_fee: totalFee,
-              is_custom: false
-            };
+              return {
+                phase1_fee: p1Fee,
+                phase2_fee: p2Fee,
+                full_fee: totalFee,
+                is_custom: false
+              };
+            }
           }
 
           const defaultFee = ctx.batchFeeDefaultByCourse.get(cKey || (courseName ? courseName.toLowerCase().trim() : ''));
           if (defaultFee) return { ...defaultFee, is_custom: false };
-          return null;
+          if (batchRow.course_definition_id) return null;
         }
       }
 
       if (!courseName && !batchNumber) return null;
 
-      if (courseName && batchNumber) {
+      if (!batchId && courseName && batchNumber) {
         const pairKey = `${courseName.toLowerCase().trim()}:::${String(batchNumber).trim()}`;
         const matchingBatches = ctx.batchesByCourseAndBatchNum.get(pairKey) || [];
 
@@ -186,13 +188,11 @@ export function getBatchFee(courseName, batchNumber, customDb = null, batchId = 
       if (res) return { ...res, is_custom: true };
 
       // Batch has no specific batch_course_fees row.
-      // Check if this batch belongs to a course definition:
       const batchRow = activeDb.prepare(
         'SELECT id, course_definition_id, course_name, batch_number FROM batches WHERE id = ?'
       ).get(batchId);
 
-      if (batchRow && batchRow.course_definition_id) {
-        // Defined batch without specific batch_id row in batch_course_fees.
+      if (batchRow) {
         // Check if there is an unlinked custom fee row for (course_name, batch_number)
         // that unambiguously belongs to this single batch (matchingBatchesCount === 1).
         const unlinkedRow = activeDb.prepare(
@@ -205,7 +205,6 @@ export function getBatchFee(courseName, batchNumber, customDb = null, batchId = 
           ).get(batchRow.course_name, String(batchRow.batch_number))?.c || 0;
 
           if (matchingBatchesCount === 1) {
-            // Unambiguous single batch — return custom fee strictly read-only without modifying payment configuration
             return {
               phase1_fee: unlinkedRow.phase1_fee,
               phase2_fee: unlinkedRow.phase2_fee,
@@ -215,30 +214,31 @@ export function getBatchFee(courseName, batchNumber, customDb = null, batchId = 
           }
         }
 
-        // Defined batch without specific batch fee override!
-        // MUST NEVER fall back to another batch's row matching (course_name, batch_number).
-        // Check if course definition defines fee policy in its phases:
-        const defRow = activeDb.prepare(
-          'SELECT definition_json FROM course_definitions WHERE id = ?'
-        ).get(batchRow.course_definition_id);
+        if (batchRow.course_definition_id) {
+          // Defined batch without specific batch fee override!
+          // Check if course definition defines fee policy in its phases:
+          const defRow = activeDb.prepare(
+            'SELECT definition_json FROM course_definitions WHERE id = ?'
+          ).get(batchRow.course_definition_id);
 
-        if (defRow && defRow.definition_json) {
-          try {
-            const defJson = typeof defRow.definition_json === 'string'
-              ? JSON.parse(defRow.definition_json)
-              : defRow.definition_json;
-            const phases = Array.isArray(defJson.phases) ? defJson.phases : [];
-            const p1Fee = phases[0] ? (Number(phases[0].feeAmount ?? phases[0].fee ?? phases[0].fee_amount) || 0) : 0;
-            const p2Fee = phases[1] ? (Number(phases[1].feeAmount ?? phases[1].fee ?? phases[1].fee_amount) || 0) : 0;
-            const totalFee = phases.reduce((acc, p) => acc + (Number(p.feeAmount ?? p.fee ?? p.fee_amount) || 0), 0);
+          if (defRow && defRow.definition_json) {
+            try {
+              const defJson = typeof defRow.definition_json === 'string'
+                ? JSON.parse(defRow.definition_json)
+                : defRow.definition_json;
+              const phases = Array.isArray(defJson.phases) ? defJson.phases : [];
+              const p1Fee = phases[0] ? (Number(phases[0].feeAmount ?? phases[0].fee ?? phases[0].fee_amount) || 0) : 0;
+              const p2Fee = phases[1] ? (Number(phases[1].feeAmount ?? phases[1].fee ?? phases[1].fee_amount) || 0) : 0;
+              const totalFee = phases.reduce((acc, p) => acc + (Number(p.feeAmount ?? p.fee ?? p.fee_amount) || 0), 0);
 
-            return {
-              phase1_fee: p1Fee,
-              phase2_fee: p2Fee,
-              full_fee: totalFee,
-              is_custom: false
-            };
-          } catch { /* empty */ }
+              return {
+                phase1_fee: p1Fee,
+                phase2_fee: p2Fee,
+                full_fee: totalFee,
+                is_custom: false
+              };
+            } catch { /* empty */ }
+          }
         }
 
         // Try global default course fee defined by admin for this course name
@@ -247,14 +247,14 @@ export function getBatchFee(courseName, batchNumber, customDb = null, batchId = 
         ).get(batchRow.course_name || courseName);
         if (defaultFee) return { ...defaultFee, is_custom: false };
 
-        return null;
+        if (batchRow.course_definition_id) return null;
       }
     }
 
     if (!courseName && !batchNumber) return null;
 
     // 2. Lookup by course_name and batch_number when batchId is not provided
-    if (courseName && batchNumber) {
+    if (!batchId && courseName && batchNumber) {
       const matchingBatches = activeDb.prepare(
         'SELECT id FROM batches WHERE LOWER(TRIM(course_name)) = LOWER(TRIM(?)) AND TRIM(batch_number) = TRIM(?)'
       ).all(courseName, String(batchNumber));
@@ -326,12 +326,16 @@ export function resolvePhaseFee({
   let definition = courseDefinition;
   if (!definition && (courseDefId || enrollment?.course_definition_id)) {
     const targetDefId = courseDefId || enrollment?.course_definition_id;
-    try {
-      const defRow = activeDb.prepare('SELECT definition_json FROM course_definitions WHERE id = ?').get(targetDefId);
-      if (defRow?.definition_json) {
-        definition = typeof defRow.definition_json === 'string' ? JSON.parse(defRow.definition_json) : defRow.definition_json;
-      }
-    } catch { /* empty */ }
+    if (feeContext?.definitionById) {
+      definition = feeContext.definitionById.get(targetDefId)?.parsed || null;
+    } else {
+      try {
+        const defRow = activeDb.prepare('SELECT definition_json FROM course_definitions WHERE id = ?').get(targetDefId);
+        if (defRow?.definition_json) {
+          definition = typeof defRow.definition_json === 'string' ? JSON.parse(defRow.definition_json) : defRow.definition_json;
+        }
+      } catch { /* empty */ }
+    }
   }
 
   // 3. Resolve course identity & batch details
@@ -341,13 +345,21 @@ export function resolvePhaseFee({
 
   if (!effectiveBatchNumber && (batchId || enrollment?.batch_id)) {
     const targetBatchId = batchId || enrollment?.batch_id;
-    try {
-      const bRow = activeDb.prepare('SELECT batch_number, course_name FROM batches WHERE id = ?').get(targetBatchId);
+    if (feeContext?.batchById) {
+      const bRow = feeContext.batchById.get(targetBatchId);
       if (bRow) {
         effectiveBatchNumber = bRow.batch_number;
         if (!effectiveCourseName) effectiveCourseName = bRow.course_name;
       }
-    } catch { /* empty */ }
+    } else {
+      try {
+        const bRow = activeDb.prepare('SELECT batch_number, course_name FROM batches WHERE id = ?').get(targetBatchId);
+        if (bRow) {
+          effectiveBatchNumber = bRow.batch_number;
+          if (!effectiveCourseName) effectiveCourseName = bRow.course_name;
+        }
+      } catch { /* empty */ }
+    }
   }
 
   if (!effectiveBatchNumber && enrollment?.user_id) {

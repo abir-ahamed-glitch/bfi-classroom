@@ -4,7 +4,7 @@ import XLSX from 'xlsx';
 import db from '../db/database.js';
 import { authenticateToken, requireRole, requirePermission, sanitizeInput } from '../middleware/auth.js';
 import { encryptMessageContent } from '../utils/messageCrypto.js';
-import { parseFeeDetails, getBatchFee, getFeeStatus, extractFeeAmounts } from '../utils/feeResolver.js';
+import { parseFeeDetails, getBatchFee, getFeeStatus, extractFeeAmounts, createFeeResolverContext } from '../utils/feeResolver.js';
 
 const router = express.Router();
 
@@ -94,15 +94,22 @@ function buildStudentDataset(filters = {}) {
   let overdueCount = 0;
 
   const students = [];
+  const feeContext = createFeeResolverContext(db);
+  const latestReminders = new Map();
+  for (const r of db.prepare('SELECT student_user_id, MAX(sent_at) AS sent_at FROM fee_reminder_log GROUP BY student_user_id').all()) {
+    latestReminders.set(r.student_user_id, r.sent_at);
+  }
+  const nowMs = Date.now();
 
   for (const row of enrollments) {
     const feeDetails = parseFeeDetails(row.fee_details);
-    const batchFee = getBatchFee(row.course_name, row.batch_number, db, row.batch_id);
+    const batchFee = getBatchFee(row.course_name, row.batch_number, db, row.batch_id, feeContext);
     const feeOpts = {
       courseDefId: row.course_definition_id,
       courseName: row.course_name,
       batchNumber: row.batch_number,
-      batchId: row.batch_id
+      batchId: row.batch_id,
+      feeContext
     };
     const rawStatus = getFeeStatus(feeDetails, row.course_type, batchFee, feeOpts);
     const amounts = extractFeeAmounts(feeDetails, row.course_type, batchFee, feeOpts);
@@ -142,14 +149,11 @@ function buildStudentDataset(filters = {}) {
     const full_name = `${row.first_name} ${row.last_name}`.trim();
 
     // Check reminder cooldown (24h)
-    const lastReminder = db.prepare(
-      `SELECT sent_at FROM fee_reminder_log WHERE student_user_id = ? ORDER BY sent_at DESC LIMIT 1`
-    ).get(row.user_id);
+    const lastSentAt = latestReminders.get(row.user_id);
     let reminder_sent_today = false;
-    if (lastReminder) {
-      const sentAt = new Date(lastReminder.sent_at);
-      const now = new Date();
-      reminder_sent_today = (now - sentAt) < 24 * 60 * 60 * 1000;
+    if (lastSentAt) {
+      const sentAt = new Date(lastSentAt);
+      reminder_sent_today = (nowMs - sentAt.getTime()) < 24 * 60 * 60 * 1000;
     }
 
     const student = {
