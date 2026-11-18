@@ -1,0 +1,286 @@
+/* Scoped dark/light styling for assessment scheduling, review, and Zoom linking panels */
+
+.assessment-admin-panel,
+.assessment-windows-panel {
+  --panel-input-bg: rgba(15, 23, 42, 0.88);
+  --panel-input-border: rgba(148, 163, 184, 0.36);
+  --panel-input-border-hover: rgba(148, 163, 184, 0.6);
+  --panel-input-text: #f8fafc;
+  --panel-input-muted: #cbd5e1;
+  --panel-focus-ring: rgba(59, 130, 246, 0.35);
+  --panel-card-bg: rgba(15, 23, 42, 0.56);
+  --panel-card-border: rgba(148, 163, 184, 0.22);
+  --panel-btn-primary-bg: #2563eb;
+  --panel-btn-primary-hover: #1d4ed8;
+  --panel-btn-primary-text: #ffffff;
+  --panel-btn-secondary-bg: rgba(30, 41, 59, 0.92);
+  --panel-btn-secondary-hover: rgba(51, 65, 85, 0.96);
+  --panel-btn-secondary-text: #f8fafc;
+  --panel-btn-secondary-border: rgba(148, 163, 184, 0.38);
+  --panel-link: #93c5fd;
+  --panel-link-hover: #bfdbfe;
+  --panel-status-bg: rgba(37, 99, 235, 0.14);
+  --panel-status-border: rgba(96, 165, 250, 0.38);
+  --panel-error-text: #fecaca;
+  --panel-error-bg: rgba(220, 38, 38, 0.16);
+  --panel-error-border: rgba(248, 113, 113, 0.42);
+  color: var(--text-primary, #f8fafc);
+  color-scheme: dark;
+}
+
+[data-mode="light"] .assessment-admin-panel,
+[data-mode="light"] .assessment-windows-panel {
+  --panel-input-bg: #ffffff;
+  --panel-input-border: rgba(15, 23, 42, 0.24);
+  --panel-input-border-hover: rgba(15, 23, 42, 0.45);
+  --panel-input-text: #0f172a;
+  --panel-input-muted: #334155;
+  --panel-focus-ring: rgba(37, 99, 235, 0.22);
+  --panel-card-bg: rgba(248, 250, 252, 0.94);
+  --panel-card-border: rgba(15, 23, 42, 0.14);
+  --panel-btn-primary-bg: #1d4ed8;
+  --panel-btn-primary-hover: #1e40af;
+  --panel-btn-primary-text: #ffffff;
+  --panel-btn-secondary-bg: #f1f5f9;
+  --panel-btn-secondary-hover: #e2e8f0;
+  --panel-btn-secondary-text: #0f172a;
+  --panel-btn-secondary-border: rgba(15, 23, 42, 0.24);
+  --panel-link: #1e40af;
+  --panel-link-hover: #1e3a8a;
+  --panel-status-bg: rgba(37, 99, 235, 0.08);
+  --panel-status-border: rgba(37, 99, 235, 0.28);
+  --panel-error-text: #991b1b;
+  --panel-error-bg: rgba(239, 68, 68, 0.08);
+  --panel-error-border: rgba(220, 38, 38, 0.28);
+  color: var(--text-primary, #0f172a);
+  color-scheme: light;
+}
+
+.assessment-admin-panel h3,
+.assessment-windows-panel h3 {
+  margin: 0 0 0.35rem;
+}
+
+.assessment-panel-subtitle {
+  margin: 0 0 0.9rem;
+  color: var(--panel-input-muted);
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
+.assessment-panel-list {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 1rem;
+  display: grid;
+  gap: 0.65rem;
+}
+
+.assessment-panel-item {
+  padding: 0.75rem 0.9rem;
+  border-radius: 10px;
+  background: var(--panel-card-bg);
+  border: 1px solid var(--panel-card-border);
+  overflow-wrap: anywhere;
+}
+
+.assessment-panel-item p {
+  margin: 0.45rem 0 0;
+}
+
+.assessment-admin-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr));
+  gap: 0.85rem;
+  align-items: end;
+}
+
+.assessment-admin-fieldset {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+
+.assessment-admin-field {
+  display: grid;
+  gap: 0.4rem;
+  min-width: 0;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--panel-input-muted);
+}
+
+.assessment-admin-input {
+  width: 100%;
+  min-width: 0;
+  min-height: 42px;
+  padding: 0.55rem 0.75rem;
+  border-radius: 8px;
+  border: 1px solid var(--panel-input-border);
+  background-color: var(--panel-input-bg);
+  color: var(--panel-input-text);
+  font-family: var(--font-sans, inherit);
+  font-size: 0.925rem;
+  line-height: 1.35;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, background-color 0.15s ease;
+}
+
+.assessment-admin-input:hover:not(:disabled) {
+  border-color: var(--panel-input-border-hover);
+}
+
+.assessment-admin-input:focus-visible {
+  outline: none;
+  border-color: var(--panel-btn-primary-bg);
+  box-shadow: 0 0 0 3px var(--panel-focus-ring);
+}
+
+.assessment-admin-input:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.assessment-admin-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  font-size: 0.9rem;
+  color: var(--panel-input-text);
+  cursor: pointer;
+}
+
+.assessment-admin-checkbox input[type="checkbox"] {
+  width: 1.05rem;
+  height: 1.05rem;
+  margin: 0;
+  flex: 0 0 auto;
+  accent-color: var(--panel-btn-primary-bg);
+}
+
+.assessment-admin-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.65rem;
+  margin-top: 0.15rem;
+}
+
+.assessment-admin-panel .assessment-btn,
+.assessment-admin-panel button.assessment-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  min-height: 42px;
+  padding: 0.55rem 1.05rem;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  font-family: var(--font-sans, inherit);
+  font-size: 0.9rem;
+  font-weight: 600;
+  line-height: 1.2;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.assessment-admin-panel button.assessment-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.assessment-admin-panel button.assessment-btn:focus-visible {
+  outline: 2px solid var(--panel-link);
+  outline-offset: 2px;
+}
+
+.assessment-admin-panel button.assessment-btn--primary {
+  background-color: var(--panel-btn-primary-bg);
+  border-color: var(--panel-btn-primary-bg);
+  color: var(--panel-btn-primary-text);
+}
+
+.assessment-admin-panel button.assessment-btn--primary:hover:not(:disabled) {
+  background-color: var(--panel-btn-primary-hover);
+  border-color: var(--panel-btn-primary-hover);
+}
+
+.assessment-admin-panel button.assessment-btn--secondary {
+  background-color: var(--panel-btn-secondary-bg);
+  border-color: var(--panel-btn-secondary-border);
+  color: var(--panel-btn-secondary-text);
+}
+
+.assessment-admin-panel button.assessment-btn--secondary:hover:not(:disabled) {
+  background-color: var(--panel-btn-secondary-hover);
+}
+
+.assessment-review-list {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.assessment-review-card {
+  padding: 0.9rem 1rem;
+  border-radius: 10px;
+  background: var(--panel-card-bg);
+  border: 1px solid var(--panel-card-border);
+  display: grid;
+  gap: 0.75rem;
+}
+
+.assessment-review-header {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.assessment-review-title {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.assessment-review-meta {
+  margin: 0;
+  color: var(--panel-input-muted);
+  font-size: 0.92rem;
+}
+
+.assessment-panel-status {
+  margin: 0.85rem 0 0;
+  padding: 0.65rem 0.85rem;
+  border-radius: 8px;
+  background: var(--panel-status-bg);
+  border: 1px solid var(--panel-status-border);
+  color: var(--panel-input-text);
+  font-size: 0.9rem;
+}
+
+.assessment-panel-error {
+  margin: 0.85rem 0 0;
+  padding: 0.65rem 0.85rem;
+  border-radius: 8px;
+  background: var(--panel-error-bg);
+  border: 1px solid var(--panel-error-border);
+  color: var(--panel-error-text);
+  font-size: 0.9rem;
+}
+
+.assessment-zoom-participant-box {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--panel-card-border);
+}
+
+@media (max-width: 640px) {
+  .assessment-admin-actions .assessment-btn {
+    width: 100%;
+  }
+  .assessment-review-header .assessment-btn {
+    width: 100%;
+  }
+}
