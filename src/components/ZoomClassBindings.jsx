@@ -1,9 +1,9 @@
 import { useState } from 'react';
 import apiClient from '../utils/apiClient';
 import { dhakaNow } from '../utils/timetable';
+import './AssessmentPanels.css';
 
 const eventTime = new Intl.DateTimeFormat('en-GB', {timeZone: 'Asia/Dhaka', hour: '2-digit', minute: '2-digit'});
-const fieldsStyle = {display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 15rem), 1fr))', gap: '0.75rem'};
 
 async function getJson(url, options) {
   const response = await apiClient(url, options);
@@ -112,60 +112,68 @@ function ParticipantReview({meetingReceiptId}) {
     }
   }
 
-  return <section aria-label="Zoom participant review" style={{marginTop: '1rem'}}>
+  return <section aria-label="Zoom participant review" className="assessment-zoom-participant-box">
     <h4>Review Zoom participants</h4>
-    {!review && <button type="button" className="btn btn-secondary" disabled={busy} onClick={() => openPage(0)}>Open participant review</button>}
+    {!review && <button type="button" className="assessment-btn assessment-btn--secondary" disabled={busy} onClick={() => openPage(0)}>Open participant review</button>}
     {review && <form onSubmit={save}>
-      <p>Match the participant ID against your verified Zoom records before choosing a student.</p>
-      <fieldset disabled={busy} style={{border: 0, padding: 0, minWidth: 0, display: 'grid', gap: '0.75rem'}}>
-        <label style={{display: 'grid', minWidth: 0}}>Zoom participant
-          <select aria-label="Zoom participant" required value={participantId} onChange={event => chooseParticipant(event.target.value)}>
+      <p className="assessment-panel-subtitle">Match the participant ID against your verified Zoom records before choosing a student.</p>
+      <fieldset disabled={busy} className="assessment-admin-fieldset">
+        <div className="assessment-admin-grid">
+        <label className="assessment-admin-field">Zoom participant
+          <select aria-label="Zoom participant" className="assessment-admin-input" required value={participantId} onChange={event => chooseParticipant(event.target.value)}>
             <option value="">Select participant</option>
             {review.participants.map(item => <option key={item.id} value={item.id}>
               {item.participantId} · {eventTime.format(new Date(item.firstEventAt))}{item.enrollmentId != null ? ' · Verified' : ''}
             </option>)}
           </select>
         </label>
-        <div style={{display: 'flex', gap: '0.5rem', flexWrap: 'wrap'}}>
-          {offset > 0 && <button type="button" className="btn btn-secondary" onClick={() => openPage(offset - 50)}>Previous participants</button>}
-          {review.hasMore && <button type="button" className="btn btn-secondary" onClick={() => openPage(offset + 50)}>More participants</button>}
-        </div>
+        {(offset > 0 || review.hasMore) && <div className="assessment-admin-actions">
+          {offset > 0 && <button type="button" className="assessment-btn assessment-btn--secondary" onClick={() => openPage(offset - 50)}>Previous participants</button>}
+          {review.hasMore && <button type="button" className="assessment-btn assessment-btn--secondary" onClick={() => openPage(offset + 50)}>More participants</button>}
+        </div>}
         {participant && (participant.enrollmentId != null ? <>
-          <p>Verified enrollment {participant.enrollmentId}{verified ? ` · ${verified.firstName} ${verified.lastName}` : ''}</p>
-          <button type="button" className="btn btn-secondary" onClick={loadEvidence}>View time in class</button>
-          {evidence && <p role="status">
+          <p className="assessment-review-meta" style={{gridColumn: '1 / -1'}}>Verified enrollment {participant.enrollmentId}{verified ? ` · ${verified.firstName} ${verified.lastName}` : ''}</p>
+          <div className="assessment-admin-actions">
+            <button type="button" className="assessment-btn assessment-btn--secondary" onClick={loadEvidence}>View time in class</button>
+          </div>
+          {evidence && <p role="status" className="assessment-panel-status" style={{gridColumn: '1 / -1', margin: 0}}>
             {Math.floor(evidence.seconds / 60)} of {Math.floor(evidence.scheduledSeconds / 60)} minutes recorded.
             {evidence.incomplete && ' Some join or leave records are missing. Review required.'}
             {evidence.policy && <> Course Maker minimum: {evidence.policy.minimumPercent}%.
               {!evidence.incomplete && (evidence.policy.meetsMinimum ? ' Minimum met.' : ' Below minimum.')}</>}
           </p>}
-          {evidence && !evidence.incomplete && evidence.seconds > 0 && evidence.policy?.meetsMinimum !== false && !attendanceRecorded && <>
-            <label><input type="checkbox" checked={approvePresent} onChange={event => setApprovePresent(event.target.checked)} /> Approve marking this student present.</label>
-            <button type="button" className="btn btn-primary" disabled={!approvePresent} onClick={recordAttendance}>Record attendance</button>
-          </>}
-          <label style={{display: 'grid'}}>Reason for revoking
-            <input required minLength={3} maxLength={240} value={reason} onChange={event => setReason(event.target.value)} />
+          {evidence && !evidence.incomplete && evidence.seconds > 0 && evidence.policy?.meetsMinimum !== false && !attendanceRecorded && <div className="assessment-admin-actions">
+            <label className="assessment-admin-checkbox"><input type="checkbox" checked={approvePresent} onChange={event => setApprovePresent(event.target.checked)} /> Approve marking this student present.</label>
+            <button type="button" className="assessment-btn assessment-btn--primary" disabled={!approvePresent} onClick={recordAttendance}>Record attendance</button>
+          </div>}
+          <label className="assessment-admin-field">Reason for revoking
+            <input className="assessment-admin-input" required minLength={3} maxLength={240} value={reason} onChange={event => setReason(event.target.value)} />
           </label>
-          <small>Revoking a verification leaves any saved attendance mark in the attendance sheet.</small>
-          <button type="submit" className="btn btn-secondary" disabled={reason.trim().length < 3}>Revoke verification</button>
+          <small className="assessment-review-meta" style={{gridColumn: '1 / -1'}}>Revoking a verification leaves any saved attendance mark in the attendance sheet.</small>
+          <div className="assessment-admin-actions">
+            <button type="submit" className="assessment-btn assessment-btn--secondary" disabled={reason.trim().length < 3}>Revoke verification</button>
+          </div>
         </> : <>
-          <label style={{display: 'grid'}}>Student enrollment
-            <select aria-label="Student enrollment" required value={enrollmentId} onChange={event => {setEnrollmentId(event.target.value); setConfirmed(false);}}>
+          <label className="assessment-admin-field">Student enrollment
+            <select aria-label="Student enrollment" className="assessment-admin-input" required value={enrollmentId} onChange={event => {setEnrollmentId(event.target.value); setConfirmed(false);}}>
               <option value="">Select enrollment</option>
               {review.enrollments.map(item => <option key={item.id} value={item.id}>
                 {item.firstName} {item.lastName} · {item.studentId || `Enrollment ${item.id}`}
               </option>)}
             </select>
           </label>
-          <label><input type="checkbox" required checked={confirmed} onChange={event => setConfirmed(event.target.checked)} /> I independently verified this participant’s identity.</label>
-          <button type="submit" className="btn btn-primary" disabled={!enrollmentId || !confirmed}>Verify participant</button>
+          <div className="assessment-admin-actions">
+            <label className="assessment-admin-checkbox"><input type="checkbox" required checked={confirmed} onChange={event => setConfirmed(event.target.checked)} /> I independently verified this participant’s identity.</label>
+            <button type="submit" className="assessment-btn assessment-btn--primary" disabled={!enrollmentId || !confirmed}>Verify participant</button>
+          </div>
         </>)}
+        </div>
       </fieldset>
-      {review.participants.length === 0 && <p>No participants are available for this page.</p>}
+      {review.participants.length === 0 && <p className="assessment-review-meta">No participants are available for this page.</p>}
     </form>}
-    {busy && <p role="status">Working…</p>}
-    {message && <p role="status">{message}</p>}
-    {error && <p role="alert">{error}</p>}
+    {busy && <p role="status" className="assessment-panel-status">Working…</p>}
+    {message && <p role="status" className="assessment-panel-status">{message}</p>}
+    {error && <p role="alert" className="assessment-panel-error">{error}</p>}
   </section>;
 }
 
@@ -227,13 +235,14 @@ export default function ZoomClassBindings({batchId, phases}) {
     }
   }
 
-  return <section className="glass-panel" aria-label="Zoom class linking" style={{padding: '1rem', marginBottom: '1rem'}}>
+  return <section className="glass-panel assessment-admin-panel" aria-label="Zoom class linking" style={{padding: '1rem', marginBottom: '1rem'}}>
     <h3>Link a Zoom meeting to a class</h3>
-    <p>Choose the class date in Bangladesh time, then select a recorded Zoom meeting.</p>
+    <p className="assessment-panel-subtitle">Choose the class date in Bangladesh time, then select a recorded Zoom meeting.</p>
     <form onSubmit={search}>
-      <fieldset disabled={busy} style={{border: 0, padding: 0, minWidth: 0, ...fieldsStyle}}>
-        <label style={{display: 'grid', gap: '0.25rem'}}>Phase
-          <select aria-label="Phase" required value={phaseId} onChange={event => {setPhaseId(event.target.value); resetResults();}}>
+      <fieldset disabled={busy} className="assessment-admin-fieldset">
+        <div className="assessment-admin-grid">
+        <label className="assessment-admin-field">Phase
+          <select aria-label="Phase" className="assessment-admin-input" required value={phaseId} onChange={event => {setPhaseId(event.target.value); resetResults();}}>
             <option value="">Select phase</option>
             {phases.map((phase, index) => {
               const id = String(phase.id || `phase_${phase.phaseIndex ?? index + 1}`);
@@ -241,37 +250,40 @@ export default function ZoomClassBindings({batchId, phases}) {
             })}
           </select>
         </label>
-        <label style={{display: 'grid', gap: '0.25rem'}}>Class date
-          <input type="date" required value={date} onChange={event => {setDate(event.target.value); resetResults();}} />
+        <label className="assessment-admin-field">Class date
+          <input className="assessment-admin-input" type="date" required value={date} onChange={event => {setDate(event.target.value); resetResults();}} />
         </label>
-        <button type="submit" className="btn btn-secondary" style={{alignSelf: 'end'}}>Find Zoom meetings</button>
+        <button type="submit" className="assessment-btn assessment-btn--secondary">Find Zoom meetings</button>
+        </div>
       </fieldset>
     </form>
-    {options?.length === 0 && <p role="status">No scheduled Zoom classes were found for that date.</p>}
-    {options?.length > 0 && <form onSubmit={bind}>
-      <fieldset disabled={busy} style={{border: 0, padding: 0, minWidth: 0, marginTop: '0.75rem', ...fieldsStyle}}>
-        <label style={{display: 'grid', gap: '0.25rem'}}>Class
-          <select aria-label="Class" required value={slotId} onChange={event => {setSlotId(event.target.value); setReceiptId(''); setMessage(''); setError('');}}>
+    {options?.length === 0 && <p role="status" className="assessment-panel-status">No scheduled Zoom classes were found for that date.</p>}
+    {options?.length > 0 && <form onSubmit={bind} style={{marginTop: '0.85rem'}}>
+      <fieldset disabled={busy} className="assessment-admin-fieldset">
+        <div className="assessment-admin-grid">
+        <label className="assessment-admin-field">Class
+          <select aria-label="Class" className="assessment-admin-input" required value={slotId} onChange={event => {setSlotId(event.target.value); setReceiptId(''); setMessage(''); setError('');}}>
             <option value="">Select class</option>
             {options.map(item => <option key={item.slotId} value={item.slotId}>{item.startTime} · {item.title}</option>)}
           </select>
         </label>
-        <label style={{display: 'grid', gap: '0.25rem'}}>Recorded Zoom meeting
-          <select aria-label="Recorded Zoom meeting" required disabled={!slot?.receipts.length} value={receiptId} onChange={event => {setReceiptId(event.target.value); setMessage(''); setError('');}}>
+        <label className="assessment-admin-field">Recorded Zoom meeting
+          <select aria-label="Recorded Zoom meeting" className="assessment-admin-input" required disabled={!slot?.receipts.length} value={receiptId} onChange={event => {setReceiptId(event.target.value); setMessage(''); setError('');}}>
             <option value="">Select meeting</option>
             {slot?.receipts.map(item => <option key={item.id} value={item.id}>
               {slot.meetingId} · {eventTime.format(new Date(item.firstEventAt))} · Record {item.id}{item.bound ? ' · Linked' : ''}
             </option>)}
           </select>
         </label>
-        <button type="submit" className="btn btn-primary" disabled={!receipt || receipt.bound} style={{alignSelf: 'end'}}>Link meeting</button>
+        <button type="submit" className="assessment-btn assessment-btn--primary" disabled={!receipt || receipt.bound}>Link meeting</button>
+        </div>
       </fieldset>
     </form>}
-    {slot && !slot.receipts.length && <p role="status">No available Zoom records for this class.</p>}
-    {receipt?.bound && !message && <p role="status">This meeting is already linked to the selected class.</p>}
+    {slot && !slot.receipts.length && <p role="status" className="assessment-panel-status">No available Zoom records for this class.</p>}
+    {receipt?.bound && !message && <p role="status" className="assessment-panel-status">This meeting is already linked to the selected class.</p>}
     {receipt?.bound && <ParticipantReview key={receipt.id} meetingReceiptId={receipt.id} />}
-    {busy && <p role="status">Working…</p>}
-    {message && <p role="status">{message}</p>}
-    {error && <p role="alert">{error}</p>}
+    {busy && <p role="status" className="assessment-panel-status">Working…</p>}
+    {message && <p role="status" className="assessment-panel-status">{message}</p>}
+    {error && <p role="alert" className="assessment-panel-error">{error}</p>}
   </section>;
 }

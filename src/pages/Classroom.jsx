@@ -273,7 +273,7 @@ export default function Classroom() {
           )}
 
           {currentUser?.role === 'student' && activeBatch && activePhase && <StudentAssessmentWindows batchId={activeBatch.batchId} phaseId={activePhase.phaseId} />}
-          {currentUser?.role === 'instructor' && activeBatch && <p><Link to={`/assessment-review?batch_id=${encodeURIComponent(activeBatch.batchId)}`}>Review answer papers</Link></p>}
+          {currentUser?.role === 'instructor' && activeBatch && <p><Link to={`/assessment-review?batch_id=${encodeURIComponent(activeBatch.batchId)}`} className="assessment-action-link">Review answer papers</Link></p>}
           {activeSlots.length > 0 && (
             <>
             <section className="classroom-timetable glass-panel" aria-label="Weekly timetable">
@@ -301,7 +301,7 @@ export default function Classroom() {
                       {import.meta.env.VITE_ZOOM_EMBED_ENABLED === 'true' && currentUser?.role === 'student' && slot === selectedSession && slot.meetingUrl && !['cancelled', 'rescheduled'].includes(slot.status) &&
                         <ZoomClassroom key={`${activeBatch.batchId}:${activePhase.phaseId}:${slot.id}:${slot.date}`} batchId={activeBatch.batchId} phaseId={activePhase.phaseId} session={slot} userName={currentUser?.full_name || currentUser?.username || 'Student'} />}
                       {slot.meetingUrl && !['cancelled', 'rescheduled'].includes(slot.status) && /^https:\/\//i.test(slot.meetingUrl) &&
-                        <div><a href={slot.meetingUrl} target="_blank" rel="noopener noreferrer">Join meeting</a></div>}
+                        <div><a href={slot.meetingUrl} target="_blank" rel="noopener noreferrer" className="assessment-action-link">Join meeting</a></div>}
                     </li>)}</ul> : <p>No classes</p>}
                   </div>;
                 })}

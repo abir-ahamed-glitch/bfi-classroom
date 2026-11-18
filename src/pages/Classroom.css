@@ -297,4 +297,6 @@
 .classroom-day li + li { margin-top: 0.5rem; }
 .classroom-selected-session { border: 2px solid #17b790; border-radius: 8px; padding: 0.45rem; background: rgba(23, 183, 144, 0.12); }
 .classroom-day p, .classroom-day li span { color: var(--text-secondary); }
+.classroom-day a { color: #93c5fd; font-weight: 600; text-decoration: underline; text-underline-offset: 3px; }
+[data-mode="light"] .classroom-day a { color: #1e40af; }
 .classroom-week-controls .btn { min-height: 44px; }

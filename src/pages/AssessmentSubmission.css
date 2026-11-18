@@ -1,0 +1,168 @@
+/* Layout clearance and accessible contrast for assessment submission and review views */
+
+.assessment-page {
+  --assessment-link: #93c5fd;
+  --assessment-link-hover: #bfdbfe;
+  --assessment-surface: rgba(15, 23, 42, 0.72);
+  --assessment-surface-border: rgba(148, 163, 184, 0.25);
+  --assessment-btn-bg: rgba(30, 41, 59, 0.9);
+  --assessment-btn-bg-hover: rgba(51, 65, 85, 0.95);
+  --assessment-btn-text: #f8fafc;
+  --assessment-primary-bg: #2563eb;
+  --assessment-primary-bg-hover: #1d4ed8;
+  --assessment-primary-text: #ffffff;
+  color: var(--text-primary);
+  min-height: 0;
+  max-height: 100%;
+  overflow-y: auto;
+  padding-bottom: 5rem;
+  scroll-padding-bottom: 3rem;
+}
+
+.assessment-windows-panel {
+  --assessment-link: #93c5fd;
+  --assessment-link-hover: #bfdbfe;
+}
+
+[data-mode="light"] .assessment-page,
+[data-mode="light"] .assessment-windows-panel {
+  --assessment-link: #1e40af;
+  --assessment-link-hover: #1e3a8a;
+  --assessment-surface: rgba(255, 255, 255, 0.92);
+  --assessment-surface-border: rgba(15, 23, 42, 0.16);
+  --assessment-btn-bg: #f1f5f9;
+  --assessment-btn-bg-hover: #e2e8f0;
+  --assessment-btn-text: #0f172a;
+  --assessment-primary-bg: #1d4ed8;
+  --assessment-primary-bg-hover: #1e40af;
+  --assessment-primary-text: #ffffff;
+}
+
+.assessment-page a,
+.assessment-back-link,
+.assessment-windows-panel a,
+.assessment-action-link {
+  color: var(--assessment-link, #93c5fd);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  font-weight: 600;
+  transition: color 0.15s ease, background-color 0.15s ease;
+}
+
+.assessment-page a:hover,
+.assessment-back-link:hover,
+.assessment-windows-panel a:hover,
+.assessment-action-link:hover {
+  color: var(--assessment-link-hover, #bfdbfe);
+}
+
+.assessment-back-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  margin-bottom: 0.25rem;
+}
+
+.assessment-page :focus-visible,
+.assessment-windows-panel :focus-visible,
+.assessment-action-link:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 3px;
+}
+
+.assessment-form {
+  display: grid;
+  gap: 0.85rem;
+  margin-top: 1rem;
+  margin-bottom: 1.5rem;
+  max-width: 44rem;
+}
+
+.assessment-field {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.assessment-page-list {
+  list-style: none;
+  padding: 0;
+  margin: 0.25rem 0;
+  display: grid;
+  gap: 0.85rem;
+}
+
+.assessment-page-card {
+  padding: 0.85rem;
+  border-radius: 10px;
+  background: var(--assessment-surface);
+  border: 1px solid var(--assessment-surface-border);
+  display: grid;
+  gap: 0.6rem;
+}
+
+.assessment-page-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.assessment-page button {
+  min-height: 40px;
+  padding: 0.45rem 0.85rem;
+  border-radius: 8px;
+  border: 1px solid var(--assessment-surface-border);
+  background: var(--assessment-btn-bg);
+  color: var(--assessment-btn-text);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.assessment-page button:hover:not(:disabled) {
+  background: var(--assessment-btn-bg-hover);
+}
+
+.assessment-page button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.assessment-page .assessment-submit-btn {
+  justify-self: start;
+  background: var(--assessment-primary-bg);
+  border-color: var(--assessment-primary-bg);
+  color: var(--assessment-primary-text);
+  min-height: 44px;
+  padding: 0.55rem 1.25rem;
+}
+
+.assessment-page .assessment-submit-btn:hover:not(:disabled) {
+  background: var(--assessment-primary-bg-hover);
+}
+
+.assessment-history-list {
+  padding-left: 1.25rem;
+  display: grid;
+  gap: 0.65rem;
+  margin-top: 0.5rem;
+}
+
+.assessment-history-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+@media (max-width: 1024px) {
+  /* Bound scroll container strictly above the fixed 60px .mobile-bottom-nav */
+  .assessment-page.page-container.container:not(.inbox-page) {
+    min-height: 0;
+    height: auto;
+    max-height: calc(100dvh - 4rem - 60px - env(safe-area-inset-bottom, 0px));
+    overflow-y: auto;
+    padding-top: 1.25rem;
+    padding-bottom: calc(2.5rem + env(safe-area-inset-bottom, 0px)) !important;
+    scroll-padding-bottom: calc(2.5rem + env(safe-area-inset-bottom, 0px));
+  }
+}

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import apiClient from '../utils/apiClient';
+import './AssessmentPanels.css';
 
 export default function AssessmentReview({ batchId }) {
   const [items, setItems] = useState([]);
@@ -32,18 +33,28 @@ export default function AssessmentReview({ batchId }) {
       await load(); setMessage('Marks saved.');
     } catch (error) { setMessage(error.message); }
   };
-  return <section aria-label="Submitted answer papers" className="glass-panel" style={{padding: '1rem', marginBottom: '1rem'}}>
+  return <section aria-label="Submitted answer papers" className="glass-panel assessment-admin-panel" style={{padding: '1rem', marginBottom: '1rem'}}>
     <h3>Submitted answer papers</h3>
-    {!items.length && <p>No submissions for this batch.</p>}
-    {items.map(item => <article key={item.id} style={{padding: '0.75rem', borderBottom: '1px solid var(--glass-border)'}}>
-      <p><strong>{item.student_name || `Student #${item.user_id}`}</strong> · {item.phase_id} · {item.assessment_type} · {item.assessment_id} · Version {item.version} · {item.status}</p>
-      <button type="button" onClick={() => download(item.id)}>Download answer paper</button>
-      {!item.is_latest ? <p>Earlier version; grade the latest submission.</p> : item.status === 'graded' ? <p>Marks: {item.marks}{item.remarks ? ` · ${item.remarks}` : ''}</p> : <form onSubmit={event => grade(event, item)}>
-        <label>Marks <input type="number" step="any" min="0" required value={marks[item.id] || ''} onChange={event => setMarks(current => ({...current, [item.id]: event.target.value}))} /></label>
-        <label>Feedback <input maxLength="2000" value={remarks[item.id] || ''} onChange={event => setRemarks(current => ({...current, [item.id]: event.target.value}))} /></label>
-        <button type="submit">Save marks</button>
-      </form>}
-    </article>)}
-    {message && <p role="status">{message}</p>}
+    {!items.length && <p className="assessment-panel-subtitle">No submissions for this batch.</p>}
+    <div className="assessment-review-list">
+      {items.map(item => <article key={item.id} className="assessment-review-card">
+        <div className="assessment-review-header">
+          <p className="assessment-review-title"><strong>{item.student_name || `Student #${item.user_id}`}</strong> · {item.phase_id} · {item.assessment_type} · {item.assessment_id} · Version {item.version} · {item.status}</p>
+          <button type="button" className="assessment-btn assessment-btn--secondary" onClick={() => download(item.id)}>Download answer paper</button>
+        </div>
+        {!item.is_latest ? <p className="assessment-review-meta">Earlier version; grade the latest submission.</p> : item.status === 'graded' ? <p className="assessment-review-meta">Marks: {item.marks}{item.remarks ? ` · ${item.remarks}` : ''}</p> : <form onSubmit={event => grade(event, item)} className="assessment-admin-grid">
+          <label className="assessment-admin-field">Marks
+            <input className="assessment-admin-input" type="number" step="any" min="0" required value={marks[item.id] || ''} onChange={event => setMarks(current => ({...current, [item.id]: event.target.value}))} />
+          </label>
+          <label className="assessment-admin-field">Feedback
+            <input className="assessment-admin-input" maxLength="2000" value={remarks[item.id] || ''} onChange={event => setRemarks(current => ({...current, [item.id]: event.target.value}))} />
+          </label>
+          <div className="assessment-admin-actions">
+            <button type="submit" className="assessment-btn assessment-btn--primary">Save marks</button>
+          </div>
+        </form>}
+      </article>)}
+    </div>
+    {message && <p role="status" className="assessment-panel-status">{message}</p>}
   </section>;
 }
