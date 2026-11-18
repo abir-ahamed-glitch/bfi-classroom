@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Wallet, Search, Filter, Download, ArrowRight, CheckCircle, Clock, AlertCircle, ChevronDown, ChevronUp, GraduationCap, Clapperboard, Edit, Trash2, X } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import { getOrdinalSuffix } from '../../utils/formatUtils';
