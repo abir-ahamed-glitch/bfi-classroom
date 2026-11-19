@@ -8,7 +8,7 @@ import apiClient from '../utils/apiClient';
 import { StudentAssessmentWindows } from '../components/AssessmentWindows';
 import ZoomClassroom from '../components/ZoomClassroom';
 import { selectedTimelineSession } from '../utils/classTimeline';
-import { addDays, dhakaNow, getTimedSessions, isSessionDate, weekdayOf } from '../utils/timetable';
+import { addDays, dhakaNow, formatTime12h, getTimedSessions, isSessionDate, weekdayOf } from '../utils/timetable';
 import './Classroom.css';
 
 export default function Classroom() {
@@ -305,13 +305,17 @@ export default function Classroom() {
                   <button type="button" className="btn btn-secondary" onClick={() => setWeekOffset(value => value + 1)}>Next week</button>
                 </div>
               </div>
-              <p aria-live="polite">{weekDates[0]} to {weekDates[6]} (Bangladesh time)</p>
+              <p className="classroom-week-range" aria-live="polite">{weekDates[0]} to {weekDates[6]} (Bangladesh time)</p>
               <div className="classroom-week">
                 {weekDates.map(date => {
                   const sessions = weeklySessions.filter(slot => slot.date === date);
-                  const isFeatured = sessions.length > 0 && (date === now.date || sessions.some(slot => slot === selectedSession));
-                  return <div className={`classroom-day${isFeatured ? ' classroom-day--featured' : ''}`} key={date}>
-                    <h4>{weekdayOf(date).slice(0, 3)} <time dateTime={date}>{date.slice(8)}</time>{date === now.date ? ' • Today' : ''}</h4>
+                  const isToday = date === now.date;
+                  const isFeatured = sessions.length > 0 && (isToday || sessions.some(slot => slot === selectedSession));
+                  return <div className={`classroom-day${isFeatured ? ' classroom-day--featured' : ''}${sessions.length === 0 ? ' classroom-day--empty' : ''}`} key={date}>
+                    <h4 className="classroom-day-header">
+                      <span>{weekdayOf(date).slice(0, 3)} <time dateTime={date}>{date.slice(8)}</time></span>
+                      {isToday && <span className="classroom-today-badge">Today</span>}
+                    </h4>
                     {sessions.length ? <ul>{sessions.map(slot => {
                       const canEmbedJoin = import.meta.env.VITE_ZOOM_EMBED_ENABLED === 'true'
                         && ['student', 'admin'].includes(currentUser?.role)
@@ -319,13 +323,23 @@ export default function Classroom() {
                         && slot.meetingUrl && slot.id != null && slot.date
                         && !['cancelled', 'rescheduled'].includes(slot.status);
                       const isStageOpen = activeZoomSlot?.key === slot.key;
-                      return <li key={slot.key} className={slot === selectedSession ? 'classroom-selected-session' : undefined}>
-                        {slot === selectedSession && <span>Selected class</span>}
-                        <strong>{slot.classTitle || slot.subjectName || 'Class'}</strong>
-                        <div>{slot.startTime} - {slot.endTime}</div>
-                        {slot.status === 'cancelled' && <span>Cancelled</span>}
-                        {slot.status === 'rescheduled' && <span>Moved to {slot.movedTo}</span>}
-                        {slot.status === 'moved' && <span>Rescheduled from {slot.originalDate}</span>}
+                      const delivery = formatDeliveryMode(slot.deliveryMode);
+                      return <li key={slot.key} className={`classroom-session-item${slot === selectedSession ? ' classroom-selected-session' : ''}`}>
+                        <div className="classroom-session-main">
+                          {slot === selectedSession && <span className="classroom-selected-tag">Selected class</span>}
+                          <div className="classroom-session-title">{slot.classTitle || slot.subjectName || 'Class'}</div>
+                          {slot.classTitle && slot.subjectName && <div className="classroom-session-subject">{slot.subjectName}</div>}
+                          <div className="classroom-session-meta">
+                            <span className="classroom-session-time">
+                              <Clock size={13} /> {formatTime12h(slot.startTime)} – {formatTime12h(slot.endTime)}
+                            </span>
+                            <span className={`classroom-pill ${delivery.className}`}>{delivery.label}</span>
+                            {slot.platform && <span className="classroom-pill classroom-pill-platform">{slot.platform}</span>}
+                            {slot.status === 'cancelled' && <span className="classroom-status-pill classroom-status-pill--cancelled">Cancelled</span>}
+                            {slot.status === 'rescheduled' && <span className="classroom-status-pill classroom-status-pill--moved">Moved to {slot.movedTo}</span>}
+                            {slot.status === 'moved' && <span className="classroom-status-pill classroom-status-pill--moved">Rescheduled from {slot.originalDate}</span>}
+                          </div>
+                        </div>
                         {(canEmbedJoin || (slot.meetingUrl && !['cancelled', 'rescheduled'].includes(slot.status) && /^https:\/\//i.test(slot.meetingUrl))) && (
                           <div className="classroom-session-actions">
                             {canEmbedJoin && (isStageOpen
@@ -339,7 +353,7 @@ export default function Classroom() {
                           </div>
                         )}
                       </li>;
-                    })}</ul> : <p>No classes</p>}
+                    })}</ul> : <p className="classroom-day-empty-text">No classes</p>}
                   </div>;
                 })}
               </div>

@@ -19,6 +19,17 @@ export function weekdayOf(date) {
   return weekdays[new Date(date + 'T00:00:00Z').getUTCDay()];
 }
 
+export function formatTime12h(timeStr) {
+  if (!timeStr || typeof timeStr !== 'string') return '';
+  const match = /^(\d{1,2}):(\d{2})$/.exec(timeStr.trim());
+  if (!match) return timeStr;
+  const hour24 = Number(match[1]);
+  const minutes = match[2];
+  const period = hour24 >= 12 ? 'PM' : 'AM';
+  const hour12 = hour24 % 12 === 0 ? 12 : hour24 % 12;
+  return `${hour12}:${minutes} ${period}`;
+}
+
 export function isSessionDate(date) {
   return typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date)
     && Number.isFinite(Date.parse(date)) && addDays(date, 0) === date;

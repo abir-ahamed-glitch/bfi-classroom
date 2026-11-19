@@ -1,17 +1,35 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Maximize2, Minimize2, Video, X } from 'lucide-react';
+import { LogOut, Maximize2, Minimize2, Video } from 'lucide-react';
 import apiClient from '../utils/apiClient';
-import { safeZoomOrigin, validZoomReadyMessage } from '../utils/zoomFrame';
+import { formatTime12h } from '../utils/timetable';
+import { safeZoomOrigin, validZoomLeftMessage, validZoomReadyMessage } from '../utils/zoomFrame';
 
 export default function ZoomClassroom({batchId, phaseId, session, userName, autoJoin = false, onClose}) {
   const [joinData, setJoinData] = useState(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [leaving, setLeaving] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const frame = useRef(null);
   const stage = useRef(null);
   const autoStarted = useRef(false);
+  const leaveTimer = useRef(null);
   const origin = safeZoomOrigin(import.meta.env.VITE_ZOOM_EMBED_ORIGIN, window.location.origin);
+
+  const finalizeClose = useCallback(() => {
+    if (leaveTimer.current) {
+      clearTimeout(leaveTimer.current);
+      leaveTimer.current = null;
+    }
+    if (document.fullscreenElement === stage.current) document.exitFullscreen?.().catch(() => {});
+    setLeaving(false);
+    setJoinData(null);
+    onClose?.();
+  }, [onClose]);
+
+  useEffect(() => () => {
+    if (leaveTimer.current) clearTimeout(leaveTimer.current);
+  }, []);
 
   useEffect(() => {
     const syncFullscreen = () => setIsFullscreen(document.fullscreenElement === stage.current);
@@ -21,13 +39,18 @@ export default function ZoomClassroom({batchId, phaseId, session, userName, auto
 
   useEffect(() => {
     if (!joinData) return;
-    const ready = event => {
-      if (!validZoomReadyMessage(event, frame.current?.contentWindow, origin)) return;
-      event.source.postMessage({type:'BFI_ZOOM_JOIN', ...joinData, userName}, origin);
+    const handleFrameMessage = event => {
+      if (validZoomReadyMessage(event, frame.current?.contentWindow, origin)) {
+        event.source.postMessage({type:'BFI_ZOOM_JOIN', ...joinData, userName}, origin);
+        return;
+      }
+      if (validZoomLeftMessage(event, frame.current?.contentWindow, origin)) {
+        finalizeClose();
+      }
     };
-    window.addEventListener('message', ready);
-    return () => window.removeEventListener('message', ready);
-  }, [joinData, userName, origin]);
+    window.addEventListener('message', handleFrameMessage);
+    return () => window.removeEventListener('message', handleFrameMessage);
+  }, [joinData, userName, origin, finalizeClose]);
 
   const join = useCallback(async () => {
     if (!origin) { setError('Zoom Classroom is not configured.'); return; }
@@ -47,10 +70,16 @@ export default function ZoomClassroom({batchId, phaseId, session, userName, auto
     join();
   }, [autoJoin, join]);
 
-  const closeMeeting = () => {
-    if (document.fullscreenElement === stage.current) document.exitFullscreen?.().catch(() => {});
-    setJoinData(null);
-    onClose?.();
+  const leaveMeeting = () => {
+    if (joinData && frame.current?.contentWindow && origin) {
+      setLeaving(true);
+      try {
+        frame.current.contentWindow.postMessage({type:'BFI_ZOOM_LEAVE'}, origin);
+      } catch { /* fallback to timer */ }
+      leaveTimer.current = setTimeout(finalizeClose, 300);
+      return;
+    }
+    finalizeClose();
   };
 
   const toggleFullscreen = async () => {
@@ -74,15 +103,15 @@ export default function ZoomClassroom({batchId, phaseId, session, userName, auto
       <div className="classroom-zoom-stage-meta">
         <span className="classroom-zoom-live-dot" aria-hidden="true" />
         <strong>{session.classTitle || session.subjectName || 'Live Classroom'}</strong>
-        {session.startTime && session.endTime && <span className="classroom-zoom-stage-time">{session.startTime} - {session.endTime}</span>}
+        {session.startTime && session.endTime && <span className="classroom-zoom-stage-time">{formatTime12h(session.startTime)} – {formatTime12h(session.endTime)}</span>}
       </div>
       <div className="classroom-zoom-stage-actions">
         <button type="button" className="classroom-zoom-fullscreen-btn" onClick={toggleFullscreen}>
           {isFullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
           {isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
         </button>
-        <button type="button" className="classroom-zoom-close-btn" onClick={closeMeeting}>
-          <X size={14} /> Close meeting
+        <button type="button" className="classroom-zoom-close-btn" onClick={leaveMeeting} disabled={leaving}>
+          <LogOut size={14} /> {leaving ? 'Leaving…' : 'Leave meeting'}
         </button>
       </div>
     </div>

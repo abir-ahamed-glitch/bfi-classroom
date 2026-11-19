@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { validJoinMessage } from '../zoom-embed/src/validation.js';
-import { validZoomReadyMessage, safeZoomOrigin } from '../src/utils/zoomFrame.js';
+import { validZoomLeftMessage, validZoomReadyMessage, safeZoomOrigin } from '../src/utils/zoomFrame.js';
 
 test('only accepts the parent origin and a well-formed participant payload', () => {
   const parent = {};
@@ -18,6 +18,8 @@ test('parent accepts readiness only from its own separately hosted frame', () =>
   assert.equal(validZoomReadyMessage({origin,source:frame,data:{type:'BFI_ZOOM_READY'}}, frame, origin), true);
   assert.equal(validZoomReadyMessage({origin,source:{},data:{type:'BFI_ZOOM_READY'}}, frame, origin), false);
   assert.equal(validZoomReadyMessage({origin:'https://evil.example',source:frame,data:{type:'BFI_ZOOM_READY'}}, frame, origin), false);
+  assert.equal(validZoomLeftMessage({origin,source:frame,data:{type:'BFI_ZOOM_LEFT'}}, frame, origin), true);
+  assert.equal(validZoomLeftMessage({origin:'https://evil.example',source:frame,data:{type:'BFI_ZOOM_LEFT'}}, frame, origin), false);
   assert.equal(safeZoomOrigin('https://zoom.example', 'https://classroom.example'), origin);
   assert.equal(safeZoomOrigin('https://classroom.example', 'https://classroom.example'), null);
   assert.equal(safeZoomOrigin('http://evil.example', 'https://classroom.example'), null);

@@ -9,18 +9,47 @@ import { validZoomAttendanceMinimum } from '../../src/utils/zoomAttendancePolicy
 
 const router = express.Router();
 
-function notifyScheduleChange(req, definitionId, batchId) {
+function notifyScheduleChange(req, definitionId, batchId, { title = 'Class Routine Updated', message = 'Your class schedule has been updated.' } = {}) {
   const io = req.app.get('io');
-  if (!io) return;
   try {
     const students = db.prepare(`
-      SELECT bs.student_id AS id FROM batch_students bs JOIN batches b ON b.id = bs.batch_id
-      WHERE b.course_definition_id = ? AND (? = 0 OR b.id = ?) AND b.deleted_at IS NULL
-      UNION
-      SELECT e.user_id AS id FROM student_course_enrollments e JOIN batches b ON b.id = e.batch_id
-      WHERE b.course_definition_id = ? AND (? = 0 OR b.id = ?) AND b.deleted_at IS NULL
+      SELECT DISTINCT u.id FROM users u
+      WHERE u.deleted_at IS NULL AND u.id IN (
+        SELECT bs.student_id FROM batch_students bs JOIN batches b ON b.id = bs.batch_id
+        WHERE b.course_definition_id = ? AND (? = 0 OR b.id = ?) AND b.deleted_at IS NULL
+        UNION
+        SELECT e.user_id FROM student_course_enrollments e JOIN batches b ON b.id = e.batch_id
+        WHERE b.course_definition_id = ? AND (? = 0 OR b.id = ?) AND b.deleted_at IS NULL
+      )
     `).all(definitionId, batchId, batchId, definitionId, batchId, batchId);
-    if (students.length) io.to(students.map(student => `user:${student.id}`)).emit('schedule_updated');
+    if (!students.length) return;
+    const link = batchId > 0 ? `/classroom?batch_id=${batchId}` : '/classroom';
+    const insertNotif = db.prepare(`
+      INSERT INTO notifications (user_id, type, title, message, link)
+      VALUES (?, 'schedule_update', ?, ?, ?)
+    `);
+    const created = [];
+    const writeAll = db.transaction(() => {
+      for (const student of students) {
+        const res = insertNotif.run(student.id, title, message, link);
+        if (res.changes) created.push({ userId: student.id, id: res.lastInsertRowid });
+      }
+    });
+    writeAll();
+    if (io) {
+      io.to(students.map(student => `user:${student.id}`)).emit('schedule_updated');
+      const nowIso = new Date().toISOString();
+      for (const item of created) {
+        io.to(`user:${item.userId}`).emit('notification_received', {
+          id: item.id,
+          type: 'schedule_update',
+          title,
+          message,
+          link,
+          created_at: nowIso
+        });
+      }
+    }
   } catch (error) {
     console.error('Could not notify students about a saved schedule:', error.message);
   }
@@ -1085,7 +1114,10 @@ router.put('/:id/routine', authenticateToken, (req, res) => {
       });
 
       revertTx();
-      notifyScheduleChange(req, id, resolvedBatchId);
+      notifyScheduleChange(req, id, resolvedBatchId, {
+        title: 'Class Routine Reverted',
+        message: reason ? String(reason).trim() : `${definition.name} routine reverted to course default schedule.`
+      });
 
       return res.json({
         success: true,
@@ -1281,7 +1313,19 @@ router.put('/:id/routine', authenticateToken, (req, res) => {
     });
 
     tx();
-    notifyScheduleChange(req, id, resolvedBatchId);
+    const hasCancel = sanitizedRoutine.some(slot => Array.isArray(slot.sessionChanges) && slot.sessionChanges.some(ch => ch.status === 'cancelled'));
+    const hasReschedule = sanitizedRoutine.some(slot => Array.isArray(slot.sessionChanges) && slot.sessionChanges.some(ch => ch.status === 'rescheduled'));
+    const notifTitle = hasCancel && hasReschedule
+      ? 'Class Schedule Changes'
+      : hasCancel
+        ? 'Class Session Cancelled'
+        : hasReschedule
+          ? 'Class Session Rescheduled'
+          : 'Class Routine Updated';
+    const notifMsg = reason && String(reason).trim()
+      ? `${definition.name}: ${String(reason).trim()}`
+      : `${definition.name} class schedule has been updated.`;
+    notifyScheduleChange(req, id, resolvedBatchId, { title: notifTitle, message: notifMsg });
 
     res.json({
       success: true,

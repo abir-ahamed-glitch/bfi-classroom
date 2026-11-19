@@ -11,3 +11,7 @@ export function safeZoomOrigin(value, parentOrigin) {
 export function validZoomReadyMessage(event, frameWindow, expectedOrigin) {
   return Boolean(frameWindow && expectedOrigin && event.source === frameWindow && event.origin === expectedOrigin && event.data?.type === 'BFI_ZOOM_READY');
 }
+
+export function validZoomLeftMessage(event, frameWindow, expectedOrigin) {
+  return Boolean(frameWindow && expectedOrigin && event.source === frameWindow && event.origin === expectedOrigin && event.data?.type === 'BFI_ZOOM_LEFT');
+}
