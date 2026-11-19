@@ -454,7 +454,7 @@ async function run() {
   await timeline.getByRole('button', { name: /Marked attendance class/ }).click();
   await timeline.getByText('Open Classroom to join the meeting.').waitFor();
   await timeline.locator('.class-timeline__detail').getByRole('link', {name: 'Open Classroom'}).click();
-  await studentPage.getByRole('region', {name: 'Weekly timetable'}).getByRole('link', {name: 'Join meeting'}).waitFor();
+  await studentPage.getByRole('region', {name: 'Weekly timetable'}).getByRole('link', {name: 'Join via Zoom App'}).waitFor();
   await studentPage.getByRole('region', {name: 'Weekly timetable'}).locator('.classroom-selected-session').getByText('Marked attendance class', {exact: true}).waitFor();
   if (process.env.TEST_ZOOM_EMBED === 'true' || process.env.TEST_ZOOM_REAL_BUNDLE === 'true') {
     process.env.ZOOM_CLIENT_ID = 'test-client'; process.env.ZOOM_CLIENT_SECRET = 'test-secret';
@@ -465,7 +465,7 @@ async function run() {
     await studentPage.getByRole('button', {name:'Close meeting'}).click();
     delete process.env.ZOOM_CLIENT_ID; delete process.env.ZOOM_CLIENT_SECRET;
   }
-  assert.equal(await studentPage.getByRole('region', {name: 'Weekly timetable'}).locator('.classroom-selected-session').getByRole('link', {name: 'Join meeting'}).getAttribute('href'), 'https://zoom.us/j/123456789');
+  assert.equal(await studentPage.getByRole('region', {name: 'Weekly timetable'}).locator('.classroom-selected-session').getByRole('link', {name: 'Join via Zoom App'}).getAttribute('href'), 'https://zoom.us/j/123456789');
   await studentPage.getByRole('region', {name: 'Assessments'}).getByText('Theory exam', {exact: true}).waitFor();
   db.prepare("UPDATE assessment_windows SET opens_at='2000-01-01T00:00:00.000Z', closes_at='2000-01-02T00:00:00.000Z' WHERE id=?").run(assignmentWindowId);
   await studentPage.reload();
@@ -526,7 +526,7 @@ async function run() {
   await timeline.getByRole('heading', { name: 'Class routine' }).waitFor();
   await timeline.getByRole('button', { name: /Marked attendance class/ }).click();
   await timeline.locator('.class-timeline__detail').getByRole('link', {name: 'Open Classroom'}).click();
-  assert.equal(await studentPage.getByRole('region', {name: 'Weekly timetable'}).getByRole('link', {name: 'Join meeting'}).getAttribute('href'), 'https://zoom.us/j/123456789');
+  assert.equal(await studentPage.getByRole('region', {name: 'Weekly timetable'}).getByRole('link', {name: 'Join via Zoom App'}).getAttribute('href'), 'https://zoom.us/j/123456789');
   await studentPage.goto(baseUrl + '/bfi-classroom/');
   await timeline.getByRole('heading', { name: 'Class routine' }).waitFor();
   if (engine === 'chromium') {
