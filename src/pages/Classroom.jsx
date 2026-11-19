@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { BookOpen, Calendar, Clock, User, AlertCircle, RefreshCw, Layers } from 'lucide-react';
+import { BookOpen, Calendar, Clock, User, AlertCircle, RefreshCw, Layers, Video, ExternalLink } from 'lucide-react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { getPlatformIcon } from '../components/admin/PlatformSelector';
@@ -23,6 +23,7 @@ export default function Classroom() {
 
   const [weekOffset, setWeekOffset] = useState(0);
   const [now, setNow] = useState(dhakaNow);
+  const [activeZoomSlot, setActiveZoomSlot] = useState(null);
   const requestNumber = useRef(0);
 
   const fetchSchedule = useCallback(async (quiet = false) => {
@@ -223,6 +224,7 @@ export default function Classroom() {
                   onClick={() => {
                     setSelectedBatchIndex(idx);
                     setSelectedPhaseIndex(0);
+                    setActiveZoomSlot(null);
                   }}
                 >
                   {b.courseName} — {b.batchName || `Batch ${b.batchNumber || idx + 1}`}
@@ -257,7 +259,10 @@ export default function Classroom() {
                   role="tab"
                   aria-selected={pIdx === selectedPhaseIndex}
                   className={`classroom-phase-tab ${pIdx === selectedPhaseIndex ? 'active' : ''}`}
-                  onClick={() => setSelectedPhaseIndex(pIdx)}
+                  onClick={() => {
+                    setSelectedPhaseIndex(pIdx);
+                    setActiveZoomSlot(null);
+                  }}
                 >
                   {phase.title || `Phase ${pIdx + 1}`}
                 </button>
@@ -281,6 +286,17 @@ export default function Classroom() {
           {activeSlots.length > 0 && (
             <>
             <section className="classroom-timetable glass-panel" aria-label="Weekly timetable">
+              {activeZoomSlot && import.meta.env.VITE_ZOOM_EMBED_ENABLED === 'true' && ['student', 'admin'].includes(currentUser?.role) && (
+                <ZoomClassroom
+                  key={`${activeBatch.batchId}:${activePhase.phaseId}:${activeZoomSlot.id}:${activeZoomSlot.date}`}
+                  batchId={activeBatch.batchId}
+                  phaseId={activePhase.phaseId}
+                  session={activeZoomSlot}
+                  userName={currentUser?.full_name || currentUser?.username || (currentUser?.role === 'admin' ? 'Admin' : 'Student')}
+                  autoJoin
+                  onClose={() => setActiveZoomSlot(null)}
+                />
+              )}
               <div className="classroom-week-heading">
                 <h3>Weekly timetable</h3>
                 <div className="classroom-week-controls">
@@ -293,20 +309,37 @@ export default function Classroom() {
               <div className="classroom-week">
                 {weekDates.map(date => {
                   const sessions = weeklySessions.filter(slot => slot.date === date);
-                  return <div className="classroom-day" key={date}>
-                    <h4>{weekdayOf(date).slice(0, 3)} <time dateTime={date}>{date.slice(8)}</time></h4>
-                    {sessions.length ? <ul>{sessions.map(slot => <li key={slot.key} className={slot === selectedSession ? 'classroom-selected-session' : undefined}>
-                      {slot === selectedSession && <span>Selected class</span>}
-                      <strong>{slot.classTitle || slot.subjectName || 'Class'}</strong>
-                      <div>{slot.startTime} - {slot.endTime}</div>
-                      {slot.status === 'cancelled' && <span>Cancelled</span>}
-                      {slot.status === 'rescheduled' && <span>Moved to {slot.movedTo}</span>}
-                      {slot.status === 'moved' && <span>Rescheduled from {slot.originalDate}</span>}
-                      {import.meta.env.VITE_ZOOM_EMBED_ENABLED === 'true' && ['student', 'admin'].includes(currentUser?.role) && (currentUser?.role === 'admin' || slot === selectedSession) && slot.meetingUrl && slot.id != null && slot.date && !['cancelled', 'rescheduled'].includes(slot.status) &&
-                        <ZoomClassroom key={`${activeBatch.batchId}:${activePhase.phaseId}:${slot.id}:${slot.date}`} batchId={activeBatch.batchId} phaseId={activePhase.phaseId} session={slot} userName={currentUser?.full_name || currentUser?.username || (currentUser?.role === 'admin' ? 'Admin' : 'Student')} />}
-                      {slot.meetingUrl && !['cancelled', 'rescheduled'].includes(slot.status) && /^https:\/\//i.test(slot.meetingUrl) &&
-                        <div><a href={slot.meetingUrl} target="_blank" rel="noopener noreferrer" className="assessment-action-link">Join meeting</a></div>}
-                    </li>)}</ul> : <p>No classes</p>}
+                  const isFeatured = sessions.length > 0 && (date === now.date || sessions.some(slot => slot === selectedSession));
+                  return <div className={`classroom-day${isFeatured ? ' classroom-day--featured' : ''}`} key={date}>
+                    <h4>{weekdayOf(date).slice(0, 3)} <time dateTime={date}>{date.slice(8)}</time>{date === now.date ? ' • Today' : ''}</h4>
+                    {sessions.length ? <ul>{sessions.map(slot => {
+                      const canEmbedJoin = import.meta.env.VITE_ZOOM_EMBED_ENABLED === 'true'
+                        && ['student', 'admin'].includes(currentUser?.role)
+                        && (currentUser?.role === 'admin' || slot === selectedSession)
+                        && slot.meetingUrl && slot.id != null && slot.date
+                        && !['cancelled', 'rescheduled'].includes(slot.status);
+                      const isStageOpen = activeZoomSlot?.key === slot.key;
+                      return <li key={slot.key} className={slot === selectedSession ? 'classroom-selected-session' : undefined}>
+                        {slot === selectedSession && <span>Selected class</span>}
+                        <strong>{slot.classTitle || slot.subjectName || 'Class'}</strong>
+                        <div>{slot.startTime} - {slot.endTime}</div>
+                        {slot.status === 'cancelled' && <span>Cancelled</span>}
+                        {slot.status === 'rescheduled' && <span>Moved to {slot.movedTo}</span>}
+                        {slot.status === 'moved' && <span>Rescheduled from {slot.originalDate}</span>}
+                        {(canEmbedJoin || (slot.meetingUrl && !['cancelled', 'rescheduled'].includes(slot.status) && /^https:\/\//i.test(slot.meetingUrl))) && (
+                          <div className="classroom-session-actions">
+                            {canEmbedJoin && (isStageOpen
+                              ? <span className="classroom-zoom-active-pill">Live in Theater ↑</span>
+                              : <button type="button" className="classroom-join-btn" onClick={() => setActiveZoomSlot(slot)}><Video size={14} /> Join in Classroom</button>)}
+                            {slot.meetingUrl && !['cancelled', 'rescheduled'].includes(slot.status) && /^https:\/\//i.test(slot.meetingUrl) && (
+                              <a href={slot.meetingUrl} target="_blank" rel="noopener noreferrer" className="classroom-zoom-app-btn">
+                                <ExternalLink size={14} /> Join via Zoom App
+                              </a>
+                            )}
+                          </div>
+                        )}
+                      </li>;
+                    })}</ul> : <p>No classes</p>}
                   </div>;
                 })}
               </div>
