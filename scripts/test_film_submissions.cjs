@@ -462,7 +462,7 @@ async function run() {
     await studentPage.getByRole('button', {name:'Join in Classroom'}).click();
     if (process.env.TEST_ZOOM_EMBED === 'true') await studentPage.frameLocator('iframe[title="Zoom classroom"]').getByText('123456789', {exact:true}).waitFor();
     else await studentPage.frameLocator('iframe[title="Zoom classroom"]').getByText(/Connecting to Zoom|Could not initialize Zoom|Could not join the meeting/).waitFor({timeout:15000}).catch(async error => {console.error('SDK FRAME STATUS:', await studentPage.frameLocator('iframe[title="Zoom classroom"]').locator('body').innerText()); throw error;});
-    await studentPage.getByRole('button', {name:'Close meeting'}).click();
+    await studentPage.getByRole('button', {name:'Leave meeting'}).click();
     delete process.env.ZOOM_CLIENT_ID; delete process.env.ZOOM_CLIENT_SECRET;
   }
   assert.equal(await studentPage.getByRole('region', {name: 'Weekly timetable'}).locator('.classroom-selected-session').getByRole('link', {name: 'Join via Zoom App'}).getAttribute('href'), 'https://zoom.us/j/123456789');
@@ -648,12 +648,13 @@ async function run() {
   assert.equal(changeResult.status(), 200, await changeResult.text());
   await week.getByText('Cancelled', {exact: true}).waitFor({timeout: 5000});
   await week.getByText('Rescheduled from ' + original, {exact: true}).waitFor({timeout: 5000});
-  await week.getByText('20:00 - 22:00', {exact: true}).waitFor();
+  await week.getByText('8:00 PM – 10:00 PM', {exact: true}).waitFor();
   await studentPage.getByRole('button', {name: 'Next week', exact: true}).click();
   await week.getByText('Monday lighting class', {exact: true}).waitFor();
   assert.equal(await week.getByText('Cancelled', {exact: true}).count(), 0);
   assert.equal(await week.getByText('Rescheduled from ' + original, {exact: true}).count(), 0);
-  assert.equal(await week.getByText('19:00 - 21:00', {exact: true}).count(), 2);
+  assert.equal(await week.getByText('7:00 PM – 9:00 PM', {exact: true}).count(), 2);
+  assert.ok(db.prepare("SELECT COUNT(*) AS n FROM notifications WHERE user_id=? AND type='schedule_update'").get(userId).n >= 1);
   console.log('PASS: live timetable update, cancelled and moved occurrences, overlap rejection, and unchanged weekly recurrence');
   const preferenceApi = '/api/notifications/preferences';
   const defaultPrefs = {notices: true, materials: true, messages: true, community: true};
