@@ -68,9 +68,13 @@ export const DEFAULT_ROUTINE_SLOT = Object.freeze({
 });
 
 export function createDefaultRoutineSlot(overrides = {}) {
+  const id = (overrides?.id != null && String(overrides.id).trim())
+    ? String(overrides.id).trim()
+    : `slot_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
   return {
     ...DEFAULT_ROUTINE_SLOT,
-    ...overrides
+    ...overrides,
+    id
   };
 }
 
