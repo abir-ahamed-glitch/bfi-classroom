@@ -1181,13 +1181,16 @@ router.put('/:id/routine', authenticateToken, (req, res) => {
     }
 
     // Sanitize routine slots to preserve full metadata and strictly validated teacherUserId
-    const sanitizedRoutine = routine.map(slot => {
+    const sanitizedRoutine = routine.map((slot, rIdx) => {
       // Strictly validate instructor ID: must be active instructor and not deleted
       // Strictly NEVER guess teacherUserId from slot.teacherName!
       const validatedTeacherUserId = validateAndSanitizeInstructorId(db, slot.teacherUserId);
+      const stableSlotId = (slot.id != null && String(slot.id).trim())
+        ? String(slot.id).trim()
+        : `slot_${resolvedBatchId || id}_${Date.now().toString(36)}_${rIdx + 1}`;
 
       return {
-        id: slot.id,
+        id: stableSlotId,
         ...(changesBySlot.get(slot).length ? { sessionChanges: changesBySlot.get(slot) } : {}),
         date: slot.date ? String(slot.date).trim() : '',
         weekday: slot.weekday,
