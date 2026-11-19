@@ -1503,7 +1503,16 @@ export default function BatchDetail() {
             </div>
           </div>
 
-          <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
+          <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
+            {currentUser?.role === 'admin' && batchData?.course_definition_id && (
+              <Link
+                to={`/classroom?batch_id=${encodeURIComponent(batchData.id)}`}
+                className="modern-btn modern-btn--secondary"
+                style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem', textDecoration: 'none' }}
+              >
+                <Video size={16} /> Open Classroom
+              </Link>
+            )}
             <button 
               onClick={handleRunDetailAutomation} 
               disabled={automationRunning}

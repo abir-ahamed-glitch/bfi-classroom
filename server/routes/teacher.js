@@ -5,7 +5,7 @@ import { resolvePhaseRoutine } from '../services/courseProgressService.js';
 
 const router = express.Router();
 
-export function sanitizeRoutineSlots(routine = []) {
+export function sanitizeRoutineSlots(routine = [], { includeMeetingUrl = false } = {}) {
   if (!Array.isArray(routine)) return [];
   return routine.map((slot, idx) => ({
     id: slot.id || `slot_${idx + 1}`,
@@ -21,6 +21,7 @@ export function sanitizeRoutineSlots(routine = []) {
     deliveryMode: slot.deliveryMode ? String(slot.deliveryMode).trim() : 'live',
     category: slot.category ? String(slot.category).trim() : 'theory',
     platform: slot.platform ? String(slot.platform).trim() : '',
+    ...(includeMeetingUrl ? { meetingUrl: typeof slot.meetingUrl === 'string' ? slot.meetingUrl : '' } : {}),
     ...(Array.isArray(slot.sessionChanges) && slot.sessionChanges.length ? { sessionChanges: slot.sessionChanges } : {})
   }));
 }
@@ -146,7 +147,7 @@ router.get('/batches/:id/schedule', authenticateToken, (req, res) => {
           phases = rawPhases.map((phase, pIdx) => {
             const phaseId = phase.id || `phase_${phase.phaseIndex || pIdx + 1}`;
             const resolved = resolvePhaseRoutine(db, batch.course_definition_id, batch.id, phaseId, phase.routine);
-            const sanitizedSlots = sanitizeRoutineSlots(resolved.routine);
+            const sanitizedSlots = sanitizeRoutineSlots(resolved.routine, { includeMeetingUrl: req.user.role === 'admin' });
 
             // Mark classes where teacherUserId explicitly matches authenticated instructor
             const markedSlots = sanitizedSlots.map(slot => {
@@ -205,7 +206,7 @@ router.get('/schedule', authenticateToken, (req, res) => {
 
     // Only active batches (deleted_at IS NULL AND status != 'archived')
     const allBatches = db.prepare(`
-      SELECT id, batch_name, batch_number, course_name, course_definition_id, created_by
+      SELECT id, batch_name, batch_number, course_name, course_definition_id, start_date, end_date, created_by
       FROM batches
       WHERE deleted_at IS NULL AND (status IS NULL OR status != 'archived')
       ORDER BY id DESC
@@ -215,6 +216,7 @@ router.get('/schedule', authenticateToken, (req, res) => {
     const myClasses = [];
 
     for (const batch of allBatches) {
+      if (req.user.role === 'admin' && !batch.course_definition_id) continue;
       const isAssigned = (req.user.role === 'admin') || isTeacherAssignedToBatch(db, req.user.id, batch);
       if (!isAssigned) continue;
 
@@ -229,7 +231,7 @@ router.get('/schedule', authenticateToken, (req, res) => {
               const phase = rawPhases[pIdx];
               const phaseId = phase.id || `phase_${phase.phaseIndex || pIdx + 1}`;
               const resolved = resolvePhaseRoutine(db, batch.course_definition_id, batch.id, phaseId, phase.routine);
-              const sanitizedSlots = sanitizeRoutineSlots(resolved.routine);
+              const sanitizedSlots = sanitizeRoutineSlots(resolved.routine, { includeMeetingUrl: req.user.role === 'admin' });
 
               const markedSlots = sanitizedSlots.map(slot => {
                 const isMy = slot.teacherUserId && Number(slot.teacherUserId) === Number(req.user.id);
@@ -266,6 +268,8 @@ router.get('/schedule', authenticateToken, (req, res) => {
 
       assignedBatches.push({
         batchId: batch.id,
+        startDate: batch.start_date?.slice(0, 10),
+        endDate: batch.end_date?.slice(0, 10),
         batchName: batch.batch_name,
         batchNumber: batch.batch_number,
         courseName: batch.course_name,

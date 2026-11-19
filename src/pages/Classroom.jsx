@@ -34,8 +34,8 @@ export default function Classroom() {
         throw new Error('Not authenticated');
       }
 
-      const isTeacher = currentUser?.role === 'instructor';
-      const endpoint = isTeacher ? '/api/teacher/schedule' : '/api/student/schedule';
+      const usesTeacherSchedule = currentUser?.role === 'instructor' || currentUser?.role === 'admin';
+      const endpoint = usesTeacherSchedule ? '/api/teacher/schedule' : '/api/student/schedule';
 
       const res = await apiClient(endpoint);
 
@@ -59,7 +59,7 @@ export default function Classroom() {
   useEffect(() => {
     fetchSchedule();
     const role = currentUser?.role;
-    if (role !== 'student' && role !== 'instructor') return;
+    if (!['student', 'instructor', 'admin'].includes(role)) return;
     const refresh = () => {
       setNow(dhakaNow());
       if (!document.hidden) fetchSchedule(true);
@@ -143,9 +143,11 @@ export default function Classroom() {
             BFI Classroom
           </h1>
           <p className="subtitle" style={{ margin: 0, color: 'var(--text-secondary, #94a3b8)', fontSize: '0.95rem' }}>
-            {currentUser?.role === 'instructor' 
-              ? 'Your assigned teaching routine, scheduled topics, and class platforms.' 
-              : 'Your enrolled batch routine, scheduled lecture dates, and live session links.'}
+            {currentUser?.role === 'instructor'
+              ? 'Your assigned teaching routine, scheduled topics, and class platforms.'
+              : currentUser?.role === 'admin'
+                ? 'Active batch routines, scheduled topics, and live Zoom classroom previews.'
+                : 'Your enrolled batch routine, scheduled lecture dates, and live session links.'}
           </p>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
@@ -195,7 +197,9 @@ export default function Classroom() {
           <p style={{ color: 'var(--text-secondary)', fontSize: '0.95rem', maxWidth: '480px', margin: '0 auto' }}>
             {currentUser?.role === 'instructor'
               ? 'You have not been assigned to any Course Maker batch schedule yet.'
-              : 'You are not actively enrolled in any scheduled Course Maker batch yet. Once enrolled, your routine will appear here automatically.'}
+              : currentUser?.role === 'admin'
+                ? 'No active scheduled Course Maker batches found.'
+                : 'You are not actively enrolled in any scheduled Course Maker batch yet. Once enrolled, your routine will appear here automatically.'}
           </p>
         </div>
       )}
@@ -298,8 +302,8 @@ export default function Classroom() {
                       {slot.status === 'cancelled' && <span>Cancelled</span>}
                       {slot.status === 'rescheduled' && <span>Moved to {slot.movedTo}</span>}
                       {slot.status === 'moved' && <span>Rescheduled from {slot.originalDate}</span>}
-                      {import.meta.env.VITE_ZOOM_EMBED_ENABLED === 'true' && currentUser?.role === 'student' && slot === selectedSession && slot.meetingUrl && !['cancelled', 'rescheduled'].includes(slot.status) &&
-                        <ZoomClassroom key={`${activeBatch.batchId}:${activePhase.phaseId}:${slot.id}:${slot.date}`} batchId={activeBatch.batchId} phaseId={activePhase.phaseId} session={slot} userName={currentUser?.full_name || currentUser?.username || 'Student'} />}
+                      {import.meta.env.VITE_ZOOM_EMBED_ENABLED === 'true' && ['student', 'admin'].includes(currentUser?.role) && (currentUser?.role === 'admin' || slot === selectedSession) && slot.meetingUrl && slot.id != null && slot.date && !['cancelled', 'rescheduled'].includes(slot.status) &&
+                        <ZoomClassroom key={`${activeBatch.batchId}:${activePhase.phaseId}:${slot.id}:${slot.date}`} batchId={activeBatch.batchId} phaseId={activePhase.phaseId} session={slot} userName={currentUser?.full_name || currentUser?.username || (currentUser?.role === 'admin' ? 'Admin' : 'Student')} />}
                       {slot.meetingUrl && !['cancelled', 'rescheduled'].includes(slot.status) && /^https:\/\//i.test(slot.meetingUrl) &&
                         <div><a href={slot.meetingUrl} target="_blank" rel="noopener noreferrer" className="assessment-action-link">Join meeting</a></div>}
                     </li>)}</ul> : <p>No classes</p>}
