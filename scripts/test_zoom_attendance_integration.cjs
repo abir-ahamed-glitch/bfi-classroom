@@ -50,6 +50,19 @@ process.env.NODE_ENV = 'test';
     const joinData = await joinResponse.json();
     assert.equal(joinData.meetingNumber,'123456789');
     assert.equal(jwt.verify(joinData.signature,process.env.ZOOM_CLIENT_SECRET,{algorithms:['HS256']}).role,0);
+    const adminJoinResponse = await fetch(base+'/api/zoom-meetings/join',{
+      method:'POST', headers:{Authorization:'Bearer '+bearer,'Content-Type':'application/json'},
+      body:JSON.stringify({batchId:batch,phaseId:'phase_1',slotId:'slot-a',date})
+    });
+    assert.equal(adminJoinResponse.status,200,await adminJoinResponse.clone().text());
+    const adminJoinData = await adminJoinResponse.json();
+    assert.equal(adminJoinData.meetingNumber,'123456789');
+    assert.equal(jwt.verify(adminJoinData.signature,process.env.ZOOM_CLIENT_SECRET,{algorithms:['HS256']}).role,0);
+    const restrictedJoinResponse = await fetch(base+'/api/zoom-meetings/join',{
+      method:'POST', headers:{Authorization:'Bearer '+restricted,'Content-Type':'application/json'},
+      body:JSON.stringify({batchId:batch,phaseId:'phase_1',slotId:'slot-a',date})
+    });
+    assert.equal(restrictedJoinResponse.status,403);
 
     async function sendEvent(type, timestamp, account = webhook.accountId) {
       const body = JSON.stringify({event:`meeting.participant_${type === 'join' ? 'joined' : 'left'}`,
